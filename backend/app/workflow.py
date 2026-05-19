@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -86,9 +87,13 @@ def copy_upload(project_id: str, source_path: Path, label: str, kind: str) -> di
 
 def run_subprocess(args: list[str], cwd: Path, run_id: str) -> subprocess.CompletedProcess[str]:
     db.add_event(run_id, "running: " + " ".join(args))
+    env = os.environ.copy()
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     proc = subprocess.run(
         args,
         cwd=str(cwd),
+        env=env,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -285,4 +290,3 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
 
 def run_translate_sync(run_id: str, request: Any) -> dict[str, Any]:
     return asyncio.run(translate_run(run_id, request))
-
