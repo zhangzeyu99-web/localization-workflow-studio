@@ -6,6 +6,8 @@ node_modules/
 dist/
 .vite/
 output/
+test-results/
+playwright-report/
 .env
 *.local
 settings.local.json
