@@ -57,6 +57,7 @@ flowchart TD
 - Provider presets: GPT and Claude only, each with `fast`, `balanced`, and `deep` presets.
 - Test provider: internal `mock`, used by CI and local E2E when no API key is available.
 - True v1 closed loop: EN translation.
+- Project brief and translation prompt generation can use auxiliary project materials via the embedded glossary workflow `--project-material` / `--project-note` adapter; Studio passes uploaded project assets into glossary extraction.
 - Other languages: visible configuration entry only; they do not pretend to be completed by automation.
 
 ## Data Policy

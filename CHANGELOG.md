@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.0 - 2026-05-19
+
+- Added layered Project Harness support with global reusable gates separated from project-specific rules, style hints, manual fixes, and improvement suggestions.
+- Added project asset roles and origins so uploaded, imported, generated, and manual workbooks or glossary assets can be selected per workflow step.
+- Added glossary import preview, import, export, and editable term workflows.
+- Added direct QA runs for existing translated workbooks, failed-row issue listing, manual fix application, QA reruns, and project improvement queues.
+- Integrated project materials and notes into glossary extraction so project briefs and translation prompts can use multimodal-ready context.
+- Hardened generated workbook metadata, mock placeholder preservation, QA failure artifact retention, browser E2E coverage, and README workflow documentation.
+
 ## 0.3.0 - 2026-05-19
 
 - Replaced free-form provider configuration with GPT and Claude only.

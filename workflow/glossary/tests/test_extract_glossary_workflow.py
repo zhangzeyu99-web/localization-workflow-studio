@@ -165,6 +165,35 @@ class UtilityTests(unittest.TestCase):
             self.assertEqual(records, [MODULE.Record("UIMail101", "领取", "Claim")])
 
 
+    def test_project_brief_uses_extra_materials_and_notes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            design_doc = temp_path / "setting.md"
+            design_doc.write_text("Project setting: aircraft, fighter jet, missile, shooter, hero gear progression.", encoding="utf-8")
+            screenshot = temp_path / "aircraft_missile_battle_ui.png"
+            screenshot.write_bytes(b"fake-image")
+
+            material_records, material_sources = MODULE.load_project_material_records(
+                material_paths=[design_doc, screenshot],
+                notes=["Screenshot shows a dark sci-fi hangar and fighter upgrade UI."],
+            )
+            records = [MODULE.Record("1", "Claim", "Claim")] + material_records
+            markdown, prompt = MODULE.build_project_brief(
+                project_name="Fixture Game",
+                sheet_name="Sheet0",
+                records=records,
+                all_rows=[],
+                glossary_rows=[],
+                manual_rows=[],
+                material_sources=material_sources,
+            )
+
+            self.assertIn("Fixture Game", markdown)
+            self.assertIn("setting.md", markdown)
+            self.assertIn("aircraft_missile_battle_ui.png", markdown)
+            self.assertIn("\u79d1\u5e7b\u519b\u4e8b", prompt)
+
+
 class MemoryTests(unittest.TestCase):
     def test_preferences_can_block_en2_and_accumulate_observations(self):
         curated = {

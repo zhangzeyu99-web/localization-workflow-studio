@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import html
 import json
@@ -182,16 +183,15 @@ PROJECT_SIGNAL_GROUPS = {
         "生产机器",
         "生成器",
         "仓库",
-        "解锁",
         "菜品",
         "烹饪",
         "顾客",
         "Merge",
     },
     "花店/装修": {
-        "花",
         "花店",
         "花束",
+        "鲜花",
         "玫瑰",
         "百合",
         "装饰",
@@ -202,6 +202,11 @@ PROJECT_SIGNAL_GROUPS = {
         "Florist",
     },
     "休闲/女性向": {
+        "女性向",
+        "恋爱",
+        "恋综",
+        "都市",
+        "时尚",
         "可爱",
         "漂亮",
         "温馨",
@@ -214,6 +219,10 @@ PROJECT_SIGNAL_GROUPS = {
         "浪漫",
         "美女",
         "小姐",
+        "romance",
+        "fashion",
+        "cozy",
+        "cute",
     },
     "战斗/RPG养成": {
         "战斗",
@@ -281,6 +290,12 @@ PROJECT_SIGNAL_GROUPS = {
         "射击",
         "僚机",
         "弹幕",
+        "aircraft",
+        "fighter",
+        "jet",
+        "plane",
+        "missile",
+        "shooter",
     },
     "末日/生存题材": {
         "幸存者",
@@ -291,6 +306,10 @@ PROJECT_SIGNAL_GROUPS = {
         "生存",
         "废土",
         "救援",
+        "survival",
+        "zombie",
+        "wasteland",
+        "shelter",
     },
     "剧情/叙事": {
         "剧情",
@@ -307,8 +326,16 @@ PROJECT_SIGNAL_GROUPS = {
         "小姐",
         "等等",
         "拜托",
+        "story",
+        "dialogue",
+        "chapter",
     },
 }
+
+TEXT_MATERIAL_EXTENSIONS = {".txt", ".md", ".markdown", ".json"}
+TABLE_MATERIAL_EXTENSIONS = {".xlsx", ".xlsm"}
+DELIMITED_MATERIAL_EXTENSIONS = {".csv", ".tsv"}
+IMAGE_MATERIAL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 
 CATEGORY_LABELS = {
     "rarity": "稀有度/品质",
@@ -1104,7 +1131,7 @@ def auto_records_from_sheet_rows(sheet_title: str, rows: list[list[object]]) -> 
     headers = list(rows[0])
     source_index = first_matching_header(
         headers,
-        ["简体中文", "中文", "正常对话", "cn", "source", "zh", "Chinese"],
+        ["简体中文", "中文", "正常对话", "资料", "简介", "内容", "说明", "描述", "cn", "source", "zh", "Chinese", "note", "description"],
     )
     if source_index is None:
         return []
@@ -1133,6 +1160,16 @@ def auto_records_from_sheet_rows(sheet_title: str, rows: list[list[object]]) -> 
     return records
 
 
+def generic_records_from_sheet_rows(sheet_title: str, rows: list[list[object]]) -> list[Record]:
+    records: list[Record] = []
+    for row_number, row in enumerate(rows[1:], start=2):
+        parts = [clean_text(value) for value in row if clean_text(value)]
+        if not parts:
+            continue
+        records.append(Record(row_id=f"{sheet_title}:{row_number}", source=" ".join(parts), target=""))
+    return records
+
+
 def load_project_records(input_path: Path) -> list[Record]:
     try:
         workbook = load_workbook(input_path, read_only=True, data_only=True)
@@ -1147,6 +1184,120 @@ def load_project_records(input_path: Path) -> list[Record]:
         for sheet_title, rows in iter_raw_xlsx_sheets(input_path):
             records.extend(auto_records_from_sheet_rows(sheet_title, rows))
         return records
+
+
+def load_table_material_records(input_path: Path) -> list[Record]:
+    try:
+        workbook = load_workbook(input_path, read_only=True, data_only=True)
+        records: list[Record] = []
+        for worksheet in workbook.worksheets:
+            rows = list(worksheet.iter_rows(values_only=True))
+            sheet_records = auto_records_from_sheet_rows(worksheet.title, rows)
+            records.extend(sheet_records or generic_records_from_sheet_rows(worksheet.title, rows))
+        workbook.close()
+        return records
+    except Exception:
+        records = []
+        for sheet_title, rows in iter_raw_xlsx_sheets(input_path):
+            sheet_records = auto_records_from_sheet_rows(sheet_title, rows)
+            records.extend(sheet_records or generic_records_from_sheet_rows(sheet_title, rows))
+        return records
+
+
+def chunk_text_material(text: str, limit: int = 160) -> list[str]:
+    cleaned = clean_text(text)
+    if not cleaned:
+        return []
+    raw_chunks = re.split(r"[\r\n]+|(?<=[。！？.!?])\s*", cleaned)
+    chunks: list[str] = []
+    buffer = ""
+    for raw_chunk in raw_chunks:
+        chunk = clean_text(raw_chunk)
+        if not chunk:
+            continue
+        if len(chunk) > limit:
+            chunks.append(chunk[:limit])
+            continue
+        if not buffer:
+            buffer = chunk
+        elif len(buffer) + len(chunk) + 1 <= limit:
+            buffer = f"{buffer} {chunk}"
+        else:
+            chunks.append(buffer)
+            buffer = chunk
+    if buffer:
+        chunks.append(buffer)
+    return chunks[:200]
+
+
+def records_from_text_material(path: Path) -> list[Record]:
+    try:
+        content = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        content = path.read_text(encoding="gb18030", errors="ignore")
+    records: list[Record] = []
+    for index, chunk in enumerate(chunk_text_material(content), start=1):
+        records.append(Record(row_id=f"{path.name}:{index}", source=chunk, target=""))
+    return records
+
+
+def records_from_delimited_material(path: Path) -> list[Record]:
+    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+    try:
+        content = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        content = path.read_text(encoding="gb18030", errors="ignore")
+    rows = list(csv.reader(content.splitlines(), delimiter=delimiter))
+    if not rows:
+        return []
+    return auto_records_from_sheet_rows(path.name, rows) or generic_records_from_sheet_rows(path.name, rows)
+
+
+def records_from_image_material(path: Path) -> list[Record]:
+    source = " ".join(
+        part
+        for part in [
+            "图片资料",
+            path.stem.replace("_", " ").replace("-", " "),
+            path.parent.name if path.parent else "",
+        ]
+        if part
+    )
+    return [Record(row_id=f"{path.name}:image", source=source, target="")]
+
+
+def load_project_material_records(
+    material_paths: list[Path],
+    notes: list[str] | None = None,
+) -> tuple[list[Record], list[str]]:
+    records: list[Record] = []
+    sources: list[str] = []
+    for note_index, note in enumerate(notes or [], start=1):
+        note_text = clean_text(note)
+        if note_text:
+            records.append(Record(row_id=f"project-note:{note_index}", source=note_text, target=""))
+            sources.append(f"备注: {note_text[:40]}")
+
+    for material_path in material_paths:
+        path = Path(material_path)
+        suffix = path.suffix.lower()
+        if not path.exists():
+            sources.append(f"缺失资料: {path}")
+            continue
+        if suffix in TABLE_MATERIAL_EXTENSIONS:
+            material_records = load_table_material_records(path)
+        elif suffix in DELIMITED_MATERIAL_EXTENSIONS:
+            material_records = records_from_delimited_material(path)
+        elif suffix in TEXT_MATERIAL_EXTENSIONS:
+            material_records = records_from_text_material(path)
+        elif suffix in IMAGE_MATERIAL_EXTENSIONS:
+            material_records = records_from_image_material(path)
+        else:
+            material_records = records_from_text_material(path)
+
+        records.extend(material_records)
+        sources.append(f"{path.name} ({len(material_records)} 条)")
+    return records, sources
 
 
 def load_records(
@@ -1360,8 +1511,9 @@ def keyword_evidence(records: list[Record], keywords: set[str]) -> tuple[int, Co
     keyword_counter: Counter[str] = Counter()
     for record in records:
         matched = False
+        source_text = record.source.lower()
         for keyword in keywords:
-            if keyword in record.source:
+            if keyword.lower() in source_text:
                 keyword_counter[keyword] += 1
                 matched = True
         if matched:
@@ -1471,6 +1623,12 @@ def style_guidance(signals: list[dict[str, object]], categories: Counter[str], t
 
 def project_type_from_signals(signals: list[dict[str, object]]) -> str:
     labels = {str(signal["label"]) for signal in signals}
+    if "飞行/射击题材" in labels and "战斗/RPG养成" in labels:
+        return "科幻战机 / 飞行射击 / RPG养成"
+    if "飞行/射击题材" in labels:
+        return "飞行射击"
+    if "战斗/RPG养成" in labels and "社交/公会竞争" in labels and "基地/建筑经营" in labels:
+        return "战斗/RPG养成 / 轻SLG"
     if {"合成/经营", "花店/装修", "剧情/叙事"} <= labels:
         return "合成经营 / 花店修复 / 轻剧情休闲"
     if {"合成/经营", "剧情/叙事"} <= labels:
@@ -1479,8 +1637,6 @@ def project_type_from_signals(signals: list[dict[str, object]]) -> str:
         return "花店装修 / 休闲经营"
     if "休闲/女性向" in labels:
         return "女性向休闲"
-    if "飞行/射击题材" in labels:
-        return "飞行射击"
     if "战斗/RPG养成" in labels:
         return "战斗/RPG养成"
     if "剧情/叙事" in labels:
@@ -1490,6 +1646,10 @@ def project_type_from_signals(signals: list[dict[str, object]]) -> str:
 
 def target_user_from_signals(signals: list[dict[str, object]]) -> str:
     labels = {str(signal["label"]) for signal in signals}
+    if "飞行/射击题材" in labels:
+        return "偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。"
+    if "战斗/RPG养成" in labels:
+        return "偏中度、关注战力成长、英雄/装备养成、活动奖励和竞技排名的移动端玩家。"
     if "花店/装修" in labels or "休闲/女性向" in labels:
         return "偏休闲、喜欢合成/装修/经营和轻剧情的女性向或轻度玩家。"
     if "合成/经营" in labels:
@@ -1499,18 +1659,42 @@ def target_user_from_signals(signals: list[dict[str, object]]) -> str:
     return "移动端游戏玩家。"
 
 
+def signal_hit_map(signals: list[dict[str, object]]) -> dict[str, int]:
+    return {str(signal["label"]): int(signal["hit_rows"]) for signal in signals}
+
+
 def content_focus_from_signals(signals: list[dict[str, object]]) -> str:
     labels = {str(signal["label"]) for signal in signals}
+    hits = signal_hit_map(signals)
     focus: list[str] = []
-    if "合成/经营" in labels:
+    if "飞行/射击题材" in labels:
+        focus.append("战机、导弹、射击、弹幕等战斗内容")
+    if "战斗/RPG养成" in labels:
+        focus.append("英雄、装备、技能、属性和战力成长")
+    if "基地/建筑经营" in labels:
+        focus.append("建造、升级、采集、生产等基地系统")
+    if hits.get("合成/经营", 0) >= 20:
         focus.append("合成、订单、生产、仓库等玩法 UI")
-    if "花店/装修" in labels:
+    if hits.get("花店/装修", 0) >= 10:
         focus.append("花店修复、装饰和生活化物件")
     if "剧情/叙事" in labels:
         focus.append("角色剧情对话")
     if "活动/商业化" in labels:
         focus.append("活动、礼包和奖励")
     return "；".join(focus) if focus else "系统 UI、玩法说明和剧情文本"
+
+
+def tone_rule_from_signals(signals: list[dict[str, object]]) -> str:
+    labels = {str(signal["label"]) for signal in signals}
+    if "飞行/射击题材" in labels:
+        return "整体语气冷静、利落、偏科幻军事；战机、装备、导弹、技能和战斗数值要专业清晰，避免可爱化、生活化或过度口语化。"
+    if "战斗/RPG养成" in labels:
+        return "整体语气清晰、有力量感；战斗、英雄、装备和数值成长要准确直接，避免弱化机制或夸张营销。"
+    if "花店/装修" in labels or "休闲/女性向" in labels:
+        return "整体语气偏轻松、温暖、生活化；涉及花店、装修、订单、合成、经营时避免硬核或过度严肃的表达。"
+    if "合成/经营" in labels:
+        return "整体语气轻松、清晰、偏休闲；合成、订单、生产和仓库说明要短句化，避免复杂长句。"
+    return "整体语气清晰、自然、符合移动游戏语境；不要为了润色改变玩法含义。"
 
 
 def build_translation_prompt(
@@ -1521,6 +1705,7 @@ def build_translation_prompt(
     target_coverage: int,
 ) -> str:
     project_type = project_type_from_signals(signals)
+    tone_rule = tone_rule_from_signals(signals)
     term_rule = "关键术语以随附术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法。"
     if not key_terms:
         term_rule = "如未提供术语表，需先从上下文判断固定系统名，保持同一中文术语的英文一致。"
@@ -1535,7 +1720,7 @@ def build_translation_prompt(
             "译文需符合以下要求：",
             "1. 游戏内容/UI/玩法说明尽量精简，适配移动游戏按钮、弹窗、任务、道具和奖励说明；",
             "2. 剧情对话必须自然、地道、通顺，参考美剧日常对白节奏，保留角色语气、冲突、幽默和情绪，不要逐字直译；",
-            "3. 风格偏轻松、温暖、生活化；涉及花店、装修、订单、合成、经营时避免硬核或过度严肃的表达；",
+            f"3. {tone_rule}",
             f"4. {term_rule}",
             f"5. {existing_en_rule}",
             "6. 保留所有游戏代码、变量、数字、换行、颜色标签、HTML/富文本标签和占位符，如 {0}、%s、<color> 等；",
@@ -1551,15 +1736,17 @@ def build_project_brief(
     all_rows: list[dict[str, object]],
     glossary_rows: list[dict[str, object]],
     manual_rows: list[dict[str, object]],
+    material_sources: list[str] | None = None,
 ) -> tuple[str, str]:
     source_rows = len(records)
     target_coverage = sum(1 for record in records if record.target)
-    signals = infer_project_signals(records)
+    signals = infer_project_signals(records, limit=10)
     categories = category_distribution(glossary_rows or all_rows)
     key_terms = top_terms(glossary_rows or all_rows)
     project_type = project_type_from_signals(signals)
     target_user = target_user_from_signals(signals)
     content_focus = content_focus_from_signals(signals)
+    tone_rule = tone_rule_from_signals(signals)
     prompt = build_translation_prompt(
         project_name=project_name,
         signals=signals,
@@ -1586,7 +1773,8 @@ def build_project_brief(
                     ["游戏类型", project_type],
                     ["目标用户", target_user],
                     ["内容构成", content_focus],
-                    ["翻译风格", "UI/玩法精简适配移动端；剧情自然、地道、通顺，参考美剧日常对白。"],
+                    ["翻译风格", f"UI/玩法精简适配移动端；剧情自然、地道、通顺，参考美剧日常对白；{tone_rule}"],
+                    ["信息来源", "语言表" if not material_sources else "语言表；" + "；".join(material_sources[:6])],
                     ["语言资产", f"{source_rows} 条文本，已有英文 {target_coverage} 条。"],
                     ["生成日期", datetime.now().strftime("%Y-%m-%d")],
                 ],
@@ -1786,6 +1974,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path for a prompt-only text output extracted from the project brief.",
     )
     parser.add_argument(
+        "--project-material",
+        action="append",
+        default=[],
+        help="Additional project material path for brief generation. Can be repeated. Supports txt/md/json/csv/tsv/xlsx and image filenames.",
+    )
+    parser.add_argument(
+        "--project-note",
+        action="append",
+        default=[],
+        help="Additional project note or image observation used for brief generation. Can be repeated.",
+    )
+    parser.add_argument(
         "--no-project-brief",
         action="store_true",
         help="Disable project audit Markdown generation.",
@@ -1843,8 +2043,12 @@ def main(argv: list[str] | None = None) -> int:
         observations_store_path=observations_store_path,
     )
     write_final_workbook(output_path=final_output_path, final_rows=final_rows)
+    material_records, material_sources = load_project_material_records(
+        material_paths=[Path(path) for path in args.project_material],
+        notes=args.project_note,
+    )
     project_records = records if args.no_project_brief and translation_prompt_output_path is None else (
-        load_project_records(input_path) or records
+        (load_project_records(input_path) or records) + material_records
     )
     project_brief_markdown, translation_prompt = build_project_brief(
         project_name=project_name,
@@ -1853,6 +2057,7 @@ def main(argv: list[str] | None = None) -> int:
         all_rows=all_rows,
         glossary_rows=glossary_rows,
         manual_rows=manual_rows,
+        material_sources=material_sources,
     )
     if not args.no_project_brief:
         write_text_output(project_brief_output_path, project_brief_markdown)
@@ -1866,6 +2071,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"FINAL_OUTPUT={final_output_path}")
     print(f"PROJECT_BRIEF_OUTPUT={project_brief_output_path if not args.no_project_brief else 'disabled'}")
     print(f"TRANSLATION_PROMPT_OUTPUT={translation_prompt_output_path or 'disabled'}")
+    print(f"PROJECT_MATERIALS={len(material_sources)}")
     print(f"CURATED_RULES={curated_rules_path or 'disabled'}")
     print(f"OBSERVATIONS_STORE={observations_store_path or 'disabled'}")
     print(f"SHEET={sheet_name}")

@@ -1,12 +1,12 @@
 {
   "name": "localization-workflow-studio-frontend",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "tsc && vite build",
-    "e2e": "playwright test e2e/studio-ui-flow.spec.ts --reporter=line",
+    "e2e": "playwright test e2e --reporter=line",
     "preview": "vite preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {

@@ -23,6 +23,7 @@ def _extract_placeholders(text: str) -> list[str]:
         r"\{[^{}]+\}",
         r"%[sdif]",
         r"##\d+",
+        r"\[(?!/?color\b)(?:[A-Za-z]+\d+|\d+)\]",
         r"\[[a-zA-Z]+[^\]]*\]",
         r"\[/[a-zA-Z]+\]",
         r"<[^>]+>",

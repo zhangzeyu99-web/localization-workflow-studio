@@ -20,12 +20,32 @@ type Project = {
   artifacts?: Artifact[]
   runs?: Run[]
   glossary?: GlossaryTerm[]
+  harness?: ProjectHarness
+}
+
+type ProjectHarness = {
+  schema_version?: number
+  updated_at?: string
+  project_metadata?: Record<string, unknown>
+  style_guidance?: string
+  target_audience?: string
+  tone?: string
+  forbidden_translations?: string[]
+  fixed_terms?: { source?: string; target?: string; note?: string; severity?: string }[]
+  hard_rules?: { label?: string; description?: string; pattern?: string; enabled?: boolean }[]
+  soft_rules?: { label?: string; description?: string; pattern?: string; enabled?: boolean }[]
+  reference_examples?: { source?: string; target?: string; note?: string }[]
+  manual_fixes?: Record<string, unknown>[]
+  qa_summary?: Record<string, unknown>
 }
 
 type Artifact = {
   id: string
   label: string
   kind: string
+  role?: string
+  origin?: string
+  metadata?: Record<string, unknown>
   path: string
   size: number
   created_at: string
@@ -55,10 +75,76 @@ type GlossaryTerm = {
   confirmed: boolean
 }
 
+type GlossaryPreviewRow = {
+  source: string
+  target: string
+  category: string
+  note: string
+}
+
+type QualityIssue = {
+  id: string
+  source: string
+  rule_source: string
+  severity: string
+  sheet: string
+  row: number
+  check_type: string
+  message: string
+  current_translation: string
+}
+
 const API = ''
 const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付归档']
 const langOptions = ['🇺🇸 英语 EN', '🇫🇷 法语 FR', '🇩🇪 德语 DE', '🇧🇷 巴葡 PT-BR', '🇷🇺 俄语 RU', '🇯🇵 日语 JA', '🇰🇷 韩语 KO', '🇪🇸 西语 ES', '🇸🇦 阿语 AR']
-type ProjectTab = 'prompt' | 'glossary' | 'history'
+type ProjectTab = 'prompt' | 'harness' | 'glossary' | 'history'
+
+const globalHarnessSummary = {
+  workpack: 'translation_workpack.jsonl',
+  responseProtocol: 'jsonl:{id:int,translation:str}',
+  hardGates: ['id', 'placeholder', 'tag', 'newline', 'input_fingerprint'],
+  qaSources: ['quality_harness.py', 'quality_regression.json']
+}
+
+function getProjectHarness(project: Project): ProjectHarness {
+  return project.harness || {}
+}
+
+function listToLines(value: unknown): string {
+  return Array.isArray(value) ? value.map((item) => String(item)).join('\n') : ''
+}
+
+function linesToList(value: string): string[] {
+  return value.split('\n').map((line) => line.trim()).filter(Boolean)
+}
+
+function rulesToLines(rules: ProjectHarness['hard_rules']): string {
+  return (rules || [])
+    .map((rule) => [rule.label, rule.description, rule.pattern].filter(Boolean).join(' | '))
+    .join('\n')
+}
+
+function linesToRules(value: string): ProjectHarness['hard_rules'] {
+  return linesToList(value).map((line) => {
+    const [label, description, pattern] = line.split('|').map((part) => part.trim())
+    return { label: label || line, description: description || label || line, pattern: pattern || '', enabled: true }
+  })
+}
+
+function fixedTermsToLines(terms: ProjectHarness['fixed_terms']): string {
+  return (terms || [])
+    .map((term) => `${term.source || ''} => ${term.target || ''}${term.note ? ` | ${term.note}` : ''}`.trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+function linesToFixedTerms(value: string): ProjectHarness['fixed_terms'] {
+  return linesToList(value).map((line) => {
+    const [pair, note] = line.split('|').map((part) => part.trim())
+    const [source, target] = pair.split('=>').map((part) => part.trim())
+    return { source: source || pair, target: target || '', note: note || '', severity: 'hard' }
+  })
+}
 
 function newestArtifact(artifacts: Artifact[] | undefined, kinds: string[]): Artifact | null {
   return [...(artifacts || [])]
@@ -69,6 +155,32 @@ function newestArtifact(artifacts: Artifact[] | undefined, kinds: string[]): Art
 function runArtifacts(project: Project, runId: string | undefined): Artifact[] {
   if (!runId) return []
   return (project.artifacts || []).filter((artifact) => artifact.run_id === runId)
+}
+
+function artifactRole(artifact: Artifact): string {
+  if (artifact.role) return artifact.role
+  const map: Record<string, string> = {
+    language_table: 'language_source',
+    term_base: 'glossary_source',
+    glossary_final: 'glossary_curated',
+    final_workbook: 'translation_workbook',
+    qa_report: 'qa_report',
+    qa_result: 'qa_report',
+    quality_summary: 'qa_report',
+    translation_prompt: 'prompt',
+    project_profile: 'profile',
+    project_harness_snapshot: 'harness_snapshot'
+  }
+  return map[artifact.kind] || artifact.kind
+}
+
+function artifactsByRole(project: Project, role: string): Artifact[] {
+  return (project.artifacts || []).filter((artifact) => artifactRole(artifact) === role)
+}
+
+function artifactsByRoles(project: Project, roles: string | string[]): Artifact[] {
+  const accepted = Array.isArray(roles) ? roles : [roles]
+  return (project.artifacts || []).filter((artifact) => accepted.includes(artifactRole(artifact)))
 }
 
 function errorText(error: unknown): string {
@@ -99,9 +211,12 @@ function App() {
   const [intro, setIntro] = useState('')
   const [sourceArtifact, setSourceArtifact] = useState<Artifact | null>(null)
   const [termArtifact, setTermArtifact] = useState<Artifact | null>(null)
+  const [qaArtifact, setQaArtifact] = useState<Artifact | null>(null)
   const [assetArtifacts, setAssetArtifacts] = useState<Artifact[]>([])
   const [latestRun, setLatestRun] = useState<Run | null>(null)
   const [selectedLangs, setSelectedLangs] = useState<string[]>(['🇺🇸 英语 EN'])
+  const [glossaryPreview, setGlossaryPreview] = useState<GlossaryPreviewRow[]>([])
+  const [qualityIssues, setQualityIssues] = useState<QualityIssue[]>([])
 
   useEffect(() => {
     refreshProjects()
@@ -122,18 +237,30 @@ function App() {
     if (!current) {
       setSourceArtifact(null)
       setTermArtifact(null)
+      setQaArtifact(null)
       setAssetArtifacts([])
       setLatestRun(null)
+      setGlossaryPreview([])
+      setQualityIssues([])
       return
     }
     const artifacts = current.artifacts || []
-    const latestTranslation = (current.runs || []).find((run) => run.kind === 'translation') || null
-    const hydratedRun = latestTranslation ? { ...latestTranslation, artifacts: runArtifacts(current, latestTranslation.id) } : null
-    setSourceArtifact(newestArtifact(artifacts, ['language_table']))
-    setTermArtifact(newestArtifact(artifacts, ['glossary_final', 'term_base']))
+    const latestProjectRun = (current.runs || [])[0] || null
+    const hydratedRun = latestProjectRun ? { ...latestProjectRun, artifacts: runArtifacts(current, latestProjectRun.id) } : null
+    setSourceArtifact(artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['language_table']))
+    setTermArtifact(artifactsByRole(current, 'glossary_curated')[0] || artifactsByRole(current, 'glossary_source')[0] || newestArtifact(artifacts, ['glossary_final', 'term_base']))
+    setQaArtifact(artifactsByRole(current, 'translation_workbook')[0] || newestArtifact(artifacts, ['final_workbook']))
     setAssetArtifacts(artifacts.filter((artifact) => artifact.kind === 'asset'))
     setLatestRun(hydratedRun)
   }, [current?.id, current?.artifacts?.length, current?.runs?.length])
+
+  useEffect(() => {
+    if (!latestRun || !['failed', 'needs_input'].includes(latestRun.status)) {
+      setQualityIssues([])
+      return
+    }
+    loadQualityIssues(latestRun.id)
+  }, [latestRun?.id, latestRun?.status])
 
   async function refreshProjects(selectId?: string) {
     const loaded = await api<Project[]>('/api/projects')
@@ -145,6 +272,15 @@ function App() {
     if (!currentId) return
     const loaded = await api<Project>(`/api/projects/${currentId}`)
     setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
+  }
+
+  async function loadQualityIssues(runId: string) {
+    try {
+      const result = await api<{ issues: QualityIssue[] }>(`/api/runs/${runId}/quality-issues`)
+      setQualityIssues(result.issues)
+    } catch (error) {
+      setStatus(`QA issue load failed: ${errorText(error)}`)
+    }
   }
 
   async function createProject(form: FormData) {
@@ -210,7 +346,9 @@ function App() {
           source_only: false,
           id_column: 'ID',
           source_column: 'cn',
-          target_column: 'en'
+          target_column: 'en',
+          project_material_artifact_ids: assetArtifacts.map((artifact) => artifact.id),
+          project_notes: [intro.trim() || current.description || `${current.name} ${current.type}`].filter(Boolean)
         })
       })
       setTermArtifact(result.artifacts.find((a) => a.kind === 'glossary_final') || null)
@@ -219,6 +357,44 @@ function App() {
       setStatus('术语提取完成')
     } catch (error) {
       setStatus(`术语提取失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function previewGlossaryImport() {
+    if (!current || !termArtifact) return
+    setBusy(true)
+    setStatus('正在预览术语表...')
+    try {
+      const result = await api<{ rows: GlossaryPreviewRow[] }>(`/api/projects/${current.id}/glossary/import-preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artifact_id: termArtifact.id })
+      })
+      setGlossaryPreview(result.rows)
+      setStatus(`术语表预览完成：${result.rows.length} 条`)
+    } catch (error) {
+      setStatus(`术语表预览失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function importGlossaryArtifact() {
+    if (!current || !termArtifact) return
+    setBusy(true)
+    setStatus('正在导入术语表...')
+    try {
+      const result = await api<{ imported_count: number }>(`/api/projects/${current.id}/glossary/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artifact_id: termArtifact.id })
+      })
+      await refreshCurrent()
+      setStatus(`术语表已导入：${result.imported_count} 条`)
+    } catch (error) {
+      setStatus(`术语表导入失败：${errorText(error)}`)
     } finally {
       setBusy(false)
     }
@@ -255,6 +431,64 @@ function App() {
       setStatus(result.run.status === 'passed' ? 'EN 闭环通过，产物已归档' : `运行结束：${result.run.status}`)
     } catch (error) {
       setStatus(`翻译失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runDirectQA() {
+    if (!current || !qaArtifact) return
+    setBusy(true)
+    setStatus('正在对已有译文 workbook 执行 QA...')
+    try {
+      const run = await api<Run>('/api/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: current.id,
+          kind: 'qa',
+          language: 'en',
+          input_artifact_id: qaArtifact.id
+        })
+      })
+      const result = await api<{ run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }>(`/api/runs/${run.id}/qa`, {
+        method: 'POST'
+      })
+      setLatestRun({ ...result.run, artifacts: result.artifacts })
+      await refreshCurrent()
+      setStatus(result.run.status === 'passed' ? '已有译文 QA 通过' : `已有译文 QA 结束：${result.run.status}`)
+    } catch (error) {
+      setStatus(`已有译文 QA 失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function applyManualFixes(fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) {
+    if (!current || !latestRun || !fixes.length) return
+    setBusy(true)
+    setStatus('正在保存手工修复并重新 QA...')
+    try {
+      const result = await api<{
+        fixed_artifact: Artifact
+        manual_fixes: Record<string, unknown>[]
+        qa_result?: { run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }
+      }>(`/api/runs/${latestRun.id}/manual-fixes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fixes, rerun_qa: true })
+      })
+      if (result.qa_result) {
+        setLatestRun({ ...result.qa_result.run, artifacts: result.qa_result.artifacts })
+        setQualityIssues([])
+        setStatus(`手工修复已重新 QA：${result.qa_result.run.status}`)
+      } else {
+        setQaArtifact(result.fixed_artifact)
+        setStatus('手工修复已保存，等待重新 QA')
+      }
+      await refreshCurrent()
+    } catch (error) {
+      setStatus(`手工修复失败：${errorText(error)}`)
     } finally {
       setBusy(false)
     }
@@ -301,6 +535,30 @@ function App() {
     await refreshCurrent()
   }
 
+  async function saveHarness(updates: Partial<ProjectHarness>) {
+    if (!current) return
+    await api(`/api/projects/${current.id}/harness`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    })
+    await refreshCurrent()
+    setStatus('Project Harness 已保存，仅对当前项目生效')
+  }
+
+  async function requestImprovementReview(runId: string) {
+    await api(`/api/runs/${runId}/improvement-review`, { method: 'POST' })
+    setStatus('已写入持续改进建议队列，等待人工确认')
+  }
+
+  async function uploadTranslationWorkbook(file: File) {
+    const artifact = await upload(file, 'final_workbook')
+    if (artifact) {
+      setQaArtifact(artifact)
+      setStatus(`已有译文已登记：${artifact.label}`)
+    }
+  }
+
   return (
     <div className="shell">
       <div className="app">
@@ -344,6 +602,8 @@ function App() {
                 onAddTerm={addGlossaryTerm}
                 onUpdateTerm={updateGlossaryTerm}
                 onDeleteTerm={deleteGlossaryTerm}
+                onSaveHarness={saveHarness}
+                onImprovementReview={requestImprovementReview}
               />
             ) : (
               <Wizard
@@ -354,18 +614,30 @@ function App() {
                 setIntro={setIntro}
                 sourceArtifact={sourceArtifact}
                 termArtifact={termArtifact}
+                qaArtifact={qaArtifact}
                 assetArtifacts={assetArtifacts}
                 latestRun={latestRun}
+                qualityIssues={qualityIssues}
                 selectedLangs={selectedLangs}
                 setSelectedLangs={setSelectedLangs}
+                setSourceArtifact={setSourceArtifact}
+                setTermArtifact={setTermArtifact}
+                setQaArtifact={setQaArtifact}
+                glossaryPreview={glossaryPreview}
                 onBack={() => setView('overview')}
                 onUploadSource={async (file) => setSourceArtifact(await upload(file, 'language_table'))}
                 onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
                 onUploadAsset={uploadAsset}
                 onAnalyze={runAnalysis}
                 onGlossaryExtract={runGlossaryExtract}
+                onGlossaryPreview={previewGlossaryImport}
+                onGlossaryImport={importGlossaryArtifact}
                 onTranslate={runTranslate}
+                onDirectQA={runDirectQA}
+                onManualFixes={applyManualFixes}
+                onUploadTranslation={uploadTranslationWorkbook}
                 onFreq={() => setFreqOpen(true)}
+                onSaveHarness={saveHarness}
                 busy={busy}
               />
             )}
@@ -384,7 +656,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   return <div className="empty"><h2>还没有项目</h2><p>先创建一个本地化项目，再进入完整工作流。</p><button className="btn btn-primary" onClick={onCreate}>新建项目</button></div>
 }
 
-function ProjectOverview({ project, tab, setTab, onStart, onAddTerm, onUpdateTerm, onDeleteTerm }: {
+function ProjectOverview({ project, tab, setTab, onStart, onAddTerm, onUpdateTerm, onDeleteTerm, onSaveHarness, onImprovementReview }: {
   project: Project
   tab: ProjectTab
   setTab: (tab: ProjectTab) => void
@@ -392,6 +664,8 @@ function ProjectOverview({ project, tab, setTab, onStart, onAddTerm, onUpdateTer
   onAddTerm: (form: FormData) => void
   onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => void
   onDeleteTerm: (term: GlossaryTerm) => void
+  onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
+  onImprovementReview: (runId: string) => Promise<void>
 }) {
   return (
     <>
@@ -400,7 +674,7 @@ function ProjectOverview({ project, tab, setTab, onStart, onAddTerm, onUpdateTer
           <h2>{project.icon} {project.name}</h2>
           <div className="desc">{project.description || '未填写项目描述'}</div>
         </div>
-        <button className="btn btn-primary" onClick={onStart}>🚀 启动新翻译任务</button>
+        <button className="btn btn-primary" data-testid="start-workflow" onClick={onStart}>🚀 启动新翻译任务</button>
       </div>
       <div className="stat-grid">
         <div className="stat-card"><div className="num">{project.stats.tasks}</div><div className="lbl">累计任务</div></div>
@@ -410,12 +684,14 @@ function ProjectOverview({ project, tab, setTab, onStart, onAddTerm, onUpdateTer
       </div>
       <div className="view-tabs">
         <button className={`view-tab ${tab === 'prompt' ? 'active' : ''}`} onClick={() => setTab('prompt')}>📝 翻译提示词</button>
+        <button className={`view-tab ${tab === 'harness' ? 'active' : ''}`} onClick={() => setTab('harness')}>🧭 Project Harness</button>
         <button className={`view-tab ${tab === 'glossary' ? 'active' : ''}`} onClick={() => setTab('glossary')}>📚 术语表</button>
         <button className={`view-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>🕒 翻译历史</button>
       </div>
       {tab === 'prompt' ? <PromptTab project={project} /> : null}
+      {tab === 'harness' ? <HarnessTab project={project} onSave={onSaveHarness} /> : null}
       {tab === 'glossary' ? <GlossaryTab project={project} onAddTerm={onAddTerm} onUpdateTerm={onUpdateTerm} onDeleteTerm={onDeleteTerm} /> : null}
-      {tab === 'history' ? <HistoryTab project={project} /> : null}
+      {tab === 'history' ? <HistoryTab project={project} onImprovementReview={onImprovementReview} /> : null}
     </>
   )
 }
@@ -439,6 +715,138 @@ function PromptTab({ project }: { project: Project }) {
         </table>
       </div>
     </>
+  )
+}
+
+function HarnessTab({ project, onSave }: { project: Project; onSave: (updates: Partial<ProjectHarness>) => Promise<void> }) {
+  return (
+    <>
+      <div className="harness-grid">
+        <div className="card">
+          <div className="card-title"><div className="left">🧱 整体 Harness（所有项目复用）</div></div>
+          <div className="harness-facts">
+            <div><strong>Workpack</strong><span>{globalHarnessSummary.workpack}</span></div>
+            <div><strong>输出协议</strong><span>{globalHarnessSummary.responseProtocol}</span></div>
+            <div><strong>硬校验</strong><span>{globalHarnessSummary.hardGates.join(' / ')}</span></div>
+            <div><strong>QA 来源</strong><span>{globalHarnessSummary.qaSources.join(' / ')}</span></div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-title"><div className="left">🧭 项目 Harness（仅当前项目）</div></div>
+          <HarnessStats harness={getProjectHarness(project)} />
+        </div>
+      </div>
+      <HarnessEditor project={project} onSave={onSave} />
+      <ImprovementQueue projectId={project.id} />
+    </>
+  )
+}
+
+function ImprovementQueue({ projectId }: { projectId: string }) {
+  const [items, setItems] = useState<Record<string, unknown>[]>([])
+  async function load() {
+    setItems(await api<Record<string, unknown>[]>(`/api/projects/${projectId}/improvements`))
+  }
+  useEffect(() => {
+    load()
+  }, [projectId])
+  return (
+    <div className="card">
+      <div className="card-title">
+        <div className="left">持续改进建议队列</div>
+        <button className="btn btn-sm" onClick={load}>刷新</button>
+      </div>
+      <table>
+        <thead><tr><th>类别</th><th>标题</th><th>状态</th></tr></thead>
+        <tbody>
+          {items.map((item) => (
+            <tr key={String(item.id)}>
+              <td>{String(item.category || '-')}</td>
+              <td>{String(item.title || '-')}</td>
+              <td><span className="tag tag-new">{String(item.status || 'pending_review')}</span></td>
+            </tr>
+          ))}
+          {!items.length ? <tr><td colSpan={3} className="muted">暂无建议；可在翻译历史里从某次 run 生成。</td></tr> : null}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function HarnessStats({ harness }: { harness: ProjectHarness }) {
+  return (
+    <div className="harness-facts">
+      <div><strong>更新时间</strong><span>{harness.updated_at ? new Date(harness.updated_at).toLocaleString() : '尚未保存'}</span></div>
+      <div><strong>项目硬规则</strong><span>{harness.hard_rules?.length || 0}</span></div>
+      <div><strong>项目软规则</strong><span>{harness.soft_rules?.length || 0}</span></div>
+      <div><strong>固定译名</strong><span>{harness.fixed_terms?.length || 0}</span></div>
+      <div><strong>禁用译法</strong><span>{harness.forbidden_translations?.length || 0}</span></div>
+    </div>
+  )
+}
+
+function HarnessEditor({
+  project,
+  onSave,
+  compact = false
+}: {
+  project: Project
+  onSave: (updates: Partial<ProjectHarness>) => Promise<void>
+  compact?: boolean
+}) {
+  const harness = getProjectHarness(project)
+  const [styleGuidance, setStyleGuidance] = useState(harness.style_guidance || '')
+  const [targetAudience, setTargetAudience] = useState(harness.target_audience || '')
+  const [tone, setTone] = useState(harness.tone || '')
+  const [forbidden, setForbidden] = useState(listToLines(harness.forbidden_translations))
+  const [fixedTerms, setFixedTerms] = useState(fixedTermsToLines(harness.fixed_terms))
+  const [hardRules, setHardRules] = useState(rulesToLines(harness.hard_rules))
+  const [softRules, setSoftRules] = useState(rulesToLines(harness.soft_rules))
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setStyleGuidance(harness.style_guidance || '')
+    setTargetAudience(harness.target_audience || '')
+    setTone(harness.tone || '')
+    setForbidden(listToLines(harness.forbidden_translations))
+    setFixedTerms(fixedTermsToLines(harness.fixed_terms))
+    setHardRules(rulesToLines(harness.hard_rules))
+    setSoftRules(rulesToLines(harness.soft_rules))
+  }, [project.id, harness.updated_at])
+
+  async function submit() {
+    setSaving(true)
+    try {
+      await onSave({
+        style_guidance: styleGuidance,
+        target_audience: targetAudience,
+        tone,
+        forbidden_translations: linesToList(forbidden),
+        fixed_terms: linesToFixedTerms(fixedTerms),
+        hard_rules: linesToRules(hardRules),
+        soft_rules: linesToRules(softRules)
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className={`card ${compact ? 'compact-harness' : ''}`}>
+      <div className="card-title">
+        <div className="left">项目 Harness 编辑</div>
+        <button className="btn btn-primary btn-sm" disabled={saving} onClick={submit}>{saving ? '保存中...' : '保存 Project Harness'}</button>
+      </div>
+      <div className="harness-editor">
+        <label><span>目标受众</span><input value={targetAudience} onChange={(event) => setTargetAudience(event.target.value)} placeholder="欧美移动端玩家 / 核心策略用户" /></label>
+        <label><span>语气</span><input value={tone} onChange={(event) => setTone(event.target.value)} placeholder="冷静、现代、军事化 / 轻松、活泼" /></label>
+        <label className="wide"><span>项目风格要求</span><textarea value={styleGuidance} onChange={(event) => setStyleGuidance(event.target.value)} placeholder="只写当前项目特有要求，不写进整体 harness。" /></label>
+        <label><span>禁用译法（一行一个）</span><textarea value={forbidden} onChange={(event) => setForbidden(event.target.value)} placeholder={'例如：\nMock\nraw CN'} /></label>
+        <label><span>固定译名（一行一个 source =&gt; target）</span><textarea value={fixedTerms} onChange={(event) => setFixedTerms(event.target.value)} placeholder={'例如：\n最强指挥官 => Strongest Commander'} /></label>
+        <label><span>项目硬规则（一行一个 label | description | regex）</span><textarea value={hardRules} onChange={(event) => setHardRules(event.target.value)} placeholder={'例如：\nNo mock marker | Mock marker must not ship | Mock'} /></label>
+        <label><span>项目软规则（一行一个 label | description）</span><textarea value={softRules} onChange={(event) => setSoftRules(event.target.value)} placeholder="例如：短 UI 文案优先用动词开头" /></label>
+      </div>
+    </div>
   )
 }
 
@@ -485,29 +893,40 @@ function GlossaryTab({
   )
 }
 
-function HistoryTab({ project }: { project: Project }) {
+function HistoryTab({ project, onImprovementReview }: { project: Project; onImprovementReview: (runId: string) => Promise<void> }) {
   return (
     <div className="card">
       <div className="card-title"><div className="left">🕒 翻译历史记录</div></div>
       <table>
-        <thead><tr><th>时间</th><th>类型</th><th>语言</th><th>状态</th><th>产物</th><th>操作</th></tr></thead>
+        <thead><tr><th>时间</th><th>类型</th><th>语言</th><th>状态</th><th>模型 / Harness</th><th>产物</th><th>操作</th></tr></thead>
         <tbody>
           {(project.runs || []).map((run) => {
             const artifacts = runArtifacts(project, run.id)
+            const model = run.metadata?.model as Record<string, unknown> | undefined
+            const harness = run.metadata?.harness as Record<string, unknown> | undefined
             return (
               <tr key={run.id}>
                 <td>{new Date(run.created_at).toLocaleString()}</td>
                 <td>{run.kind}</td><td>{run.language}</td><td><span className={`tag ${run.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{run.status}</span></td>
+                <td className="run-meta">
+                  <span>{model?.provider ? `${model.provider} / ${model.model || '-'}` : '-'}</span>
+                  <span>project_harness hard={String(harness?.hard_rules ?? 0)}</span>
+                </td>
                 <td>
                   <div className="artifact-links">
                     {artifacts.length ? artifacts.map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.kind}</a>) : <span className="muted-left">暂无</span>}
                   </div>
                 </td>
-                <td><a href={`/api/runs/${run.id}/events`} target="_blank">查看事件</a></td>
+                <td>
+                  <div className="table-actions">
+                    <a href={`/api/runs/${run.id}/events`} target="_blank">查看事件</a>
+                    <button className="btn btn-sm" onClick={() => onImprovementReview(run.id)}>生成建议</button>
+                  </div>
+                </td>
               </tr>
             )
           })}
-          {!project.runs?.length ? <tr><td colSpan={6} className="muted">暂无运行历史</td></tr> : null}
+          {!project.runs?.length ? <tr><td colSpan={7} className="muted">暂无运行历史</td></tr> : null}
         </tbody>
       </table>
     </div>
@@ -522,18 +941,30 @@ function Wizard(props: {
   setIntro: (value: string) => void
   sourceArtifact: Artifact | null
   termArtifact: Artifact | null
+  qaArtifact: Artifact | null
   assetArtifacts: Artifact[]
   latestRun: Run | null
+  qualityIssues: QualityIssue[]
   selectedLangs: string[]
   setSelectedLangs: (langs: string[]) => void
+  setSourceArtifact: (artifact: Artifact | null) => void
+  setTermArtifact: (artifact: Artifact | null) => void
+  setQaArtifact: (artifact: Artifact | null) => void
+  glossaryPreview: GlossaryPreviewRow[]
   onBack: () => void
   onUploadSource: (file: File) => void
   onUploadTerm: (file: File) => void
   onUploadAsset: (file: File) => void
   onAnalyze: () => void
   onGlossaryExtract: () => void
+  onGlossaryPreview: () => void
+  onGlossaryImport: () => void
   onTranslate: () => void
+  onDirectQA: () => void
+  onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
+  onUploadTranslation: (file: File) => void
   onFreq: () => void
+  onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   busy: boolean
 }) {
   const { project, step, setStep } = props
@@ -548,7 +979,7 @@ function Wizard(props: {
       </div>
       <div className="steps-nav">
         {steps.map((title, index) => (
-          <button key={title} className={`step-item ${index + 1 === step ? 'active' : index + 1 < step ? 'done' : ''}`} onClick={() => setStep(index + 1)}>
+          <button key={title} data-testid={`step-${index + 1}`} className={`step-item ${index + 1 === step ? 'active' : index + 1 < step ? 'done' : ''}`} onClick={() => setStep(index + 1)}>
             <span className="num">{index + 1}</span>{title}
           </button>
         ))}
@@ -605,45 +1036,103 @@ function StepIntro({
   )
 }
 
-function StepAnalyze({ onAnalyze, project, busy, assetArtifacts }: { onAnalyze: () => void; project: Project; busy: boolean; assetArtifacts: Artifact[] }) {
+function StepAnalyze({
+  onAnalyze,
+  project,
+  busy,
+  assetArtifacts,
+  onSaveHarness
+}: {
+  onAnalyze: () => void
+  project: Project
+  busy: boolean
+  assetArtifacts: Artifact[]
+  onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
+}) {
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 2</span>AI 分析与专属提示词生成</div>
       <div className="panel-desc">基于文字资料与已归档素材生成 project_profile 和 translation_prompt。当前素材：{assetArtifacts.length} 个。</div>
       <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>🤖 启动 AI 分析</button>
       <div className="ai-card"><div className="ai-header">当前提示词</div><pre>{project.prompt_text || '尚未生成'}</pre></div>
+      <div className="split-note">
+        <div><strong>整体 Harness</strong><span>workpack、JSONL 协议、ID/占位符/标签/换行/指纹校验。</span></div>
+        <div><strong>项目 Harness</strong><span>只保存当前项目的风格、禁译、固定译名、硬/软规则。</span></div>
+      </div>
+      <HarnessEditor project={project} onSave={onSaveHarness} compact />
     </>
   )
 }
 
-function StepTerm({ onUploadTerm, termArtifact }: { onUploadTerm: (file: File) => void; termArtifact: Artifact | null }) {
+function StepTerm({
+  project,
+  onUploadTerm,
+  termArtifact,
+  setTermArtifact,
+  glossaryPreview,
+  onGlossaryPreview,
+  onGlossaryImport,
+  busy
+}: {
+  project: Project
+  onUploadTerm: (file: File) => void
+  termArtifact: Artifact | null
+  setTermArtifact: (artifact: Artifact | null) => void
+  glossaryPreview: GlossaryPreviewRow[]
+  onGlossaryPreview: () => void
+  onGlossaryImport: () => void
+  busy: boolean
+}) {
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 3</span>导入游戏术语表</div>
-      <div className="panel-desc">支持 .xlsx / .csv；也可跳过，由 Step 5 从语言表提取。</div>
-      <FileBox label="上传 glossary.xlsx" onFile={onUploadTerm} />
+      <div className="panel-desc">可使用已有术语表、上传新文件、预览后导入，也可跳过由 Step 5 生成。</div>
+      <div className="action-card">
+        <AssetSelect label="使用已有术语资产" project={project} role="glossary_source" value={termArtifact} onChange={setTermArtifact} />
+        <FileBox label="上传 glossary.xlsx" onFile={onUploadTerm} />
+        <div className="row-actions">
+          <button className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语</button>
+          <button className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入到项目术语</button>
+          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出术语</a>
+        </div>
+      </div>
       {termArtifact ? <ArtifactNote artifact={termArtifact} /> : null}
+      {glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} /> : null}
     </>
   )
 }
 
-function StepSource({ onUploadSource, sourceArtifact }: { onUploadSource: (file: File) => void; sourceArtifact: Artifact | null }) {
+function StepSource({
+  project,
+  onUploadSource,
+  sourceArtifact,
+  setSourceArtifact
+}: {
+  project: Project
+  onUploadSource: (file: File) => void
+  sourceArtifact: Artifact | null
+  setSourceArtifact: (artifact: Artifact | null) => void
+}) {
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 4</span>导入待翻译内容</div>
-      <div className="panel-desc">上传 Excel 语言表，默认字段：ID | cn | en。</div>
-      <FileBox label="上传 language.xlsx" onFile={onUploadSource} />
+      <div className="panel-desc">可选择已有语言表，也可上传新的 Excel 语言表；默认字段：ID | cn | en。</div>
+      <div className="action-card">
+        <AssetSelect label="使用已有语言表" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
+        <FileBox label="上传 language.xlsx" onFile={onUploadSource} />
+      </div>
       {sourceArtifact ? <ArtifactNote artifact={sourceArtifact} /> : null}
     </>
   )
 }
 
-function StepFreq({ onGlossaryExtract, onFreq, sourceArtifact, busy }: { onGlossaryExtract: () => void; onFreq: () => void; sourceArtifact: Artifact | null; busy: boolean }) {
+function StepFreq({ onGlossaryExtract, onFreq, sourceArtifact, assetArtifacts, busy }: { onGlossaryExtract: () => void; onFreq: () => void; sourceArtifact: Artifact | null; assetArtifacts: Artifact[]; busy: boolean }) {
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 5</span>高频词扫描 & 术语表智能补充</div>
-      <div className="panel-desc">调用 glossary workflow，输出 details、ID/CN/EN/EN2、project brief 和 prompt。</div>
-      <div className="row-actions">
+      <div className="panel-desc">如果已有术语可跳过；需要生成时调用 glossary workflow，输出 details、ID/CN/EN/EN2、project brief 和 prompt。</div>
+      <div className="row-actions action-card">
+        <span className="asset-meta">Project materials: {assetArtifacts.length}</span>
         <button className="btn btn-primary" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>🔍 开始扫描</button>
         <button className="btn btn-ghost" onClick={onFreq}>💡 查看补充策略</button>
       </div>
@@ -667,29 +1156,138 @@ function StepLang({ selectedLangs, setSelectedLangs }: { selectedLangs: string[]
   )
 }
 
-function StepTranslate({ onTranslate, busy, latestRun, sourceArtifact }: { onTranslate: () => void; busy: boolean; latestRun: Run | null; sourceArtifact: Artifact | null }) {
+function StepTranslate({
+  project,
+  onTranslate,
+  busy,
+  latestRun,
+  sourceArtifact,
+  termArtifact,
+  setSourceArtifact,
+  setTermArtifact
+}: {
+  project: Project
+  onTranslate: () => void
+  busy: boolean
+  latestRun: Run | null
+  sourceArtifact: Artifact | null
+  termArtifact: Artifact | null
+  setSourceArtifact: (artifact: Artifact | null) => void
+  setTermArtifact: (artifact: Artifact | null) => void
+}) {
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 7</span>模型翻译进行中</div>
-      <div className="panel-desc">后端生成 workpack，调用 GPT / Claude provider，并统一输出 JSONL。</div>
-      <button className="btn btn-primary" disabled={busy || !sourceArtifact} onClick={onTranslate}>⚡ 开始翻译</button>
+      <div className="panel-desc">选择任意语言表和术语资产后生成 workpack，调用 GPT / Claude provider，并统一输出 JSONL。</div>
+      <div className="action-card">
+        <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
+        <AssetSelect label="术语输入" project={project} role={['glossary_curated', 'glossary_source']} value={termArtifact} onChange={setTermArtifact} allowEmpty />
+        <button className="btn btn-primary" disabled={busy || !sourceArtifact} onClick={onTranslate}>⚡ 开始翻译</button>
+      </div>
       {!sourceArtifact ? <div className="warn-line">请先上传或恢复语言表。</div> : null}
       {latestRun ? <RunCard run={latestRun} /> : null}
     </>
   )
 }
 
-function StepQA({ latestRun }: { latestRun: Run | null }) {
+function StepQA({
+  project,
+  latestRun,
+  qualityIssues,
+  qaArtifact,
+  setQaArtifact,
+  onDirectQA,
+  onManualFixes,
+  onUploadTranslation,
+  busy
+}: {
+  project: Project
+  latestRun: Run | null
+  qualityIssues: QualityIssue[]
+  qaArtifact: Artifact | null
+  setQaArtifact: (artifact: Artifact | null) => void
+  onDirectQA: () => void
+  onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
+  onUploadTranslation: (file: File) => void
+  busy: boolean
+}) {
+  const projectQuality = latestRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
+  const projectHardErrors = projectQuality?.hard_errors ?? 0
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 8</span>自动校对与优化</div>
-      <div className="panel-desc">翻译接口会自动执行保守 auto-fix、机审和 quality_harness final gate。</div>
+      <div className="panel-desc">可直接选择已有译文 workbook 执行 QA，不需要先跑模型翻译；QA 会叠加当前项目的 Project Harness 规则。</div>
+      <div className="action-card">
+        <AssetSelect label="已有译文 workbook" project={project} role="translation_workbook" value={qaArtifact} onChange={setQaArtifact} allowEmpty />
+        <FileBox label="上传已有译文 workbook" onFile={onUploadTranslation} />
+        <button className="btn btn-primary" data-testid="run-qa" disabled={!qaArtifact || busy} onClick={onDirectQA}>运行 QA</button>
+      </div>
       <div className="check-list">
         <CheckItem ok={latestRun?.status === 'passed'} title="quality_harness 最终 gate" detail={latestRun ? `当前状态：${latestRun.status}` : '等待翻译运行'} />
+        <CheckItem ok={!latestRun || projectHardErrors === 0} title="project_harness 项目规则" detail={latestRun ? `hard=${projectHardErrors} / soft=${projectQuality?.soft_warnings ?? 0}` : '等待翻译运行'} />
         <CheckItem ok title="结构校验" detail="ID、占位符、标签、换行和输入指纹由后端强校验" />
-        <CheckItem ok={false} title="失败行编辑器" detail="v1 尚未接入人工修复与单批重跑；hard error 当前会让 run failed。" />
+        <CheckItem ok={qualityIssues.length === 0} title="失败行编辑器" detail={qualityIssues.length ? `待处理 ${qualityIssues.length} 条 hard/soft issue` : 'hard error 可进入人工修复并重新 QA'} />
       </div>
+      {qualityIssues.length ? <FailedRowEditor issues={qualityIssues} busy={busy} onApply={onManualFixes} /> : null}
     </>
+  )
+}
+
+function FailedRowEditor({
+  issues,
+  busy,
+  onApply
+}: {
+  issues: QualityIssue[]
+  busy: boolean
+  onApply: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
+}) {
+  const editable = issues.filter((issue) => issue.sheet && issue.row > 1)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    const next: Record<string, string> = {}
+    for (const issue of editable) next[issue.id] = drafts[issue.id] ?? issue.current_translation
+    setDrafts(next)
+  }, [issues.map((issue) => issue.id).join('|')])
+
+  const fixes = editable
+    .map((issue) => ({
+      issue_id: issue.id,
+      sheet: issue.sheet,
+      row: issue.row,
+      translation: (drafts[issue.id] ?? '').trim(),
+      note: `${issue.source}:${issue.check_type}`
+    }))
+    .filter((fix) => fix.translation)
+
+  return (
+    <div className="failed-editor" data-testid="failed-row-editor">
+      <div className="card-title">
+        <div className="left">失败行编辑器</div>
+        <button className="btn btn-primary btn-sm" data-testid="manual-fix-rerun" disabled={busy || fixes.length === 0} onClick={() => onApply(fixes)}>保存修复并重新 QA</button>
+      </div>
+      <div className="failed-rows">
+        {editable.map((issue) => (
+          <div key={issue.id} className="failed-row">
+            <div className="failed-meta">
+              <span>{issue.severity}</span>
+              <span>{issue.source}</span>
+              <span>{issue.sheet}#{issue.row}</span>
+              <span>{issue.check_type}</span>
+            </div>
+            <div className="failed-message">{issue.message}</div>
+            <div className="failed-current">{issue.current_translation || '-'}</div>
+            <textarea
+              data-testid={`manual-fix-input-${issue.row}`}
+              value={drafts[issue.id] ?? issue.current_translation}
+              onChange={(event) => setDrafts((prev) => ({ ...prev, [issue.id]: event.target.value }))}
+            />
+          </div>
+        ))}
+      </div>
+      {!editable.length ? <div className="muted">当前问题缺少 workbook 行定位，先查看 QA report 或重新生成带行号的报告。</div> : null}
+    </div>
   )
 }
 
@@ -709,6 +1307,57 @@ function StepDone({ project, latestRun }: { project: Project; latestRun: Run | n
   )
 }
 
+function AssetSelect({
+  label,
+  project,
+  role,
+  value,
+  onChange,
+  allowEmpty = false
+}: {
+  label: string
+  project: Project
+  role: string | string[]
+  value: Artifact | null
+  onChange: (artifact: Artifact | null) => void
+  allowEmpty?: boolean
+}) {
+  const assets = artifactsByRoles(project, role)
+  return (
+    <label className="asset-select">
+      <span>{label}</span>
+      <select value={value?.id || ''} onChange={(event) => onChange(assets.find((artifact) => artifact.id === event.target.value) || null)}>
+        {allowEmpty ? <option value="">不使用</option> : null}
+        {!allowEmpty && !assets.length ? <option value="">暂无可用资产</option> : null}
+        {assets.map((artifact) => (
+          <option key={artifact.id} value={artifact.id}>{artifact.label} · {artifact.origin || 'generated'}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function GlossaryPreview({ rows }: { rows: GlossaryPreviewRow[] }) {
+  return (
+    <div className="card tight">
+      <div className="card-title"><div className="left">术语预览（{rows.length} 条）</div></div>
+      <table>
+        <thead><tr><th>原文</th><th>译文</th><th>类型</th><th>备注</th></tr></thead>
+        <tbody>
+          {rows.slice(0, 20).map((row, index) => (
+            <tr key={`${row.source}-${index}`}>
+              <td>{row.source}</td>
+              <td>{row.target}</td>
+              <td>{row.category}</td>
+              <td>{row.note}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function FileBox({ label, onFile }: { label: string; onFile: (file: File) => void }) {
   return (
     <label className="upload-box">
@@ -724,7 +1373,10 @@ function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compa
 }
 
 function RunCard({ run }: { run: Run }) {
-  return <div className="ai-card"><div className="ai-header">Run {run.id}</div><pre>{`status=${run.status}\nlanguage=${run.language}\nartifacts=${run.artifacts?.length || 0}`}</pre></div>
+  const model = run.metadata?.model as Record<string, unknown> | undefined
+  const harness = run.metadata?.harness as Record<string, unknown> | undefined
+  const projectQuality = run.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
+  return <div className="ai-card"><div className="ai-header">Run {run.id}</div><pre>{`status=${run.status}\nlanguage=${run.language}\nmodel=${model?.provider || '-'} / ${model?.model || '-'}\nproject_harness_hard_rules=${harness?.hard_rules ?? 0}\nproject_harness_hard_errors=${projectQuality?.hard_errors ?? 0}\nartifacts=${run.artifacts?.length || 0}`}</pre></div>
 }
 
 function CheckItem({ ok, title, detail }: { ok: boolean; title: string; detail: string }) {

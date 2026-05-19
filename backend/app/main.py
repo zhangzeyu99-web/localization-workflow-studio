@@ -18,9 +18,13 @@ if __package__ is None or __package__ == "":
     from app import db
     from app.config import DATA_ROOT, load_settings, public_settings, save_settings
     from app.schemas import (
+        ArtifactUpdate,
         GlossaryExtractRequest,
+        GlossaryImportRequest,
         GlossaryTermPayload,
         GlossaryTermUpdate,
+        ManualFixRequest,
+        ProjectHarnessUpdate,
         ProjectAnalysisRequest,
         ProjectCreate,
         ProjectUpdate,
@@ -28,14 +32,36 @@ if __package__ is None or __package__ == "":
         SettingsUpdate,
         TranslateRequest,
     )
-    from app.workflow import analyze_assets, extract_glossary, project_dir, run_translate_sync, write_project_prompt
+    from app.workflow import (
+        analyze_assets,
+        apply_manual_fixes,
+        create_improvement_review,
+        create_semantic_qa_context,
+        export_glossary,
+        extract_glossary,
+        harness_overview,
+        import_glossary,
+        list_improvements,
+        list_quality_issues,
+        preview_glossary_import,
+        project_dir,
+        read_project_harness,
+        run_qa_sync,
+        run_translate_sync,
+        write_project_harness,
+        write_project_prompt,
+    )
 else:
     from . import db
     from .config import DATA_ROOT, load_settings, public_settings, save_settings
     from .schemas import (
+        ArtifactUpdate,
         GlossaryExtractRequest,
+        GlossaryImportRequest,
         GlossaryTermPayload,
         GlossaryTermUpdate,
+        ManualFixRequest,
+        ProjectHarnessUpdate,
         ProjectAnalysisRequest,
         ProjectCreate,
         ProjectUpdate,
@@ -43,7 +69,25 @@ else:
         SettingsUpdate,
         TranslateRequest,
     )
-    from .workflow import analyze_assets, extract_glossary, project_dir, run_translate_sync, write_project_prompt
+    from .workflow import (
+        analyze_assets,
+        apply_manual_fixes,
+        create_improvement_review,
+        create_semantic_qa_context,
+        export_glossary,
+        extract_glossary,
+        harness_overview,
+        import_glossary,
+        list_improvements,
+        list_quality_issues,
+        preview_glossary_import,
+        project_dir,
+        read_project_harness,
+        run_qa_sync,
+        run_translate_sync,
+        write_project_harness,
+        write_project_prompt,
+    )
 
 
 @asynccontextmanager
@@ -53,7 +97,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Localization Workflow Studio", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="0.4.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -113,6 +157,23 @@ def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="project not found") from exc
 
 
+@app.get("/api/projects/{project_id}/harness")
+def get_project_harness(project_id: str) -> dict[str, Any]:
+    try:
+        return harness_overview(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@app.patch("/api/projects/{project_id}/harness")
+def patch_project_harness(project_id: str, payload: ProjectHarnessUpdate) -> dict[str, Any]:
+    try:
+        harness = write_project_harness(project_id, payload.model_dump(exclude_none=True))
+        return {"global_harness": harness_overview(project_id)["global_harness"], "project_harness": harness}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
 @app.post("/api/projects/{project_id}/analyze")
 def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[str, Any]:
     try:
@@ -139,8 +200,17 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
     with destination.open("wb") as fh:
         shutil.copyfileobj(file.file, fh)
     mime = file.content_type or mimetypes.guess_type(str(destination))[0] or "application/octet-stream"
-    artifact = db.add_artifact(project_id, safe_name, destination, kind, mime=mime)
+    artifact = db.add_artifact(project_id, safe_name, destination, kind, mime=mime, origin="uploaded")
     return artifact
+
+
+@app.get("/api/projects/{project_id}/assets")
+def list_project_assets(project_id: str, role: str | None = None, origin: str | None = None, run_id: str | None = None) -> list[dict[str, Any]]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    return db.list_artifacts(project_id=project_id, run_id=run_id, role=role, origin=origin)
 
 
 @app.get("/api/projects/{project_id}/glossary")
@@ -168,6 +238,34 @@ def delete_glossary_term(project_id: str, term_id: str) -> dict[str, bool]:
     _require_project_term(project_id, term_id)
     db.delete_glossary_term(term_id)
     return {"deleted": True}
+
+
+@app.post("/api/projects/{project_id}/glossary/import-preview")
+def preview_project_glossary_import(project_id: str, payload: GlossaryImportRequest) -> dict[str, Any]:
+    try:
+        return preview_glossary_import(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project, artifact, or column not found") from exc
+
+
+@app.post("/api/projects/{project_id}/glossary/import")
+def import_project_glossary(project_id: str, payload: GlossaryImportRequest) -> dict[str, Any]:
+    try:
+        return import_glossary(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project, artifact, or column not found") from exc
+
+
+@app.get("/api/projects/{project_id}/glossary/export")
+def export_project_glossary(project_id: str, format: str = "xlsx") -> Any:
+    try:
+        exported = export_glossary(project_id, format)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    if isinstance(exported, dict):
+        return exported
+    media_type = "text/csv" if exported.suffix.lower() == ".csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return FileResponse(exported, media_type=media_type, filename=exported.name)
 
 
 @app.post("/api/projects/{project_id}/glossary/extract")
@@ -229,13 +327,60 @@ def translate(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
 
 @app.post("/api/runs/{run_id}/qa")
 def qa(run_id: str) -> dict[str, Any]:
-    run = db.get_run(run_id)
-    return {"run": run, "message": "QA is executed as part of /api/runs/{run_id}/translate in v1."}
+    try:
+        return run_qa_sync(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run or artifact not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/runs/{run_id}/quality-issues")
+def quality_issues(run_id: str) -> dict[str, Any]:
+    try:
+        return list_quality_issues(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+
+
+@app.post("/api/runs/{run_id}/manual-fixes")
+def manual_fixes(run_id: str, payload: ManualFixRequest) -> dict[str, Any]:
+    try:
+        return apply_manual_fixes(run_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/runs/{run_id}/semantic-qa")
+def semantic_qa(run_id: str) -> dict[str, Any]:
+    try:
+        return create_semantic_qa_context(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
 
 
 @app.get("/api/runs/{run_id}/events")
 def get_events(run_id: str) -> list[dict[str, Any]]:
     return db.list_events(run_id)
+
+
+@app.get("/api/projects/{project_id}/improvements")
+def get_project_improvements(project_id: str) -> list[dict[str, Any]]:
+    try:
+        db.get_project(project_id)
+        return list_improvements(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@app.post("/api/runs/{run_id}/improvement-review")
+def improvement_review(run_id: str) -> dict[str, Any]:
+    try:
+        return create_improvement_review(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
 
 
 @app.get("/api/artifacts/{artifact_id}/download")
@@ -252,6 +397,14 @@ def download_artifact(artifact_id: str) -> FileResponse:
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="artifact path is outside data root") from exc
     return FileResponse(path, media_type=artifact["mime"], filename=path.name)
+
+
+@app.patch("/api/artifacts/{artifact_id}")
+def patch_artifact(artifact_id: str, payload: ArtifactUpdate) -> dict[str, Any]:
+    try:
+        return db.update_artifact(artifact_id, payload.model_dump(exclude_none=True))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
 
 
 def _safe_filename(name: str) -> str:
@@ -298,6 +451,7 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
         project["artifacts"] = artifacts
         project["runs"] = runs
         project["glossary"] = terms
+        project["harness"] = read_project_harness(project["id"])
     return project
 
 

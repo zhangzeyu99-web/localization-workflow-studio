@@ -21,6 +21,27 @@ class ProjectUpdate(BaseModel):
     prompt_text: str | None = None
 
 
+class ProjectHarnessUpdate(BaseModel):
+    project_metadata: dict[str, Any] | None = None
+    style_guidance: str | None = None
+    target_audience: str | None = None
+    tone: str | None = None
+    forbidden_translations: list[str] | None = None
+    fixed_terms: list[dict[str, Any]] | None = None
+    hard_rules: list[dict[str, Any]] | None = None
+    soft_rules: list[dict[str, Any]] | None = None
+    reference_examples: list[dict[str, Any]] | None = None
+    manual_fixes: list[dict[str, Any]] | None = None
+    qa_summary: dict[str, Any] | None = None
+
+
+class ArtifactUpdate(BaseModel):
+    label: str | None = None
+    role: str | None = None
+    origin: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
 class ProjectAnalysisRequest(BaseModel):
     intro: str = ""
     asset_artifact_ids: list[str] = Field(default_factory=list)
@@ -44,6 +65,16 @@ class GlossaryTermUpdate(BaseModel):
     confirmed: bool | None = None
 
 
+class GlossaryImportRequest(BaseModel):
+    artifact_id: str
+    sheet: str | None = None
+    source_column: str | None = None
+    target_column: str | None = None
+    category_column: str | None = None
+    note_column: str | None = None
+    limit: int = 100
+
+
 class RunCreate(BaseModel):
     project_id: str
     kind: str = "translation"
@@ -53,11 +84,26 @@ class RunCreate(BaseModel):
     batch_size: int | None = None
 
 
+class ManualFixItem(BaseModel):
+    sheet: str | None = None
+    row: int
+    translation: str
+    note: str = ""
+    issue_id: str | None = None
+
+
+class ManualFixRequest(BaseModel):
+    fixes: list[ManualFixItem]
+    rerun_qa: bool = True
+
+
 class GlossaryExtractRequest(BaseModel):
     input_artifact_id: str
     project_name: str | None = None
     source_only: bool = False
     include_empty_final_terms: bool = False
+    project_material_artifact_ids: list[str] = Field(default_factory=list)
+    project_notes: list[str] = Field(default_factory=list)
     sheet: str | None = None
     id_column: str = "ID"
     source_column: str = "cn"
