@@ -119,13 +119,6 @@ const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词
 const langOptions = ['🇺🇸 英语 EN', '🇫🇷 法语 FR', '🇩🇪 德语 DE', '🇧🇷 巴葡 PT-BR', '🇷🇺 俄语 RU', '🇯🇵 日语 JA', '🇰🇷 韩语 KO', '🇪🇸 西语 ES', '🇸🇦 阿语 AR']
 type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'delivery'
 
-const globalHarnessSummary = {
-  workpack: 'translation_workpack.jsonl',
-  responseProtocol: 'jsonl:{id:int,translation:str}',
-  hardGates: ['id', 'placeholder', 'tag', 'newline', 'input_fingerprint'],
-  qaSources: ['quality_harness.py', 'quality_regression.json']
-}
-
 function getProjectHarness(project: Project): ProjectHarness {
   return project.harness || {}
 }
@@ -588,11 +581,6 @@ function App() {
     setStatus('Project Harness 已保存，仅对当前项目生效')
   }
 
-  async function requestImprovementReview(runId: string) {
-    await api(`/api/runs/${runId}/improvement-review`, { method: 'POST' })
-    setStatus('已写入持续改进建议队列，等待人工确认')
-  }
-
   async function uploadTranslationWorkbook(file: File) {
     const artifact = await upload(file, 'final_workbook')
     if (artifact) {
@@ -821,7 +809,7 @@ function ProjectOverview({
         <button className={`view-tab ${tab === 'qa' ? 'active' : ''}`} onClick={() => setTab('qa')}>校对</button>
         <button className={`view-tab ${tab === 'delivery' ? 'active' : ''}`} onClick={() => setTab('delivery')}>交付</button>
       </div>
-      {tab === 'meta' ? <MetaTab project={project} intro={intro} setIntro={setIntro} busy={busy} onSaveMeta={onSaveMeta} onAnalyze={onAnalyze} /> : null}
+      {tab === 'meta' ? <MetaTab project={project} intro={intro} setIntro={setIntro} busy={busy} onSaveMeta={onSaveMeta} onAnalyze={onAnalyze} onSaveHarness={onSaveHarness} /> : null}
       {tab === 'glossary' ? (
         <GlossaryTab
           project={project}
@@ -877,7 +865,8 @@ function MetaTab({
   setIntro,
   busy,
   onSaveMeta,
-  onAnalyze
+  onAnalyze,
+  onSaveHarness
 }: {
   project: Project
   intro: string
@@ -885,6 +874,7 @@ function MetaTab({
   busy: boolean
   onSaveMeta: (updates: Partial<Project>) => Promise<void>
   onAnalyze: () => void
+  onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
 }) {
   const [name, setName] = useState(project.name)
   const [type, setType] = useState(project.type || '')
@@ -928,52 +918,13 @@ function MetaTab({
         <div className="ai-header">翻译提示词</div>
         <pre>{project.prompt_text || '尚未生成。点击“生成/更新”后显示。'}</pre>
       </div>
-    </>
-  )
-}
-
-function PromptTab({ project }: { project: Project }) {
-  return (
-    <>
-      <div className="card">
-        <div className="card-title"><div className="left">🤖 AI 生成的专属翻译提示词</div></div>
-        <pre>{project.prompt_text || '尚未生成。进入新任务 Step 2 后生成 project_profile 和 translation_prompt。'}</pre>
-      </div>
-      <div className="card">
-        <div className="card-title"><div className="left">📌 项目元信息</div></div>
-        <table>
-          <tbody>
-            <tr><th>游戏类型</th><td>{project.type || '-'}</td></tr>
-            <tr><th>数据目录</th><td>仓库外本地目录</td></tr>
-            <tr><th>真实闭环</th><td>英语 EN</td></tr>
-            <tr><th>模型协议</th><td>Chat Completions 默认 / Responses 可选</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </>
-  )
-}
-
-function HarnessTab({ project, onSave }: { project: Project; onSave: (updates: Partial<ProjectHarness>) => Promise<void> }) {
-  return (
-    <>
-      <div className="harness-grid">
-        <div className="card">
-          <div className="card-title"><div className="left">🧱 整体 Harness（所有项目复用）</div></div>
-          <div className="harness-facts">
-            <div><strong>Workpack</strong><span>{globalHarnessSummary.workpack}</span></div>
-            <div><strong>输出协议</strong><span>{globalHarnessSummary.responseProtocol}</span></div>
-            <div><strong>硬校验</strong><span>{globalHarnessSummary.hardGates.join(' / ')}</span></div>
-            <div><strong>QA 来源</strong><span>{globalHarnessSummary.qaSources.join(' / ')}</span></div>
-          </div>
+      <details className="advanced-panel">
+        <summary>高级：项目规则与持续改进</summary>
+        <div className="advanced-body">
+          <HarnessEditor project={project} onSave={onSaveHarness} compact />
+          <ImprovementQueue projectId={project.id} />
         </div>
-        <div className="card">
-          <div className="card-title"><div className="left">🧭 项目 Harness（仅当前项目）</div></div>
-          <HarnessStats harness={getProjectHarness(project)} />
-        </div>
-      </div>
-      <HarnessEditor project={project} onSave={onSave} />
-      <ImprovementQueue projectId={project.id} />
+      </details>
     </>
   )
 }
@@ -1005,18 +956,6 @@ function ImprovementQueue({ projectId }: { projectId: string }) {
           {!items.length ? <tr><td colSpan={3} className="muted">暂无建议；可在翻译历史里从某次 run 生成。</td></tr> : null}
         </tbody>
       </table>
-    </div>
-  )
-}
-
-function HarnessStats({ harness }: { harness: ProjectHarness }) {
-  return (
-    <div className="harness-facts">
-      <div><strong>更新时间</strong><span>{harness.updated_at ? new Date(harness.updated_at).toLocaleString() : '尚未保存'}</span></div>
-      <div><strong>项目硬规则</strong><span>{harness.hard_rules?.length || 0}</span></div>
-      <div><strong>项目软规则</strong><span>{harness.soft_rules?.length || 0}</span></div>
-      <div><strong>固定译名</strong><span>{harness.fixed_terms?.length || 0}</span></div>
-      <div><strong>禁用译法</strong><span>{harness.forbidden_translations?.length || 0}</span></div>
     </div>
   )
 }
@@ -1233,6 +1172,11 @@ function TranslationTab({
         </div>
         <SelectedInput label="语言表" artifact={sourceArtifact} />
         <SelectedInput label="术语表" artifact={termArtifact} />
+        <div className="workflow-note-grid">
+          <div><strong>提示词</strong><span>{project.prompt_text ? '已在元信息页生成' : '未生成'}</span></div>
+          <div><strong>术语约束</strong><span>{termArtifact ? '本次翻译会使用所选术语表' : '未选择术语表'}</span></div>
+          <div><strong>质量门槛</strong><span>回填后必须通过 QA 才能交付</span></div>
+        </div>
       </div>
       {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} /> : null}
     </>
@@ -1288,46 +1232,6 @@ function formalTranslationBlockReason(settings: AppSettings | null, sourceArtifa
   if (settings.provider === 'mock') return '当前是 mock provider。真实项目禁止用 mock 假装完成，请先配置 GPT API key。'
   if ((settings.provider === 'openai' || settings.provider === 'anthropic') && !settings.api_key) return `${providerName(settings)} API key 未配置，正式翻译已阻断。`
   return ''
-}
-
-function HistoryTab({ project, onImprovementReview }: { project: Project; onImprovementReview: (runId: string) => Promise<void> }) {
-  return (
-    <div className="card">
-      <div className="card-title"><div className="left">🕒 翻译历史记录</div></div>
-      <table>
-        <thead><tr><th>时间</th><th>类型</th><th>语言</th><th>状态</th><th>模型 / Harness</th><th>产物</th><th>操作</th></tr></thead>
-        <tbody>
-          {(project.runs || []).map((run) => {
-            const artifacts = runArtifacts(project, run.id)
-            const model = run.metadata?.model as Record<string, unknown> | undefined
-            const harness = run.metadata?.harness as Record<string, unknown> | undefined
-            return (
-              <tr key={run.id}>
-                <td>{new Date(run.created_at).toLocaleString()}</td>
-                <td>{run.kind}</td><td>{run.language}</td><td><span className={`tag ${run.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{run.status}</span></td>
-                <td className="run-meta">
-                  <span>{model?.provider ? `${model.provider} / ${model.model || '-'}` : '-'}</span>
-                  <span>project_harness hard={String(harness?.hard_rules ?? 0)}</span>
-                </td>
-                <td>
-                  <div className="artifact-links">
-                    {artifacts.length ? artifacts.map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.kind}</a>) : <span className="muted-left">暂无</span>}
-                  </div>
-                </td>
-                <td>
-                  <div className="table-actions">
-                    <a href={`/api/runs/${run.id}/events`} target="_blank">查看事件</a>
-                    <button className="btn btn-sm" onClick={() => onImprovementReview(run.id)}>生成建议</button>
-                  </div>
-                </td>
-              </tr>
-            )
-          })}
-          {!project.runs?.length ? <tr><td colSpan={7} className="muted">暂无运行历史</td></tr> : null}
-        </tbody>
-      </table>
-    </div>
-  )
 }
 
 function Wizard(props: {
@@ -1613,6 +1517,11 @@ function StepQA({
         <FileBox label="上传已有译文 workbook" onFile={onUploadTranslation} />
         <button className="btn btn-primary" data-testid="run-qa" disabled={!qaArtifact || busy} onClick={onDirectQA}>运行 QA</button>
       </div>
+      <div className="check-list">
+        <CheckItem ok={Boolean(qaArtifact)} title="译文 workbook" detail={qaArtifact ? qaArtifact.label : '未选择'} />
+        <CheckItem ok={!latestRun || latestRun.status === 'passed'} title="QA 状态" detail={latestRun ? latestRun.status : '未运行'} />
+        <CheckItem ok={qaIssues.length === 0} title="待处理问题" detail={qaIssues.length ? `${qaIssues.length} 条` : '无'} />
+      </div>
       {latestRun ? <TaskRunSummary run={latestRun} issues={qaIssues} projectHardErrors={projectHardErrors} /> : null}
       {qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onApply={onManualFixes} /> : null}
     </>
@@ -1629,6 +1538,7 @@ function FailedRowEditor({
   onApply: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
 }) {
   const editable = issues.filter((issue) => issue.sheet && issue.row > 1)
+  const visibleIssues = editable.slice(0, 50)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -1652,30 +1562,37 @@ function FailedRowEditor({
   }
 
   return (
-    <div className="failed-editor" data-testid="failed-row-editor">
-      <div className="card-title">
-        <div className="left">问题修复</div>
-        <button className="btn btn-primary btn-sm" data-testid="manual-fix-rerun" disabled={busy || fixes.length === 0} onClick={() => onApply(fixes)}>保存修复并重新 QA</button>
-      </div>
-      <div className="failed-rows">
-        {editable.map((issue) => (
-          <div key={issue.id} className="failed-row">
-            <div className="failed-meta">
-              <span>{issue.severity}</span>
-              <span>{issue.source}</span>
-              <span>{issue.sheet}#{issue.row}</span>
-              <span>{issue.check_type}</span>
-            </div>
-            <div className="failed-message">{issue.message}</div>
-            <div className="failed-current">{issue.current_translation || '-'}</div>
-            <textarea
-              data-testid={`manual-fix-input-${issue.row}`}
-              value={drafts[issue.id] ?? issue.current_translation}
-              onChange={(event) => setDrafts((prev) => ({ ...prev, [issue.id]: event.target.value }))}
-            />
+    <div className="issue-summary">
+      <div className="card-title"><div className="left">QA 问题摘要</div></div>
+      <IssueChips issues={issues} />
+      <details className="repair-panel" data-testid="failed-row-editor">
+        <summary>展开问题修复（显示前 {visibleIssues.length} / {editable.length} 条可编辑问题）</summary>
+        <div className="failed-editor">
+          <div className="card-title">
+            <div className="left">问题修复</div>
+            <button className="btn btn-primary btn-sm" data-testid="manual-fix-rerun" disabled={busy || fixes.length === 0} onClick={() => onApply(fixes)}>保存修复并重新 QA</button>
           </div>
-        ))}
-      </div>
+          <div className="failed-rows">
+            {visibleIssues.map((issue) => (
+              <div key={issue.id} className="failed-row">
+                <div className="failed-meta">
+                  <span>{issue.severity}</span>
+                  <span>{issue.source}</span>
+                  <span>{issue.sheet}#{issue.row}</span>
+                  <span>{issue.check_type}</span>
+                </div>
+                <div className="failed-message">{issue.message}</div>
+                <div className="failed-current">{issue.current_translation || '-'}</div>
+                <textarea
+                  data-testid={`manual-fix-input-${issue.row}`}
+                  value={drafts[issue.id] ?? issue.current_translation}
+                  onChange={(event) => setDrafts((prev) => ({ ...prev, [issue.id]: event.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      </details>
     </div>
   )
 }
@@ -1731,6 +1648,16 @@ function TaskRunSummary({
 }
 
 function IssueSummary({ issues }: { issues: QualityIssue[] }) {
+  return (
+    <div className="issue-summary">
+      <div className="card-title"><div className="left">QA 问题摘要</div></div>
+      <IssueChips issues={issues} />
+      <div className="muted-left">这些问题缺少可直接编辑的 workbook 行定位；请查看 QA 报告，或重新生成带行号的问题列表后再批量修复。</div>
+    </div>
+  )
+}
+
+function IssueChips({ issues }: { issues: QualityIssue[] }) {
   const counts = issues.reduce<Record<string, number>>((acc, issue) => {
     const key = issue.check_type || issue.source || 'issue'
     acc[key] = (acc[key] || 0) + 1
@@ -1738,12 +1665,17 @@ function IssueSummary({ issues }: { issues: QualityIssue[] }) {
   }, {})
   const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6)
   return (
-    <div className="issue-summary">
-      <div className="card-title"><div className="left">QA 问题摘要</div></div>
-      <div className="issue-chips">
-        {top.map(([name, count]) => <span key={name}>{name}: {count}</span>)}
-      </div>
-      <div className="muted-left">这些问题缺少可直接编辑的 workbook 行定位；请查看 QA 报告，或重新生成带行号的问题列表后再批量修复。</div>
+    <div className="issue-chips">
+      {top.map(([name, count]) => <span key={name}>{name}: {count}</span>)}
+    </div>
+  )
+}
+
+function CheckItem({ ok, title, detail }: { ok: boolean; title: string; detail: string }) {
+  return (
+    <div className="check-item">
+      <div className={`check-icon ${ok ? 'check-pass' : 'check-warn'}`}>{ok ? '✓' : '!'}</div>
+      <div className="check-info"><div className="name">{title}</div><div className="detail">{detail}</div></div>
     </div>
   )
 }

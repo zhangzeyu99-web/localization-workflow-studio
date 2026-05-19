@@ -71,7 +71,7 @@ test('user can complete the EN localization workflow from project tabs', async (
 
   await page.getByRole('button', { name: '校对' }).click()
   await expect(page.getByText('最近翻译任务')).toBeVisible()
-  await expect(page.getByText('passed')).toBeVisible()
+  await expect(page.locator('.tag-done', { hasText: 'passed' })).toBeVisible()
 
   await page.getByRole('button', { name: '交付' }).click()
   await page.getByRole('button', { name: '生成任务交付' }).click()
@@ -128,5 +128,5 @@ wb.close()
   await page.getByTestId('run-qa').click()
   await expect(page.getByText('已有译文 QA 通过')).toBeVisible({ timeout: 60000 })
   await expect(page.getByText('最近校对任务')).toBeVisible()
-  await expect(page.getByText('passed')).toBeVisible()
+  await expect(page.locator('.tag-done', { hasText: 'passed' })).toBeVisible()
 })
