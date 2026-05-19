@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "terms": {
+    "报名": {
+      "approved_en": "Registration",
+      "approved_en2": "Sign Up",
+      "block_en2": false,
+      "ignore": false,
+      "note": "高频系统入口词，保留按钮式手动适配。",
+      "category_override": ""
+    },
+    "升级": {
+      "approved_en": "Level Up",
+      "approved_en2": "Upgrade",
+      "block_en2": false,
+      "ignore": false,
+      "note": "养成语境和模块/建筑语境可并存。",
+      "category_override": ""
+    },
+    "奖励": {
+      "approved_en": "Reward",
+      "approved_en2": "",
+      "block_en2": true,
+      "ignore": false,
+      "note": "默认不自动派生 EN2，避免 Promo 之类噪音词误入术语表。",
+      "category_override": ""
+    },
+    "碎片": {
+      "approved_en": "Shard",
+      "approved_en2": "",
+      "block_en2": true,
+      "ignore": false,
+      "note": "默认不把上下文派生词写成 EN2。",
+      "category_override": ""
+    }
+  }
+}

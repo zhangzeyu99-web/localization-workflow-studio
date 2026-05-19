@@ -1,0 +1,319 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from openpyxl import Workbook, load_workbook
+
+from utils.translation_harness import (
+    apply_translation_response,
+    prepare_translation_harness,
+)
+
+
+SRC_CLAIM = "\u9886\u53d6\u5956\u52b1"
+SRC_SURVIVAL = "\u7d2f\u8ba1\u53c2\u4e0e{0}\u6b21\u6c42\u751f\u4e4b\u8def"
+SRC_RICH = "[size=80][c0]\u81ea\u9009\u4f20\u8bf4\u6280\u80fd[s0][/size]"
+
+
+def _write_language_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["ID", "Cn", "En"])
+    ws.append([1, SRC_CLAIM, ""])
+    ws.append([2, SRC_SURVIVAL, SRC_SURVIVAL])
+    ws.append([3, SRC_RICH, ""])
+    wb.save(path)
+
+
+def _write_term_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "\u672f\u8bed\u8868"
+    ws.append(["ID", "CN", "EN", "EN2", "\u5206\u7c7b"])
+    ws.append([1, SRC_CLAIM, "Claim Reward", "", "UI\u64cd\u4f5c\u52a8\u8bcd"])
+    ws.append([2, "\u6c42\u751f\u4e4b\u8def", "Survival Road", "", "\u4efb\u52a1/\u6d3b\u52a8/\u73a9\u6cd5"])
+    ws.append([3, "\u4f20\u8bf4\u6280\u80fd", "Legendary Skill", "", "\u9053\u5177/\u88c5\u5907/\u793c\u5305"])
+    wb.save(path)
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+
+class TranslationHarnessTests(unittest.TestCase):
+    def test_prepare_builds_workpack_for_empty_or_chinese_target_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            term_path = tmp_path / "terms.xlsx"
+            out_dir = tmp_path / "out"
+            _write_language_workbook(lang_path)
+            _write_term_workbook(term_path)
+
+            result = prepare_translation_harness(
+                input_path=lang_path,
+                term_base_path=term_path,
+                lang="en",
+                output_dir=out_dir,
+            )
+
+            self.assertTrue(result.target_status.requires_full_translation)
+            self.assertEqual(result.manifest["language"], "en")
+            self.assertEqual(result.manifest["row_ids"], [1, 2, 3])
+            self.assertTrue(result.workpack_path.exists())
+            self.assertTrue(result.manifest_path.exists())
+
+            rows = [
+                json.loads(line)
+                for line in result.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[0]["current_target"], SRC_CLAIM)
+            self.assertEqual(rows[0]["text_type"], "ui_short")
+            self.assertEqual(rows[1]["placeholders"], ["{0}"])
+            self.assertIn("Survival Road", [term["target"] for term in rows[1]["term_hits"]])
+            self.assertIn("[size=80]", rows[2]["tags"])
+
+    def test_prepare_includes_project_style_hint_and_scopes_cache_by_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            out_dir = tmp_path / "out"
+            _write_language_workbook(lang_path)
+            style_hint = "US mobile SLG; concise, idiomatic UI wording"
+
+            prepared = prepare_translation_harness(
+                input_path=lang_path,
+                lang="en",
+                output_dir=out_dir,
+                style_hint=style_hint,
+            )
+
+            self.assertEqual(prepared.manifest["style_profile"]["project_hint"], style_hint)
+            rows = [
+                json.loads(line)
+                for line in prepared.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(rows[0]["style_hint"], style_hint)
+
+            response_path = tmp_path / "translation_response.jsonl"
+            _write_jsonl(
+                response_path,
+                [
+                    {"id": 1, "translation": "Claim"},
+                    {"id": 2, "translation": "Do Survival Road {0} times"},
+                    {"id": 3, "translation": "[size=80][c0]Pick Legendary Skill[s0][/size]"},
+                ],
+            )
+            apply_translation_response(
+                input_path=lang_path,
+                manifest_path=prepared.manifest_path,
+                response_path=response_path,
+                output_dir=out_dir,
+            )
+
+            same_hint = prepare_translation_harness(
+                input_path=lang_path,
+                lang="en",
+                output_dir=out_dir,
+                style_hint=style_hint,
+            )
+            same_rows = [
+                json.loads(line)
+                for line in same_hint.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertTrue(same_rows[0]["cache_hit"])
+            self.assertEqual(same_rows[0]["cached_translation"], "Claim")
+
+            different_hint = prepare_translation_harness(
+                input_path=lang_path,
+                lang="en",
+                output_dir=out_dir,
+                style_hint="UK PC strategy; formal wording",
+            )
+            different_rows = [
+                json.loads(line)
+                for line in different_hint.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertFalse(different_rows[0]["cache_hit"])
+            self.assertEqual(different_rows[0]["cached_translation"], "")
+
+    def test_apply_rejects_incomplete_duplicate_extra_or_placeholder_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            out_dir = tmp_path / "out"
+            _write_language_workbook(lang_path)
+            prepared = prepare_translation_harness(lang_path, output_dir=out_dir)
+
+            cases = [
+                ([{"id": 1, "translation": "Claim Reward"}], "missing"),
+                (
+                    [
+                        {"id": 1, "translation": "Claim Reward"},
+                        {"id": 1, "translation": "Claim Reward Again"},
+                        {"id": 2, "translation": "Join {0} Survival Road"},
+                        {"id": 3, "translation": "[size=80][c0]Select Legendary Skill[s0][/size]"},
+                    ],
+                    "duplicate",
+                ),
+                (
+                    [
+                        {"id": 1, "translation": "Claim Reward"},
+                        {"id": 2, "translation": "Join {0} Survival Road"},
+                        {"id": 3, "translation": "[size=80][c0]Select Legendary Skill[s0][/size]"},
+                        {"id": 99, "translation": "Extra"},
+                    ],
+                    "extra",
+                ),
+                (
+                    [
+                        {"id": 2, "translation": "Join {0} Survival Road"},
+                        {"id": 1, "translation": "Claim Reward"},
+                        {"id": 3, "translation": "[size=80][c0]Select Legendary Skill[s0][/size]"},
+                    ],
+                    "order",
+                ),
+                (
+                    [
+                        {"id": 1, "translation": "Claim Reward"},
+                        {"id": 2, "translation": "Join Survival Road"},
+                        {"id": 3, "translation": "[size=80][c0]Select Legendary Skill[s0][/size]"},
+                    ],
+                    "placeholder",
+                ),
+            ]
+
+            for rows, expected in cases:
+                response_path = tmp_path / f"{expected}.jsonl"
+                _write_jsonl(response_path, rows)
+                with self.assertRaisesRegex(ValueError, expected):
+                    apply_translation_response(
+                        input_path=lang_path,
+                        manifest_path=prepared.manifest_path,
+                        response_path=response_path,
+                        output_dir=out_dir,
+                    )
+
+    def test_apply_rejects_input_drift_between_prepare_and_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            out_dir = tmp_path / "out"
+            _write_language_workbook(lang_path)
+            prepared = prepare_translation_harness(lang_path, output_dir=out_dir)
+
+            response_path = tmp_path / "translation_response.jsonl"
+            _write_jsonl(
+                response_path,
+                [
+                    {"id": 1, "translation": "Claim Reward"},
+                    {"id": 2, "translation": "Join Survival Road {0} times"},
+                    {"id": 3, "translation": "[size=80][c0]Select Legendary Skill[s0][/size]"},
+                ],
+            )
+
+            wb = load_workbook(lang_path)
+            ws = wb.active
+            ws.cell(2, 2).value = "\u9886\u53d6\u5956\u52b1!"
+            wb.save(lang_path)
+            wb.close()
+
+            with self.assertRaisesRegex(ValueError, "input drift"):
+                apply_translation_response(
+                    input_path=lang_path,
+                    manifest_path=prepared.manifest_path,
+                    response_path=response_path,
+                    output_dir=out_dir,
+                )
+
+    def test_apply_writes_final_workbook_and_same_project_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            out_dir = tmp_path / "out"
+            _write_language_workbook(lang_path)
+            prepared = prepare_translation_harness(lang_path, output_dir=out_dir)
+
+            response_path = tmp_path / "translation_response.jsonl"
+            _write_jsonl(
+                response_path,
+                [
+                    {"id": 1, "translation": "Claim Reward"},
+                    {"id": 2, "translation": "Join Survival Road {0} times"},
+                    {"id": 3, "translation": "[size=80][c0]Select Legendary Skill[s0][/size]"},
+                ],
+            )
+
+            applied = apply_translation_response(
+                input_path=lang_path,
+                manifest_path=prepared.manifest_path,
+                response_path=response_path,
+                output_dir=out_dir,
+            )
+
+            wb = load_workbook(applied.final_workbook_path, read_only=True, data_only=False)
+            ws = wb.active
+            self.assertEqual(ws.cell(2, 3).value, "Claim Reward")
+            self.assertEqual(ws.cell(3, 3).value, "Join Survival Road {0} times")
+            self.assertEqual(ws.cell(4, 3).value, "[size=80][c0]Select Legendary Skill[s0][/size]")
+            wb.close()
+
+            cache_path = tmp_path / ".translation_cache" / "en.jsonl"
+            self.assertTrue(cache_path.exists())
+            cache_rows = [json.loads(line) for line in cache_path.read_text(encoding="utf-8").splitlines()]
+            self.assertIn("Claim Reward", [row["translation"] for row in cache_rows])
+
+            prepared_again = prepare_translation_harness(lang_path, output_dir=out_dir)
+            rows = [
+                json.loads(line)
+                for line in prepared_again.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(rows[0]["cached_translation"], "Claim Reward")
+            self.assertTrue(rows[0]["cache_hit"])
+
+    def test_apply_accepts_utf8_bom_response_written_by_windows_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            out_dir = tmp_path / "out"
+            _write_language_workbook(lang_path)
+            prepared = prepare_translation_harness(lang_path, output_dir=out_dir)
+
+            response_path = tmp_path / "translation_response.jsonl"
+            response_path.write_text(
+                "\ufeff"
+                + "\n".join(
+                    [
+                        json.dumps({"id": 1, "translation": "Claim Reward"}, ensure_ascii=False),
+                        json.dumps({"id": 2, "translation": "Join Survival Road {0} times"}, ensure_ascii=False),
+                        json.dumps(
+                            {
+                                "id": 3,
+                                "translation": "[size=80][c0]Select Legendary Skill[s0][/size]",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            applied = apply_translation_response(
+                input_path=lang_path,
+                manifest_path=prepared.manifest_path,
+                response_path=response_path,
+                output_dir=out_dir,
+            )
+
+            self.assertEqual(applied.row_count, 3)
+
+
+if __name__ == "__main__":
+    unittest.main()

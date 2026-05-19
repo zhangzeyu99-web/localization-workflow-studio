@@ -1,0 +1,6 @@
+状态	文件名格式	主表字段	用途
+已提取	项目名-已提取-YYYYMMDD.xlsx	ID / CN / EN / EN2	源文-only 或双语表初步术语提取，EN/EN2 可为空
+预翻译	项目名-预翻译-YYYYMMDD.xlsx	ID / CN / EN / EN2	给提取术语补一版可审校英文
+已分类	项目名-已分类-YYYYMMDD.xlsx	ID / CN / EN / EN2 / 分类	按游戏本地化分类整理，同类术语放一起
+已审校	项目名-已审校-YYYYMMDD.xlsx	ID / CN / EN / EN2 / 分类	人工确认后的术语表，可用于下发翻译和LQA
+已回灌	项目名-已回灌-YYYYMMDD.xlsx	ID / CN / EN / EN2 / 分类	已导入 curated_terms.json 的确认版本

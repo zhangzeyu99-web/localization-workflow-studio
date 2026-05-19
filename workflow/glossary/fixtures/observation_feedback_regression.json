@@ -1,0 +1,65 @@
+{
+  "sheet": "Sheet0",
+  "columns": {
+    "id": "ID",
+    "source": "cn",
+    "target": "en"
+  },
+  "extract": {
+    "min_hit": 1,
+    "glossary_hit_threshold": 1
+  },
+  "curated_rules": {
+    "version": 1,
+    "terms": {
+      "报名": {
+        "approved_en": "Registration",
+        "approved_en2": "",
+        "block_en2": false,
+        "ignore": false,
+        "note": "历史观察允许自动补回稳定 EN2。",
+        "category_override": ""
+      }
+    }
+  },
+  "observations_store": {
+    "version": 1,
+    "terms": {
+      "报名": {
+        "observed_exact_candidates": {
+          "Registration": 2
+        },
+        "observed_example_usages": {
+          "Registration Countdown": 2
+        },
+        "observed_manual_adaptations": {
+          "Sign Up": 4
+        },
+        "seen_runs": 2,
+        "last_seen_at": "2026-04-24T00:00:00+00:00",
+        "last_input_digest": "older-run"
+      }
+    }
+  },
+  "rows": [
+    {
+      "ID": "1",
+      "cn": "报名",
+      "en": "Registration"
+    },
+    {
+      "ID": "2",
+      "cn": "报名条件",
+      "en": "Registration Requirements"
+    }
+  ],
+  "expected_final": [
+    {
+      "CN": "报名",
+      "EN": "Registration",
+      "EN2": "Sign Up"
+    }
+  ],
+  "expected_absent": [],
+  "strict_terms": false
+}

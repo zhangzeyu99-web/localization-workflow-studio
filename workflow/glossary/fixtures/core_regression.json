@@ -1,0 +1,108 @@
+{
+  "sheet": "Sheet0",
+  "columns": {
+    "id": "ID",
+    "source": "cn",
+    "target": "en"
+  },
+  "extract": {
+    "min_hit": 1,
+    "glossary_hit_threshold": 1
+  },
+  "curated_rules": {
+    "version": 1,
+    "terms": {
+      "报名": {
+        "approved_en": "Registration",
+        "approved_en2": "Sign Up",
+        "block_en2": false,
+        "ignore": false,
+        "note": "",
+        "category_override": ""
+      },
+      "升级": {
+        "approved_en": "Level Up",
+        "approved_en2": "Upgrade",
+        "block_en2": false,
+        "ignore": false,
+        "note": "",
+        "category_override": ""
+      },
+      "奖励": {
+        "approved_en": "Reward",
+        "approved_en2": "",
+        "block_en2": true,
+        "ignore": false,
+        "note": "",
+        "category_override": ""
+      }
+    }
+  },
+  "observations_store": {
+    "version": 1,
+    "terms": {}
+  },
+  "rows": [
+    {
+      "ID": "1",
+      "cn": "报名",
+      "en": "Registration"
+    },
+    {
+      "ID": "2",
+      "cn": "报名倒计时",
+      "en": "Registration Countdown"
+    },
+    {
+      "ID": "3",
+      "cn": "报名",
+      "en": "Sign Up"
+    },
+    {
+      "ID": "4",
+      "cn": "升级",
+      "en": "Level Up"
+    },
+    {
+      "ID": "5",
+      "cn": "升级模块",
+      "en": "Upgrade Module"
+    },
+    {
+      "ID": "6",
+      "cn": "升级营地",
+      "en": "Upgrade Camp"
+    },
+    {
+      "ID": "7",
+      "cn": "奖励",
+      "en": "Reward"
+    },
+    {
+      "ID": "8",
+      "cn": "奖励补发",
+      "en": "Promo"
+    }
+  ],
+  "expected_final": [
+    {
+      "CN": "报名",
+      "EN": "Registration",
+      "EN2": "Sign Up"
+    },
+    {
+      "CN": "升级",
+      "EN": "Level Up",
+      "EN2": "Upgrade"
+    },
+    {
+      "CN": "奖励",
+      "EN": "Reward",
+      "EN2": ""
+    }
+  ],
+  "expected_absent": [
+    "倒计时"
+  ],
+  "strict_terms": false
+}

@@ -1,0 +1,82 @@
+version: 1
+privacy:
+  scope: single_project_private_workspace
+  commit_to_public_repo: false
+
+project:
+  name: ""
+  genre: ""
+  theme: ""
+  target_market: ""
+  target_language: en
+  platform: ""
+  audience: ""
+
+game_context:
+  core_loop: ""
+  main_systems: []
+  combat_or_progression_model: ""
+  monetization_context: ""
+  ui_density_constraints: ""
+
+translation_goals:
+  primary_goal: production_readable
+  secondary_goal: ""
+  tone: ""
+  reading_level: ""
+  region_style: ""
+  length_preference: clarity_first_length_second
+
+terminology:
+  strong_terms:
+    - source: ""
+      target: ""
+      context: ""
+      notes: ""
+  soft_terms:
+    - source: ""
+      preferred_target: ""
+      allowed_alternatives: []
+      notes: ""
+  forbidden_translations:
+    - source_or_pattern: ""
+      forbidden_output: ""
+      required_handling: ""
+
+name_policy:
+  character_names: ""
+  place_names: ""
+  item_and_skill_names: ""
+  official_name_source: ""
+
+style_rules:
+  ui_buttons: ""
+  skill_descriptions: ""
+  system_prompts: ""
+  mail_or_narrative: ""
+  error_messages: ""
+  title_case: ""
+  sentence_case: ""
+
+technical_rules:
+  placeholders: preserve exactly
+  bbcode_html_tags: preserve exactly
+  color_tags: preserve count, order, and color values
+  newlines: preserve shape exactly
+  numbers_and_units: ""
+  ui_length: clarity first; do not create bad abbreviations
+
+reference_materials:
+  term_base: ""
+  accepted_delivery_reference: ""
+  previous_final_workbook: ""
+  screenshots_or_ui_context: ""
+
+project_harness_rules:
+  hard_gates: []
+  soft_warnings: []
+
+translation_prompt_output:
+  prompt_file: translation_prompt.txt
+  style_hint: ""
+  last_reviewed: ""

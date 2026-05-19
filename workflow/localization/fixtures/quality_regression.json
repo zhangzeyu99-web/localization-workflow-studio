@@ -1,0 +1,372 @@
+{
+  "version": 1,
+  "description": "Regression cases distilled from real localization delivery failures.",
+  "cases": [
+    {
+      "id": "bad-title-case-too-many-roles",
+      "source": "该帐号创角过多",
+      "translation": "Too Many Roles",
+      "expected_issues": ["title_case_overuse"]
+    },
+    {
+      "id": "good-title-case-feature-login",
+      "source": "七日登录",
+      "translation": "7-Day Login",
+      "expected_issues": []
+    },
+    {
+      "id": "good-title-case-feature-name",
+      "source": "战令",
+      "translation": "Battle Pass",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-clipped-login-timeout",
+      "source": "登录超时",
+      "translation": "Logi time",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-profession-role",
+      "source": "\u80fd\u6e90\u5b66\u5bb6\u5965\u6587",
+      "translation": "Ener Scie Owen",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-item-name",
+      "source": "10\u70b9\u6539\u826f\u7cbe\u7cb9",
+      "translation": "10 Pts impr esse",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-search-result",
+      "source": "\u6682\u65e0\u641c\u7d22\u7ed3\u679c",
+      "translation": "No sear resu yet",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-romanized-person-name",
+      "source": "\u53a8\u5e08\u4f0a\u82b3",
+      "translation": "Chef Yifang",
+      "expected_issues": ["romanized_name_residue"]
+    },
+    {
+      "id": "good-natural-profession-role",
+      "source": "\u80fd\u6e90\u5b66\u5bb6\u5965\u6587",
+      "translation": "Energy Scientist Owen",
+      "expected_issues": []
+    },
+    {
+      "id": "good-natural-item-name",
+      "source": "10\u70b9\u6539\u826f\u7cbe\u7cb9",
+      "translation": "10 Improvement Essence",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-clipped-equipment-name",
+      "source": "\u795e\u950b\u88c5\u7532",
+      "translation": "Shen Armo",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "good-natural-equipment-name",
+      "source": "\u795e\u950b\u88c5\u7532",
+      "translation": "Divine Edge Armor",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-clipped-status-available",
+      "source": "\u6ca1\u6709\u7a7a\u4f59\u5e8a\u4f4d",
+      "translation": "No beds avai",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-thunder-order",
+      "source": "\u96f7\u9706\u4e4b\u4ee4",
+      "translation": "Orde Thun",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-skill-tracking-round",
+      "source": "\u75be\u901f\u8ffd\u8e2a\u5f39",
+      "translation": "Fast Trac Bull",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-skill-smart-guidance",
+      "source": "\u667a\u80fd\u5236\u5bfc",
+      "translation": "Inte guid",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-final-attack-speed",
+      "source": "\u6700\u7ec8\u653b\u901f",
+      "translation": "Fina ATK SPD",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-skill-glory-contract",
+      "source": "\u8363\u8000\u5951\u7ea6",
+      "translation": "Glor Cont",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "good-natural-skill-name",
+      "source": "\u75be\u901f\u8ffd\u8e2a\u5f39",
+      "translation": "Rapid Tracking Round",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-clipped-content-empty",
+      "source": "\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a",
+      "translation": "Cont cann empt",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-contribution",
+      "source": "\u60a8\u7684\u8d21\u732e\uff1a##1",
+      "translation": "Your cont ##1",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "good-natural-content-empty",
+      "source": "\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a",
+      "translation": "Content cannot be empty",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-clipped-position-placement",
+      "source": "\u4f4d\u7f6e\u4e0d\u53ef\u6446\u653e",
+      "translation": "Loca cann plac",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-equipment-reset",
+      "source": "\u5df2\u7a7f\u6234\u7684\u88c5\u5907\u4e0d\u53ef\u91cd\u7f6e",
+      "translation": "Wear equi cann rese",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "good-natural-equipment-reset",
+      "source": "\u5df2\u7a7f\u6234\u7684\u88c5\u5907\u4e0d\u53ef\u91cd\u7f6e",
+      "translation": "Equipped gear cannot be reset",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-clipped-wearable-equipment",
+      "source": "\u6ca1\u6709\u53ef\u7a7f\u6234\u7684\u88c5\u5907",
+      "translation": "No wear equi",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-strong-equipment-pack",
+      "source": "\u5f3a\u529b\u88c5\u5907\u793c\u5305",
+      "translation": "Stro equi Pack",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-reply-message",
+      "source": "\u56de\u590d##1\uff1a",
+      "translation": "Repl ##1",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-expired-message",
+      "source": "\u56de\u590d\uff1a\u6b64\u6d88\u606f\u5df2\u8fc7\u671f",
+      "translation": "Repl This mess expi",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-unread-mail",
+      "source": "\u6ca1\u6709\u672a\u8bfb\u90ae\u4ef6",
+      "translation": "No unre mess",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-spam-message",
+      "source": "\u9a9a\u6270/\u5237\u5c4f/\u5783\u573e\u4fe1\u606f",
+      "translation": "Hara swip spam mess",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "good-natural-reply-message",
+      "source": "\u56de\u590d\uff1a\u6b64\u6d88\u606f\u5df2\u8fc7\u671f",
+      "translation": "Reply: This message has expired",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-clipped-troop-capacity",
+      "source": "\u90e8\u961f\u5bb9\u91cf",
+      "translation": "Troo capa",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-spend-diamonds",
+      "source": "\u786e\u8ba4\u82b1\u8d39##1\u4e2a\u94bb\u77f3\uff1f",
+      "translation": "Conf spen ##1 diam",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-clipped-offline-rewards",
+      "source": "\u79bb\u7ebf\u6536\u76ca",
+      "translation": "Offline Rwds",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "good-natural-troop-capacity",
+      "source": "\u90e8\u961f\u5bb9\u91cf",
+      "translation": "Troop Capacity",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-clipped-please-enter-correct-chars",
+      "source": "请输入正确的字符",
+      "translation": "Plea ente corr char",
+      "expected_issues": ["clipped_word"]
+    },
+    {
+      "id": "bad-opaque-abbreviation-ui",
+      "source": "请输入举报原因",
+      "translation": "PERR",
+      "expected_issues": ["opaque_abbreviation"]
+    },
+    {
+      "id": "bad-opaque-placeholder-code",
+      "source": "本关至多上阵4个英雄",
+      "translation": "AM4HUITL",
+      "expected_issues": ["internal_token_leak"]
+    },
+    {
+      "id": "bad-internal-token-random",
+      "source": "调试残留",
+      "translation": "ZXN37Q",
+      "expected_issues": ["internal_token_leak"]
+    },
+    {
+      "id": "bad-hash-code-abbreviation",
+      "source": "黑名单数量已达上限",
+      "translation": "#BRUL",
+      "expected_issues": ["hash_code_abbreviation"]
+    },
+    {
+      "id": "bad-hashed-internal-code",
+      "source": "该职位达到人数上限",
+      "translation": "TPRM#P",
+      "expected_issues": ["hash_code_abbreviation"]
+    },
+    {
+      "id": "bad-placeholder-compaction",
+      "source": "花费##1个##2",
+      "translation": "S##1##2",
+      "expected_issues": ["placeholder_compaction"]
+    },
+    {
+      "id": "bad-placeholder-word-glue",
+      "source": "##1上岗##2位居民",
+      "translation": "##1Employed##2",
+      "expected_issues": ["placeholder_word_glue"]
+    },
+    {
+      "id": "bad-html-entity",
+      "source": "稀有的商人出售各种稀有道具",
+      "translation": "Rare&#39;s dark web merchant sells all sorts of rare items.",
+      "expected_issues": ["html_entity_leak"]
+    },
+    {
+      "id": "bad-orphan-leading-clitic",
+      "source": "毒舌依旧",
+      "translation": "’s poisonous tongue remains the same.",
+      "expected_issues": ["orphan_leading_clitic"]
+    },
+    {
+      "id": "bad-leading-lowercase",
+      "source": "双层红色液体。",
+      "translation": "double red liquid.",
+      "expected_issues": ["leading_lowercase"]
+    },
+    {
+      "id": "bad-fullwidth-punctuation",
+      "source": "系统错误",
+      "translation": "System error！",
+      "expected_issues": ["fullwidth_punctuation"]
+    },
+    {
+      "id": "bad-question-quote-corruption",
+      "source": "怎么了？",
+      "translation": "What's wrong, Nora\"",
+      "expected_issues": ["punctuation_corruption"]
+    },
+    {
+      "id": "bad-middle-dot-downgraded-to-question",
+      "source": "重装·普攻I",
+      "translation": "Tank ? Basic Attack I",
+      "expected_issues": ["punctuation_corruption"]
+    },
+    {
+      "id": "good-natural-question-in-question-source",
+      "source": "开飞机？试试看嘛！",
+      "translation": "Flying a Warplane? Let's try!",
+      "expected_issues": []
+    },
+    {
+      "id": "good-question-key-prompt",
+      "source": "帮助键",
+      "translation": "Press ? for help",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-broken-bullet-glyph",
+      "source": "◇R5：军团协力积分的10%",
+      "translation": "?R5: 10% of Legion Co-op Points",
+      "expected_issues": ["punctuation_corruption"]
+    },
+    {
+      "id": "bad-placeholder-missing-v0",
+      "source": "[v0]次射击",
+      "translation": "0 shots",
+      "expected_issues": ["variable_missing"]
+    },
+    {
+      "id": "good-placeholder-v0",
+      "source": "[v0]次射击",
+      "translation": "[v0] shots",
+      "expected_issues": []
+    },
+    {
+      "id": "good-game-abbreviation",
+      "source": "生命值",
+      "translation": "HP",
+      "expected_issues": []
+    },
+    {
+      "id": "good-sentence-case-status",
+      "source": "系统错误",
+      "translation": "System error",
+      "expected_issues": []
+    },
+    {
+      "id": "good-placeholder-order",
+      "source": "##1等##2人被重新分配了工作",
+      "translation": "##1 and ##2 others were reassigned",
+      "expected_issues": []
+    },
+    {
+      "id": "good-bbcode-size-prefix",
+      "source": "[size=80][c0]\u81ea\u9009\u4f20\u8bf4\u6280\u80fd[s0][/size]",
+      "translation": "[size=80][c0]Select Legendary Skill[s0][/size]",
+      "expected_issues": []
+    },
+    {
+      "id": "good-bbcode-color-hex-tag",
+      "source": "[color=#FFFFFF]\u7b7e\u5230\u9001[/color]",
+      "translation": "Day [color=#FFFFFF]Sign-in Gift[/color]",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-html-color-mismatch",
+      "source": "<color=#608F01>##1</color>\u5956\u52b1",
+      "translation": "<color=#FF0000>##1</color> rewards",
+      "expected_issues": ["bbcode_color_mismatch"]
+    }
+  ]
+}
