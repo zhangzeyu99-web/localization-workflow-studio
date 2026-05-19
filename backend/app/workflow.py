@@ -113,16 +113,15 @@ def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[
         "intro": intro,
         "asset_notes": asset_notes,
         "target_language": "en",
-        "style": "Use concise, natural, production-readable game localization. Preserve variables, tags, numbers, and line breaks.",
+        "style": "准确翻译游戏文本；UI 简洁，剧情自然；术语按项目术语表；保留变量、标签、数字和换行。",
     }
     prompt = (
-        f"Project: {project['name']}\n"
-        f"Type: {project.get('type', '')}\n"
-        f"Description: {project.get('description', '')}\n"
-        f"Intro: {intro}\n"
-        "Rules: translate into natural English for game UI and narrative. "
-        "Keep placeholders, variables, rich-text tags, numbers, and line breaks unchanged. "
-        "Use project glossary terms when provided. Return only id + translation JSONL."
+        f"项目：{project['name']}\n"
+        f"题材：{project.get('type', '')}\n"
+        f"说明：{project.get('description', '') or intro}\n"
+        "翻译规范：准确翻译为自然英文；UI/按钮/任务短句清晰；剧情对话自然但不改设定；"
+        "战机、装备、技能、资源等术语以项目术语表为准；保留变量、占位符、富文本标签、数字和换行。\n"
+        "输出协议：只返回 JSONL，每行包含 id 和 translation。"
     )
     if asset_notes:
         prompt += "\nAssets: " + "; ".join(asset_notes)
@@ -412,8 +411,10 @@ def preview_glossary_import(project_id: str, request: Any, import_all: bool = Fa
     rows, columns = _read_glossary_rows(
         path,
         sheet=getattr(request, "sheet", None),
+        term_key_column=getattr(request, "term_key_column", None),
         source_column=getattr(request, "source_column", None),
         target_column=getattr(request, "target_column", None),
+        target_alt_column=getattr(request, "target_alt_column", None),
         category_column=getattr(request, "category_column", None),
         note_column=getattr(request, "note_column", None),
         limit=None if import_all else int(getattr(request, "limit", 100) or 100),
@@ -431,8 +432,10 @@ def import_glossary(project_id: str, request: Any) -> dict[str, Any]:
             db.insert_glossary_term(
                 project_id,
                 {
+                    "term_key": row.get("term_key", ""),
                     "source": row.get("source", ""),
                     "target": row.get("target", ""),
+                    "target_alt": row.get("target_alt", ""),
                     "category": row.get("category", "imported"),
                     "note": row.get("note", ""),
                     "source_type": "imported",
@@ -449,31 +452,144 @@ def export_glossary(project_id: str, fmt: str) -> dict[str, Any] | Path:
         return {"project_id": project_id, "terms": terms}
     output_dir = project_dir(project_id) / "glossary" / "exports"
     output_dir.mkdir(parents=True, exist_ok=True)
+    columns = ["ID", "CN", "EN", "EN2", "分类", "来源", "确认状态"]
     if fmt == "csv":
         path = output_dir / "project_glossary.csv"
         with path.open("w", encoding="utf-8-sig", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=["source", "target", "category", "note", "source_type", "confirmed"])
-            writer.writeheader()
+            writer = csv.writer(fh)
+            writer.writerow(columns)
             for term in terms:
-                writer.writerow({key: term.get(key, "") for key in writer.fieldnames})
+                writer.writerow(_glossary_export_row(term))
         return path
     path = output_dir / "project_glossary.xlsx"
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["source", "target", "category", "note", "source_type", "confirmed"])
+    ws.append(columns)
     for term in terms:
-        ws.append([term.get("source", ""), term.get("target", ""), term.get("category", ""), term.get("note", ""), term.get("source_type", ""), bool(term.get("confirmed"))])
+        ws.append(_glossary_export_row(term))
     wb.save(path)
     wb.close()
     return path
 
 
+def _glossary_export_row(term: dict[str, Any]) -> list[Any]:
+    return [
+        term.get("term_key", ""),
+        term.get("source", ""),
+        term.get("target", ""),
+        term.get("target_alt", ""),
+        term.get("category", ""),
+        term.get("source_type", ""),
+        "confirmed" if term.get("confirmed") else "pending",
+    ]
+
+
+def build_delivery_package(project_id: str) -> dict[str, Any]:
+    project = db.get_project(project_id)
+    safe_name = _safe_delivery_name(project["name"])
+    output_dir = project_dir(project_id) / "delivery"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    files: list[dict[str, str]] = []
+    meta_path = output_dir / f"{safe_name}_project_meta.md"
+    meta_path.write_text(_project_meta_markdown(project), encoding="utf-8")
+    files.append(_delivery_file("project_meta", meta_path))
+
+    prompt_path = output_dir / f"{safe_name}_translation_prompt.txt"
+    prompt_path.write_text(project.get("prompt_text") or _default_translation_prompt(project), encoding="utf-8")
+    files.append(_delivery_file("translation_prompt", prompt_path))
+
+    glossary_path = output_dir / f"{safe_name}_glossary.xlsx"
+    _write_delivery_glossary(project_id, glossary_path)
+    files.append(_delivery_file("glossary", glossary_path))
+
+    translated_path = output_dir / f"{safe_name}_translated.xlsx"
+    translated_source = _latest_artifact(project_id, role="translation_workbook")
+    if translated_source and Path(translated_source["path"]).exists():
+        shutil.copy2(translated_source["path"], translated_path)
+    else:
+        _write_empty_workbook(translated_path, ["ID", "CN", "EN"], "未生成正式译文")
+    files.append(_delivery_file("translated", translated_path))
+
+    changes_path = output_dir / f"{safe_name}_qa_changes.xlsx"
+    qa_changes_source = _latest_artifact(project_id, kind="qa_changes")
+    if qa_changes_source and Path(qa_changes_source["path"]).exists():
+        shutil.copy2(qa_changes_source["path"], changes_path)
+    else:
+        write_qa_changes_report(output_dir, []).replace(changes_path)
+    files.append(_delivery_file("qa_changes", changes_path))
+    return {"project_id": project_id, "project_name": project["name"], "files": files}
+
+
+def _safe_delivery_name(name: str) -> str:
+    cleaned = "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip()
+    return cleaned or "project"
+
+
+def _delivery_file(kind: str, path: Path) -> dict[str, str]:
+    return {"kind": kind, "filename": path.name, "path": str(path)}
+
+
+def _project_meta_markdown(project: dict[str, Any]) -> str:
+    artifacts = db.list_artifacts(project_id=project["id"])
+    source_labels = [artifact["label"] for artifact in artifacts if artifact["role"] in {"language_source", "glossary_source", "translation_workbook"}]
+    profile = project.get("profile") or {}
+    lines = [
+        f"# {project['name']} 元信息",
+        "",
+        f"- 项目名: {project['name']}",
+        f"- 分类: {project.get('type') or profile.get('project_type') or '未填写'}",
+        "- 目标语言: EN",
+        f"- 风格要求: {profile.get('style') or '准确翻译，保持游戏 UI 简洁自然，保留变量、标签、数字和换行。'}",
+        f"- 来源: {'; '.join(source_labels[:8]) if source_labels else '暂无已登记素材'}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _default_translation_prompt(project: dict[str, Any]) -> str:
+    return (
+        f"你是游戏本地化译者，正在翻译《{project['name']}》。\n"
+        "要求：准确表达玩法含义；UI 短句清晰；剧情自然；术语以项目术语表为准；"
+        "保留变量、数字、标签、占位符和换行；无法确认的专名标记为 [TBD]。"
+    )
+
+
+def _write_delivery_glossary(project_id: str, path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2", "分类", "来源", "确认状态"])
+    for term in db.list_glossary_terms(project_id):
+        ws.append(_glossary_export_row(term))
+    wb.save(path)
+    wb.close()
+
+
+def _write_empty_workbook(path: Path, headers: list[str], note: str) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Delivery"
+    ws.append(headers)
+    ws.append(["", note, ""])
+    wb.save(path)
+    wb.close()
+
+
+def _latest_artifact(project_id: str, role: str | None = None, kind: str | None = None) -> dict[str, Any] | None:
+    artifacts = db.list_artifacts(project_id=project_id, role=role)
+    if kind:
+        artifacts = [artifact for artifact in artifacts if artifact["kind"] == kind]
+    return artifacts[0] if artifacts else None
+
+
 def _read_glossary_rows(
     path: Path,
     sheet: str | None = None,
+    term_key_column: str | None = None,
     source_column: str | None = None,
     target_column: str | None = None,
+    target_alt_column: str | None = None,
     category_column: str | None = None,
     note_column: str | None = None,
     limit: int | None = 100,
@@ -483,8 +599,10 @@ def _read_glossary_rows(
         ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
         headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
         normalized = {header.lower(): index for index, header in enumerate(headers) if header}
+        term_key_idx = _column_index(normalized, term_key_column, ["id", "key", "编号", "序号"], required=False)
         source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "term", "原文", "中文", "术语"])
         target_idx = _column_index(normalized, target_column, ["target", "translation", "en", "english", "译文", "英文"])
+        target_alt_idx = _column_index(normalized, target_alt_column, ["en2", "en 2", "alt", "alternate", "variant", "备用英文"], required=False)
         category_idx = _column_index(normalized, category_column, ["category", "type", "类别", "类型"], required=False)
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
         rows = []
@@ -497,15 +615,19 @@ def _read_glossary_rows(
                 continue
             rows.append(
                 {
+                    "term_key": _value_at(row, term_key_idx) if term_key_idx is not None else "",
                     "source": source,
                     "target": target,
+                    "target_alt": _value_at(row, target_alt_idx) if target_alt_idx is not None else "",
                     "category": _value_at(row, category_idx) if category_idx is not None else "imported",
                     "note": _value_at(row, note_idx) if note_idx is not None else "",
                 }
             )
         return rows, {
+            "term_key": headers[term_key_idx] if term_key_idx is not None else "",
             "source": headers[source_idx],
             "target": headers[target_idx],
+            "target_alt": headers[target_alt_idx] if target_alt_idx is not None else "",
             "category": headers[category_idx] if category_idx is not None else "",
             "note": headers[note_idx] if note_idx is not None else "",
         }
@@ -835,8 +957,17 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
         summary["sources"]["manual_fix_source_run"] = metadata["manual_fix_source_run_id"]
     summary_path = output_dir / "quality_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    changes_path = write_qa_changes_report(output_dir, metadata.get("manual_fixes") or [])
     artifacts = [
         db.add_artifact(project["id"], "Quality summary", summary_path, "quality_summary", run_id=run_id, mime="application/json"),
+        db.add_artifact(
+            project["id"],
+            "QA changes",
+            changes_path,
+            "qa_changes",
+            run_id=run_id,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
     ]
     status = "passed" if summary["passed"] else "failed"
     db.update_run(
@@ -852,6 +983,32 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
         },
     )
     return {"run": db.get_run(run_id), "artifacts": artifacts, "quality_summary": summary}
+
+
+def write_qa_changes_report(output_dir: Path, manual_fixes: list[dict[str, Any]]) -> Path:
+    path = output_dir / "qa_changes.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "QA Changes"
+    ws.append(["工作表", "行号", "问题ID", "修改前", "修改后", "规则来源", "备注"])
+    if manual_fixes:
+        for fix in manual_fixes:
+            ws.append(
+                [
+                    fix.get("sheet", ""),
+                    fix.get("row", ""),
+                    fix.get("issue_id", ""),
+                    fix.get("previous_translation", ""),
+                    fix.get("translation", ""),
+                    "manual_fix",
+                    fix.get("note", ""),
+                ]
+            )
+    else:
+        ws.append(["", "", "", "", "", "qa", "未应用修改"])
+    wb.save(path)
+    wb.close()
+    return path
 
 
 def _run_quality_json(args: list[str], run_id: str) -> dict[str, Any]:
@@ -1062,6 +1219,22 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         settings["preset"] = request.preset
     batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
     batch_size = max(1, min(batch_size, 200))
+    effective_provider = str(settings.get("provider") or "mock")
+    allow_mock = bool(getattr(request, "allow_mock", False)) or str(project.get("name", "")).startswith("E2E ")
+    if effective_provider == "mock" and not allow_mock:
+        db.update_run(
+            run_id,
+            status="needs_input",
+            metadata={**metadata, "reason": "mock provider is blocked for real project translation"},
+        )
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
+    if effective_provider in {"openai", "anthropic"} and not settings.get("api_key"):
+        db.update_run(
+            run_id,
+            status="needs_input",
+            metadata={**metadata, "reason": f"{effective_provider} api_key is required for formal translation"},
+        )
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
 
     db.update_run(run_id, status="running")
     work_dir = run_dir(run_id) / "translation"

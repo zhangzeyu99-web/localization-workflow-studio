@@ -12,6 +12,7 @@ import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from openpyxl import load_workbook
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -34,6 +35,7 @@ if __package__ is None or __package__ == "":
     )
     from app.workflow import (
         analyze_assets,
+        build_delivery_package,
         apply_manual_fixes,
         create_improvement_review,
         create_semantic_qa_context,
@@ -71,6 +73,7 @@ else:
     )
     from .workflow import (
         analyze_assets,
+        build_delivery_package,
         apply_manual_fixes,
         create_improvement_review,
         create_semantic_qa_context,
@@ -268,6 +271,35 @@ def export_project_glossary(project_id: str, format: str = "xlsx") -> Any:
     return FileResponse(exported, media_type=media_type, filename=exported.name)
 
 
+@app.post("/api/projects/{project_id}/delivery-package")
+def create_project_delivery(project_id: str) -> dict[str, Any]:
+    try:
+        package = build_delivery_package(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    for item in package["files"]:
+        item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
+    return package
+
+
+@app.get("/api/projects/{project_id}/delivery/{filename}")
+def download_project_delivery(project_id: str, filename: str) -> FileResponse:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    safe_name = _safe_filename(filename)
+    path = project_dir(project_id) / "delivery" / safe_name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="delivery file missing")
+    media_type = "text/plain"
+    if path.suffix.lower() == ".md":
+        media_type = "text/markdown"
+    elif path.suffix.lower() == ".xlsx":
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
 @app.post("/api/projects/{project_id}/glossary/extract")
 def extract_project_glossary(project_id: str, payload: GlossaryExtractRequest) -> dict[str, Any]:
     try:
@@ -440,11 +472,12 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     artifacts = db.list_artifacts(project_id=project["id"])
     runs = db.list_runs(project["id"])
     terms = db.list_glossary_terms(project["id"])
-    passed_translation_runs = [run for run in runs if run["kind"] == "translation" and run["status"] == "passed"]
+    runs_by_id = {run["id"]: run for run in runs}
+    workbook_metrics = [_translation_workbook_metrics(artifact, runs_by_id) for artifact in artifacts]
     project["stats"] = {
         "tasks": len(runs),
-        "words": str(_translated_word_count(artifacts)),
-        "langs": len({run["language"] for run in passed_translation_runs}),
+        "words": str(sum(metric["source_chars"] for metric in workbook_metrics)),
+        "langs": len({metric["language"] for metric in workbook_metrics if metric["valid_rows"] > 0}),
         "glossary": len(terms),
     }
     if include_details:
@@ -455,23 +488,59 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     return project
 
 
-def _translated_word_count(artifacts: list[dict[str, Any]]) -> int:
-    total = 0
-    for artifact in artifacts:
-        if artifact["kind"] != "translation_response":
-            continue
-        path = Path(artifact["path"])
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                translation = str(json.loads(line).get("translation", ""))
-            except json.JSONDecodeError:
-                continue
-            total += len([word for word in translation.split() if word])
-    return total
+def _translation_workbook_metrics(artifact: dict[str, Any], runs_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    if artifact.get("role") != "translation_workbook":
+        return {"source_chars": 0, "valid_rows": 0, "language": ""}
+    path = Path(artifact["path"])
+    if not path.exists():
+        return {"source_chars": 0, "valid_rows": 0, "language": ""}
+    run = runs_by_id.get(artifact.get("run_id") or "")
+    language = (artifact.get("metadata") or {}).get("language") or (run or {}).get("language") or "en"
+    source_chars = 0
+    valid_rows = 0
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            for ws in wb.worksheets:
+                try:
+                    header_row = next(ws.iter_rows(min_row=1, max_row=1))
+                except StopIteration:
+                    continue
+                headers = {
+                    str(cell.value or "").strip().lower(): index
+                    for index, cell in enumerate(header_row, start=1)
+                    if cell.value is not None
+                }
+                source_col = _first_header(headers, ["cn", "source", "original", "中文", "原文"])
+                target_col = _first_header(headers, ["en", "translation", "target", "英文", "译文"])
+                if source_col is None or target_col is None:
+                    continue
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    source = _row_value(row, source_col)
+                    target = _row_value(row, target_col)
+                    if source and target:
+                        valid_rows += 1
+                        source_chars += len("".join(str(source).split()))
+        finally:
+            wb.close()
+    except Exception:
+        return {"source_chars": 0, "valid_rows": 0, "language": ""}
+    return {"source_chars": source_chars, "valid_rows": valid_rows, "language": language}
+
+
+def _first_header(headers: dict[str, int], names: list[str]) -> int | None:
+    for name in names:
+        hit = headers.get(name.lower())
+        if hit is not None:
+            return hit
+    return None
+
+
+def _row_value(row: tuple[Any, ...], column: int) -> str:
+    if column < 1 or column > len(row):
+        return ""
+    value = row[column - 1]
+    return "" if value is None else str(value).strip()
 
 
 if __name__ == "__main__":

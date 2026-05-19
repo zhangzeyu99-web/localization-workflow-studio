@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:5173'
+const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:15173'
 
 test('user can repair failed QA rows and rerun QA from the web UI', async ({ page, request }) => {
   const badWorkbook = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-failed-qa-')), 'bad-translated.xlsx')
@@ -31,13 +31,11 @@ wb.close()
   })
 
   await page.goto(baseURL)
-  await expect(page.getByText(projectName).first()).toBeVisible({ timeout: 15000 })
-  await page.getByText(projectName).first().click()
-  await page.getByTestId('start-workflow').click()
-  await page.getByTestId('step-8').click()
-  await expect(page.getByText('STEP 8')).toBeVisible()
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '校对' }).click()
+  await expect(page.getByText('自动校对与优化')).toBeVisible()
 
-  await page.locator('label.upload-box input[type="file"]').setInputFiles(badWorkbook)
+  await page.locator('label.upload-box', { hasText: '上传已有译文 workbook' }).locator('input[type="file"]').setInputFiles(badWorkbook)
   await page.getByTestId('run-qa').click()
   await expect(page.getByTestId('failed-row-editor')).toBeVisible({ timeout: 60000 })
   await expect(page.getByText('Forbidden Brand Reward').first()).toBeVisible()

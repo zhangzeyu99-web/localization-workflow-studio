@@ -48,8 +48,10 @@ class ProjectAnalysisRequest(BaseModel):
 
 
 class GlossaryTermPayload(BaseModel):
+    term_key: str = ""
     source: str
     target: str = ""
+    target_alt: str = ""
     category: str = ""
     note: str = ""
     source_type: str = "manual"
@@ -57,8 +59,10 @@ class GlossaryTermPayload(BaseModel):
 
 
 class GlossaryTermUpdate(BaseModel):
+    term_key: str | None = None
     source: str | None = None
     target: str | None = None
+    target_alt: str | None = None
     category: str | None = None
     note: str | None = None
     source_type: str | None = None
@@ -68,8 +72,10 @@ class GlossaryTermUpdate(BaseModel):
 class GlossaryImportRequest(BaseModel):
     artifact_id: str
     sheet: str | None = None
+    term_key_column: str | None = None
     source_column: str | None = None
     target_column: str | None = None
+    target_alt_column: str | None = None
     category_column: str | None = None
     note_column: str | None = None
     limit: int = 100
@@ -115,6 +121,7 @@ class TranslateRequest(BaseModel):
     protocol: str | None = None
     preset: str | None = None
     batch_size: int | None = None
+    allow_mock: bool = False
 
 
 class SettingsUpdate(BaseModel):

@@ -7,7 +7,7 @@ from pathlib import Path
 os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
 
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from app.main import app
 from app.providers import mock_translate_batch
@@ -31,9 +31,9 @@ def _sample_term_workbook(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["source", "target", "category", "note"])
-    ws.append(["最强指挥官", "Strongest Commander", "title", "confirmed project term"])
-    ws.append(["联盟", "Alliance", "system", "common game term"])
+    ws.append(["ID", "CN", "EN", "EN2", "分类", "note"])
+    ws.append([1, "最强指挥官", "Strongest Commander", "Top Commander", "title", "confirmed project term"])
+    ws.append([2, "联盟", "Alliance", "Guild", "system", "common game term"])
     wb.save(path)
     wb.close()
 
@@ -48,6 +48,7 @@ def _translated_workbook(path: Path) -> None:
     ws.append([3, "系统错误", "System Error"])
     ws.append([4, "主线任务", "Main Quest"])
     ws.append([5, "欢迎回来，{playerName}", "Welcome back, {playerName}"])
+    wb.create_sheet("EmptySheet")
     wb.save(path)
     wb.close()
 
@@ -94,7 +95,7 @@ def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
             json={"intro": "A synthetic strategy game for testing localization workflow.", "asset_artifact_ids": []},
         )
         assert analysis_response.status_code == 200
-        assert "Return only id + translation JSONL" in analysis_response.json()["prompt"]
+        assert "只返回 JSONL" in analysis_response.json()["prompt"]
 
         with workbook.open("rb") as fh:
             upload_response = client.post(
@@ -117,7 +118,7 @@ def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert run_response.status_code == 200
         run = run_response.json()
 
-        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock"})
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
         assert translate_response.status_code == 200, translate_response.text
         result = translate_response.json()
         assert result["run"]["status"] == "passed"
@@ -129,8 +130,33 @@ def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert result["run"]["metadata"]["harness"]["source"] == "project_harness"
         project_detail_response = client.get(f"/api/projects/{project['id']}")
         assert project_detail_response.status_code == 200
-        assert project_detail_response.json()["stats"]["words"] == "11"
+        assert project_detail_response.json()["stats"]["words"] == "33"
         assert project_detail_response.json()["stats"]["langs"] == 1
+
+
+def test_mock_provider_is_blocked_for_real_project_without_explicit_allow(tmp_path: Path) -> None:
+    workbook = tmp_path / "sample-language.xlsx"
+    _sample_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "小小战机", "type": "飞行射击"}).json()
+        with workbook.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("sample-language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        source_artifact = upload_response.json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": source_artifact["id"]},
+        ).json()
+
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock"})
+        assert translate_response.status_code == 200
+        result = translate_response.json()
+        assert result["run"]["status"] == "needs_input"
+        assert result["run"]["metadata"]["reason"] == "mock provider is blocked for real project translation"
+        assert result["artifacts"] == []
 
 
 def test_assets_register_role_and_origin_with_legacy_kind_mapping(tmp_path: Path) -> None:
@@ -183,6 +209,8 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         preview = preview_response.json()
         assert preview["rows"][0]["source"] == "最强指挥官"
         assert preview["rows"][0]["target"] == "Strongest Commander"
+        assert preview["rows"][0]["target_alt"] == "Top Commander"
+        assert preview["rows"][0]["term_key"] == "1"
 
         import_response = client.post(
             f"/api/projects/{project['id']}/glossary/import",
@@ -194,12 +222,16 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         project_terms = client.get(f"/api/projects/{project['id']}/glossary").json()
         assert {term["source"] for term in project_terms} == {"最强指挥官", "联盟"}
         assert {term["source_type"] for term in project_terms} == {"imported"}
+        assert {term["target_alt"] for term in project_terms} == {"Top Commander", "Guild"}
 
         export_response = client.get(f"/api/projects/{project['id']}/glossary/export?format=json")
         assert export_response.status_code == 200
         exported = export_response.json()
         assert len(exported["terms"]) == 2
         assert exported["terms"][0]["source"]
+        xlsx_response = client.get(f"/api/projects/{project['id']}/glossary/export?format=xlsx")
+        assert xlsx_response.status_code == 200
+        assert "spreadsheetml" in xlsx_response.headers["content-type"]
 
 
 def test_glossary_extract_uses_project_materials_for_brief_and_prompt(tmp_path: Path) -> None:
@@ -274,7 +306,64 @@ def test_existing_translation_workbook_can_run_qa_without_translation_workpack(t
         assert result["quality_summary"]["sources"]["translation_workbook"] == translated_artifact["id"]
         kinds = {artifact["kind"] for artifact in result["artifacts"]}
         assert "quality_summary" in kinds
+        assert "qa_changes" in kinds
         assert "translation_workpack" not in kinds
+        project_detail = client.get(f"/api/projects/{project['id']}").json()
+        assert int(project_detail["stats"]["words"]) > 0
+        assert project_detail["stats"]["langs"] == 1
+
+
+def test_delivery_package_contains_only_user_five_files(tmp_path: Path) -> None:
+    terms = tmp_path / "terms.xlsx"
+    workbook = tmp_path / "translated.xlsx"
+    _sample_term_workbook(terms)
+    _translated_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "小小战机", "type": "飞行射击", "description": "来源：测试文件"}).json()
+        client.patch(f"/api/projects/{project['id']}", json={"prompt_text": "项目提示词：准确翻译，术语以项目术语表为准。"})
+        with terms.open("rb") as fh:
+            term_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        import_response = client.post(f"/api/projects/{project['id']}/glossary/import", json={"artifact_id": term_artifact["id"]})
+        assert import_response.status_code == 200
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("translated.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"]},
+        ).json()
+        qa_response = client.post(f"/api/runs/{run['id']}/qa")
+        assert qa_response.status_code == 200, qa_response.text
+
+        package_response = client.post(f"/api/projects/{project['id']}/delivery-package")
+        assert package_response.status_code == 200, package_response.text
+        package = package_response.json()
+        filenames = [item["filename"] for item in package["files"]]
+        assert filenames == [
+            "小小战机_project_meta.md",
+            "小小战机_translation_prompt.txt",
+            "小小战机_glossary.xlsx",
+            "小小战机_translated.xlsx",
+            "小小战机_qa_changes.xlsx",
+        ]
+        assert not any("input_copy" in filename or "manifest" in filename or "jsonl" in filename for filename in filenames)
+        for item in package["files"]:
+            assert Path(item["path"]).exists()
+            assert item["download_url"].endswith(item["filename"])
+
+        glossary_file = next(item for item in package["files"] if item["kind"] == "glossary")
+        exported = load_workbook(glossary_file["path"], read_only=True)
+        try:
+            headers = [cell.value for cell in next(exported.active.iter_rows(min_row=1, max_row=1))]
+            assert headers == ["ID", "CN", "EN", "EN2", "分类", "来源", "确认状态"]
+        finally:
+            exported.close()
 
 
 def test_failed_qa_exposes_normalized_project_harness_rows(tmp_path: Path) -> None:
@@ -356,6 +445,7 @@ def test_manual_fix_creates_fixed_workbook_reruns_qa_and_updates_project_harness
         assert result["fixed_artifact"]["origin"] == "manual"
         assert result["qa_result"]["run"]["status"] == "passed"
         assert result["qa_result"]["quality_summary"]["sources"]["manual_fix_source_run"] == failed_run["id"]
+        assert any(artifact["kind"] == "qa_changes" for artifact in result["qa_result"]["artifacts"])
 
         harness = client.get(f"/api/projects/{project['id']}/harness").json()["project_harness"]
         assert harness["manual_fixes"][0]["previous_translation"] == "Forbidden Brand Reward"
@@ -452,6 +542,6 @@ def _run_mock_translation(client: TestClient, project_id: str, workbook: Path) -
     )
     assert run_response.status_code == 200
     run = run_response.json()
-    translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock"})
+    translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
     assert translate_response.status_code == 200, translate_response.text
     return translate_response.json()

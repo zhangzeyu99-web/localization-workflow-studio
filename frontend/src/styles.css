@@ -222,6 +222,63 @@ a { color: #a5b4fc; text-decoration: none; }
   gap: 8px;
   margin-bottom: 12px;
 }
+.meta-grid,
+.prompt-source-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.meta-grid label {
+  display: grid;
+  gap: 6px;
+  color: #d4d4d8;
+  font-size: 12px;
+}
+.meta-grid .wide { grid-column: 1 / -1; }
+.compact-textarea { min-height: 96px; margin-bottom: 12px; }
+.glossary-form {
+  display: grid;
+  grid-template-columns: .6fr 1fr 1fr 1fr .8fr 1fr auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.table-scroll { overflow: auto; }
+.cell-input {
+  min-width: 110px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(0,0,0,.16);
+}
+.provider-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.provider-strip div,
+.delivery-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(255,255,255,.04);
+}
+.provider-strip strong,
+.delivery-item strong { color: #fff; }
+.provider-strip span,
+.delivery-item span { color: #a1a1aa; font-size: 12px; }
+.delivery-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.delivery-item { align-items: center; }
+.delivery-item div {
+  display: grid;
+  gap: 4px;
+}
 .action-card {
   border: 1px solid rgba(255,255,255,.08);
   border-radius: 12px;
@@ -600,7 +657,7 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   .sidebar { width: auto; border-right: 0; border-bottom: 1px solid rgba(255,255,255,.08); }
   .steps-nav { grid-template-columns: repeat(3, 1fr); }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
-  .inline-form { grid-template-columns: 1fr; }
+  .inline-form, .glossary-form, .meta-grid, .prompt-source-grid, .provider-strip { grid-template-columns: 1fr; }
   .harness-grid, .harness-editor { grid-template-columns: 1fr; }
   .upload-row { grid-template-columns: 1fr; }
   .proj-head, .header { flex-direction: column; align-items: stretch; }

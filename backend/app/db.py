@@ -21,8 +21,10 @@ ARTIFACT_ROLE_BY_KIND = {
     "translation_response": "translation_response",
     "qa_report": "qa_report",
     "qa_result": "qa_report",
+    "qa_changes": "qa_report",
     "quality_summary": "qa_report",
     "semantic_qa_context": "qa_report",
+    "delivery_file": "delivery",
     "translation_prompt": "prompt",
     "compiled_style_hint": "prompt",
     "project_profile": "profile",
@@ -72,8 +74,10 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS glossary_terms (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
+                term_key TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL,
                 target TEXT NOT NULL DEFAULT '',
+                target_alt TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT '',
                 note TEXT NOT NULL DEFAULT '',
                 source_type TEXT NOT NULL DEFAULT 'manual',
@@ -122,6 +126,8 @@ def init_db() -> None:
         _ensure_column(conn, "artifacts", "role", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "artifacts", "origin", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "artifacts", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "glossary_terms", "term_key", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "glossary_terms", "target_alt", "TEXT NOT NULL DEFAULT ''")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
@@ -394,14 +400,16 @@ def insert_glossary_term(project_id: str, payload: dict[str, Any]) -> dict[str, 
         conn.execute(
             """
             INSERT INTO glossary_terms
-              (id, project_id, source, target, category, note, source_type, confirmed, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (id, project_id, term_key, source, target, target_alt, category, note, source_type, confirmed, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 term_id,
                 project_id,
+                payload.get("term_key", ""),
                 payload.get("source", ""),
                 payload.get("target", ""),
+                payload.get("target_alt", ""),
                 payload.get("category", ""),
                 payload.get("note", ""),
                 payload.get("source_type", "manual"),
@@ -444,7 +452,7 @@ def list_glossary_terms(project_id: str) -> list[dict[str, Any]]:
 
 
 def update_glossary_term(term_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"source", "target", "category", "note", "source_type", "confirmed"}
+    allowed = {"term_key", "source", "target", "target_alt", "category", "note", "source_type", "confirmed"}
     fields = []
     values: list[Any] = []
     for key, value in payload.items():
