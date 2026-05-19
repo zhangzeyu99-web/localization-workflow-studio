@@ -2,6 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 
+declare global {
+  interface Window {
+    __lwsRoot?: ReturnType<typeof createRoot>
+  }
+}
+
 type Project = {
   id: string
   name: string
@@ -31,6 +37,8 @@ type Run = {
   kind: string
   language: string
   status: string
+  created_at: string
+  updated_at: string
   metadata?: Record<string, unknown>
   events?: { id: number; level: string; message: string; created_at: string }[]
   artifacts?: Artifact[]
@@ -386,7 +394,7 @@ function HistoryTab({ project }: { project: Project }) {
         <tbody>
           {(project.runs || []).map((run) => (
             <tr key={run.id}>
-              <td>{new Date(run.id ? Date.now() : Date.now()).toLocaleDateString()}</td>
+              <td>{new Date(run.created_at).toLocaleDateString()}</td>
               <td>{run.kind}</td><td>{run.language}</td><td><span className={`tag ${run.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{run.status}</span></td>
               <td><a href={`/api/runs/${run.id}/events`} target="_blank">查看事件</a></td>
             </tr>
@@ -664,5 +672,9 @@ function FrequencyModal({ onClose }: { onClose: () => void }) {
   )
 }
 
-createRoot(document.getElementById('root')!).render(<App />)
-
+const rootElement = document.getElementById('root')
+if (!rootElement) {
+  throw new Error('Missing root element')
+}
+window.__lwsRoot = window.__lwsRoot ?? createRoot(rootElement)
+window.__lwsRoot.render(<App />)

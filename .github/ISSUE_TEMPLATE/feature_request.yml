@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose an improvement or new workflow capability.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user workflow is blocked or inefficient?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List testable outcomes.
+      value: |
+        - 
+    validations:
+      required: true
+  - type: dropdown
+    id: version-impact
+    attributes:
+      label: Version impact
+      options:
+        - Patch
+        - Minor
+        - Major / breaking
+        - Unknown
+    validations:
+      required: true

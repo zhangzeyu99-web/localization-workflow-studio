@@ -77,3 +77,7 @@ def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert result["run"]["status"] == "passed"
         kinds = {artifact["kind"] for artifact in result["artifacts"]}
         assert {"final_workbook", "qa_report", "qa_result", "translation_manifest"}.issubset(kinds)
+        project_detail_response = client.get(f"/api/projects/{project['id']}")
+        assert project_detail_response.status_code == 200
+        assert project_detail_response.json()["stats"]["words"] == "11"
+        assert project_detail_response.json()["stats"]["langs"] == 1

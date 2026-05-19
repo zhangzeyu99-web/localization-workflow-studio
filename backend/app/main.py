@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import json
 import shutil
 import sys
 from contextlib import asynccontextmanager
@@ -50,7 +51,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Localization Workflow Studio", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -241,10 +242,11 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     artifacts = db.list_artifacts(project_id=project["id"])
     runs = db.list_runs(project["id"])
     terms = db.list_glossary_terms(project["id"])
+    passed_translation_runs = [run for run in runs if run["kind"] == "translation" and run["status"] == "passed"]
     project["stats"] = {
         "tasks": len(runs),
-        "words": "0",
-        "langs": 1,
+        "words": str(_translated_word_count(artifacts)),
+        "langs": len({run["language"] for run in passed_translation_runs}),
         "glossary": len(terms),
     }
     if include_details:
@@ -252,6 +254,25 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
         project["runs"] = runs
         project["glossary"] = terms
     return project
+
+
+def _translated_word_count(artifacts: list[dict[str, Any]]) -> int:
+    total = 0
+    for artifact in artifacts:
+        if artifact["kind"] != "translation_response":
+            continue
+        path = Path(artifact["path"])
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                translation = str(json.loads(line).get("translation", ""))
+            except json.JSONDecodeError:
+                continue
+            total += len([word for word in translation.split() if word])
+    return total
 
 
 if __name__ == "__main__":
