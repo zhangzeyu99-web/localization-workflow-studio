@@ -29,6 +29,7 @@ type Artifact = {
   path: string
   size: number
   created_at: string
+  run_id?: string | null
 }
 
 type Run = {
@@ -57,6 +58,23 @@ type GlossaryTerm = {
 const API = ''
 const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付归档']
 const langOptions = ['🇺🇸 英语 EN', '🇫🇷 法语 FR', '🇩🇪 德语 DE', '🇧🇷 巴葡 PT-BR', '🇷🇺 俄语 RU', '🇯🇵 日语 JA', '🇰🇷 韩语 KO', '🇪🇸 西语 ES', '🇸🇦 阿语 AR']
+type ProjectTab = 'prompt' | 'glossary' | 'history'
+
+function newestArtifact(artifacts: Artifact[] | undefined, kinds: string[]): Artifact | null {
+  return [...(artifacts || [])]
+    .filter((artifact) => kinds.includes(artifact.kind))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] || null
+}
+
+function runArtifacts(project: Project, runId: string | undefined): Artifact[] {
+  if (!runId) return []
+  return (project.artifacts || []).filter((artifact) => artifact.run_id === runId)
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, init)
@@ -71,7 +89,7 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [currentId, setCurrentId] = useState<string>('')
   const [view, setView] = useState<'overview' | 'wizard'>('overview')
-  const [tab, setTab] = useState<'prompt' | 'glossary' | 'history'>('prompt')
+  const [tab, setTab] = useState<ProjectTab>('prompt')
   const [step, setStep] = useState(1)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -81,6 +99,7 @@ function App() {
   const [intro, setIntro] = useState('')
   const [sourceArtifact, setSourceArtifact] = useState<Artifact | null>(null)
   const [termArtifact, setTermArtifact] = useState<Artifact | null>(null)
+  const [assetArtifacts, setAssetArtifacts] = useState<Artifact[]>([])
   const [latestRun, setLatestRun] = useState<Run | null>(null)
   const [selectedLangs, setSelectedLangs] = useState<string[]>(['🇺🇸 英语 EN'])
 
@@ -89,6 +108,32 @@ function App() {
   }, [])
 
   const current = useMemo(() => projects.find((p) => p.id === currentId), [projects, currentId])
+
+  useEffect(() => {
+    if (currentId) refreshCurrent()
+  }, [currentId])
+
+  useEffect(() => {
+    if (!current) return
+    setIntro(current.description || '')
+  }, [currentId])
+
+  useEffect(() => {
+    if (!current) {
+      setSourceArtifact(null)
+      setTermArtifact(null)
+      setAssetArtifacts([])
+      setLatestRun(null)
+      return
+    }
+    const artifacts = current.artifacts || []
+    const latestTranslation = (current.runs || []).find((run) => run.kind === 'translation') || null
+    const hydratedRun = latestTranslation ? { ...latestTranslation, artifacts: runArtifacts(current, latestTranslation.id) } : null
+    setSourceArtifact(newestArtifact(artifacts, ['language_table']))
+    setTermArtifact(newestArtifact(artifacts, ['glossary_final', 'term_base']))
+    setAssetArtifacts(artifacts.filter((artifact) => artifact.kind === 'asset'))
+    setLatestRun(hydratedRun)
+  }, [current?.id, current?.artifacts?.length, current?.runs?.length])
 
   async function refreshProjects(selectId?: string) {
     const loaded = await api<Project[]>('/api/projects')
@@ -137,10 +182,15 @@ function App() {
       await api(`/api/projects/${current.id}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ intro, asset_artifact_ids: [] })
+        body: JSON.stringify({
+          intro: intro.trim() || current.description || `${current.name} ${current.type}`,
+          asset_artifact_ids: assetArtifacts.map((artifact) => artifact.id)
+        })
       })
       await refreshCurrent()
       setStatus('项目提示词已生成')
+    } catch (error) {
+      setStatus(`项目分析失败：${errorText(error)}`)
     } finally {
       setBusy(false)
     }
@@ -167,6 +217,8 @@ function App() {
       setLatestRun(result.run)
       await refreshCurrent()
       setStatus('术语提取完成')
+    } catch (error) {
+      setStatus(`术语提取失败：${errorText(error)}`)
     } finally {
       setBusy(false)
     }
@@ -201,8 +253,18 @@ function App() {
       setLatestRun({ ...result.run, artifacts: result.artifacts })
       await refreshCurrent()
       setStatus(result.run.status === 'passed' ? 'EN 闭环通过，产物已归档' : `运行结束：${result.run.status}`)
+    } catch (error) {
+      setStatus(`翻译失败：${errorText(error)}`)
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function uploadAsset(file: File) {
+    const artifact = await upload(file, 'asset')
+    if (artifact) {
+      setAssetArtifacts((prev) => [artifact, ...prev.filter((item) => item.id !== artifact.id)])
+      setStatus(`参考素材已归档：${artifact.label}`)
     }
   }
 
@@ -220,6 +282,22 @@ function App() {
         confirmed: true
       })
     })
+    await refreshCurrent()
+  }
+
+  async function updateGlossaryTerm(term: GlossaryTerm, updates: Partial<GlossaryTerm>) {
+    if (!current) return
+    await api(`/api/projects/${current.id}/glossary/${term.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    })
+    await refreshCurrent()
+  }
+
+  async function deleteGlossaryTerm(term: GlossaryTerm) {
+    if (!current) return
+    await api(`/api/projects/${current.id}/glossary/${term.id}`, { method: 'DELETE' })
     await refreshCurrent()
   }
 
@@ -264,6 +342,8 @@ function App() {
                 setTab={setTab}
                 onStart={() => { setView('wizard'); setStep(1) }}
                 onAddTerm={addGlossaryTerm}
+                onUpdateTerm={updateGlossaryTerm}
+                onDeleteTerm={deleteGlossaryTerm}
               />
             ) : (
               <Wizard
@@ -274,12 +354,14 @@ function App() {
                 setIntro={setIntro}
                 sourceArtifact={sourceArtifact}
                 termArtifact={termArtifact}
+                assetArtifacts={assetArtifacts}
                 latestRun={latestRun}
                 selectedLangs={selectedLangs}
                 setSelectedLangs={setSelectedLangs}
                 onBack={() => setView('overview')}
                 onUploadSource={async (file) => setSourceArtifact(await upload(file, 'language_table'))}
                 onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
+                onUploadAsset={uploadAsset}
                 onAnalyze={runAnalysis}
                 onGlossaryExtract={runGlossaryExtract}
                 onTranslate={runTranslate}
@@ -302,12 +384,14 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   return <div className="empty"><h2>还没有项目</h2><p>先创建一个本地化项目，再进入完整工作流。</p><button className="btn btn-primary" onClick={onCreate}>新建项目</button></div>
 }
 
-function ProjectOverview({ project, tab, setTab, onStart, onAddTerm }: {
+function ProjectOverview({ project, tab, setTab, onStart, onAddTerm, onUpdateTerm, onDeleteTerm }: {
   project: Project
-  tab: 'prompt' | 'glossary' | 'history'
-  setTab: (tab: 'prompt' | 'glossary' | 'history') => void
+  tab: ProjectTab
+  setTab: (tab: ProjectTab) => void
   onStart: () => void
   onAddTerm: (form: FormData) => void
+  onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => void
+  onDeleteTerm: (term: GlossaryTerm) => void
 }) {
   return (
     <>
@@ -330,7 +414,7 @@ function ProjectOverview({ project, tab, setTab, onStart, onAddTerm }: {
         <button className={`view-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>🕒 翻译历史</button>
       </div>
       {tab === 'prompt' ? <PromptTab project={project} /> : null}
-      {tab === 'glossary' ? <GlossaryTab project={project} onAddTerm={onAddTerm} /> : null}
+      {tab === 'glossary' ? <GlossaryTab project={project} onAddTerm={onAddTerm} onUpdateTerm={onUpdateTerm} onDeleteTerm={onDeleteTerm} /> : null}
       {tab === 'history' ? <HistoryTab project={project} /> : null}
     </>
   )
@@ -358,7 +442,17 @@ function PromptTab({ project }: { project: Project }) {
   )
 }
 
-function GlossaryTab({ project, onAddTerm }: { project: Project; onAddTerm: (form: FormData) => void }) {
+function GlossaryTab({
+  project,
+  onAddTerm,
+  onUpdateTerm,
+  onDeleteTerm
+}: {
+  project: Project
+  onAddTerm: (form: FormData) => void
+  onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => void
+  onDeleteTerm: (term: GlossaryTerm) => void
+}) {
   return (
     <div className="card">
       <div className="card-title"><div className="left">📚 项目术语表（{project.glossary?.length || 0} 条）</div></div>
@@ -370,15 +464,21 @@ function GlossaryTab({ project, onAddTerm }: { project: Project; onAddTerm: (for
         <button className="btn btn-primary btn-sm">+ 新增</button>
       </form>
       <table>
-        <thead><tr><th>原文</th><th>译文</th><th>类型</th><th>来源</th><th>状态</th></tr></thead>
+        <thead><tr><th>原文</th><th>译文</th><th>类型</th><th>来源</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>
           {(project.glossary || []).map((row) => (
             <tr key={row.id}>
               <td>{row.source}</td><td>{row.target}</td><td>{row.category}</td><td>{row.source_type}</td>
               <td><span className={`tag ${row.confirmed ? 'tag-done' : 'tag-new'}`}>{row.confirmed ? '已确认' : '待确认'}</span></td>
+              <td>
+                <div className="table-actions">
+                  <button className="btn btn-sm" onClick={() => onUpdateTerm(row, { confirmed: !row.confirmed })}>{row.confirmed ? '设为待确认' : '确认'}</button>
+                  <button className="btn btn-sm btn-danger" onClick={() => onDeleteTerm(row)}>删除</button>
+                </div>
+              </td>
             </tr>
           ))}
-          {!project.glossary?.length ? <tr><td colSpan={5} className="muted">暂无术语，可手工新增或在 Step 5 自动提取。</td></tr> : null}
+          {!project.glossary?.length ? <tr><td colSpan={6} className="muted">暂无术语，可手工新增或在 Step 5 自动提取。</td></tr> : null}
         </tbody>
       </table>
     </div>
@@ -390,16 +490,24 @@ function HistoryTab({ project }: { project: Project }) {
     <div className="card">
       <div className="card-title"><div className="left">🕒 翻译历史记录</div></div>
       <table>
-        <thead><tr><th>时间</th><th>类型</th><th>语言</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th>时间</th><th>类型</th><th>语言</th><th>状态</th><th>产物</th><th>操作</th></tr></thead>
         <tbody>
-          {(project.runs || []).map((run) => (
-            <tr key={run.id}>
-              <td>{new Date(run.created_at).toLocaleDateString()}</td>
-              <td>{run.kind}</td><td>{run.language}</td><td><span className={`tag ${run.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{run.status}</span></td>
-              <td><a href={`/api/runs/${run.id}/events`} target="_blank">查看事件</a></td>
-            </tr>
-          ))}
-          {!project.runs?.length ? <tr><td colSpan={5} className="muted">暂无运行历史</td></tr> : null}
+          {(project.runs || []).map((run) => {
+            const artifacts = runArtifacts(project, run.id)
+            return (
+              <tr key={run.id}>
+                <td>{new Date(run.created_at).toLocaleString()}</td>
+                <td>{run.kind}</td><td>{run.language}</td><td><span className={`tag ${run.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{run.status}</span></td>
+                <td>
+                  <div className="artifact-links">
+                    {artifacts.length ? artifacts.map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.kind}</a>) : <span className="muted-left">暂无</span>}
+                  </div>
+                </td>
+                <td><a href={`/api/runs/${run.id}/events`} target="_blank">查看事件</a></td>
+              </tr>
+            )
+          })}
+          {!project.runs?.length ? <tr><td colSpan={6} className="muted">暂无运行历史</td></tr> : null}
         </tbody>
       </table>
     </div>
@@ -414,12 +522,14 @@ function Wizard(props: {
   setIntro: (value: string) => void
   sourceArtifact: Artifact | null
   termArtifact: Artifact | null
+  assetArtifacts: Artifact[]
   latestRun: Run | null
   selectedLangs: string[]
   setSelectedLangs: (langs: string[]) => void
   onBack: () => void
   onUploadSource: (file: File) => void
   onUploadTerm: (file: File) => void
+  onUploadAsset: (file: File) => void
   onAnalyze: () => void
   onGlossaryExtract: () => void
   onTranslate: () => void
@@ -462,22 +572,44 @@ function Wizard(props: {
   )
 }
 
-function StepIntro({ intro, setIntro }: { intro: string; setIntro: (value: string) => void }) {
+function StepIntro({
+  project,
+  intro,
+  setIntro,
+  assetArtifacts,
+  onUploadAsset
+}: {
+  project: Project
+  intro: string
+  setIntro: (value: string) => void
+  assetArtifacts: Artifact[]
+  onUploadAsset: (file: File) => void
+}) {
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 1</span>输入游戏信息</div>
-      <div className="panel-desc">填写游戏介绍文字，可选上传图片、PDF、视频、音频；不支持的素材会归档并降级，不阻断主流程。</div>
+      <div className="panel-title"><span className="badge">STEP 1</span>确认项目资料与参考素材</div>
+      <div className="panel-desc">已从项目描述带入基础信息；这里只需要补充本次任务特有的风格、玩法、角色或素材。</div>
       <textarea value={intro} onChange={(event) => setIntro(event.target.value)} placeholder={'游戏名：《星际边境》\n类型：科幻 SLG\n目标用户：欧美移动端玩家\n玩法：基地建造 + 英雄养成 + 联盟战争'} />
-      <div className="field-foot"><span>{intro.trim().length} 字</span><span className={intro.trim().length > 20 ? 'ok' : 'warn'}>{intro.trim().length > 20 ? '✓ 信息可用于生成 prompt' : '⚠ 建议补充更多信息'}</span></div>
+      <div className="field-foot">
+        <span>{intro.trim().length} 字</span>
+        <span className={intro.trim().length > 20 || project.description ? 'ok' : 'warn'}>{intro.trim().length > 20 || project.description ? '✓ 信息可用于生成 prompt' : '⚠ 建议补充更多信息'}</span>
+      </div>
+      <div className="upload-row">
+        <FileBox label="上传图片 / PDF / 音视频素材" onFile={onUploadAsset} />
+        <div className="asset-list">
+          <div className="ai-header">已归档参考素材</div>
+          {assetArtifacts.length ? assetArtifacts.map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />) : <div className="muted-left">暂无素材；可直接继续，不阻断语言表流程。</div>}
+        </div>
+      </div>
     </>
   )
 }
 
-function StepAnalyze({ onAnalyze, project, busy }: { onAnalyze: () => void; project: Project; busy: boolean }) {
+function StepAnalyze({ onAnalyze, project, busy, assetArtifacts }: { onAnalyze: () => void; project: Project; busy: boolean; assetArtifacts: Artifact[] }) {
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 2</span>AI 分析与专属提示词生成</div>
-      <div className="panel-desc">基于文字资料与可分析素材生成 project_profile 和 translation_prompt。</div>
+      <div className="panel-desc">基于文字资料与已归档素材生成 project_profile 和 translation_prompt。当前素材：{assetArtifacts.length} 个。</div>
       <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>🤖 启动 AI 分析</button>
       <div className="ai-card"><div className="ai-header">当前提示词</div><pre>{project.prompt_text || '尚未生成'}</pre></div>
     </>
@@ -535,12 +667,13 @@ function StepLang({ selectedLangs, setSelectedLangs }: { selectedLangs: string[]
   )
 }
 
-function StepTranslate({ onTranslate, busy, latestRun }: { onTranslate: () => void; busy: boolean; latestRun: Run | null }) {
+function StepTranslate({ onTranslate, busy, latestRun, sourceArtifact }: { onTranslate: () => void; busy: boolean; latestRun: Run | null; sourceArtifact: Artifact | null }) {
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 7</span>模型翻译进行中</div>
       <div className="panel-desc">后端生成 workpack，调用 Chat Completions / Responses / Mock provider，并统一输出 JSONL。</div>
-      <button className="btn btn-primary" disabled={busy} onClick={onTranslate}>⚡ 开始翻译</button>
+      <button className="btn btn-primary" disabled={busy || !sourceArtifact} onClick={onTranslate}>⚡ 开始翻译</button>
+      {!sourceArtifact ? <div className="warn-line">请先上传或恢复语言表。</div> : null}
       {latestRun ? <RunCard run={latestRun} /> : null}
     </>
   )
@@ -554,14 +687,14 @@ function StepQA({ latestRun }: { latestRun: Run | null }) {
       <div className="check-list">
         <CheckItem ok={latestRun?.status === 'passed'} title="quality_harness 最终 gate" detail={latestRun ? `当前状态：${latestRun.status}` : '等待翻译运行'} />
         <CheckItem ok title="结构校验" detail="ID、占位符、标签、换行和输入指纹由后端强校验" />
-        <CheckItem ok title="失败行编辑器" detail="hard error 会进入失败行修复队列，v1 已预留状态入口" />
+        <CheckItem ok={false} title="失败行编辑器" detail="v1 尚未接入人工修复与单批重跑；hard error 当前会让 run failed。" />
       </div>
     </>
   )
 }
 
 function StepDone({ project, latestRun }: { project: Project; latestRun: Run | null }) {
-  const artifacts = latestRun?.artifacts || project.artifacts || []
+  const artifacts = latestRun?.artifacts?.length ? latestRun.artifacts : runArtifacts(project, latestRun?.id)
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 9</span>输出译文 & 回写项目</div>
@@ -586,8 +719,8 @@ function FileBox({ label, onFile }: { label: string; onFile: (file: File) => voi
   )
 }
 
-function ArtifactNote({ artifact }: { artifact: Artifact }) {
-  return <div className="ai-card"><div className="ai-header">已上传：{artifact.label}</div><pre>{artifact.path}</pre></div>
+function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compact?: boolean }) {
+  return <div className={`ai-card ${compact ? 'compact-note' : ''}`}><div className="ai-header">已上传：{artifact.label}</div><pre>{artifact.path}</pre></div>
 }
 
 function RunCard({ run }: { run: Run }) {

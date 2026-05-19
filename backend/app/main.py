@@ -20,6 +20,7 @@ if __package__ is None or __package__ == "":
     from app.schemas import (
         GlossaryExtractRequest,
         GlossaryTermPayload,
+        GlossaryTermUpdate,
         ProjectAnalysisRequest,
         ProjectCreate,
         ProjectUpdate,
@@ -34,6 +35,7 @@ else:
     from .schemas import (
         GlossaryExtractRequest,
         GlossaryTermPayload,
+        GlossaryTermUpdate,
         ProjectAnalysisRequest,
         ProjectCreate,
         ProjectUpdate,
@@ -51,7 +53,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Localization Workflow Studio", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="0.2.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -133,7 +135,7 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     safe_name = _safe_filename(file.filename or "upload.bin")
-    destination = project_dir(project_id) / "uploads" / safe_name
+    destination = _unique_path(project_dir(project_id) / "uploads" / safe_name)
     with destination.open("wb") as fh:
         shutil.copyfileobj(file.file, fh)
     mime = file.content_type or mimetypes.guess_type(str(destination))[0] or "application/octet-stream"
@@ -148,18 +150,22 @@ def list_project_glossary(project_id: str) -> list[dict[str, Any]]:
 
 @app.post("/api/projects/{project_id}/glossary")
 def create_glossary_term(project_id: str, payload: GlossaryTermPayload) -> dict[str, Any]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
     return db.insert_glossary_term(project_id, payload.model_dump())
 
 
 @app.patch("/api/projects/{project_id}/glossary/{term_id}")
-def update_glossary_term(project_id: str, term_id: str, payload: GlossaryTermPayload) -> dict[str, Any]:
-    _ = project_id
+def update_glossary_term(project_id: str, term_id: str, payload: GlossaryTermUpdate) -> dict[str, Any]:
+    _require_project_term(project_id, term_id)
     return db.update_glossary_term(term_id, payload.model_dump(exclude_unset=True))
 
 
 @app.delete("/api/projects/{project_id}/glossary/{term_id}")
 def delete_glossary_term(project_id: str, term_id: str) -> dict[str, bool]:
-    _ = project_id
+    _require_project_term(project_id, term_id)
     db.delete_glossary_term(term_id)
     return {"deleted": True}
 
@@ -176,6 +182,17 @@ def extract_project_glossary(project_id: str, payload: GlossaryExtractRequest) -
 
 @app.post("/api/runs")
 def create_run(payload: RunCreate) -> dict[str, Any]:
+    try:
+        db.get_project(payload.project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    active = [
+        run
+        for run in db.list_runs(payload.project_id)
+        if run["kind"] == payload.kind and run["status"] in {"queued", "running"}
+    ]
+    if active:
+        raise HTTPException(status_code=409, detail=f"{payload.kind} run already active for this project")
     metadata = {
         "input_artifact_id": payload.input_artifact_id,
         "term_artifact_id": payload.term_artifact_id,
@@ -230,12 +247,40 @@ def download_artifact(artifact_id: str) -> FileResponse:
     path = Path(artifact["path"])
     if not path.exists():
         raise HTTPException(status_code=404, detail="artifact file missing")
+    try:
+        path.resolve().relative_to(DATA_ROOT.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="artifact path is outside data root") from exc
     return FileResponse(path, media_type=artifact["mime"], filename=path.name)
 
 
 def _safe_filename(name: str) -> str:
     cleaned = "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip()
     return cleaned or "upload.bin"
+
+
+def _unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    parent = path.parent
+    index = 2
+    while True:
+        candidate = parent / f"{stem}-{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def _require_project_term(project_id: str, term_id: str) -> dict[str, Any]:
+    try:
+        term = db.get_glossary_term(term_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="glossary term not found") from exc
+    if term["project_id"] != project_id:
+        raise HTTPException(status_code=404, detail="glossary term not found")
+    return term
 
 
 def _with_project_stats(project: dict[str, Any], include_details: bool = False) -> dict[str, Any]:

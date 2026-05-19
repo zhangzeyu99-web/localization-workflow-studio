@@ -96,7 +96,7 @@ test('user can complete the EN localization workflow from the web UI', async ({ 
   await page.getByRole('button', { name: '下一步 →' }).click()
   await expect(page.getByText('本次任务摘要')).toBeVisible()
   await expect(page.getByText('状态：passed')).toBeVisible()
-  await expect(page.locator('a.artifact')).toHaveCount(4)
+  await expect(page.locator('a.artifact')).toHaveCount(5)
 
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('link', { name: /Final workbook/ }).click()

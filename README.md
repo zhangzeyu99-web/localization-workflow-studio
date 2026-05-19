@@ -22,6 +22,34 @@ workflow/glossary
 
 The web app and backend adapter live outside those workflow folders so upstream workflow changes can be re-applied with a narrow adapter check.
 
+## Workflow
+
+```mermaid
+flowchart TD
+  A["新建/选择项目"] --> B["录入项目资料与上传素材"]
+  B --> C["多模态分析<br/>能力探测，失败则归档并降级"]
+  C --> D["生成 project_profile + translation_prompt"]
+  D --> E["导入语言表 Excel"]
+  E --> F["导入/编辑/复用术语表"]
+  F --> G["术语提取 + project brief<br/>extract_glossary.py"]
+  G --> H["选择目标语言"]
+  H --> I{"EN?"}
+  I -- "是" --> J["生成 workpack / manifest"]
+  J --> K["调用 LLM Provider<br/>Chat Completions 默认，Responses 可选"]
+  K --> L["统一输出 JSONL<br/>id + translation"]
+  L --> M["严格校验<br/>ID、占位符、标签、换行、指纹"]
+  M --> N{"通过?"}
+  N -- "否" --> O["失败行编辑器<br/>人工改 / 单批重跑 / 重新 QA"]
+  O --> M
+  N -- "是" --> P["回填最终 workbook"]
+  P --> Q["保守 auto-fix + QA"]
+  Q --> R["quality_harness 最终 gate"]
+  R --> S{"hard error = 0?"}
+  S -- "否" --> O
+  S -- "是" --> T["归档产物与项目历史"]
+  I -- "否" --> U["保留配置/QA入口<br/>不进入自动翻译闭环"]
+```
+
 ## Current Scope
 
 - Frontend: React + Vite.
@@ -131,7 +159,7 @@ npm run e2e
 
 ## Version
 
-Current version: `0.2.0`
+Current version: `0.2.1`
 
 Version markers:
 

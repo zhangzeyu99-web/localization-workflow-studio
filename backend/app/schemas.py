@@ -35,6 +35,15 @@ class GlossaryTermPayload(BaseModel):
     confirmed: bool = False
 
 
+class GlossaryTermUpdate(BaseModel):
+    source: str | None = None
+    target: str | None = None
+    category: str | None = None
+    note: str | None = None
+    source_type: str | None = None
+    confirmed: bool | None = None
+
+
 class RunCreate(BaseModel):
     project_id: str
     kind: str = "translation"
@@ -69,4 +78,3 @@ class SettingsUpdate(BaseModel):
     model: str | None = None
     batch_size: int | None = None
     multimodal: dict[str, bool] | None = None
-
