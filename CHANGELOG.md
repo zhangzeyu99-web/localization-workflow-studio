@@ -2,6 +2,14 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.3.0 - 2026-05-19
+
+- Replaced free-form provider configuration with GPT and Claude only.
+- Added fixed fast, balanced, and deep-thinking presets for each provider.
+- Added native Claude Messages API translation support.
+- Updated GPT translation to use the Responses API with preset reasoning effort.
+- Removed Gemini/Google from the provider plan and UI.
+
 ## 0.2.1 - 2026-05-19
 
 - Moved the workflow diagram into the README for GitHub project introduction.

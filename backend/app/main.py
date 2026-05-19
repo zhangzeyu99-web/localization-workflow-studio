@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Localization Workflow Studio", version="0.2.1", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -77,7 +77,7 @@ def get_settings() -> dict[str, Any]:
 def patch_settings(payload: SettingsUpdate) -> dict[str, Any]:
     current = load_settings()
     updates = payload.model_dump(exclude_none=True)
-    if "api_key" in updates and updates["api_key"] == "configured":
+    if "api_key" in updates and updates["api_key"] in {"", "configured"}:
         updates.pop("api_key")
     current.update(updates)
     saved = save_settings(current)

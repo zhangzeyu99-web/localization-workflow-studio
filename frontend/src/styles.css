@@ -449,6 +449,23 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
 .modal h3 { margin-bottom: 8px; }
 .modal p { color: #a1a1aa; font-size: 13px; line-height: 1.6; margin-bottom: 14px; }
 .field-label { display: block; color: #d4d4d8; font-size: 12px; margin: 10px 0 6px; }
+.preset-note {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.1);
+  background: rgba(255,255,255,.04);
+}
+.preset-note div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #d4d4d8;
+  font-size: 12px;
+}
+.preset-note strong { color: #fff; }
 .modal-foot {
   display: flex;
   justify-content: flex-end;

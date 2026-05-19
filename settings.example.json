@@ -1,9 +1,11 @@
 {
-  "provider": "mock",
-  "protocol": "chat-completions",
+  "provider": "openai",
+  "preset": "balanced",
+  "protocol": "responses",
   "base_url": "https://api.openai.com",
   "api_key": "",
-  "model": "gpt-4.1-mini",
+  "model": "gpt-5.5",
+  "reasoning_effort": "medium",
   "batch_size": 90,
   "multimodal": {
     "images": true,
@@ -12,4 +14,3 @@
     "audio": false
   }
 }
-

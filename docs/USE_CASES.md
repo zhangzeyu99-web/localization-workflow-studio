@@ -52,7 +52,7 @@ cd D:\codex\localization-workflow-studio
 python backend\app\main.py
 ```
 
-Then open `http://127.0.0.1:5173`, set provider to `openai-compatible`, keep protocol as Chat Completions unless testing Responses, and run the same EN workflow with a small workbook first.
+Then open `http://127.0.0.1:5173`, set provider to `GPT` or `Claude`, choose one of the three presets, and run the same EN workflow with a small workbook first.
 
 ## Image-Gen Prompt
 

@@ -671,7 +671,7 @@ function StepTranslate({ onTranslate, busy, latestRun, sourceArtifact }: { onTra
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 7</span>模型翻译进行中</div>
-      <div className="panel-desc">后端生成 workpack，调用 Chat Completions / Responses / Mock provider，并统一输出 JSONL。</div>
+      <div className="panel-desc">后端生成 workpack，调用 GPT / Claude provider，并统一输出 JSONL。</div>
       <button className="btn btn-primary" disabled={busy || !sourceArtifact} onClick={onTranslate}>⚡ 开始翻译</button>
       {!sourceArtifact ? <div className="warn-line">请先上传或恢复语言表。</div> : null}
       {latestRun ? <RunCard run={latestRun} /> : null}
@@ -753,38 +753,53 @@ function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate:
 
 function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null)
-  useEffect(() => { api<Record<string, unknown>>('/api/settings').then(setSettings) }, [])
+  const [provider, setProvider] = useState('openai')
+  const [preset, setPreset] = useState('balanced')
+  useEffect(() => {
+    api<Record<string, unknown>>('/api/settings').then((loaded) => {
+      setSettings(loaded)
+      setProvider(String(loaded.provider) === 'anthropic' ? 'anthropic' : 'openai')
+      setPreset(['fast', 'balanced', 'deep'].includes(String(loaded.preset)) ? String(loaded.preset) : 'balanced')
+    })
+  }, [])
   async function submit(form: FormData) {
     const saved = await api<Record<string, unknown>>('/api/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         provider: form.get('provider'),
-        protocol: form.get('protocol'),
-        base_url: form.get('base_url'),
+        preset: form.get('preset'),
         api_key: form.get('api_key'),
-        model: form.get('model'),
         batch_size: Number(form.get('batch_size') || 90)
       })
     })
     setSettings(saved)
     onClose()
   }
+  const presets = settings?.provider_presets as Record<string, Record<string, { label: string; model: string; reasoning_effort: string }>> | undefined
+  const selectedPreset = presets?.[provider]?.[preset]
   return (
     <div className="modal-mask show">
       <form className="modal" onSubmit={(event) => { event.preventDefault(); submit(new FormData(event.currentTarget)) }}>
-        <h3>⚙ Provider 设置</h3>
-        <p>密钥写入仓库外 `settings.local.json`。默认 mock provider 可直接跑功能测试。</p>
+        <h3>⚙ 模型设置</h3>
+        <p>只保留 GPT 与 Claude。每家固定三档预设：快速响应、平衡、深度思考；密钥写入仓库外 `settings.local.json`。</p>
         <label className="field-label">Provider</label>
-        <select name="provider" defaultValue={String(settings?.provider || 'mock')}><option value="mock">mock</option><option value="openai-compatible">openai-compatible</option></select>
-        <label className="field-label">协议</label>
-        <select name="protocol" defaultValue={String(settings?.protocol || 'chat-completions')}><option value="chat-completions">Chat Completions</option><option value="responses">Responses</option></select>
-        <label className="field-label">Base URL</label>
-        <input name="base_url" defaultValue={String(settings?.base_url || 'https://api.openai.com')} />
+        <select name="provider" value={provider} onChange={(event) => setProvider(event.target.value)}>
+          <option value="openai">GPT</option>
+          <option value="anthropic">Claude</option>
+        </select>
+        <label className="field-label">响应预设</label>
+        <select name="preset" value={preset} onChange={(event) => setPreset(event.target.value)}>
+          <option value="fast">快速响应</option>
+          <option value="balanced">平衡</option>
+          <option value="deep">深度思考</option>
+        </select>
+        <div className="preset-note">
+          <div><strong>当前模型</strong><span>{selectedPreset?.model || String(settings?.model || '-')}</span></div>
+          <div><strong>思考配置</strong><span>{selectedPreset?.reasoning_effort || String(settings?.reasoning_effort || '-')}</span></div>
+        </div>
         <label className="field-label">API Key</label>
         <input name="api_key" type="password" placeholder={String(settings?.api_key || '')} />
-        <label className="field-label">Model</label>
-        <input name="model" defaultValue={String(settings?.model || 'gpt-4.1-mini')} />
         <label className="field-label">Batch size</label>
         <input name="batch_size" type="number" defaultValue={Number(settings?.batch_size || 90)} min={1} max={200} />
         <div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={onClose}>取消</button><button className="btn btn-primary">保存</button></div>

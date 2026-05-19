@@ -203,6 +203,8 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         settings["provider"] = request.provider
     if request.protocol:
         settings["protocol"] = request.protocol
+    if getattr(request, "preset", None):
+        settings["preset"] = request.preset
     batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
     batch_size = max(1, min(batch_size, 200))
 

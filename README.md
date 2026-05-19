@@ -54,8 +54,8 @@ flowchart TD
 
 - Frontend: React + Vite.
 - Backend: FastAPI + SQLite.
-- Provider protocols: Chat Completions by default, Responses optional.
-- Default provider: `mock`, so local and CI tests do not need an API key.
+- Provider presets: GPT and Claude only, each with `fast`, `balanced`, and `deep` presets.
+- Test provider: internal `mock`, used by CI and local E2E when no API key is available.
 - True v1 closed loop: EN translation.
 - Other languages: visible configuration entry only; they do not pretend to be completed by automation.
 
@@ -104,14 +104,19 @@ Public repository files only include `settings.example.json`. Runtime secrets ar
 D:\codex\localization-workflow-studio-data\settings.local.json
 ```
 
-Default settings use `mock`. For a real provider, open the web settings modal and configure:
+For a real provider, open the web settings modal and configure:
 
-- provider: `openai-compatible`
-- protocol: `chat-completions` or `responses`
-- base URL
+- provider: `GPT` or `Claude`
+- preset: `快速响应`, `平衡`, or `深度思考`
 - API key
-- model
 - batch size
+
+Preset model map:
+
+| Provider | 快速响应 | 平衡 | 深度思考 |
+|---|---|---|---|
+| GPT | `gpt-5.4-mini` | `gpt-5.5` | `gpt-5.5-pro` |
+| Claude | `claude-haiku-4-5-20251001` | `claude-sonnet-4-6` | `claude-opus-4-7` |
 
 ## Test Matrix
 
@@ -159,7 +164,7 @@ npm run e2e
 
 ## Version
 
-Current version: `0.2.1`
+Current version: `0.3.0`
 
 Version markers:
 

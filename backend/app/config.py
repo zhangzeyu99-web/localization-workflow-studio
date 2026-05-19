@@ -16,17 +16,68 @@ DB_PATH = DATA_ROOT / "studio.sqlite3"
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "provider": "mock",
-    "protocol": "chat-completions",
+    "provider": "openai",
+    "preset": "balanced",
+    "protocol": "responses",
     "base_url": "https://api.openai.com",
     "api_key": "",
-    "model": "gpt-4.1-mini",
+    "model": "gpt-5.5",
+    "reasoning_effort": "medium",
     "batch_size": 90,
     "multimodal": {
         "images": True,
         "pdf": True,
         "video": False,
         "audio": False,
+    },
+}
+
+PROVIDER_PRESETS: dict[str, dict[str, dict[str, str | int | None]]] = {
+    "openai": {
+        "fast": {
+            "label": "快速响应",
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "base_url": "https://api.openai.com",
+            "max_output_tokens": 8192,
+        },
+        "balanced": {
+            "label": "平衡",
+            "model": "gpt-5.5",
+            "reasoning_effort": "medium",
+            "base_url": "https://api.openai.com",
+            "max_output_tokens": 8192,
+        },
+        "deep": {
+            "label": "深度思考",
+            "model": "gpt-5.5-pro",
+            "reasoning_effort": "high",
+            "base_url": "https://api.openai.com",
+            "max_output_tokens": 16384,
+        },
+    },
+    "anthropic": {
+        "fast": {
+            "label": "快速响应",
+            "model": "claude-haiku-4-5-20251001",
+            "reasoning_effort": "none",
+            "base_url": "https://api.anthropic.com",
+            "max_output_tokens": 8192,
+        },
+        "balanced": {
+            "label": "平衡",
+            "model": "claude-sonnet-4-6",
+            "reasoning_effort": "adaptive",
+            "base_url": "https://api.anthropic.com",
+            "max_output_tokens": 8192,
+        },
+        "deep": {
+            "label": "深度思考",
+            "model": "claude-opus-4-7",
+            "reasoning_effort": "adaptive",
+            "base_url": "https://api.anthropic.com",
+            "max_output_tokens": 16384,
+        },
     },
 }
 
@@ -45,7 +96,7 @@ def load_settings() -> dict[str, Any]:
     merged = dict(DEFAULT_SETTINGS)
     merged.update(payload)
     merged["multimodal"] = {**DEFAULT_SETTINGS["multimodal"], **payload.get("multimodal", {})}
-    return merged
+    return normalize_settings(merged)
 
 
 def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -53,6 +104,7 @@ def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
     sanitized = dict(DEFAULT_SETTINGS)
     sanitized.update(settings)
     sanitized["multimodal"] = {**DEFAULT_SETTINGS["multimodal"], **settings.get("multimodal", {})}
+    sanitized = normalize_settings(sanitized)
     SETTINGS_PATH.write_text(json.dumps(sanitized, ensure_ascii=False, indent=2), encoding="utf-8")
     return sanitized
 
@@ -62,5 +114,33 @@ def public_settings(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     payload["api_key"] = "configured" if payload.get("api_key") else ""
     payload["settings_path"] = str(SETTINGS_PATH)
     payload["data_root"] = str(DATA_ROOT)
+    payload["provider_presets"] = PROVIDER_PRESETS
     return payload
 
+
+def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(settings)
+    provider = str(payload.get("provider") or DEFAULT_SETTINGS["provider"])
+    if provider == "openai-compatible":
+        provider = "openai"
+    if provider not in {"openai", "anthropic", "mock"}:
+        provider = str(DEFAULT_SETTINGS["provider"])
+    payload["provider"] = provider
+    if provider == "mock":
+        payload["preset"] = payload.get("preset") or "balanced"
+        payload["model"] = payload.get("model") or "mock-localization"
+        payload["reasoning_effort"] = "none"
+        payload["protocol"] = "mock"
+        return payload
+
+    preset = str(payload.get("preset") or DEFAULT_SETTINGS["preset"])
+    if preset not in PROVIDER_PRESETS[provider]:
+        preset = str(DEFAULT_SETTINGS["preset"])
+    selected = PROVIDER_PRESETS[provider][preset]
+    payload["preset"] = preset
+    payload["model"] = selected["model"]
+    payload["reasoning_effort"] = selected["reasoning_effort"]
+    payload["base_url"] = selected["base_url"]
+    payload["max_output_tokens"] = selected["max_output_tokens"]
+    payload["protocol"] = "responses" if provider == "openai" else "messages"
+    return payload

@@ -109,11 +109,12 @@ async def openai_responses_translate_batch(
     if not api_key:
         raise ProviderError("api_key is required for responses provider")
     base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
-    model = settings.get("model") or "gpt-4.1-mini"
+    model = settings.get("model") or "gpt-5.5"
+    reasoning_effort = settings.get("reasoning_effort") or "medium"
     body = {
         "model": model,
         "input": build_prompt(rows, project_prompt),
-        "temperature": 0.2,
+        "reasoning": {"effort": reasoning_effort},
     }
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
@@ -128,12 +129,57 @@ async def openai_responses_translate_batch(
     return parse_jsonl_items(text)
 
 
+async def anthropic_messages_translate_batch(
+    rows: list[dict[str, Any]],
+    settings: dict[str, Any],
+    project_prompt: str,
+) -> list[TranslationItem]:
+    api_key = settings.get("api_key")
+    if not api_key:
+        raise ProviderError("api_key is required for Claude provider")
+    base_url = str(settings.get("base_url") or "https://api.anthropic.com").rstrip("/")
+    model = settings.get("model") or "claude-sonnet-4-6"
+    body = {
+        "model": model,
+        "max_tokens": int(settings.get("max_output_tokens") or 8192),
+        "system": "Return strict JSONL only. Do not include prose, markdown fences, or explanations.",
+        "messages": [
+            {
+                "role": "user",
+                "content": build_prompt(rows, project_prompt),
+            }
+        ],
+    }
+    async with httpx.AsyncClient(timeout=180) as client:
+        response = await client.post(
+            f"{base_url}/v1/messages",
+            headers={
+                "x-api-key": str(api_key),
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            json=body,
+        )
+    if response.status_code >= 400:
+        raise ProviderError(f"claude messages failed: {response.status_code} {response.text[:500]}")
+    payload = response.json()
+    return parse_jsonl_items(_collect_anthropic_text(payload))
+
+
 def _collect_response_text(payload: dict[str, Any]) -> str:
     chunks: list[str] = []
     for item in payload.get("output", []):
         for content in item.get("content", []):
             if "text" in content:
                 chunks.append(str(content["text"]))
+    return "\n".join(chunks)
+
+
+def _collect_anthropic_text(payload: dict[str, Any]) -> str:
+    chunks: list[str] = []
+    for content in payload.get("content", []):
+        if content.get("type") == "text" and "text" in content:
+            chunks.append(str(content["text"]))
     return "\n".join(chunks)
 
 
@@ -163,6 +209,10 @@ async def translate_batch(
     protocol = protocol_override or settings.get("protocol", "chat-completions")
     if provider == "mock":
         return mock_translate_batch(rows, settings)
+    if provider == "anthropic":
+        return await anthropic_messages_translate_batch(rows, settings, project_prompt)
+    if provider == "openai":
+        return await openai_responses_translate_batch(rows, settings, project_prompt)
     if protocol == "responses":
         return await openai_responses_translate_batch(rows, settings, project_prompt)
     return await openai_chat_translate_batch(rows, settings, project_prompt)

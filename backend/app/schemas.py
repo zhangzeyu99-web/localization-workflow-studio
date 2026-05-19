@@ -67,14 +67,17 @@ class GlossaryExtractRequest(BaseModel):
 class TranslateRequest(BaseModel):
     provider: str | None = None
     protocol: str | None = None
+    preset: str | None = None
     batch_size: int | None = None
 
 
 class SettingsUpdate(BaseModel):
     provider: str | None = None
+    preset: str | None = None
     protocol: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
     batch_size: int | None = None
     multimodal: dict[str, bool] | None = None
