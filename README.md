@@ -131,6 +131,8 @@ Preset model map:
 | GPT | `gpt-5.4-mini` | `gpt-5.5` | `gpt-5.5-pro` |
 | Claude | `claude-haiku-4-5-20251001` | `claude-sonnet-4-6` | `claude-opus-4-7` |
 
+See [Configuration](docs/CONFIGURATION.md) for data-root overrides, API key handling, batch sizing, mock boundaries, and API examples.
+
 ## Test Matrix
 
 Run backend and workflow tests:
@@ -176,6 +178,7 @@ npm run e2e
 ## Documentation
 
 - [Use cases](docs/USE_CASES.md)
+- [Configuration](docs/CONFIGURATION.md)
 - [Iteration model](docs/ITERATION.md)
 - [GitHub management](docs/GITHUB_MANAGEMENT.md)
 - [Quality gates](docs/QUALITY_GATES.md)
