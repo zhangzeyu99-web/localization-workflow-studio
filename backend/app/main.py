@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Localization Workflow Studio", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="0.4.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

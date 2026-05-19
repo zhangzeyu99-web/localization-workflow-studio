@@ -56,9 +56,21 @@ flowchart TD
 - Backend: FastAPI + SQLite.
 - Provider presets: GPT and Claude only, each with `fast`, `balanced`, and `deep` presets.
 - Test provider: internal `mock`, used by CI and local E2E when no API key is available.
+- Real project translation is blocked when the active provider is `mock` or a required API key is missing. Mock output must not be treated as a deliverable translation.
 - True v1 closed loop: EN translation.
 - Project brief and translation prompt generation can use auxiliary project materials via the embedded glossary workflow `--project-material` / `--project-note` adapter; Studio passes uploaded project assets into glossary extraction.
 - Other languages: visible configuration entry only; they do not pretend to be completed by automation.
+
+## Quality Gates
+
+Formal translation delivery is accepted only when all quality evidence exists for the same run:
+
+1. Prompt snapshot: project prompt plus project harness are compiled into the run style hint.
+2. Pre-translation pack: the workpack records row ID, source text, text type, placeholders, tags, newline shape, terminology hits, UI length metadata, and input fingerprint.
+3. Pre-backfill validation: response JSONL must match IDs and order, preserve placeholders, tags, newline shape, and pass input drift checks before the workbook is written.
+4. Pre-delivery gate: machine QA and project harness QA must pass with zero hard errors.
+
+Direct QA of an uploaded translated workbook is supported, but it is a QA run, not proof that Studio performed the translation. See [Quality gates](docs/QUALITY_GATES.md).
 
 ## Data Policy
 
@@ -125,8 +137,14 @@ Run backend and workflow tests:
 
 ```powershell
 python -m pytest -q
-python -m pytest -q workflow\localization
-python -m pytest -q workflow\glossary
+
+Push-Location workflow\localization
+python -m pytest -q
+Pop-Location
+
+Push-Location workflow\glossary
+python -m pytest -q
+Pop-Location
 ```
 
 Run frontend build:
@@ -160,12 +178,13 @@ npm run e2e
 - [Use cases](docs/USE_CASES.md)
 - [Iteration model](docs/ITERATION.md)
 - [GitHub management](docs/GITHUB_MANAGEMENT.md)
+- [Quality gates](docs/QUALITY_GATES.md)
 - [Changelog](CHANGELOG.md)
 - [License](LICENSE)
 
 ## Version
 
-Current version: `0.3.0`
+Current version: `0.4.1`
 
 Version markers:
 

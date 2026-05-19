@@ -2,6 +2,14 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.1 - 2026-05-19
+
+- Documented the formal translation evidence chain: prompt snapshot, workpack, response validation, workbook backfill, and final QA gate.
+- Clarified that direct QA of an uploaded workbook is not evidence that Studio performed model translation.
+- Kept real project translation blocked when the active provider is `mock` or a provider API key is missing.
+- Fixed README version drift and added repository management follow-up tracking.
+- Included the post-0.4.0 CI webserver conflict fix and small warplane project convergence fixes in the release line.
+
 ## 0.4.0 - 2026-05-19
 
 - Added layered Project Harness support with global reusable gates separated from project-specific rules, style hints, manual fixes, and improvement suggestions.

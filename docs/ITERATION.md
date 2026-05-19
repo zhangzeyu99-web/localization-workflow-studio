@@ -15,7 +15,7 @@ Localization Workflow Studio is maintained as an integration shell around two up
 
 1. Pull or copy upstream workflow changes into `workflow/localization` or `workflow/glossary`.
 2. Record the upstream commit in the change note or release body.
-3. Run backend mock E2E, both upstream baseline suites, frontend build, and browser E2E.
+3. Run backend mock E2E, both upstream baseline suites from their workflow directories, frontend build, and browser E2E.
 4. Update `CHANGELOG.md` and `VERSION` when the change is user-visible.
 5. Push to GitHub and verify Actions before tagging a version.
 
