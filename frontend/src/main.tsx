@@ -604,11 +604,11 @@ function App() {
   async function createDeliveryPackage() {
     if (!current) return
     setBusy(true)
-    setStatus('正在生成交付五件套...')
+    setStatus('正在生成任务交付...')
     try {
       const result = await api<{ files: DeliveryFile[] }>(`/api/projects/${current.id}/delivery-package`, { method: 'POST' })
       setDeliveryFiles(result.files)
-      setStatus(`交付五件套已生成：${result.files.length} 个文件`)
+      setStatus(`任务交付已生成：${result.files.length} 个文件`)
     } catch (error) {
       setStatus(`交付生成失败：${errorText(error)}`)
     } finally {
@@ -821,7 +821,7 @@ function ProjectOverview({
         <button className={`view-tab ${tab === 'qa' ? 'active' : ''}`} onClick={() => setTab('qa')}>校对</button>
         <button className={`view-tab ${tab === 'delivery' ? 'active' : ''}`} onClick={() => setTab('delivery')}>交付</button>
       </div>
-      {tab === 'meta' ? <MetaTab project={project} intro={intro} setIntro={setIntro} busy={busy} onSaveMeta={onSaveMeta} onAnalyze={onAnalyze} onSaveHarness={onSaveHarness} /> : null}
+      {tab === 'meta' ? <MetaTab project={project} intro={intro} setIntro={setIntro} busy={busy} onSaveMeta={onSaveMeta} onAnalyze={onAnalyze} /> : null}
       {tab === 'glossary' ? (
         <GlossaryTab
           project={project}
@@ -877,8 +877,7 @@ function MetaTab({
   setIntro,
   busy,
   onSaveMeta,
-  onAnalyze,
-  onSaveHarness
+  onAnalyze
 }: {
   project: Project
   intro: string
@@ -886,7 +885,6 @@ function MetaTab({
   busy: boolean
   onSaveMeta: (updates: Partial<Project>) => Promise<void>
   onAnalyze: () => void
-  onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
 }) {
   const [name, setName] = useState(project.name)
   const [type, setType] = useState(project.type || '')
@@ -922,9 +920,14 @@ function MetaTab({
           <button className="btn btn-primary btn-sm" disabled={busy} onClick={onAnalyze}>生成/更新</button>
         </div>
         <textarea className="compact-textarea" value={intro} onChange={(event) => setIntro(event.target.value)} placeholder="补充本次分析需要的上下文；留空时使用项目描述。" />
-        <pre>{project.prompt_text || '尚未生成 translation_prompt。'}</pre>
+        <div className="meta-summary">
+          <div><strong>项目名</strong><span>{project.name}</span></div>
+          <div><strong>分类</strong><span>{project.type || '未填写'}</span></div>
+          <div className="wide"><strong>项目说明</strong><span>{project.description || '未填写'}</span></div>
+        </div>
+        <div className="ai-header">翻译提示词</div>
+        <pre>{project.prompt_text || '尚未生成。点击“生成/更新”后显示。'}</pre>
       </div>
-      <HarnessEditor project={project} onSave={onSaveHarness} compact />
     </>
   )
 }
@@ -1228,29 +1231,10 @@ function TranslationTab({
           <button className="btn btn-primary" data-testid="formal-translate" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>开始正式翻译</button>
           {blockReason ? <div className="warn-line">{blockReason}</div> : null}
         </div>
-        {sourceArtifact ? <ArtifactNote artifact={sourceArtifact} /> : null}
-        {termArtifact ? <ArtifactNote artifact={termArtifact} compact /> : null}
+        <SelectedInput label="语言表" artifact={sourceArtifact} />
+        <SelectedInput label="术语表" artifact={termArtifact} />
       </div>
-      <div className="card">
-        <div className="card-title"><div className="left">本次翻译依据</div></div>
-        <div className="prompt-source-grid">
-          <div>
-            <div className="ai-header">translation_prompt</div>
-            <pre>{project.prompt_text || '尚未生成提示词。先在“元信息”页生成/更新。'}</pre>
-          </div>
-          <div>
-            <div className="ai-header">Project Harness 摘要</div>
-            <pre>{JSON.stringify({
-              style_guidance: project.harness?.style_guidance || '',
-              target_audience: project.harness?.target_audience || '',
-              tone: project.harness?.tone || '',
-              fixed_terms: project.harness?.fixed_terms?.length || 0,
-              hard_rules: project.harness?.hard_rules?.length || 0
-            }, null, 2)}</pre>
-          </div>
-        </div>
-      </div>
-      {latestRun ? <RunCard run={latestRun} /> : null}
+      {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} /> : null}
     </>
   )
 }
@@ -1266,18 +1250,12 @@ function DeliveryTab({
   busy: boolean
   onCreateDelivery: () => void
 }) {
-  const expected = [
-    `${project.name}_project_meta.md`,
-    `${project.name}_translation_prompt.txt`,
-    `${project.name}_glossary.xlsx`,
-    `${project.name}_translated.xlsx`,
-    `${project.name}_qa_changes.xlsx`
-  ]
+  const expected = [`${project.name}_translated.xlsx`, `${project.name}_qa_changes.xlsx`]
   return (
     <div className="card">
       <div className="card-title">
-        <div className="left">交付五件套</div>
-        <button className="btn btn-primary btn-sm" disabled={busy} onClick={onCreateDelivery}>生成交付包</button>
+        <div className="left">任务交付</div>
+        <button className="btn btn-primary btn-sm" disabled={busy} onClick={onCreateDelivery}>生成任务交付</button>
       </div>
       <div className="delivery-list">
         {(deliveryFiles.length ? deliveryFiles : expected.map((filename) => ({ filename, kind: 'pending', download_url: '', path: '' }))).map((file) => (
@@ -1290,7 +1268,7 @@ function DeliveryTab({
           </div>
         ))}
       </div>
-      <div className="muted-left">这里只展示用户验收文件；manifest、JSONL、raw summary、input copy 等调试产物仍保留在系统历史里。</div>
+      <div className="muted-left">翻译和校对的基础交付一致：最终 workbook + QA 修改表。术语表在“术语表”页单独导出；元信息和提示词只在“元信息”页查看。</div>
     </div>
   )
 }
@@ -1459,14 +1437,12 @@ function StepAnalyze({
   onAnalyze,
   project,
   busy,
-  assetArtifacts,
-  onSaveHarness
+  assetArtifacts
 }: {
   onAnalyze: () => void
   project: Project
   busy: boolean
   assetArtifacts: Artifact[]
-  onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
 }) {
   return (
     <>
@@ -1474,11 +1450,6 @@ function StepAnalyze({
       <div className="panel-desc">基于文字资料与已归档素材生成 project_profile 和 translation_prompt。当前素材：{assetArtifacts.length} 个。</div>
       <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>🤖 启动 AI 分析</button>
       <div className="ai-card"><div className="ai-header">当前提示词</div><pre>{project.prompt_text || '尚未生成'}</pre></div>
-      <div className="split-note">
-        <div><strong>整体 Harness</strong><span>workpack、JSONL 协议、ID/占位符/标签/换行/指纹校验。</span></div>
-        <div><strong>项目 Harness</strong><span>只保存当前项目的风格、禁译、固定译名、硬/软规则。</span></div>
-      </div>
-      <HarnessEditor project={project} onSave={onSaveHarness} compact />
     </>
   )
 }
@@ -1604,7 +1575,7 @@ function StepTranslate({
         <button className="btn btn-primary" disabled={busy || !sourceArtifact} onClick={onTranslate}>⚡ 开始翻译</button>
       </div>
       {!sourceArtifact ? <div className="warn-line">请先上传或恢复语言表。</div> : null}
-      {latestRun ? <RunCard run={latestRun} /> : null}
+      {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} /> : null}
     </>
   )
 }
@@ -1632,22 +1603,18 @@ function StepQA({
 }) {
   const projectQuality = latestRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
   const projectHardErrors = projectQuality?.hard_errors ?? 0
+  const qaIssues = qualityIssues.filter((issue) => issue.severity === 'hard' || issue.severity === 'soft')
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 8</span>自动校对与优化</div>
-      <div className="panel-desc">可直接选择已有译文 workbook 执行 QA，不需要先跑模型翻译；QA 会叠加当前项目的 Project Harness 规则。</div>
+      <div className="panel-desc">选择已有译文 workbook 执行 QA；交付标准和翻译任务一致，最终只看 workbook 与 QA 修改表。</div>
       <div className="action-card">
         <AssetSelect label="已有译文 workbook" project={project} role="translation_workbook" value={qaArtifact} onChange={setQaArtifact} allowEmpty />
         <FileBox label="上传已有译文 workbook" onFile={onUploadTranslation} />
         <button className="btn btn-primary" data-testid="run-qa" disabled={!qaArtifact || busy} onClick={onDirectQA}>运行 QA</button>
       </div>
-      <div className="check-list">
-        <CheckItem ok={latestRun?.status === 'passed'} title="quality_harness 最终 gate" detail={latestRun ? `当前状态：${latestRun.status}` : '等待翻译运行'} />
-        <CheckItem ok={!latestRun || projectHardErrors === 0} title="project_harness 项目规则" detail={latestRun ? `hard=${projectHardErrors} / soft=${projectQuality?.soft_warnings ?? 0}` : '等待翻译运行'} />
-        <CheckItem ok title="结构校验" detail="ID、占位符、标签、换行和输入指纹由后端强校验" />
-        <CheckItem ok={qualityIssues.length === 0} title="失败行编辑器" detail={qualityIssues.length ? `待处理 ${qualityIssues.length} 条 hard/soft issue` : 'hard error 可进入人工修复并重新 QA'} />
-      </div>
-      {qualityIssues.length ? <FailedRowEditor issues={qualityIssues} busy={busy} onApply={onManualFixes} /> : null}
+      {latestRun ? <TaskRunSummary run={latestRun} issues={qaIssues} projectHardErrors={projectHardErrors} /> : null}
+      {qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onApply={onManualFixes} /> : null}
     </>
   )
 }
@@ -1680,10 +1647,14 @@ function FailedRowEditor({
     }))
     .filter((fix) => fix.translation)
 
+  if (!editable.length) {
+    return <IssueSummary issues={issues} />
+  }
+
   return (
     <div className="failed-editor" data-testid="failed-row-editor">
       <div className="card-title">
-        <div className="left">失败行编辑器</div>
+        <div className="left">问题修复</div>
         <button className="btn btn-primary btn-sm" data-testid="manual-fix-rerun" disabled={busy || fixes.length === 0} onClick={() => onApply(fixes)}>保存修复并重新 QA</button>
       </div>
       <div className="failed-rows">
@@ -1705,24 +1676,75 @@ function FailedRowEditor({
           </div>
         ))}
       </div>
-      {!editable.length ? <div className="muted">当前问题缺少 workbook 行定位，先查看 QA report 或重新生成带行号的报告。</div> : null}
     </div>
   )
 }
 
 function StepDone({ project, latestRun }: { project: Project; latestRun: Run | null }) {
-  const artifacts = latestRun?.artifacts?.length ? latestRun.artifacts : runArtifacts(project, latestRun?.id)
+  const artifacts = (latestRun?.artifacts?.length ? latestRun.artifacts : runArtifacts(project, latestRun?.id))
+    .filter((artifact) => artifact.role === 'translation_workbook' || artifact.kind === 'qa_changes')
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 9</span>输出译文 & 回写项目</div>
-      <div className="ai-card">
-        <div className="ai-header">🎉 本次任务摘要</div>
-        <pre>{`项目：${project.name}\n语言：英语 EN\n状态：${latestRun?.status || '未运行'}\n产物数量：${artifacts.length}\n归档：仓库外数据目录`}</pre>
-      </div>
+      <div className="panel-title"><span className="badge">STEP 9</span>任务交付</div>
+      {latestRun ? <TaskRunSummary run={latestRun} /> : <div className="muted-left">暂无可交付任务。先完成翻译或校对。</div>}
       <div className="artifact-grid">
         {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={`/api/artifacts/${artifact.id}/download`}>{artifact.label}<span>{artifact.kind}</span></a>)}
       </div>
+      <div className="muted-left">正式交付请回到“交付”页生成最终 workbook 和 QA 修改表。</div>
     </>
+  )
+}
+
+function SelectedInput({ label, artifact }: { label: string; artifact: Artifact | null }) {
+  return (
+    <div className="selected-input">
+      <strong>{label}</strong>
+      <span>{artifact ? artifact.label : '未选择'}</span>
+    </div>
+  )
+}
+
+function TaskRunSummary({
+  run,
+  issues = [],
+  projectHardErrors
+}: {
+  run: Run
+  issues?: QualityIssue[]
+  projectHardErrors?: number
+}) {
+  const title = run.kind === 'qa' ? '最近校对任务' : run.kind === 'translation' ? '最近翻译任务' : '最近任务'
+  const issueText = issues.length ? `待处理问题 ${issues.length} 条` : '无待处理问题'
+  const projectGate = typeof projectHardErrors === 'number' ? `，项目规则 hard=${projectHardErrors}` : ''
+  return (
+    <div className="task-summary">
+      <div>
+        <strong>{title}</strong>
+        <span>{new Date(run.created_at).toLocaleString()}</span>
+      </div>
+      <div>
+        <span className={`tag ${run.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{run.status}</span>
+        <span>{issueText}{projectGate}</span>
+      </div>
+    </div>
+  )
+}
+
+function IssueSummary({ issues }: { issues: QualityIssue[] }) {
+  const counts = issues.reduce<Record<string, number>>((acc, issue) => {
+    const key = issue.check_type || issue.source || 'issue'
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6)
+  return (
+    <div className="issue-summary">
+      <div className="card-title"><div className="left">QA 问题摘要</div></div>
+      <div className="issue-chips">
+        {top.map(([name, count]) => <span key={name}>{name}: {count}</span>)}
+      </div>
+      <div className="muted-left">这些问题缺少可直接编辑的 workbook 行定位；请查看 QA 报告，或重新生成带行号的问题列表后再批量修复。</div>
+    </div>
   )
 }
 
@@ -1791,17 +1813,6 @@ function FileBox({ label, onFile }: { label: string; onFile: (file: File) => voi
 
 function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compact?: boolean }) {
   return <div className={`ai-card ${compact ? 'compact-note' : ''}`}><div className="ai-header">已上传：{artifact.label}</div><pre>{artifact.path}</pre></div>
-}
-
-function RunCard({ run }: { run: Run }) {
-  const model = run.metadata?.model as Record<string, unknown> | undefined
-  const harness = run.metadata?.harness as Record<string, unknown> | undefined
-  const projectQuality = run.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
-  return <div className="ai-card"><div className="ai-header">Run {run.id}</div><pre>{`status=${run.status}\nlanguage=${run.language}\nmodel=${model?.provider || '-'} / ${model?.model || '-'}\nproject_harness_hard_rules=${harness?.hard_rules ?? 0}\nproject_harness_hard_errors=${projectQuality?.hard_errors ?? 0}\nartifacts=${run.artifacts?.length || 0}`}</pre></div>
-}
-
-function CheckItem({ ok, title, detail }: { ok: boolean; title: string; detail: string }) {
-  return <div className="check-item"><div className={`check-icon ${ok ? 'check-pass' : 'check-warn'}`}>{ok ? '✓' : '!'}</div><div className="check-info"><div className="name">{title}</div><div className="detail">{detail}</div></div></div>
 }
 
 function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate: (form: FormData) => void }) {

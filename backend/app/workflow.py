@@ -490,20 +490,11 @@ def build_delivery_package(project_id: str) -> dict[str, Any]:
     safe_name = _safe_delivery_name(project["name"])
     output_dir = project_dir(project_id) / "delivery"
     output_dir.mkdir(parents=True, exist_ok=True)
+    for existing in output_dir.iterdir():
+        if existing.is_file():
+            existing.unlink()
 
     files: list[dict[str, str]] = []
-    meta_path = output_dir / f"{safe_name}_project_meta.md"
-    meta_path.write_text(_project_meta_markdown(project), encoding="utf-8")
-    files.append(_delivery_file("project_meta", meta_path))
-
-    prompt_path = output_dir / f"{safe_name}_translation_prompt.txt"
-    prompt_path.write_text(project.get("prompt_text") or _default_translation_prompt(project), encoding="utf-8")
-    files.append(_delivery_file("translation_prompt", prompt_path))
-
-    glossary_path = output_dir / f"{safe_name}_glossary.xlsx"
-    _write_delivery_glossary(project_id, glossary_path)
-    files.append(_delivery_file("glossary", glossary_path))
-
     translated_path = output_dir / f"{safe_name}_translated.xlsx"
     translated_source = _latest_artifact(project_id, role="translation_workbook")
     if translated_source and Path(translated_source["path"]).exists():
@@ -529,41 +520,6 @@ def _safe_delivery_name(name: str) -> str:
 
 def _delivery_file(kind: str, path: Path) -> dict[str, str]:
     return {"kind": kind, "filename": path.name, "path": str(path)}
-
-
-def _project_meta_markdown(project: dict[str, Any]) -> str:
-    artifacts = db.list_artifacts(project_id=project["id"])
-    source_labels = [artifact["label"] for artifact in artifacts if artifact["role"] in {"language_source", "glossary_source", "translation_workbook"}]
-    profile = project.get("profile") or {}
-    lines = [
-        f"# {project['name']} 元信息",
-        "",
-        f"- 项目名: {project['name']}",
-        f"- 分类: {project.get('type') or profile.get('project_type') or '未填写'}",
-        "- 目标语言: EN",
-        f"- 风格要求: {profile.get('style') or '准确翻译，保持游戏 UI 简洁自然，保留变量、标签、数字和换行。'}",
-        f"- 来源: {'; '.join(source_labels[:8]) if source_labels else '暂无已登记素材'}",
-    ]
-    return "\n".join(lines) + "\n"
-
-
-def _default_translation_prompt(project: dict[str, Any]) -> str:
-    return (
-        f"你是游戏本地化译者，正在翻译《{project['name']}》。\n"
-        "要求：准确表达玩法含义；UI 短句清晰；剧情自然；术语以项目术语表为准；"
-        "保留变量、数字、标签、占位符和换行；无法确认的专名标记为 [TBD]。"
-    )
-
-
-def _write_delivery_glossary(project_id: str, path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Glossary"
-    ws.append(["ID", "CN", "EN", "EN2", "分类", "来源", "确认状态"])
-    for term in db.list_glossary_terms(project_id):
-        ws.append(_glossary_export_row(term))
-    wb.save(path)
-    wb.close()
 
 
 def _write_empty_workbook(path: Path, headers: list[str], note: str) -> None:

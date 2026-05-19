@@ -313,7 +313,7 @@ def test_existing_translation_workbook_can_run_qa_without_translation_workpack(t
         assert project_detail["stats"]["langs"] == 1
 
 
-def test_delivery_package_contains_only_user_five_files(tmp_path: Path) -> None:
+def test_delivery_package_contains_only_task_outputs(tmp_path: Path) -> None:
     terms = tmp_path / "terms.xlsx"
     workbook = tmp_path / "translated.xlsx"
     _sample_term_workbook(terms)
@@ -346,24 +346,21 @@ def test_delivery_package_contains_only_user_five_files(tmp_path: Path) -> None:
         package = package_response.json()
         filenames = [item["filename"] for item in package["files"]]
         assert filenames == [
-            "小小战机_project_meta.md",
-            "小小战机_translation_prompt.txt",
-            "小小战机_glossary.xlsx",
             "小小战机_translated.xlsx",
             "小小战机_qa_changes.xlsx",
         ]
-        assert not any("input_copy" in filename or "manifest" in filename or "jsonl" in filename for filename in filenames)
+        assert not any(
+            "input_copy" in filename
+            or "manifest" in filename
+            or "jsonl" in filename
+            or "project_meta" in filename
+            or "translation_prompt" in filename
+            or "glossary" in filename
+            for filename in filenames
+        )
         for item in package["files"]:
             assert Path(item["path"]).exists()
             assert item["download_url"].endswith(item["filename"])
-
-        glossary_file = next(item for item in package["files"] if item["kind"] == "glossary")
-        exported = load_workbook(glossary_file["path"], read_only=True)
-        try:
-            headers = [cell.value for cell in next(exported.active.iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "EN2", "分类", "来源", "确认状态"]
-        finally:
-            exported.close()
 
 
 def test_failed_qa_exposes_normalized_project_harness_rows(tmp_path: Path) -> None:
