@@ -28,5 +28,34 @@ jobs:
       - name: Frontend build
         working-directory: frontend
         run: |
-          npm install
+          npm ci
           npm run build
+          npx playwright install chromium
+      - name: Browser E2E
+        env:
+          LWS_DATA_ROOT: ${{ runner.temp }}\localization-workflow-studio-data
+          E2E_BASE_URL: http://127.0.0.1:5173
+        shell: pwsh
+        run: |
+          $backend = Start-Process python -ArgumentList @('-m','uvicorn','app.main:app','--app-dir','backend','--host','127.0.0.1','--port','8000') -PassThru
+          $frontend = Start-Process npm.cmd -ArgumentList @('run','dev','--','--host','127.0.0.1','--port','5173') -WorkingDirectory 'frontend' -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              try {
+                Invoke-RestMethod -Uri http://127.0.0.1:8000/api/health | Out-Null
+                Invoke-WebRequest -Uri http://127.0.0.1:5173 -UseBasicParsing | Out-Null
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $ready) {
+              throw 'local test servers did not become ready'
+            }
+            npm run e2e --prefix frontend
+          } finally {
+            Stop-Process -Id $backend.Id -ErrorAction SilentlyContinue
+            Stop-Process -Id $frontend.Id -ErrorAction SilentlyContinue
+          }
