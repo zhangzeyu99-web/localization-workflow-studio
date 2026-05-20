@@ -2,6 +2,11 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.3 - 2026-05-20
+
+- Fixed translation history so glossary extraction/project brief runs no longer appear as completed translation tasks.
+- Kept translation downloads tied to real QA-passed translation workbooks instead of prompt, brief, glossary, or other non-translation artifacts.
+
 ## 0.4.2 - 2026-05-20
 
 - Completed the main workflow closure around project metadata, project glossary, translation, QA, and final delivery.

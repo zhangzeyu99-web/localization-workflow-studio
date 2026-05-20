@@ -1396,7 +1396,7 @@ function TranslationTab({
           <div><strong>质量门槛</strong><span>QA hard error 为 0 才能交付</span></div>
         </div>
       </div>
-      <TaskHistoryTable project={project} kind="all" title="🕒 翻译历史记录" />
+      <TaskHistoryTable project={project} kind="translation" title="🕒 翻译历史记录" />
       {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} /> : null}
     </>
   )
