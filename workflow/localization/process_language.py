@@ -155,10 +155,10 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
                         return col_map[c]
             return None
 
-        cn_col = _pick([r'中文术语', r'原文', r'中文', r'source', r'original'])
+        cn_col = _pick([r'中文术语', r'原文', r'中文', r'^cn$', r'^zh$', r'source', r'original'])
         lang_patterns = LANG_TERM_PATTERNS.get(lang, LANG_TERM_PATTERNS['en'])
-        target_col = _pick(lang_patterns['primary']) or _pick([r'译文', r'翻译', r'translation', r'target'])
-        alt_col = _pick(lang_patterns['variant']) or _pick([r'variant', r'variants', r'alternate'])
+        target_col = _pick(lang_patterns['primary']) or _pick([r'^en$', r'译文', r'翻译', r'translation', r'target'])
+        alt_col = _pick(lang_patterns['variant']) or _pick([r'^en2$', r'variant', r'variants', r'alternate'])
         constraint_col = _pick([r'约束', r'constraint'])
 
         from utils.text_normalize import strip_tags_and_vars

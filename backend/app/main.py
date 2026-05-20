@@ -184,10 +184,11 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     notes = analyze_assets(payload.asset_artifact_ids, load_settings())
-    profile_path, prompt_path, prompt = write_project_prompt(project, payload.intro, notes)
+    profile_path, prompt_path, brief_path, prompt = write_project_prompt(project, payload.intro, notes)
     artifacts = [
         db.add_artifact(project_id, "Project profile", profile_path, "project_profile", mime="application/json"),
         db.add_artifact(project_id, "Translation prompt", prompt_path, "translation_prompt", mime="text/plain"),
+        db.add_artifact(project_id, "Project brief", brief_path, "project_brief", mime="text/markdown"),
     ]
     return {"project": _with_project_stats(db.get_project(project_id), include_details=True), "artifacts": artifacts, "prompt": prompt}
 
@@ -277,6 +278,8 @@ def create_project_delivery(project_id: str) -> dict[str, Any]:
         package = build_delivery_package(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     for item in package["files"]:
         item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
     return package
@@ -327,6 +330,8 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
         "input_artifact_id": payload.input_artifact_id,
         "term_artifact_id": payload.term_artifact_id,
         "batch_size": payload.batch_size,
+        "task_origin": payload.task_origin or ("direct_import" if payload.kind == "qa" else "translation_run"),
+        "source_run_id": payload.source_run_id,
     }
     return db.insert_run(payload.project_id, payload.kind, payload.language, metadata)
 

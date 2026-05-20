@@ -104,33 +104,181 @@ def harness_overview(project_id: str) -> dict[str, Any]:
     }
 
 
-def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[str]) -> tuple[Path, Path, str]:
-    root = project_dir(project["id"]) / "profile"
-    profile = {
+def _workbook_text_stats(path: Path) -> dict[str, int]:
+    try:
+        wb = load_workbook(path, read_only=True, data_only=False)
+        ws = wb.active
+        headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        lowered = [header.lower() for header in headers]
+        source_idx = next(
+            (idx for idx, header in enumerate(lowered) if header in {"cn", "source", "原文", "中文"}),
+            None,
+        )
+        target_idx = next(
+            (idx for idx, header in enumerate(lowered) if header in {"en", "target", "translation", "译文", "英文"}),
+            None,
+        )
+        source_rows = 0
+        translated_rows = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if source_idx is not None and row[source_idx] not in (None, ""):
+                source_rows += 1
+            if target_idx is not None and row[target_idx] not in (None, ""):
+                translated_rows += 1
+        wb.close()
+        return {"source_rows": source_rows, "translated_rows": translated_rows}
+    except Exception:
+        return {"source_rows": 0, "translated_rows": 0}
+
+
+def _language_assets_summary(project_id: str) -> str:
+    candidates = [
+        *db.list_artifacts(project_id=project_id, role="translation_workbook"),
+        *db.list_artifacts(project_id=project_id, role="language_source"),
+    ]
+    best = {"source_rows": 0, "translated_rows": 0}
+    for artifact in candidates:
+        path = Path(str(artifact.get("path") or ""))
+        if path.suffix.lower() != ".xlsx" or not path.exists():
+            continue
+        stats = _workbook_text_stats(path)
+        if stats["source_rows"] > best["source_rows"]:
+            best = stats
+        elif stats["translated_rows"] > best["translated_rows"]:
+            best["translated_rows"] = stats["translated_rows"]
+    if best["source_rows"]:
+        return f"{best['source_rows']} 条文本，已有英文 {best['translated_rows']} 条。"
+    return "暂未统计语言表行数。"
+
+
+def _project_material_labels(project_id: str) -> list[str]:
+    labels: list[str] = []
+    for role in ("glossary_source", "language_source", "translation_workbook"):
+        for artifact in db.list_artifacts(project_id=project_id, role=role):
+            label = str(artifact.get("label") or "").strip()
+            if label and label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _is_warplane_project(project: dict[str, Any], intro: str, material_labels: list[str]) -> bool:
+    text = " ".join(
+        [
+            str(project.get("name") or ""),
+            str(project.get("type") or ""),
+            str(project.get("description") or ""),
+            intro,
+            *material_labels,
+        ]
+    )
+    return any(token in text for token in ("战机", "飞行射击", "导弹", "装备", "Warplane", "warplane"))
+
+
+def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: list[str]) -> dict[str, Any]:
+    material_labels = _project_material_labels(project["id"])
+    description = project.get("description", "") or intro
+    is_warplane = _is_warplane_project(project, intro, material_labels)
+    if is_warplane:
+        game_type = "科幻战机 / 飞行射击 / RPG养成"
+        target_audience = "偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。"
+        content_scope = "战机、导弹、射击、弹幕等战斗内容；英雄、装备、技能、属性和战力成长；建造、升级、采集、生产等基地系统；角色剧情对话；活动、礼包和奖励。"
+        translation_style = "UI/玩法精简适配移动端；剧情自然、地道、通顺，参考美剧日常对白；整体语气冷静、利落、偏科幻军事；战机、装备、导弹、技能和战斗数值要专业清晰，避免可爱化、生活化或过度口语化。"
+        tone = "冷静、利落、偏科幻军事"
+    else:
+        game_type = project.get("type", "") or "游戏本地化项目"
+        target_audience = "目标语区游戏玩家；以当前项目描述和参考素材为准。"
+        content_scope = description or "UI、系统、任务、道具、活动和剧情文本。"
+        translation_style = "准确翻译为自然英文；UI/按钮/任务短句清晰；剧情对话自然但不改设定；术语以项目术语表为准；保留变量、占位符、富文本标签、数字和换行。"
+        tone = "自然、准确、游戏 UI 友好"
+    return {
         "project_name": project["name"],
         "project_type": project.get("type", ""),
-        "description": project.get("description", ""),
+        "description": description,
         "intro": intro,
         "asset_notes": asset_notes,
+        "source_materials": material_labels,
+        "game_type": game_type,
+        "target_audience": target_audience,
+        "content_scope": content_scope,
+        "translation_style": translation_style,
+        "language_assets": _language_assets_summary(project["id"]),
         "target_language": "en",
-        "style": "准确翻译游戏文本；UI 简洁，剧情自然；术语按项目术语表；保留变量、标签、数字和换行。",
+        "tone": tone,
+        "generated_date": db.now_iso()[:10],
     }
-    prompt = (
-        f"项目：{project['name']}\n"
-        f"题材：{project.get('type', '')}\n"
-        f"说明：{project.get('description', '') or intro}\n"
-        "翻译规范：准确翻译为自然英文；UI/按钮/任务短句清晰；剧情对话自然但不改设定；"
-        "战机、装备、技能、资源等术语以项目术语表为准；保留变量、占位符、富文本标签、数字和换行。\n"
+
+
+def _project_prompt_from_profile(profile: dict[str, Any]) -> str:
+    return (
+        f"你是一位资深游戏本地化译者，正在翻译《{profile['project_name']}》这款{profile['game_type']}游戏。\n"
+        "译文需符合以下要求：\n"
+        "1. 游戏内容/UI/玩法说明尽量精简，适配移动游戏按钮、弹窗、任务、道具和奖励说明；\n"
+        "2. 剧情对话必须自然、地道、通顺，保留角色语气、冲突、幽默和情绪，不要逐字直译；\n"
+        "3. 整体语气冷静、利落、偏科幻军事；战机、装备、导弹、技能和战斗数值要专业清晰，避免可爱化、生活化或过度口语化；\n"
+        "4. 关键术语以随附术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法；\n"
+        "5. 已有英文译文代表项目历史用法；如现有译法不自然，可以优化，但不要破坏已固定的系统术语；\n"
+        "6. 保留所有游戏代码、变量、数字、换行、颜色标签、HTML/富文本标签和占位符，如 {0}、%s、<color> 等；\n"
+        "7. 无法确认的专有名词或信息缺口用 [TBD] 标记，不要自行编造设定。\n"
         "输出协议：只返回 JSONL，每行包含 id 和 translation。"
     )
-    if asset_notes:
-        prompt += "\nAssets: " + "; ".join(asset_notes)
+
+
+def _project_brief_markdown(profile: dict[str, Any], prompt: str) -> str:
+    return (
+        f"# {profile['project_name']} 翻译提示词与项目元信息\n\n"
+        "## 🤖 AI 生成的专属翻译提示词\n\n"
+        "```\n"
+        f"{prompt}\n"
+        "```\n\n"
+        "## 📌 项目元信息\n\n"
+        "| 项目 | 信息 |\n"
+        "| --- | --- |\n"
+        f"| 游戏类型 | {profile['game_type']} |\n"
+        f"| 目标用户 | {profile['target_audience']} |\n"
+        f"| 内容构成 | {profile['content_scope']} |\n"
+        f"| 翻译风格 | {profile['translation_style']} |\n"
+        f"| 语言资产 | {profile['language_assets']} |\n"
+        f"| 生成日期 | {profile['generated_date']} |\n"
+    )
+
+
+def _save_generated_project_harness(project: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    current = read_project_harness(project["id"])
+    metadata = dict(current.get("project_metadata") or {})
+    metadata.update(
+        {
+            "game_type": profile["game_type"],
+            "target_language": profile["target_language"],
+            "content_scope": profile["content_scope"],
+            "language_assets": profile["language_assets"],
+            "source_materials": profile.get("source_materials", []),
+            "generated_from": "project_analysis",
+        }
+    )
+    return write_project_harness(
+        project["id"],
+        {
+            "project_metadata": metadata,
+            "style_guidance": profile["translation_style"],
+            "target_audience": profile["target_audience"],
+            "tone": profile["tone"],
+        },
+    )
+
+
+def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[str]) -> tuple[Path, Path, Path, str]:
+    root = project_dir(project["id"]) / "profile"
+    profile = _build_project_profile(project, intro, asset_notes)
+    prompt = _project_prompt_from_profile(profile)
+    _save_generated_project_harness(project, profile)
     profile_path = root / "project_profile.json"
     prompt_path = root / "translation_prompt.txt"
+    brief_path = root / "project_brief.md"
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
     prompt_path.write_text(prompt, encoding="utf-8")
+    brief_path.write_text(_project_brief_markdown(profile, prompt), encoding="utf-8")
     db.update_project(project["id"], {"profile": profile, "prompt_text": prompt})
-    return profile_path, prompt_path, prompt
+    return profile_path, prompt_path, brief_path, prompt
 
 
 def compile_project_harness_prompt(project: dict[str, Any], base_prompt: str, output_dir: Path) -> tuple[Path, Path, str, dict[str, Any]]:
@@ -153,6 +301,70 @@ def compile_project_harness_prompt(project: dict[str, Any], base_prompt: str, ou
     prompt_path.write_text(compiled, encoding="utf-8")
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     return prompt_path, snapshot_path, compiled, snapshot
+
+
+def create_project_glossary_snapshot(project_id: str, run_id: str, output_dir: Path | None = None) -> dict[str, Any]:
+    output = output_dir or run_dir(run_id) / "snapshots"
+    output.mkdir(parents=True, exist_ok=True)
+    path = output / "project_glossary_snapshot.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2", "分类", "备注"])
+    terms = db.list_glossary_terms(project_id)
+    for term in reversed(terms):
+        ws.append(_glossary_export_row(term))
+    wb.save(path)
+    wb.close()
+    return db.add_artifact(
+        project_id,
+        "Project glossary snapshot",
+        path,
+        "glossary_snapshot",
+        run_id=run_id,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        origin="generated",
+        metadata={"term_count": len(terms), "source": "project_glossary"},
+    )
+
+
+def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir: Path | None = None) -> dict[str, Any]:
+    project = db.get_project(project_id)
+    output = output_dir or run_dir(run_id) / "snapshots"
+    output.mkdir(parents=True, exist_ok=True)
+    prompt_path = project_dir(project_id) / "profile" / "translation_prompt.txt"
+    if not prompt_path.exists():
+        write_project_prompt(project, project.get("description", ""), [])
+    base_prompt = prompt_path.read_text(encoding="utf-8")
+    compiled_path, harness_path, compiled_prompt, harness_snapshot = compile_project_harness_prompt(project, base_prompt, output)
+    prompt_artifact = db.add_artifact(
+        project_id,
+        "Prompt snapshot",
+        compiled_path,
+        "prompt_snapshot",
+        run_id=run_id,
+        mime="text/plain",
+        origin="generated",
+        metadata={"source": "project_prompt_and_harness"},
+    )
+    harness_artifact = db.add_artifact(
+        project_id,
+        "Project harness snapshot",
+        harness_path,
+        "project_harness_snapshot",
+        run_id=run_id,
+        mime="application/json",
+        origin="generated",
+        metadata={"source": "project_harness"},
+    )
+    return {
+        "prompt": compiled_prompt,
+        "prompt_artifact": prompt_artifact,
+        "harness_artifact": harness_artifact,
+        "harness_snapshot": harness_snapshot,
+        "prompt_path": compiled_path,
+        "harness_path": harness_path,
+    }
 
 
 def analyze_assets(artifact_ids: list[str], settings: dict[str, Any]) -> list[str]:
@@ -190,6 +402,18 @@ def _sanitize_harness(payload: dict[str, Any]) -> dict[str, Any]:
     for key in list_fields:
         value = payload.get(key)
         payload[key] = value if isinstance(value, list) else []
+    cleaned_fixed_terms = []
+    for item in payload.get("fixed_terms", []):
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "").strip()
+        target = str(item.get("target") or "").strip()
+        if not source or not target:
+            continue
+        if all(ch in "?�" or ch.isspace() for ch in source):
+            continue
+        cleaned_fixed_terms.append(item)
+    payload["fixed_terms"] = cleaned_fixed_terms
     if not isinstance(payload.get("project_metadata"), dict):
         payload["project_metadata"] = {}
     if not isinstance(payload.get("qa_summary"), dict):
@@ -384,15 +608,79 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
             db.add_artifact(project_id, "Project brief", brief_output, "project_brief", run_id=run["id"], mime="text/markdown"),
             db.add_artifact(project_id, "Translation prompt", prompt_output, "translation_prompt", run_id=run["id"], mime="text/plain"),
         ]
+        backfill = backfill_project_glossary_from_final(project_id, final_output, run["id"])
         if prompt_output.exists():
             prompt = prompt_output.read_text(encoding="utf-8")
             db.update_project(project_id, {"prompt_text": prompt})
-        db.update_run(run["id"], status="passed", metadata={"output": parsed})
-        return {"run": db.get_run(run["id"]), "artifacts": artifacts, "output": parsed}
+        db.update_run(run["id"], status="passed", metadata={"output": parsed, "glossary_backfill": backfill})
+        return {"run": db.get_run(run["id"]), "artifacts": artifacts, "output": parsed, "glossary_backfill": backfill}
     except Exception as exc:
         db.add_event(run["id"], str(exc), level="error")
         db.update_run(run["id"], status="failed", metadata={"error": str(exc)})
         raise
+
+
+def backfill_project_glossary_from_final(project_id: str, final_output: Path, run_id: str | None = None) -> dict[str, Any]:
+    """Apply generated glossary rows to the project term table without overwriting curated decisions."""
+    if not final_output.exists():
+        result = {"candidates": 0, "inserted": 0, "updated": 0, "skipped_existing": 0, "skipped_empty": 0}
+        if run_id:
+            db.add_event(run_id, "高频词补充跳过：未找到生成的 ID/CN/EN/EN2 术语文件。", level="warn")
+        return result
+    rows, _columns = _read_glossary_rows(final_output, limit=None)
+    existing = {str(term.get("source", "")).strip(): term for term in db.list_glossary_terms(project_id) if str(term.get("source", "")).strip()}
+    result = {"candidates": len(rows), "inserted": 0, "updated": 0, "skipped_existing": 0, "skipped_empty": 0}
+    if run_id:
+        db.add_event(
+            run_id,
+            "高频词补充策略：读取生成的 ID/CN/EN/EN2 候选；项目中不存在的候选会新增，"
+            "EN/EN2 为空时作为待补译词条；已有词条只补空白 EN/EN2，不覆盖人工译名或已导入译名。",
+        )
+    for row in rows:
+        source = str(row.get("source") or "").strip()
+        target = str(row.get("target") or "").strip()
+        target_alt = str(row.get("target_alt") or "").strip()
+        if not source:
+            result["skipped_empty"] += 1
+            continue
+        current = existing.get(source)
+        if current:
+            updates: dict[str, Any] = {}
+            if target and not str(current.get("target") or "").strip():
+                updates["target"] = target
+            if target_alt and not str(current.get("target_alt") or "").strip():
+                updates["target_alt"] = target_alt
+            if updates:
+                updates["note"] = str(current.get("note") or "高频词扫描补充").strip() or "高频词扫描补充"
+                db.update_glossary_term(current["id"], updates)
+                current.update(updates)
+                result["updated"] += 1
+            else:
+                result["skipped_existing"] += 1
+            continue
+        created = db.insert_glossary_term(
+            project_id,
+            {
+                "term_key": row.get("term_key", ""),
+                "source": source,
+                "target": target,
+                "target_alt": target_alt,
+                "category": row.get("category", "") or "generated",
+                "note": row.get("note", "") or ("高频词扫描补充" if target or target_alt else "高频词扫描候选，待补译"),
+                "source_type": "generated",
+                "confirmed": False,
+            },
+        )
+        existing[source] = created
+        result["inserted"] += 1
+    if run_id:
+        db.add_event(
+            run_id,
+            "高频词补充结果："
+            f"候选 {result['candidates']}，新增 {result['inserted']}，补全 {result['updated']}，"
+            f"保留已有 {result['skipped_existing']}，跳过空项 {result['skipped_empty']}。",
+        )
+    return result
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -449,10 +737,13 @@ def import_glossary(project_id: str, request: Any) -> dict[str, Any]:
 def export_glossary(project_id: str, fmt: str) -> dict[str, Any] | Path:
     terms = db.list_glossary_terms(project_id)
     if fmt == "json":
-        return {"project_id": project_id, "terms": terms}
+        return {
+            "project_id": project_id,
+            "terms": [dict(zip(("term_key", "source", "target", "target_alt", "category", "note"), _glossary_export_row(term))) for term in terms],
+        }
     output_dir = project_dir(project_id) / "glossary" / "exports"
     output_dir.mkdir(parents=True, exist_ok=True)
-    columns = ["ID", "CN", "EN", "EN2", "分类", "来源", "确认状态"]
+    columns = ["ID", "CN", "EN", "EN2", "分类", "备注"]
     if fmt == "csv":
         path = output_dir / "project_glossary.csv"
         with path.open("w", encoding="utf-8-sig", newline="") as fh:
@@ -480,8 +771,7 @@ def _glossary_export_row(term: dict[str, Any]) -> list[Any]:
         term.get("target", ""),
         term.get("target_alt", ""),
         term.get("category", ""),
-        term.get("source_type", ""),
-        "confirmed" if term.get("confirmed") else "pending",
+        term.get("note", ""),
     ]
 
 
@@ -496,11 +786,11 @@ def build_delivery_package(project_id: str) -> dict[str, Any]:
 
     files: list[dict[str, str]] = []
     translated_path = output_dir / f"{safe_name}_translated.xlsx"
-    translated_source = _latest_artifact(project_id, role="translation_workbook")
+    translated_source = _latest_artifact(project_id, role="translation_workbook", kind="qa_final_workbook")
     if translated_source and Path(translated_source["path"]).exists():
         shutil.copy2(translated_source["path"], translated_path)
     else:
-        _write_empty_workbook(translated_path, ["ID", "CN", "EN"], "未生成正式译文")
+        raise ValueError("QA 未通过，暂无最终交付 workbook")
     files.append(_delivery_file("translated", translated_path))
 
     changes_path = output_dir / f"{safe_name}_qa_changes.xlsx"
@@ -881,40 +1171,132 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
 
     output_dir = run_dir(run_id) / "qa"
     output_dir.mkdir(parents=True, exist_ok=True)
+    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, output_dir / "snapshots")
+    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, output_dir / "snapshots")
+    qa_result = run_localization_qa(
+        project=project,
+        run_id=run_id,
+        workbook_path=workbook_path,
+        output_dir=output_dir,
+        glossary_snapshot=glossary_snapshot,
+        harness_snapshot=snapshots["harness_snapshot"],
+        workbook_artifact=workbook_artifact,
+        run_metadata=metadata,
+        manual_fixes=metadata.get("manual_fixes") or [],
+    )
+    input_artifacts = {
+        "translation_workbook": workbook_artifact["id"],
+        "glossary_snapshot": glossary_snapshot["id"],
+        "prompt_snapshot": snapshots["prompt_artifact"]["id"],
+        "harness_snapshot": snapshots["harness_artifact"]["id"],
+    }
+    if qa_result.get("qa_final_artifact"):
+        input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
+    status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
+    db.update_run(
+        run_id,
+        status=status,
+        metadata={
+            **metadata,
+            "task_origin": metadata.get("task_origin") or "direct_import",
+            "input_artifacts": input_artifacts,
+            "quality": qa_result["quality"],
+            "project_harness_quality": qa_result["project_harness_quality"],
+            "semantic_qa": qa_result["semantic_qa"],
+            "quality_summary": qa_result["quality_summary"],
+        },
+    )
+    return {"run": db.get_run(run_id), "artifacts": qa_result["artifacts"], "quality_summary": qa_result["quality_summary"]}
+
+
+def run_localization_qa(
+    project: dict[str, Any],
+    run_id: str,
+    workbook_path: Path,
+    output_dir: Path,
+    glossary_snapshot: dict[str, Any],
+    harness_snapshot: dict[str, Any],
+    workbook_artifact: dict[str, Any] | None = None,
+    run_metadata: dict[str, Any] | None = None,
+    manual_fixes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    machine_dir = output_dir / "machine_review"
+    machine_dir.mkdir(parents=True, exist_ok=True)
+    review_args = [
+        sys.executable,
+        str(LOCALIZATION_ROOT / "process_language.py"),
+        "--input",
+        str(workbook_path),
+        "--lang",
+        "en",
+        "--output-dir",
+        str(machine_dir),
+        "--auto-fix",
+        "--term-base",
+        glossary_snapshot["path"],
+    ]
+    run_subprocess(review_args, LOCALIZATION_ROOT, run_id)
+    qa_workbook = machine_dir / "result_en.xlsx"
+    qa_report = machine_dir / "report_en.xlsx"
+    _normalize_review_workbook_sheet_names(qa_workbook, workbook_path)
     quality_args = [
         sys.executable,
         str(LOCALIZATION_ROOT / "scripts" / "run_quality_harness.py"),
         str(LOCALIZATION_ROOT / "fixtures" / "quality_regression.json"),
         "--workbook",
-        str(workbook_path),
+        str(qa_workbook),
+        "--term-base",
+        glossary_snapshot["path"],
         "--json",
     ]
     quality = _run_quality_json(quality_args, run_id)
-    project_harness_quality = run_project_harness_qa(workbook_path, read_project_harness(project["id"]))
-    semantic_qa = _mock_semantic_qa_report(run_id, project["id"], quality, project_harness_quality)
+    project_harness_quality = run_project_harness_qa(qa_workbook, harness_snapshot["project_harness"])
+    semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality)
     hard_errors = _hard_error_count(quality) + int(project_harness_quality.get("hard_errors", 0)) + int(semantic_qa.get("hard_errors", 0))
+    passed = hard_errors == 0
     summary = {
         "version": 1,
         "run_id": run_id,
         "project_id": project["id"],
-        "passed": hard_errors == 0,
+        "passed": passed,
         "hard_errors": hard_errors,
         "sources": {
-            "translation_workbook": workbook_artifact["id"],
+            "translation_workbook": (workbook_artifact or {}).get("id", ""),
+            "qa_workbook": str(qa_workbook),
+            "glossary_snapshot": glossary_snapshot["id"],
             "global_harness": GLOBAL_HARNESS_CONTRACT,
-            "project_harness": "project_harness.json",
-            "semantic_qa": "mock",
+            "project_harness": "project_harness_snapshot.json",
+            "semantic_qa": semantic_qa.get("status", ""),
         },
         "global_harness_quality": quality,
         "project_harness_quality": project_harness_quality,
         "semantic_qa": semantic_qa,
     }
+    metadata = run_metadata or {}
     if metadata.get("manual_fix_source_run_id"):
         summary["sources"]["manual_fix_source_run"] = metadata["manual_fix_source_run_id"]
     summary_path = output_dir / "quality_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    changes_path = write_qa_changes_report(output_dir, metadata.get("manual_fixes") or [])
+    auto_fixes = _collect_workbook_translation_changes(workbook_path, qa_workbook)
+    changes_path = write_qa_changes_report(output_dir, manual_fixes or [], auto_fixes)
     artifacts = [
+        db.add_artifact(
+            project["id"],
+            "QA reviewed workbook",
+            qa_workbook,
+            "qa_result",
+            run_id=run_id,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        db.add_artifact(
+            project["id"],
+            "QA report",
+            qa_report,
+            "qa_report",
+            run_id=run_id,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
         db.add_artifact(project["id"], "Quality summary", summary_path, "quality_summary", run_id=run_id, mime="application/json"),
         db.add_artifact(
             project["id"],
@@ -925,23 +1307,31 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ),
     ]
-    status = "passed" if summary["passed"] else "failed"
-    db.update_run(
-        run_id,
-        status=status,
-        metadata={
-            **metadata,
-            "input_artifacts": {"translation_workbook": workbook_artifact["id"]},
-            "quality": quality,
-            "project_harness_quality": project_harness_quality,
-            "semantic_qa": semantic_qa,
-            "quality_summary": summary,
-        },
-    )
-    return {"run": db.get_run(run_id), "artifacts": artifacts, "quality_summary": summary}
+    qa_final_artifact = None
+    if passed:
+        qa_final_artifact = db.add_artifact(
+            project["id"],
+            "QA final workbook",
+            qa_workbook,
+            "qa_final_workbook",
+            run_id=run_id,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            origin="generated",
+            metadata={"language": "en", "source_workbook": str(workbook_path), "glossary_snapshot": glossary_snapshot["id"]},
+        )
+        artifacts.append(qa_final_artifact)
+    return {
+        "artifacts": artifacts,
+        "qa_final_artifact": qa_final_artifact,
+        "quality": quality,
+        "project_harness_quality": project_harness_quality,
+        "semantic_qa": semantic_qa,
+        "quality_summary": summary,
+        "qa_workbook": qa_workbook,
+    }
 
 
-def write_qa_changes_report(output_dir: Path, manual_fixes: list[dict[str, Any]]) -> Path:
+def write_qa_changes_report(output_dir: Path, manual_fixes: list[dict[str, Any]], auto_fixes: list[dict[str, Any]] | None = None) -> Path:
     path = output_dir / "qa_changes.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -960,7 +1350,19 @@ def write_qa_changes_report(output_dir: Path, manual_fixes: list[dict[str, Any]]
                     fix.get("note", ""),
                 ]
             )
-    else:
+    for fix in auto_fixes or []:
+        ws.append(
+            [
+                fix.get("sheet", ""),
+                fix.get("row", ""),
+                fix.get("issue_id", "auto_fix"),
+                fix.get("previous_translation", ""),
+                fix.get("translation", ""),
+                "localization_auto_fix",
+                fix.get("note", ""),
+            ]
+        )
+    if not manual_fixes and not auto_fixes:
         ws.append(["", "", "", "", "", "qa", "未应用修改"])
     wb.save(path)
     wb.close()
@@ -988,22 +1390,175 @@ def _hard_error_count(quality: dict[str, Any]) -> int:
     return 1 if not quality.get("issues") and not quality.get("failures") else 0
 
 
-def _mock_semantic_qa_report(run_id: str, project_id: str, quality: dict[str, Any], project_quality: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "source": "semantic_qa",
-        "status": "mock_provider_ready",
-        "model": "mock-semantic-qa",
-        "passed": True,
-        "hard_errors": 0,
-        "soft_warnings": 0,
-        "issues": [],
-        "prompt_context": {
-            "run_id": run_id,
-            "project_id": project_id,
-            "global_issue_count": len(quality.get("issues", [])),
-            "project_harness_issue_count": len(project_quality.get("issues", [])),
-        },
+def run_semantic_qa_report(
+    run_id: str,
+    project_id: str,
+    workbook_path: Path,
+    quality: dict[str, Any],
+    project_quality: dict[str, Any],
+) -> dict[str, Any]:
+    settings = load_settings()
+    provider = str(settings.get("provider") or "mock")
+    model = str(settings.get("model") or "")
+    issue_context = {
+        "global_issue_count": len(quality.get("issues", [])),
+        "project_harness_issue_count": len(project_quality.get("issues", [])),
+        "sample_issues": (quality.get("issues", []) or [])[:20],
+        "project_issues": (project_quality.get("issues", []) or [])[:20],
     }
+    base = {
+        "source": "semantic_qa",
+        "provider": provider,
+        "model": model,
+        "prompt_context": {"run_id": run_id, "project_id": project_id, **issue_context},
+        "issues": [],
+        "soft_warnings": 0,
+    }
+    if provider == "mock" or not settings.get("api_key"):
+        return {**base, "status": "skipped_no_key", "passed": True, "hard_errors": 0}
+
+    prompt = (
+        "You are doing semantic QA for a game localization workbook. "
+        "Review the machine QA context and return strict JSON only: "
+        "{\"passed\": boolean, \"issues\": [{\"severity\":\"hard|soft\", \"message\":\"...\", \"sheet\":\"\", \"row\":0}]}.\n"
+        f"Workbook: {workbook_path.name}\n"
+        f"Context:\n{json.dumps(issue_context, ensure_ascii=False)}"
+    )
+    try:
+        text = _call_semantic_provider(settings, prompt)
+        payload = _parse_semantic_qa_payload(text)
+        issues = payload.get("issues", []) if isinstance(payload.get("issues"), list) else []
+        hard_errors = len([issue for issue in issues if str(issue.get("severity", "hard")).lower() == "hard"])
+        return {
+            **base,
+            "status": "model_reviewed",
+            "passed": bool(payload.get("passed", hard_errors == 0)) and hard_errors == 0,
+            "hard_errors": hard_errors,
+            "soft_warnings": len([issue for issue in issues if str(issue.get("severity", "")).lower() == "soft"]),
+            "issues": issues,
+        }
+    except Exception as exc:
+        return {
+            **base,
+            "status": "provider_error",
+            "passed": False,
+            "hard_errors": 1,
+            "issues": [{"severity": "hard", "message": f"Semantic QA provider failed: {exc}", "sheet": "", "row": 0}],
+        }
+
+
+def _call_semantic_provider(settings: dict[str, Any], prompt: str) -> str:
+    import httpx
+
+    provider = str(settings.get("provider") or "openai")
+    base_url = str(settings.get("base_url") or ("https://api.anthropic.com" if provider == "anthropic" else "https://api.openai.com")).rstrip("/")
+    api_key = str(settings.get("api_key") or "")
+    model = str(settings.get("model") or ("claude-opus-4-7" if provider == "anthropic" else "gpt-5.5"))
+    if provider == "anthropic":
+        response = httpx.post(
+            f"{base_url}/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+            json={"model": model, "max_tokens": 4096, "system": "Return strict JSON only.", "messages": [{"role": "user", "content": prompt}]},
+            timeout=120,
+        )
+        response.raise_for_status()
+        chunks = [str(item.get("text", "")) for item in response.json().get("content", []) if item.get("type") == "text"]
+        return "\n".join(chunks)
+    if str(settings.get("protocol") or "chat-completions") == "responses":
+        response = httpx.post(
+            f"{base_url}/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "input": prompt, "reasoning": {"effort": settings.get("reasoning_effort") or "medium"}},
+            timeout=120,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return str(payload.get("output_text") or "")
+    response = httpx.post(
+        f"{base_url}/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "temperature": 0.1, "messages": [{"role": "system", "content": "Return strict JSON only."}, {"role": "user", "content": prompt}]},
+        timeout=120,
+    )
+    response.raise_for_status()
+    return str(response.json()["choices"][0]["message"]["content"])
+
+
+def _parse_semantic_qa_payload(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return json.loads(cleaned)
+
+
+def _collect_workbook_translation_changes(before_path: Path, after_path: Path) -> list[dict[str, Any]]:
+    if not before_path.exists() or not after_path.exists():
+        return []
+    before_wb = load_workbook(before_path, read_only=True, data_only=True)
+    after_wb = load_workbook(after_path, read_only=True, data_only=True)
+    changes: list[dict[str, Any]] = []
+    try:
+        before_ws = before_wb[before_wb.sheetnames[0]]
+        after_ws = after_wb[before_ws.title] if before_ws.title in after_wb.sheetnames else after_wb[after_wb.sheetnames[0]]
+        before_headers = _header_map(before_ws)
+        after_headers = _header_map(after_ws)
+        before_id_col = _first_col(before_headers, ["id", "key", "编号", "序号"])
+        after_id_col = _first_col(after_headers, ["id", "key", "编号", "序号"])
+        before_target_col = _first_col(before_headers, ["en", "translation", "target", "译文", "英文"])
+        after_target_col = _first_col(after_headers, ["en", "translation", "target", "译文", "英文"])
+        if before_id_col is None or after_id_col is None or before_target_col is None or after_target_col is None:
+            return []
+        after_by_id: dict[str, tuple[int, str]] = {}
+        for row_index, row in enumerate(after_ws.iter_rows(min_row=2, values_only=True), start=2):
+            row_id = _row_cell(row, after_id_col)
+            if row_id:
+                after_by_id[row_id] = (row_index, _row_cell(row, after_target_col))
+        for row_index, row in enumerate(before_ws.iter_rows(min_row=2, values_only=True), start=2):
+            row_id = _row_cell(row, before_id_col)
+            if not row_id or row_id not in after_by_id:
+                continue
+            after_row, after_text = after_by_id[row_id]
+            before_text = _row_cell(row, before_target_col)
+            if before_text != after_text:
+                changes.append(
+                    {
+                        "sheet": after_ws.title,
+                        "row": after_row,
+                        "issue_id": "auto_fix",
+                        "previous_translation": before_text,
+                        "translation": after_text,
+                        "note": f"localization workflow auto-fix for ID {row_id}",
+                    }
+                )
+    finally:
+        before_wb.close()
+        after_wb.close()
+    return changes
+
+
+def _normalize_review_workbook_sheet_names(review_path: Path, source_path: Path) -> None:
+    if not review_path.exists() or not source_path.exists():
+        return
+    source_wb = load_workbook(source_path, read_only=True, data_only=True)
+    review_wb = load_workbook(review_path)
+    try:
+        source_title = source_wb.sheetnames[0] if source_wb.sheetnames else ""
+        if source_title and review_wb.sheetnames:
+            first = review_wb[review_wb.sheetnames[0]]
+            if first.title != source_title and source_title not in review_wb.sheetnames:
+                first.title = source_title
+                review_wb.save(review_path)
+    finally:
+        source_wb.close()
+        review_wb.close()
+
+
+def _row_cell(row: tuple[Any, ...], column: int) -> str:
+    if column < 1 or column > len(row):
+        return ""
+    value = row[column - 1]
+    return "" if value is None else str(value).strip()
 
 
 def _normalize_quality_issues(source_key: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1049,7 +1604,7 @@ def _workbook_artifact_for_quality_run(run: dict[str, Any]) -> dict[str, Any]:
     input_artifact_id = metadata.get("input_artifacts", {}).get("translation_workbook") or metadata.get("input_artifact_id")
     if input_artifact_id:
         artifact = db.get_artifact(input_artifact_id)
-        if artifact["role"] == "translation_workbook":
+        if artifact["role"] in {"translation_workbook", "translation_draft"}:
             return artifact
     artifacts = db.list_artifacts(run_id=run["id"], role="translation_workbook")
     if artifacts:
@@ -1165,7 +1720,6 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
     project = db.get_project(run["project_id"])
     metadata = run.get("metadata", {})
     input_artifact = db.get_artifact(metadata["input_artifact_id"])
-    term_artifact = db.get_artifact(metadata["term_artifact_id"]) if metadata.get("term_artifact_id") else None
     settings = load_settings()
     if request.provider:
         settings["provider"] = request.provider
@@ -1195,15 +1749,13 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
     db.update_run(run_id, status="running")
     work_dir = run_dir(run_id) / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
-    prompt_path = project_dir(project["id"]) / "profile" / "translation_prompt.txt"
-    if not prompt_path.exists():
-        write_project_prompt(project, project.get("description", ""), [])
-    base_prompt = prompt_path.read_text(encoding="utf-8")
-    compiled_prompt_path, harness_snapshot_path, prompt, harness_snapshot = compile_project_harness_prompt(
-        project,
-        base_prompt,
-        work_dir,
-    )
+    snapshot_dir = work_dir / "snapshots"
+    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir)
+    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir)
+    prompt = snapshots["prompt"]
+    prompt_snapshot = snapshots["prompt_artifact"]
+    harness_snapshot_artifact = snapshots["harness_artifact"]
+    harness_snapshot = snapshots["harness_snapshot"]
 
     prepare_args = [
         sys.executable,
@@ -1215,10 +1767,10 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         "--output-dir",
         str(work_dir),
         "--style-hint-file",
-        str(compiled_prompt_path),
+        str(snapshots["prompt_path"]),
+        "--term-base",
+        glossary_snapshot["path"],
     ]
-    if term_artifact:
-        prepare_args.extend(["--term-base", term_artifact["path"]])
     try:
         run_subprocess(prepare_args, LOCALIZATION_ROOT, run_id)
         workpack_path = work_dir / "translation_workpack.jsonl"
@@ -1244,42 +1796,63 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
             str(work_dir),
             "--response",
             str(response_path),
-            "--run-qa",
+            "--term-base",
+            glossary_snapshot["path"],
         ]
-        if term_artifact:
-            apply_args.extend(["--term-base", term_artifact["path"]])
         apply_proc = run_subprocess(apply_args, LOCALIZATION_ROOT, run_id)
         parsed = parse_key_output(apply_proc.stdout)
-        final_workbook = Path(parsed.get("final_workbook", ""))
-        qa_report = Path(parsed.get("qa_report", ""))
-        qa_result = Path(parsed.get("qa_result", ""))
-
-        quality_args = [
-            sys.executable,
-            str(LOCALIZATION_ROOT / "scripts" / "run_quality_harness.py"),
-            str(LOCALIZATION_ROOT / "fixtures" / "quality_regression.json"),
-            "--workbook",
-            str(final_workbook),
-            "--json",
-        ]
-        quality = _run_quality_json(quality_args, run_id)
-        project_harness_quality = run_project_harness_qa(final_workbook, harness_snapshot["project_harness"])
-        status = "passed" if quality.get("passed") and project_harness_quality.get("passed") else "failed"
+        raw_workbook = Path(parsed.get("final_workbook", ""))
+        raw_artifact = db.add_artifact(
+            project["id"],
+            "Raw translated workbook",
+            raw_workbook,
+            "raw_translated_workbook",
+            run_id=run_id,
+            origin="generated",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            metadata={"language": "en", "source_workbook": input_artifact["id"]},
+        )
+        qa_result = run_localization_qa(
+            project=project,
+            run_id=run_id,
+            workbook_path=raw_workbook,
+            output_dir=work_dir / "qa",
+            glossary_snapshot=glossary_snapshot,
+            harness_snapshot=harness_snapshot,
+            workbook_artifact=raw_artifact,
+            run_metadata=metadata,
+        )
+        status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
         artifacts = [
-            db.add_artifact(project["id"], "Final workbook", final_workbook, "final_workbook", run_id=run_id, origin="generated"),
-            db.add_artifact(project["id"], "QA report", qa_report, "qa_report", run_id=run_id),
-            db.add_artifact(project["id"], "QA result", qa_result, "qa_result", run_id=run_id),
+            raw_artifact,
             db.add_artifact(project["id"], "Translation manifest", work_dir / "translation_manifest.json", "translation_manifest", run_id=run_id, mime="application/json"),
-            db.add_artifact(project["id"], "Project harness snapshot", harness_snapshot_path, "project_harness_snapshot", run_id=run_id, mime="application/json"),
-            db.add_artifact(project["id"], "Compiled project style hint", compiled_prompt_path, "compiled_style_hint", run_id=run_id, mime="text/plain"),
+            glossary_snapshot,
+            prompt_snapshot,
+            harness_snapshot_artifact,
+            *qa_result["artifacts"],
         ]
+        input_artifacts = {
+            "source_workbook": input_artifact["id"],
+            "raw_translated_workbook": raw_artifact["id"],
+            "translation_workbook": raw_artifact["id"],
+            "glossary_snapshot": glossary_snapshot["id"],
+            "prompt_snapshot": prompt_snapshot["id"],
+            "harness_snapshot": harness_snapshot_artifact["id"],
+        }
+        if qa_result.get("qa_final_artifact"):
+            input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
+            input_artifacts["translation_workbook"] = qa_result["qa_final_artifact"]["id"]
         db.update_run(
             run_id,
             status=status,
             metadata={
                 **metadata,
-                "quality": quality,
-                "project_harness_quality": project_harness_quality,
+                "task_origin": metadata.get("task_origin") or "translation_run",
+                "input_artifacts": input_artifacts,
+                "quality": qa_result["quality"],
+                "project_harness_quality": qa_result["project_harness_quality"],
+                "semantic_qa": qa_result["semantic_qa"],
+                "quality_summary": qa_result["quality_summary"],
                 "harness": harness_snapshot["summary"],
                 "model": {
                     "provider": settings.get("provider"),
@@ -1291,7 +1864,13 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
                 "batch_size": batch_size,
             },
         )
-        return {"run": db.get_run(run_id), "artifacts": artifacts, "quality": quality, "project_harness_quality": project_harness_quality}
+        return {
+            "run": db.get_run(run_id),
+            "artifacts": artifacts,
+            "quality": qa_result["quality"],
+            "project_harness_quality": qa_result["project_harness_quality"],
+            "quality_summary": qa_result["quality_summary"],
+        }
     except Exception as exc:
         db.add_event(run_id, str(exc), level="error")
         db.update_run(run_id, status="failed", metadata={**metadata, "error": str(exc)})

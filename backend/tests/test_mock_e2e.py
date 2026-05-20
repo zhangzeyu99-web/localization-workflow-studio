@@ -11,6 +11,7 @@ from openpyxl import Workbook, load_workbook
 
 from app.main import app
 from app.providers import mock_translate_batch
+from app.workflow import backfill_project_glossary_from_final
 
 
 def _sample_workbook(path: Path) -> None:
@@ -123,10 +124,24 @@ def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         result = translate_response.json()
         assert result["run"]["status"] == "passed"
         kinds = {artifact["kind"] for artifact in result["artifacts"]}
-        assert {"final_workbook", "qa_report", "qa_result", "translation_manifest", "project_harness_snapshot"}.issubset(kinds)
-        final_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "final_workbook")
+        assert {
+            "raw_translated_workbook",
+            "qa_final_workbook",
+            "qa_report",
+            "qa_result",
+            "qa_changes",
+            "translation_manifest",
+            "glossary_snapshot",
+            "prompt_snapshot",
+            "project_harness_snapshot",
+        }.issubset(kinds)
+        final_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "qa_final_workbook")
         assert final_artifact["role"] == "translation_workbook"
         assert final_artifact["origin"] == "generated"
+        metadata = result["run"]["metadata"]
+        assert metadata["input_artifacts"]["source_workbook"] == source_artifact["id"]
+        assert metadata["input_artifacts"]["qa_final_workbook"] == final_artifact["id"]
+        assert metadata["semantic_qa"]["status"] == "skipped_no_key"
         assert result["run"]["metadata"]["harness"]["source"] == "project_harness"
         project_detail_response = client.get(f"/api/projects/{project['id']}")
         assert project_detail_response.status_code == 200
@@ -224,14 +239,80 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         assert {term["source_type"] for term in project_terms} == {"imported"}
         assert {term["target_alt"] for term in project_terms} == {"Top Commander", "Guild"}
 
+        manual_response = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={
+                "term_key": "M-1",
+                "source": "战机",
+                "target": "Warplane",
+                "target_alt": "Fighter",
+                "category": "unit",
+                "note": "manual term",
+                "source_type": "manual",
+                "confirmed": True,
+            },
+        )
+        assert manual_response.status_code == 200
+        manual = manual_response.json()
+        update_response = client.patch(
+            f"/api/projects/{project['id']}/glossary/{manual['id']}",
+            json={"target": "Fighter Jet", "note": "edited term"},
+        )
+        assert update_response.status_code == 200
+
         export_response = client.get(f"/api/projects/{project['id']}/glossary/export?format=json")
         assert export_response.status_code == 200
         exported = export_response.json()
-        assert len(exported["terms"]) == 2
-        assert exported["terms"][0]["source"]
+        assert len(exported["terms"]) == 3
+        assert all("source_type" not in term and "confirmed" not in term for term in exported["terms"])
+        assert any(term["source"] == "战机" and term["target"] == "Fighter Jet" and term["note"] == "edited term" for term in exported["terms"])
         xlsx_response = client.get(f"/api/projects/{project['id']}/glossary/export?format=xlsx")
         assert xlsx_response.status_code == 200
         assert "spreadsheetml" in xlsx_response.headers["content-type"]
+        exported_xlsx = tmp_path / "exported_terms.xlsx"
+        exported_xlsx.write_bytes(xlsx_response.content)
+        wb = load_workbook(exported_xlsx, read_only=True)
+        try:
+            ws = wb.active
+            headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            assert headers == ["ID", "CN", "EN", "EN2", "分类", "备注"]
+        finally:
+            wb.close()
+
+
+def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: Path) -> None:
+    generated = tmp_path / "generated_glossary.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2"])
+    ws.append(["G-1", "战机", "Warplane", "Fighter"])
+    ws.append(["G-2", "钻石", "Diamonds", "Gems"])
+    ws.append(["G-3", "能量", "", ""])
+    wb.save(generated)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Backfill", "type": "QA"}).json()
+        existing = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"source": "战机", "target": "Manual Warplane", "target_alt": "", "source_type": "manual", "confirmed": True},
+        ).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "en"}).json()
+
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"])
+
+        assert result == {"candidates": 3, "inserted": 2, "updated": 1, "skipped_existing": 0, "skipped_empty": 0}
+        terms = client.get(f"/api/projects/{project['id']}/glossary").json()
+        by_source = {term["source"]: term for term in terms}
+        assert by_source["战机"]["target"] == "Manual Warplane"
+        assert by_source["战机"]["target_alt"] == "Fighter"
+        assert by_source["钻石"]["target"] == "Diamonds"
+        assert by_source["能量"]["target"] == ""
+        assert "待补译" in by_source["能量"]["note"]
+        events = client.get(f"/api/runs/{run['id']}/events").json()
+        assert any("高频词补充策略" in event["message"] for event in events)
+        assert any("新增 2，补全 1" in event["message"] for event in events)
 
 
 def test_glossary_extract_uses_project_materials_for_brief_and_prompt(tmp_path: Path) -> None:
@@ -281,6 +362,11 @@ def test_existing_translation_workbook_can_run_qa_without_translation_workpack(t
 
     with TestClient(app) as client:
         project = client.post("/api/projects", json={"name": "Direct QA", "type": "QA"}).json()
+        term_response = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"source": "开始游戏", "target": "Start Game", "target_alt": "Begin", "category": "ui", "source_type": "manual"},
+        )
+        assert term_response.status_code == 200
         with workbook.open("rb") as fh:
             upload_response = client.post(
                 f"/api/projects/{project['id']}/files?kind=final_workbook",
@@ -304,10 +390,21 @@ def test_existing_translation_workbook_can_run_qa_without_translation_workpack(t
         result = qa_response.json()
         assert result["run"]["status"] == "passed"
         assert result["quality_summary"]["sources"]["translation_workbook"] == translated_artifact["id"]
+        snapshot_id = result["run"]["metadata"]["input_artifacts"]["glossary_snapshot"]
         kinds = {artifact["kind"] for artifact in result["artifacts"]}
         assert "quality_summary" in kinds
         assert "qa_changes" in kinds
+        assert "qa_final_workbook" in kinds
         assert "translation_workpack" not in kinds
+        snapshot_artifact = next(artifact for artifact in client.get(f"/api/projects/{project['id']}").json()["artifacts"] if artifact["id"] == snapshot_id)
+        snapshot_wb = load_workbook(Path(snapshot_artifact["path"]), read_only=True, data_only=True)
+        try:
+            rows = list(snapshot_wb.active.iter_rows(values_only=True))
+            assert any(row[1] == "开始游戏" and row[2] == "Start Game" for row in rows[1:])
+        finally:
+            snapshot_wb.close()
+        events = client.get(f"/api/runs/{run_response.json()['id']}/events").json()
+        assert any("--term-base" in event["message"] and "project_glossary_snapshot.xlsx" in event["message"] for event in events)
         project_detail = client.get(f"/api/projects/{project['id']}").json()
         assert int(project_detail["stats"]["words"]) > 0
         assert project_detail["stats"]["langs"] == 1

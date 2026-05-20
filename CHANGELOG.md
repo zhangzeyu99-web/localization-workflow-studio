@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.2 - 2026-05-20
+
+- Completed the main workflow closure around project metadata, project glossary, translation, QA, and final delivery.
+- Added run-level glossary, prompt, and Project Harness snapshots so translation and QA history can prove which inputs were used.
+- Made translation runs register deliverable workbooks only after QA passes; direct QA now uses the project glossary snapshot and reports semantic QA as skipped when no provider key is configured.
+- Tightened the UI around the reference layout: project tabs, glossary editing/import/export, translation history, QA continuation/import entry points, and delivery gate.
+- Removed inactive history placeholder actions and kept user-facing delivery surfaces free of debug artifacts such as manifests, JSONL, raw workbooks, and input copies.
+- Expanded backend, workflow, and Playwright E2E tests for glossary import/export, direct QA, manual fixes, mock-provider blocking, and final delivery generation.
+
 ## 0.4.1 - 2026-05-19
 
 - Documented the formal translation evidence chain: prompt snapshot, workpack, response validation, workbook backfill, and final QA gate.

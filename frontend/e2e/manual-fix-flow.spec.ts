@@ -32,7 +32,7 @@ wb.close()
 
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
-  await page.getByRole('button', { name: '校对' }).click()
+  await page.getByRole('button', { name: '🔧 校对' }).click()
   await expect(page.getByText('自动校对与优化')).toBeVisible()
 
   await page.locator('label.upload-box', { hasText: '上传已有译文 workbook' }).locator('input[type="file"]').setInputFiles(badWorkbook)

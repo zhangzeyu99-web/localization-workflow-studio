@@ -88,6 +88,8 @@ class RunCreate(BaseModel):
     input_artifact_id: str | None = None
     term_artifact_id: str | None = None
     batch_size: int | None = None
+    task_origin: str | None = None
+    source_run_id: str | None = None
 
 
 class ManualFixItem(BaseModel):
