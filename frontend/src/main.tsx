@@ -379,6 +379,7 @@ function App() {
 
   async function upload(file: File, kind: string) {
     if (!current) return null
+    setStatus(`正在上传：${file.name}`)
     const data = new FormData()
     data.append('file', file)
     const artifact = await api<Artifact>(`/api/projects/${current.id}/files?kind=${kind}`, {
@@ -386,6 +387,7 @@ function App() {
       body: data
     })
     await refreshCurrent()
+    setStatus(`已上传：${artifact.label}`)
     return artifact
   }
 
@@ -483,6 +485,11 @@ function App() {
 
   async function runTranslate() {
     if (!current || !sourceArtifact) return
+    const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current)
+    if (blockReason) {
+      setStatus(`无法开始翻译：${blockReason}`)
+      return
+    }
     if (!selectedLangs.some((item) => item.includes('EN'))) {
       setStatus('v1 只支持英语真闭环；其他语言保留为后续 provider 能力')
       return
@@ -703,6 +710,7 @@ function App() {
                 setTab={setTab}
                 settings={settings}
                 busy={busy}
+                status={status}
                 intro={intro}
                 setIntro={setIntro}
                 sourceArtifact={sourceArtifact}
@@ -752,6 +760,8 @@ function App() {
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={setQaArtifact}
                 glossaryPreview={glossaryPreview}
+                settings={settings}
+                status={status}
                 onBack={() => setView('overview')}
                 onUploadSource={async (file) => setSourceArtifact(await upload(file, 'language_table'))}
                 onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
@@ -790,6 +800,7 @@ function ProjectOverview({
   setTab,
   settings,
   busy,
+  status,
   intro,
   setIntro,
   sourceArtifact,
@@ -825,6 +836,7 @@ function ProjectOverview({
   setTab: (tab: ProjectTab) => void
   settings: AppSettings | null
   busy: boolean
+  status: string
   intro: string
   setIntro: (value: string) => void
   sourceArtifact: Artifact | null
@@ -886,6 +898,7 @@ function ProjectOverview({
           setTermArtifact={setTermArtifact}
           glossaryPreview={glossaryPreview}
           busy={busy}
+          status={status}
           onUploadTerm={onUploadTerm}
           onGlossaryPreview={onGlossaryPreview}
           onGlossaryImport={onGlossaryImport}
@@ -900,6 +913,7 @@ function ProjectOverview({
           project={project}
           settings={settings}
           busy={busy}
+          status={status}
           sourceArtifact={sourceArtifact}
           termArtifact={termArtifact}
           latestRun={latestRun}
@@ -920,9 +934,10 @@ function ProjectOverview({
           onManualFixes={onManualFixes}
           onUploadTranslation={onUploadTranslation}
           busy={busy}
+          status={status}
         />
       ) : null}
-      {tab === 'delivery' ? <DeliveryTab project={project} deliveryFiles={deliveryFiles} busy={busy} onCreateDelivery={onCreateDelivery} /> : null}
+      {tab === 'delivery' ? <DeliveryTab project={project} deliveryFiles={deliveryFiles} busy={busy} status={status} onCreateDelivery={onCreateDelivery} /> : null}
     </>
   )
 }
@@ -1170,6 +1185,7 @@ function GlossaryTab({
   setTermArtifact,
   glossaryPreview,
   busy,
+  status,
   onUploadTerm,
   onGlossaryPreview,
   onGlossaryImport,
@@ -1184,6 +1200,7 @@ function GlossaryTab({
   setTermArtifact: (artifact: Artifact | null) => void
   glossaryPreview: GlossaryPreviewRow[]
   busy: boolean
+  status: string
   onUploadTerm: (file: File) => void
   onGlossaryPreview: () => void
   onGlossaryImport: () => void
@@ -1213,6 +1230,7 @@ function GlossaryTab({
             onGlossaryExtract={onGlossaryExtract}
           />
         ) : null}
+        <ActionStatus status={status} busy={busy} />
         {toolsOpen && glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} /> : null}
         <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTerm(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
           <input name="term_key" placeholder="ID" />
@@ -1352,6 +1370,7 @@ function TranslationTab({
   project,
   settings,
   busy,
+  status,
   sourceArtifact,
   termArtifact,
   latestRun,
@@ -1363,6 +1382,7 @@ function TranslationTab({
   project: Project
   settings: AppSettings | null
   busy: boolean
+  status: string
   sourceArtifact: Artifact | null
   termArtifact: Artifact | null
   latestRun: Run | null
@@ -1388,6 +1408,7 @@ function TranslationTab({
           <FileBox label="上传待翻译 workbook" onFile={onUploadSource} />
           <button className="btn btn-primary" data-testid="formal-translate" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>开始正式翻译</button>
           {blockReason ? <div className="warn-line">{blockReason}</div> : null}
+          <ActionStatus status={status} busy={busy} />
         </div>
         <SelectedInput label="语言表" artifact={sourceArtifact} />
         <div className="workflow-note-grid">
@@ -1406,11 +1427,13 @@ function DeliveryTab({
   project,
   deliveryFiles,
   busy,
+  status,
   onCreateDelivery
 }: {
   project: Project
   deliveryFiles: DeliveryFile[]
   busy: boolean
+  status: string
   onCreateDelivery: () => void
 }) {
   const expected = [`${project.name}_translated.xlsx`, `${project.name}_qa_changes.xlsx`]
@@ -1422,6 +1445,7 @@ function DeliveryTab({
         <button className="btn btn-primary btn-sm" disabled={busy || !hasFinalWorkbook} onClick={onCreateDelivery}>生成任务交付</button>
       </div>
       {!hasFinalWorkbook ? <div className="warn-line">QA 未通过，暂无最终交付。请先完成翻译/校对闭环。</div> : null}
+      <ActionStatus status={status} busy={busy} />
       <div className="delivery-list">
         {(deliveryFiles.length ? deliveryFiles : expected.map((filename) => ({ filename, kind: 'pending', download_url: '', path: '' }))).map((file) => (
           <div key={file.filename} className="delivery-item">
@@ -1467,6 +1491,8 @@ function Wizard(props: {
   assetArtifacts: Artifact[]
   latestRun: Run | null
   qualityIssues: QualityIssue[]
+  settings: AppSettings | null
+  status: string
   selectedLangs: string[]
   setSelectedLangs: (langs: string[]) => void
   setSourceArtifact: (artifact: Artifact | null) => void
@@ -1506,6 +1532,7 @@ function Wizard(props: {
           </button>
         ))}
       </div>
+      <ActionStatus status={props.status} busy={props.busy} />
       <div className="step-panel active">
         {step === 1 ? <StepIntro {...props} /> : null}
         {step === 2 ? <StepAnalyze {...props} /> : null}
@@ -1698,6 +1725,8 @@ function StepLang({ selectedLangs, setSelectedLangs }: { selectedLangs: string[]
 
 function StepTranslate({
   project,
+  settings,
+  status,
   onTranslate,
   busy,
   latestRun,
@@ -1707,6 +1736,8 @@ function StepTranslate({
   setTermArtifact
 }: {
   project: Project
+  settings: AppSettings | null
+  status: string
   onTranslate: () => void
   busy: boolean
   latestRun: Run | null
@@ -1715,6 +1746,7 @@ function StepTranslate({
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
 }) {
+  const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project)
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   return (
     <>
@@ -1722,14 +1754,15 @@ function StepTranslate({
       <div className="panel-desc">选择语言表后生成 workpack，使用项目术语库快照、提示词和 Project Harness 调用 GPT / Claude。</div>
       <div className="action-card">
         <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
-        <button className="btn btn-primary" disabled={busy || !sourceArtifact} onClick={onTranslate}>⚡ 开始翻译</button>
+        <button className="btn btn-primary" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>⚡ 开始翻译</button>
+        {blockReason ? <div className="warn-line">{blockReason}</div> : null}
+        <ActionStatus status={status} busy={busy} />
       </div>
       <div className="workflow-note-grid">
         <div><strong>项目术语库</strong><span>{glossaryCount} 条</span></div>
         <div><strong>提示词</strong><span>{project.prompt_text ? '已生成' : '未生成'}</span></div>
         <div><strong>校对门槛</strong><span>QA 通过后才生成最终交付</span></div>
       </div>
-      {!sourceArtifact ? <div className="warn-line">请先上传或恢复语言表。</div> : null}
       {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} /> : null}
     </>
   )
@@ -1744,7 +1777,8 @@ function StepQA({
   onDirectQA,
   onManualFixes,
   onUploadTranslation,
-  busy
+  busy,
+  status
 }: {
   project: Project
   latestRun: Run | null
@@ -1755,6 +1789,7 @@ function StepQA({
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onUploadTranslation: (file: File) => void
   busy: boolean
+  status: string
 }) {
   const projectQuality = latestRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
   const projectHardErrors = projectQuality?.hard_errors ?? 0
@@ -1778,6 +1813,8 @@ function StepQA({
         <AssetSelect label="已有译文 workbook" project={project} role="translation_workbook" value={qaArtifact} onChange={setQaArtifact} allowEmpty />
         <FileBox label="上传已有译文 workbook" onFile={onUploadTranslation} />
         <button className="btn btn-primary" data-testid="run-qa" disabled={!qaArtifact || busy} onClick={onDirectQA}>运行 QA</button>
+        {!qaArtifact ? <div className="warn-line">请选择或上传已有译文 workbook 后再运行 QA。</div> : null}
+        <ActionStatus status={status} busy={busy} />
       </div>
       <div className="check-list">
         <CheckItem ok={Boolean(qaArtifact)} title="译文 workbook" detail={qaArtifact ? qaArtifact.label : '未选择'} />
@@ -2032,6 +2069,16 @@ function CheckItem({ ok, title, detail }: { ok: boolean; title: string; detail: 
     <div className="check-item">
       <div className={`check-icon ${ok ? 'check-pass' : 'check-warn'}`}>{ok ? '✓' : '!'}</div>
       <div className="check-info"><div className="name">{title}</div><div className="detail">{detail}</div></div>
+    </div>
+  )
+}
+
+function ActionStatus({ status, busy }: { status: string; busy: boolean }) {
+  if (!status) return null
+  return (
+    <div className={`inline-status ${busy ? 'running' : ''}`} role="status" aria-live="polite">
+      {busy ? <span className="loading" /> : null}
+      <span>{busy ? '正在执行：' : '当前状态：'}{status}</span>
     </div>
   )
 }

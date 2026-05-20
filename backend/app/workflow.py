@@ -724,7 +724,7 @@ def import_glossary(project_id: str, request: Any) -> dict[str, Any]:
                     "source": row.get("source", ""),
                     "target": row.get("target", ""),
                     "target_alt": row.get("target_alt", ""),
-                    "category": row.get("category", "imported"),
+                    "category": row.get("category", ""),
                     "note": row.get("note", ""),
                     "source_type": "imported",
                     "confirmed": True,
@@ -849,7 +849,7 @@ def _read_glossary_rows(
         source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "term", "原文", "中文", "术语"])
         target_idx = _column_index(normalized, target_column, ["target", "translation", "en", "english", "译文", "英文"])
         target_alt_idx = _column_index(normalized, target_alt_column, ["en2", "en 2", "alt", "alternate", "variant", "备用英文"], required=False)
-        category_idx = _column_index(normalized, category_column, ["category", "type", "类别", "类型"], required=False)
+        category_idx = _column_index(normalized, category_column, ["category", "type", "分类", "类别", "类型"], required=False)
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
         rows = []
         for row in ws.iter_rows(min_row=2, values_only=True):
@@ -865,7 +865,7 @@ def _read_glossary_rows(
                     "source": source,
                     "target": target,
                     "target_alt": _value_at(row, target_alt_idx) if target_alt_idx is not None else "",
-                    "category": _value_at(row, category_idx) if category_idx is not None else "imported",
+                    "category": _value_at(row, category_idx) if category_idx is not None else "",
                     "note": _value_at(row, note_idx) if note_idx is not None else "",
                 }
             )

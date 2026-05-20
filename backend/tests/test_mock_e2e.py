@@ -226,6 +226,7 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         assert preview["rows"][0]["target"] == "Strongest Commander"
         assert preview["rows"][0]["target_alt"] == "Top Commander"
         assert preview["rows"][0]["term_key"] == "1"
+        assert preview["rows"][0]["category"] == "title"
 
         import_response = client.post(
             f"/api/projects/{project['id']}/glossary/import",
@@ -238,6 +239,7 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         assert {term["source"] for term in project_terms} == {"最强指挥官", "联盟"}
         assert {term["source_type"] for term in project_terms} == {"imported"}
         assert {term["target_alt"] for term in project_terms} == {"Top Commander", "Guild"}
+        assert {term["category"] for term in project_terms} == {"title", "system"}
 
         manual_response = client.post(
             f"/api/projects/{project['id']}/glossary",

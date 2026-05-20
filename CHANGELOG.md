@@ -2,6 +2,13 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.4 - 2026-05-20
+
+- Added inline action status feedback near translation, QA, glossary, wizard, and delivery controls so button clicks have visible progress or result confirmation.
+- Blocked wizard translation through the same provider/key guard used by the translation tab.
+- Fixed glossary import category detection for Chinese `分类` headers and stopped using `imported` as a fallback category value.
+- Updated browser E2E assertions to verify inline status feedback for upload, import, translation, QA, delivery, and manual fix actions.
+
 ## 0.4.3 - 2026-05-20
 
 - Fixed translation history so glossary extraction/project brief runs no longer appear as completed translation tasks.

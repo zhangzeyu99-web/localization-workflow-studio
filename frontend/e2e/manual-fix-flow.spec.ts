@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:15173'
+const inlineStatus = (page: any, text: string) => page.locator('.inline-status', { hasText: text })
 
 test('user can repair failed QA rows and rerun QA from the web UI', async ({ page, request }) => {
   const badWorkbook = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-failed-qa-')), 'bad-translated.xlsx')
@@ -42,6 +43,6 @@ wb.close()
   await expect(page.getByText('Forbidden Brand Reward').first()).toBeVisible()
   await page.getByTestId('manual-fix-input-2').fill('Reward')
   await page.getByTestId('manual-fix-rerun').click()
-  await expect(page.getByText('手工修复已重新 QA：passed')).toBeVisible({ timeout: 60000 })
+  await expect(inlineStatus(page, '手工修复已重新 QA：passed')).toBeVisible({ timeout: 60000 })
   await expect(page.getByTestId('failed-row-editor')).toBeHidden()
 })

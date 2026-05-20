@@ -430,6 +430,24 @@ a { color: #a5b4fc; text-decoration: none; }
   background: rgba(255,255,255,.035);
   margin-bottom: 14px;
 }
+.inline-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(167,139,250,.22);
+  border-radius: 8px;
+  color: #d8b4fe;
+  background: rgba(139,92,246,.12);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.inline-status.running {
+  color: #6ee7b7;
+  border-color: rgba(110,231,183,.22);
+  background: rgba(16,185,129,.12);
+}
 .asset-select {
   display: grid;
   gap: 6px;
