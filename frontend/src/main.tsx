@@ -113,7 +113,32 @@ type DeliveryFile = {
   kind: string
   filename: string
   path: string
-  download_url: string
+  download_url?: string
+}
+
+type DeliverableTask = {
+  run_id: string
+  task_code: 'A' | 'T' | 'QA' | string
+  task_id: string
+  task_label: string
+  task_type: string
+  language: string
+  created_at: string
+  updated_at: string
+  status: string
+  processed_rows: number
+  source_rows?: number
+  translated_rows?: number
+  provider?: string
+  model?: string
+  input_label?: string
+  qa_status?: string
+  qa_hard_errors?: number
+  qa_soft_warnings?: number
+  files: {
+    final?: DeliveryFile
+    changes?: DeliveryFile
+  }
 }
 
 const API = ''
@@ -215,6 +240,17 @@ function formatDate(value?: string): string {
   return date.toISOString().slice(0, 10)
 }
 
+function formatDateTime(value?: string): string {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function shortRunId(runId?: string): string {
+  return (runId || '').replace(/^run_/, '').slice(0, 6) || '-'
+}
+
 function fieldText(value: unknown, fallback = '未生成'): string {
   if (Array.isArray(value)) {
     const items = value.map((item) => String(item).trim()).filter(Boolean)
@@ -277,7 +313,7 @@ function App() {
   const [glossaryPreview, setGlossaryPreview] = useState<GlossaryPreviewRow[]>([])
   const [qualityIssues, setQualityIssues] = useState<QualityIssue[]>([])
   const [settings, setSettings] = useState<AppSettings | null>(null)
-  const [deliveryFiles, setDeliveryFiles] = useState<DeliveryFile[]>([])
+  const [deliverables, setDeliverables] = useState<DeliverableTask[]>([])
 
   useEffect(() => {
     refreshProjects()
@@ -304,7 +340,7 @@ function App() {
       setLatestRun(null)
       setGlossaryPreview([])
       setQualityIssues([])
-      setDeliveryFiles([])
+      setDeliverables([])
       return
     }
     const artifacts = current.artifacts || []
@@ -315,8 +351,14 @@ function App() {
     setQaArtifact(artifactsByRole(current, 'translation_workbook')[0] || newestArtifact(artifacts, ['final_workbook']))
     setAssetArtifacts(artifacts.filter((artifact) => artifact.kind === 'asset'))
     setLatestRun(hydratedRun)
-    setDeliveryFiles([])
+    setDeliverables([])
   }, [current?.id, current?.artifacts?.length, current?.runs?.length])
+
+  useEffect(() => {
+    if (current?.id && tab === 'delivery') {
+      refreshDeliverables()
+    }
+  }, [current?.id, current?.runs?.length, tab])
 
   useEffect(() => {
     if (!latestRun || !['failed', 'needs_input'].includes(latestRun.status)) {
@@ -483,7 +525,7 @@ function App() {
     }
   }
 
-  async function runTranslate() {
+  async function runTranslate(taskCode: 'A' | 'T' = 'T') {
     if (!current || !sourceArtifact) return
     const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current)
     if (blockReason) {
@@ -506,7 +548,8 @@ function App() {
           language: 'en',
           input_artifact_id: sourceArtifact.id,
           term_artifact_id: termArtifact?.id || null,
-          batch_size: 90
+          batch_size: 90,
+          task_code: taskCode
         })
       })
       const result = await api<{ run: Run; artifacts: Artifact[]; quality?: Record<string, unknown> }>(`/api/runs/${run.id}/translate`, {
@@ -516,6 +559,7 @@ function App() {
       })
       setLatestRun({ ...result.run, artifacts: result.artifacts })
       await refreshCurrent()
+      if (tab === 'delivery') await refreshDeliverables()
       setStatus(result.run.status === 'passed' ? 'EN 闭环通过，产物已归档' : `运行结束：${result.run.status}`)
     } catch (error) {
       setStatus(`翻译失败：${errorText(error)}`)
@@ -524,7 +568,7 @@ function App() {
     }
   }
 
-  async function runDirectQA() {
+  async function runDirectQA(taskCode: 'QA' = 'QA') {
     if (!current || !qaArtifact) return
     const sourceRunId = qaArtifact.run_id && (current.runs || []).some((run) => run.id === qaArtifact.run_id && run.kind === 'translation')
       ? qaArtifact.run_id
@@ -542,7 +586,8 @@ function App() {
           input_artifact_id: qaArtifact.id,
           term_artifact_id: termArtifact?.id || null,
           task_origin: sourceRunId ? 'translation_continuation' : 'direct_import',
-          source_run_id: sourceRunId
+          source_run_id: sourceRunId,
+          task_code: taskCode
         })
       })
       const result = await api<{ run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }>(`/api/runs/${run.id}/qa`, {
@@ -550,6 +595,7 @@ function App() {
       })
       setLatestRun({ ...result.run, artifacts: result.artifacts })
       await refreshCurrent()
+      if (tab === 'delivery') await refreshDeliverables()
       setStatus(result.run.status === 'passed' ? '已有译文 QA 通过' : `已有译文 QA 结束：${result.run.status}`)
     } catch (error) {
       setStatus(`已有译文 QA 失败：${errorText(error)}`)
@@ -653,16 +699,29 @@ function App() {
     }
   }
 
-  async function createDeliveryPackage() {
+  async function refreshDeliverables() {
+    if (!current) {
+      setDeliverables([])
+      return
+    }
+    try {
+      const result = await api<{ deliverables: DeliverableTask[] }>(`/api/projects/${current.id}/deliverables`)
+      setDeliverables(result.deliverables || [])
+    } catch {
+      setDeliverables([])
+    }
+  }
+
+  async function createDeliveryPackage(runId: string) {
     if (!current) return
     setBusy(true)
-    setStatus('正在生成任务交付...')
+    setStatus('正在生成最终交付文件...')
     try {
-      const result = await api<{ files: DeliveryFile[] }>(`/api/projects/${current.id}/delivery-package`, { method: 'POST' })
-      setDeliveryFiles(result.files)
-      setStatus(`任务交付已生成：${result.files.length} 个文件`)
+      const result = await api<{ files: DeliveryFile[] }>(`/api/projects/${current.id}/delivery-package?run_id=${encodeURIComponent(runId)}`, { method: 'POST' })
+      await refreshDeliverables()
+      setStatus(`最终交付已生成：${result.files.length} 个文件`)
     } catch (error) {
-      setStatus(`交付生成失败：${errorText(error)}`)
+      setStatus(`最终交付生成失败：${errorText(error)}`)
     } finally {
       setBusy(false)
     }
@@ -719,7 +778,7 @@ function App() {
                 latestRun={latestRun}
                 qualityIssues={qualityIssues}
                 glossaryPreview={glossaryPreview}
-                deliveryFiles={deliveryFiles}
+                deliverables={deliverables}
                 setSourceArtifact={setSourceArtifact}
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={setQaArtifact}
@@ -734,8 +793,8 @@ function App() {
                 onUpdateTerm={updateGlossaryTerm}
                 onDeleteTerm={deleteGlossaryTerm}
                 onSaveHarness={saveHarness}
-                onTranslate={runTranslate}
-                onDirectQA={runDirectQA}
+                onTranslate={() => runTranslate('T')}
+                onDirectQA={() => runDirectQA('QA')}
                 onManualFixes={applyManualFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
                 onCreateDelivery={createDeliveryPackage}
@@ -770,8 +829,8 @@ function App() {
                 onGlossaryExtract={runGlossaryExtract}
                 onGlossaryPreview={previewGlossaryImport}
                 onGlossaryImport={importGlossaryArtifact}
-                onTranslate={runTranslate}
-                onDirectQA={runDirectQA}
+                onTranslate={() => runTranslate('A')}
+                onDirectQA={() => runDirectQA('QA')}
                 onManualFixes={applyManualFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
                 onFreq={() => setFreqOpen(true)}
@@ -809,7 +868,7 @@ function ProjectOverview({
   latestRun,
   qualityIssues,
   glossaryPreview,
-  deliveryFiles,
+  deliverables,
   setSourceArtifact,
   setTermArtifact,
   setQaArtifact,
@@ -845,7 +904,7 @@ function ProjectOverview({
   latestRun: Run | null
   qualityIssues: QualityIssue[]
   glossaryPreview: GlossaryPreviewRow[]
-  deliveryFiles: DeliveryFile[]
+  deliverables: DeliverableTask[]
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
   setQaArtifact: (artifact: Artifact | null) => void
@@ -864,7 +923,7 @@ function ProjectOverview({
   onDirectQA: () => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onUploadTranslation: (file: File) => void
-  onCreateDelivery: () => void
+  onCreateDelivery: (runId: string) => void
   onStartTask: () => void
 }) {
   return (
@@ -937,7 +996,7 @@ function ProjectOverview({
           status={status}
         />
       ) : null}
-      {tab === 'delivery' ? <DeliveryTab project={project} deliveryFiles={deliveryFiles} busy={busy} status={status} onCreateDelivery={onCreateDelivery} /> : null}
+      {tab === 'delivery' ? <DeliveryTab project={project} deliverables={deliverables} busy={busy} status={status} onCreateDelivery={onCreateDelivery} /> : null}
     </>
   )
 }
@@ -1425,37 +1484,57 @@ function TranslationTab({
 
 function DeliveryTab({
   project,
-  deliveryFiles,
+  deliverables,
   busy,
   status,
   onCreateDelivery
 }: {
   project: Project
-  deliveryFiles: DeliveryFile[]
+  deliverables: DeliverableTask[]
   busy: boolean
   status: string
-  onCreateDelivery: () => void
+  onCreateDelivery: (runId: string) => void
 }) {
-  const expected = [`${project.name}_translated.xlsx`, `${project.name}_qa_changes.xlsx`]
-  const hasFinalWorkbook = Boolean(newestArtifact(project.artifacts, ['qa_final_workbook']))
   return (
     <div className="card">
       <div className="card-title">
-        <div className="left">任务交付</div>
-        <button className="btn btn-primary btn-sm" disabled={busy || !hasFinalWorkbook} onClick={onCreateDelivery}>生成任务交付</button>
+        <div className="left">最终交付</div>
       </div>
-      {!hasFinalWorkbook ? <div className="warn-line">QA 未通过，暂无最终交付。请先完成翻译/校对闭环。</div> : null}
+      {!deliverables.length ? <div className="warn-line">暂无最终交付，需先完成翻译/校对并通过 QA。</div> : null}
       <ActionStatus status={status} busy={busy} />
       <div className="delivery-list">
-        {(deliveryFiles.length ? deliveryFiles : expected.map((filename) => ({ filename, kind: 'pending', download_url: '', path: '' }))).map((file) => (
-          <div key={file.filename} className="delivery-item">
-            <div>
-              <strong>{file.filename}</strong>
-              <span>{file.path || '尚未生成'}</span>
+        {deliverables.map((task) => {
+          const finalFile = task.files.final
+          const changesFile = task.files.changes
+          return (
+            <div key={task.run_id} className="delivery-card">
+              <div className="delivery-head">
+                <div>
+                  <strong>{project.name} · {task.language} · {task.task_label}</strong>
+                  <span>{task.task_type} / {task.input_label || '-'}</span>
+                </div>
+                <span className="tag tag-done">{task.qa_status || task.status}</span>
+              </div>
+              <div className="delivery-meta">
+                <div><strong>任务时间</strong><span>{formatDateTime(task.created_at)}</span></div>
+                <div><strong>任务类型</strong><span>{task.task_type}</span></div>
+                <div><strong>处理条数</strong><span>{task.processed_rows || 0}</span></div>
+                <div><strong>完成状态</strong><span>{task.status}</span></div>
+                <div><strong>模型/来源</strong><span>{[task.provider, task.model].filter((item) => item && item !== '-').join(' / ') || '-'}</span></div>
+                <div><strong>QA 结果</strong><span>hard {task.qa_hard_errors ?? 0} / soft {task.qa_soft_warnings ?? 0}</span></div>
+              </div>
+              <div className="row-actions">
+                <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成/刷新最终交付文件</button>
+                {finalFile?.download_url ? <a className="btn btn-ghost btn-sm" href={finalFile.download_url}>下载最终表</a> : <span className="muted-inline">最终表未生成</span>}
+                {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>下载修改表</a> : <span className="muted-inline">修改表未生成</span>}
+              </div>
+              <div className="delivery-files">
+                <span>{finalFile?.filename || '-'}</span>
+                <span>{changesFile?.filename || '-'}</span>
+              </div>
             </div>
-            {file.download_url ? <a className="btn btn-ghost btn-sm" href={file.download_url}>下载</a> : <span className="tag tag-new">待生成</span>}
-          </div>
-        ))}
+          )
+        })}
       </div>
       <div className="muted-left">翻译和校对的基础交付一致：最终 workbook + QA 修改表。术语表在“术语表”页单独导出；元信息和提示词只在“元信息”页查看。</div>
     </div>
@@ -1904,7 +1983,7 @@ function StepDone({ project, latestRun }: { project: Project; latestRun: Run | n
     .filter((artifact) => artifact.kind === 'qa_final_workbook' || artifact.kind === 'qa_changes')
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 9</span>任务交付</div>
+      <div className="panel-title"><span className="badge">STEP 9</span>最终交付</div>
       {latestRun ? <TaskRunSummary run={latestRun} /> : <div className="muted-left">暂无可交付任务。先完成翻译或校对。</div>}
       <div className="artifact-grid">
         {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={`/api/artifacts/${artifact.id}/download`}>{artifact.label}<span>{artifact.kind}</span></a>)}
@@ -1933,10 +2012,11 @@ function TaskHistoryTable({ project, kind, title }: { project: Project; kind: Hi
           {runs.map((run) => {
             const artifacts = runArtifacts(project, run.id)
             const download = downloadableArtifact(artifacts, kind)
+            const task = runTaskSummary(project, run)
             return (
               <tr key={run.id}>
                 <td>{formatDate(run.created_at)}</td>
-                <td>{run.kind === 'qa' ? '校对任务' : '翻译任务'} · {run.id.slice(0, 8)}</td>
+                <td>{task.taskType} · {task.taskLabel}</td>
                 <td>{run.language?.toUpperCase() || '-'}</td>
                 <td>{artifacts.length}</td>
                 <td><span className={`tag ${run.status === 'passed' ? 'tag-done' : run.status === 'failed' ? 'tag-warn' : 'tag-doing'}`}>{run.status}</span></td>
@@ -1969,6 +2049,8 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
   const visibleArtifacts = artifacts.filter((artifact) => downloadableArtifact([artifact], kind))
   const inputs = (run.metadata?.input_artifacts || {}) as Record<string, string>
   const artifactById = new Map((project.artifacts || []).map((artifact) => [artifact.id, artifact]))
+  const task = runTaskSummary(project, run)
+  const quality = (run.metadata?.quality_summary || {}) as Record<string, unknown>
   const inputItems = [
     ['源/译文', inputs.source_workbook || inputs.translation_workbook],
     ['术语快照', inputs.glossary_snapshot],
@@ -1982,10 +2064,14 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
         <span>{run.id}</span>
       </div>
       <div className="history-detail-grid">
+        <div><strong>任务类型</strong><span>{task.taskType}</span></div>
+        <div><strong>任务ID</strong><span>{task.taskLabel}</span></div>
         <div><strong>状态</strong><span>{run.status}</span></div>
         <div><strong>语言</strong><span>{run.language?.toUpperCase() || '-'}</span></div>
         <div><strong>创建时间</strong><span>{new Date(run.created_at).toLocaleString()}</span></div>
         <div><strong>更新时间</strong><span>{new Date(run.updated_at).toLocaleString()}</span></div>
+        <div><strong>来源文件</strong><span>{inputArtifactName(project, run) || '-'}</span></div>
+        <div><strong>QA 结果</strong><span>hard {Number(quality.hard_errors || 0)}</span></div>
       </div>
       <div className="artifact-links">
         {visibleArtifacts.map((artifact) => (
@@ -2003,6 +2089,32 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
       ) : null}
     </div>
   )
+}
+
+function runTaskSummary(project: Project, run: Run, seen: Set<string> = new Set()): { taskCode: string; taskType: string; taskLabel: string } {
+  if (seen.has(run.id)) {
+    const code = run.kind === 'qa' ? 'QA' : run.kind === 'translation' ? 'T' : run.kind.toUpperCase()
+    return { taskCode: code, taskType: code, taskLabel: `${code}-${shortRunId(run.id)}` }
+  }
+  seen.add(run.id)
+  const sourceId = String(run.metadata?.manual_fix_source_run_id || run.metadata?.source_run_id || '')
+  if (sourceId) {
+    const sourceRun = (project.runs || []).find((item) => item.id === sourceId)
+    if (sourceRun && (run.kind === 'qa' || run.metadata?.task_origin === 'translation_continuation')) {
+      return runTaskSummary(project, sourceRun, seen)
+    }
+  }
+  const code = String(run.metadata?.task_code || (run.kind === 'qa' ? 'QA' : run.kind === 'translation' ? 'T' : run.kind.toUpperCase())).toUpperCase()
+  const label = `${code}-${shortRunId(run.id)}`
+  const type = code === 'A' ? '完整工作流' : code === 'QA' ? '校对任务' : code === 'T' ? '翻译任务' : code
+  return { taskCode: code, taskType: type, taskLabel: label }
+}
+
+function inputArtifactName(project: Project, run: Run): string {
+  const inputs = (run.metadata?.input_artifacts || {}) as Record<string, string>
+  const artifactId = inputs.source_workbook || inputs.translation_workbook || String(run.metadata?.input_artifact_id || '')
+  if (!artifactId) return ''
+  return (project.artifacts || []).find((artifact) => artifact.id === artifactId)?.label || artifactId
 }
 
 function SelectedInput({ label, artifact }: { label: string; artifact: Artifact | null }) {

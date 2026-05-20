@@ -90,6 +90,7 @@ class RunCreate(BaseModel):
     batch_size: int | None = None
     task_origin: str | None = None
     source_run_id: str | None = None
+    task_code: str | None = None
 
 
 class ManualFixItem(BaseModel):

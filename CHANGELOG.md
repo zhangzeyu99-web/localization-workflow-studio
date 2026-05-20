@@ -2,6 +2,14 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.5 - 2026-05-20
+
+- Reworked the delivery page into final deliverable task cards instead of pending placeholder files.
+- Added fixed per-run delivery filenames with project, language, timestamp, task type, short run ID, and final/changes suffixes.
+- Added `task_code` support for A/T/QA task identities, including QA continuation inheriting the source translation task identity.
+- Added `GET /api/projects/{id}/deliverables` so only QA-passed runs with final workbooks appear as deliverable tasks.
+- Updated translation and QA history details to show the same task identity, source file, status, and QA summary fields used by delivery cards.
+
 ## 0.4.4 - 2026-05-20
 
 - Added inline action status feedback near translation, QA, glossary, wizard, and delivery controls so button clicks have visible progress or result confirmation.

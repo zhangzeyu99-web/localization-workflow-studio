@@ -43,6 +43,7 @@ if __package__ is None or __package__ == "":
         extract_glossary,
         harness_overview,
         import_glossary,
+        list_project_deliverables,
         list_improvements,
         list_quality_issues,
         preview_glossary_import,
@@ -81,6 +82,7 @@ else:
         extract_glossary,
         harness_overview,
         import_glossary,
+        list_project_deliverables,
         list_improvements,
         list_quality_issues,
         preview_glossary_import,
@@ -100,7 +102,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Localization Workflow Studio", version="0.4.1", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="0.4.5", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -272,16 +274,28 @@ def export_project_glossary(project_id: str, format: str = "xlsx") -> Any:
     return FileResponse(exported, media_type=media_type, filename=exported.name)
 
 
-@app.post("/api/projects/{project_id}/delivery-package")
-def create_project_delivery(project_id: str) -> dict[str, Any]:
+@app.get("/api/projects/{project_id}/deliverables")
+def get_project_deliverables(project_id: str) -> dict[str, Any]:
     try:
-        package = build_delivery_package(project_id)
+        deliverables = list_project_deliverables(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    for deliverable in deliverables:
+        _attach_delivery_downloads(project_id, deliverable)
+    return {"project_id": project_id, "deliverables": deliverables}
+
+
+@app.post("/api/projects/{project_id}/delivery-package")
+def create_project_delivery(project_id: str, run_id: str | None = None) -> dict[str, Any]:
+    try:
+        package = build_delivery_package(project_id, run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     for item in package["files"]:
         item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
+    _attach_delivery_downloads(project_id, package["deliverable"])
     return package
 
 
@@ -332,6 +346,7 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
         "batch_size": payload.batch_size,
         "task_origin": payload.task_origin or ("direct_import" if payload.kind == "qa" else "translation_run"),
         "source_run_id": payload.source_run_id,
+        "task_code": _resolve_task_code(payload),
     }
     return db.insert_run(payload.project_id, payload.kind, payload.language, metadata)
 
@@ -442,6 +457,39 @@ def patch_artifact(artifact_id: str, payload: ArtifactUpdate) -> dict[str, Any]:
         return db.update_artifact(artifact_id, payload.model_dump(exclude_none=True))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
+
+
+def _attach_delivery_downloads(project_id: str, deliverable: dict[str, Any]) -> None:
+    files = deliverable.get("files") if isinstance(deliverable.get("files"), dict) else {}
+    for item in files.values():
+        if item.get("path"):
+            item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
+        else:
+            item["download_url"] = ""
+
+
+def _resolve_task_code(payload: RunCreate) -> str:
+    if payload.source_run_id:
+        try:
+            source = db.get_run(payload.source_run_id)
+            if source["project_id"] == payload.project_id:
+                source_code = str((source.get("metadata") or {}).get("task_code") or "").upper()
+                if source_code in {"A", "T", "QA"}:
+                    return source_code
+                if source["kind"] == "translation":
+                    return "T"
+                if source["kind"] == "qa":
+                    return "QA"
+        except KeyError:
+            pass
+    task_code = str(payload.task_code or "").upper()
+    if task_code in {"A", "T", "QA"}:
+        return task_code
+    if payload.kind == "translation":
+        return "T"
+    if payload.kind == "qa":
+        return "QA"
+    return str(payload.kind or "TASK").upper()
 
 
 def _safe_filename(name: str) -> str:

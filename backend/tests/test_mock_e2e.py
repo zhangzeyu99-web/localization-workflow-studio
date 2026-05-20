@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -435,19 +436,26 @@ def test_delivery_package_contains_only_task_outputs(tmp_path: Path) -> None:
             ).json()
         run = client.post(
             "/api/runs",
-            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"]},
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"], "task_code": "QA"},
         ).json()
         qa_response = client.post(f"/api/runs/{run['id']}/qa")
         assert qa_response.status_code == 200, qa_response.text
 
-        package_response = client.post(f"/api/projects/{project['id']}/delivery-package")
+        deliverables_response = client.get(f"/api/projects/{project['id']}/deliverables")
+        assert deliverables_response.status_code == 200
+        deliverables = deliverables_response.json()["deliverables"]
+        assert len(deliverables) == 1
+        assert deliverables[0]["task_label"] == f"QA-{run['id'].replace('run_', '')[:6]}"
+        assert deliverables[0]["processed_rows"] == 5
+        assert deliverables[0]["status"] == "passed"
+
+        package_response = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}")
         assert package_response.status_code == 200, package_response.text
         package = package_response.json()
         filenames = [item["filename"] for item in package["files"]]
-        assert filenames == [
-            "小小战机_translated.xlsx",
-            "小小战机_qa_changes.xlsx",
-        ]
+        assert len(filenames) == 2
+        assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_final\.xlsx", filenames[0])
+        assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_changes\.xlsx", filenames[1])
         assert not any(
             "input_copy" in filename
             or "manifest" in filename
@@ -460,6 +468,67 @@ def test_delivery_package_contains_only_task_outputs(tmp_path: Path) -> None:
         for item in package["files"]:
             assert Path(item["path"]).exists()
             assert item["download_url"].endswith(item["filename"])
+        refreshed = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"][0]
+        assert refreshed["files"]["final"]["download_url"].endswith("_final.xlsx")
+        assert refreshed["files"]["changes"]["download_url"].endswith("_changes.xlsx")
+
+
+def test_qa_continuation_inherits_translation_delivery_identity(tmp_path: Path) -> None:
+    workbook = tmp_path / "translated.xlsx"
+    _translated_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "继承任务", "type": "QA"}).json()
+        source_run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en", "task_code": "A"},
+        ).json()
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("translated.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        qa_run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "qa",
+                "language": "en",
+                "input_artifact_id": translated_artifact["id"],
+                "task_origin": "translation_continuation",
+                "source_run_id": source_run["id"],
+                "task_code": "QA",
+            },
+        ).json()
+        qa_response = client.post(f"/api/runs/{qa_run['id']}/qa")
+        assert qa_response.status_code == 200
+
+        deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
+        assert deliverables[0]["task_label"] == f"A-{source_run['id'].replace('run_', '')[:6]}"
+        package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={qa_run['id']}").json()
+        assert re.fullmatch(r"继承任务_EN_\d{12}_A-[0-9a-f]{6}_final\.xlsx", package["files"][0]["filename"])
+
+
+def test_failed_runs_are_not_deliverable(tmp_path: Path) -> None:
+    workbook = tmp_path / "failed.xlsx"
+    _project_harness_failed_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "不可交付", "type": "QA"}).json()
+        client.patch(f"/api/projects/{project['id']}/harness", json={"forbidden_translations": ["Forbidden Brand"]})
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("failed.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"], "task_code": "QA"},
+        ).json()
+        qa_response = client.post(f"/api/runs/{run['id']}/qa")
+        assert qa_response.status_code == 200
+        assert qa_response.json()["run"]["status"] == "failed"
+        assert client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"] == []
 
 
 def test_failed_qa_exposes_normalized_project_harness_rows(tmp_path: Path) -> None:
