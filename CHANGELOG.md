@@ -2,6 +2,11 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.8 - 2026-05-21
+
+- Added static GitHub Pages interactions to the workbench demo: settings modal, new project modal, 9-step task wizard, prompt edit/copy/regenerate controls, glossary import panel, term add/edit/delete, run detail toggle, QA action feedback, and delivery refresh feedback.
+- Kept all interactions demo-only with visible status/toast feedback instead of pretending to call the backend.
+
 ## 0.4.7 - 2026-05-21
 
 - Reworked the GitHub Pages demo to mirror the local workbench layout directly: same top header, sidebar, project overview, stat cards, tabs, glossary table, and static action feedback.

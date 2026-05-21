@@ -303,6 +303,110 @@
     }
     .delivery-head strong { color: #fff; }
     .delivery-head span { color: #a1a1aa; font-size: 12px; }
+    .glossary-tools-panel,
+    .history-detail { margin-bottom: 16px; }
+    .action-card {
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 10px;
+      padding: 14px;
+      background: rgba(255,255,255,.04);
+      display: grid;
+      gap: 12px;
+    }
+    .upload-box {
+      display: grid;
+      place-items: center;
+      min-height: 100px;
+      border: 1px dashed rgba(139,92,246,.65);
+      border-radius: 10px;
+      color: #d4d4d8;
+      background: rgba(139,92,246,.08);
+    }
+    .history-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .history-detail-grid div {
+      display: grid;
+      gap: 4px;
+      border-radius: 8px;
+      padding: 9px;
+      background: rgba(0,0,0,.14);
+    }
+    .history-detail-grid strong { font-size: 12px; color: #fff; }
+    .history-detail-grid span { font-size: 12px; color: #a1a1aa; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(0,0,0,.58);
+      z-index: 10;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(860px, 100%);
+      max-height: 90vh;
+      overflow: auto;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 14px;
+      background: #1b2034;
+      box-shadow: 0 24px 80px rgba(0,0,0,.45);
+      padding: 20px;
+    }
+    .modal.small { width: min(520px, 100%); }
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .modal-head h3 { color: #fff; font-size: 18px; }
+    .modal-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .modal-grid label { display: grid; gap: 6px; color: #d4d4d8; font-size: 12px; }
+    .modal-grid .wide { grid-column: 1 / -1; }
+    .steps-nav {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 10px;
+      border-radius: 10px;
+      background: rgba(0,0,0,.18);
+      margin-bottom: 16px;
+    }
+    .step-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 0;
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: #d4d4d8;
+      background: rgba(255,255,255,.06);
+      white-space: nowrap;
+    }
+    .step-item.active { color: #fff; background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+    .step-body {
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 12px;
+      background: rgba(255,255,255,.03);
+      padding: 18px;
+      min-height: 210px;
+      margin-bottom: 14px;
+    }
+    .step-body h4 { color: #fff; margin-bottom: 8px; }
+    .step-body p { color: #a1a1aa; line-height: 1.7; margin-bottom: 12px; }
+    .hidden { display: none !important; }
     .panel { display: none; }
     .panel.active { display: block; }
     .toast {
@@ -343,7 +447,7 @@
         </div>
         <div class="header-actions">
           <span class="status" id="status">准备就绪</span>
-          <button class="btn btn-ghost" data-demo="设置仅在完整后端版本中可用。">⚙ 设置</button>
+          <button class="btn btn-ghost" id="open-settings">⚙ 设置</button>
         </div>
       </header>
 
@@ -351,15 +455,15 @@
         <aside class="sidebar">
           <div class="sidebar-title">📁 我的项目</div>
           <div class="project-list">
-            <button class="project-item active" data-demo="静态 Demo 只有小小战机示例项目。">
+            <button class="project-item active" id="select-project">
               <span class="pname">小小战机</span>
               <span class="pmeta">6 个任务 · 25489 字</span>
               <span class="ptag">飞行射击</span>
             </button>
           </div>
-          <button class="new-project-btn" data-demo="静态 Demo 不创建项目；完整版本会写入私有数据目录。">+ 新建项目</button>
+          <button class="new-project-btn" id="open-new-project">+ 新建项目</button>
           <div class="sidebar-title quick">⚡ 快捷入口</div>
-          <button class="project-item quick-entry" data-demo="完整版本会进入 9 步向导；Demo 保留当前项目概览。">
+          <button class="project-item quick-entry open-wizard">
             <span class="pname">🚀 开始新翻译任务</span>
             <span class="pmeta">基于当前项目启动工作流</span>
           </button>
@@ -371,7 +475,7 @@
               <h2>小小战机</h2>
               <div class="desc">来源：战机术语表.xlsx；战机英语5.18翻译需求.xlsx；战机英语语言表校对.xlsx。目标语言：英语 EN。风格：UI 短句清晰，战机、装备、资源、任务术语统一。</div>
             </div>
-            <button class="btn btn-primary" data-demo="完整版本会进入新翻译任务向导。">🚀 启动新翻译任务</button>
+            <button class="btn btn-primary open-wizard">🚀 启动新翻译任务</button>
           </div>
 
           <div class="stat-grid">
@@ -394,12 +498,12 @@
               <div class="card-title">
                 <div class="left">🤖 AI 生成的专属翻译提示词</div>
                 <div class="card-actions">
-                  <button class="btn btn-ghost btn-sm" data-demo="静态 Demo 不操作剪贴板。">📋 复制</button>
-                  <button class="btn btn-ghost btn-sm" data-demo="完整版本可直接编辑并保存提示词。">✏️ 编辑</button>
-                  <button class="btn btn-ghost btn-sm" data-demo="完整版本会调用项目分析并保存到当前项目。">🔄 重新生成</button>
+                  <button class="btn btn-ghost btn-sm" id="copy-prompt">📋 复制</button>
+                  <button class="btn btn-ghost btn-sm" id="edit-prompt">✏️ 编辑</button>
+                  <button class="btn btn-ghost btn-sm" id="regen-prompt">🔄 重新生成</button>
                 </div>
               </div>
-              <pre>你是资深游戏本地化译者，正在翻译《小小战机》这款科幻战机 / 飞行射击 / RPG 养成游戏。
+              <pre id="prompt-view">你是资深游戏本地化译者，正在翻译《小小战机》这款科幻战机 / 飞行射击 / RPG 养成游戏。
 
 要求：
 1. 游戏内容 / UI / 玩法说明尽量精简，适配移动端按钮、弹窗、任务、道具和奖励说明。
@@ -407,6 +511,13 @@
 3. 战机、装备、导弹、技能和战斗数值要专业清晰。
 4. 关键术语以术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法。
 5. 保留变量、占位符、富文本标签、颜色标签、换行和数字。</pre>
+              <div id="prompt-edit-box" class="hidden">
+                <textarea id="prompt-editor"></textarea>
+                <div class="row-actions">
+                  <button class="btn btn-ghost btn-sm" id="cancel-prompt">取消</button>
+                  <button class="btn btn-primary btn-sm" id="save-prompt">保存提示词</button>
+                </div>
+              </div>
             </div>
             <div class="card reference-card">
               <div class="card-title"><div class="left">📌 项目元信息</div></div>
@@ -427,29 +538,41 @@
             <div class="card">
               <div class="card-title">
                 <div class="left">项目术语表（402 条）</div>
-                <button type="button" class="btn btn-ghost btn-sm" data-demo="完整版本会展开导入 / 生成 / 导出看板。">导入 / 生成 / 导出</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="toggle-glossary-tools">导入 / 生成 / 导出</button>
+              </div>
+              <div class="glossary-tools-panel hidden" id="glossary-tools">
+                <div class="action-card">
+                  <select id="term-asset"><option>战机术语表.xlsx · uploaded</option><option>高频词扫描结果 · generated</option></select>
+                  <div class="upload-box">📄 上传术语表 xlsx / csv / json</div>
+                  <div class="row-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" data-action-status="已载入术语表预览：显示前 6 条。">预览导入</button>
+                    <button type="button" class="btn btn-primary btn-sm" data-action-status="已导入到项目术语：新增 0，补全 2，重复跳过 4。">导入到项目术语</button>
+                    <button type="button" class="btn btn-ghost btn-sm" data-action-status="已从语言表生成候选：新增待确认 2，补全 1。">从语言表生成</button>
+                    <button type="button" class="btn btn-ghost btn-sm" data-action-status="已准备导出：小小战机_glossary.xlsx">导出 XLSX</button>
+                  </div>
+                </div>
               </div>
               <span class="action-status">当前状态：准备就绪</span>
               <form class="glossary-form">
-                <input placeholder="ID" />
-                <input placeholder="CN" />
-                <input placeholder="EN" />
-                <input placeholder="EN2" />
-                <input placeholder="分类" />
-                <input placeholder="备注" />
-                <button class="btn btn-primary btn-sm" type="button" data-demo="完整版本会新增到项目术语库并参与下一次快照。">+ 新增</button>
+                <input id="term-id" placeholder="ID" />
+                <input id="term-cn" placeholder="CN" />
+                <input id="term-en" placeholder="EN" />
+                <input id="term-en2" placeholder="EN2" />
+                <input id="term-category" placeholder="分类" />
+                <input id="term-note" placeholder="备注" />
+                <button class="btn btn-primary btn-sm" type="button" id="add-term">+ 新增</button>
               </form>
               <div class="table-scroll">
                 <table class="glossary-table">
                   <thead><tr><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
                   <tbody>
-                    <tr><td>28</td><td>消灭怪物</td><td>-</td><td>-</td><td>-</td><td>高频词扫描候选，待补译</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
-                    <tr><td>237</td><td>特训</td><td>-</td><td>-</td><td>-</td><td>高频词扫描候选，待补译</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
-                    <tr><td>400</td><td>增伤</td><td>DMG Boost</td><td>-</td><td>战斗属性/数值</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
-                    <tr><td>399</td><td>输出军工厂</td><td>DPS Armory</td><td>-</td><td>核心系统/功能名</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
-                    <tr><td>398</td><td>钻石</td><td>Diamonds</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
-                    <tr><td>397</td><td>金条</td><td>Gold Bar</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
-                    <tr><td>396</td><td>超频核心</td><td>Overclock Core</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
+                    <tr><td>28</td><td>消灭怪物</td><td>-</td><td>-</td><td>-</td><td>高频词扫描候选，待补译</td><td><button class="btn btn-sm edit-term">编辑</button></td></tr>
+                    <tr><td>237</td><td>特训</td><td>-</td><td>-</td><td>-</td><td>高频词扫描候选，待补译</td><td><button class="btn btn-sm edit-term">编辑</button></td></tr>
+                    <tr><td>400</td><td>增伤</td><td>DMG Boost</td><td>-</td><td>战斗属性/数值</td><td>-</td><td><button class="btn btn-sm edit-term">编辑</button></td></tr>
+                    <tr><td>399</td><td>输出军工厂</td><td>DPS Armory</td><td>-</td><td>核心系统/功能名</td><td>-</td><td><button class="btn btn-sm edit-term">编辑</button></td></tr>
+                    <tr><td>398</td><td>钻石</td><td>Diamonds</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm edit-term">编辑</button></td></tr>
+                    <tr><td>397</td><td>金条</td><td>Gold Bar</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm edit-term">编辑</button></td></tr>
+                    <tr><td>396</td><td>超频核心</td><td>Overclock Core</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm edit-term">编辑</button></td></tr>
                   </tbody>
                 </table>
               </div>
@@ -467,9 +590,19 @@
               <table>
                 <thead><tr><th>日期</th><th>任务名称</th><th>目标语言</th><th>产物</th><th>状态</th><th>操作</th></tr></thead>
                 <tbody>
-                  <tr><td>2026-05-20</td><td>翻译任务 · run_3481</td><td>EN</td><td>4</td><td><span class="tag tag-done">passed</span></td><td><a href="#" data-demo="Demo 不下载文件。">查看</a>　<a href="#" data-demo="完整版本会下载 QA 后最终 workbook。">下载</a></td></tr>
+                  <tr><td>2026-05-20</td><td>翻译任务 · run_3481</td><td>EN</td><td>4</td><td><span class="tag tag-done">passed</span></td><td><a href="#" id="show-run-detail">查看</a>　<a href="#" data-action-status="Demo 不下载文件；完整版本会下载 QA 后最终 workbook。">下载</a></td></tr>
                 </tbody>
               </table>
+              <div class="history-detail hidden" id="run-detail">
+                <div class="history-detail-grid">
+                  <div><strong>任务类型</strong><span>T-3481e4</span></div>
+                  <div><strong>输入文件</strong><span>战机英语5.18翻译需求.xlsx</span></div>
+                  <div><strong>快照</strong><span>术语库 / 提示词 / 项目规则</span></div>
+                  <div><strong>QA</strong><span>必须修复 0 / 建议修复 0</span></div>
+                  <div><strong>模型</strong><span>GPT deep</span></div>
+                  <div><strong>状态</strong><span>passed</span></div>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -480,6 +613,11 @@
                 <div><strong>输入</strong><span>继续前一步翻译结果 / 上传已有译文</span></div>
                 <div><strong>规则 QA</strong><span>术语、变量、标签、换行、UI 长度</span></div>
                 <div><strong>模型修复</strong><span>有 key 时先模型批量修复，再人工兜底</span></div>
+              </div>
+              <div class="row-actions" style="justify-content:flex-start;margin-bottom:12px">
+                <button class="btn btn-ghost btn-sm" data-action-status="已选择前一步翻译结果作为校对输入。">继续前一步翻译结果</button>
+                <button class="btn btn-primary btn-sm" data-action-status="QA 已完成：必须修复 0，建议修复 0。">运行 QA</button>
+                <button class="btn btn-ghost btn-sm" data-action-status="模型修复会在完整版本中调用 GPT / Claude。">模型修复并重跑 QA</button>
               </div>
               <table>
                 <thead><tr><th>日期</th><th>任务</th><th>来源</th><th>处理条数</th><th>状态</th></tr></thead>
@@ -496,7 +634,7 @@
               <div class="delivery-card">
                 <div class="delivery-head">
                   <div><strong>T-3481e4 · EN</strong><span>2026-05-20 14:30 · 2033 条 · QA passed</span></div>
-                  <button class="btn btn-primary btn-sm" data-demo="完整版本会生成固定命名交付文件。">生成/刷新最终交付文件</button>
+                  <button class="btn btn-primary btn-sm" id="make-delivery">生成/刷新最终交付文件</button>
                 </div>
                 <div class="delivery-meta">
                   <div><strong>最终表</strong><span>小小战机_EN_202605201430_T-3481e4_final.xlsx</span></div>
@@ -507,6 +645,59 @@
             </div>
           </section>
         </main>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="settings-modal">
+    <div class="modal small">
+      <div class="modal-head">
+        <h3>⚙ 设置</h3>
+        <button class="btn btn-ghost btn-sm close-modal">关闭</button>
+      </div>
+      <div class="modal-grid">
+        <label><span>Provider</span><select id="demo-provider"><option>GPT</option><option>Claude</option><option>Mock</option></select></label>
+        <label><span>预设</span><select id="demo-preset"><option>快速响应</option><option selected>平衡</option><option>深度思考</option></select></label>
+        <label class="wide"><span>API key</span><input type="password" placeholder="完整版本写入私有 settings.local.json" /></label>
+      </div>
+      <div class="row-actions">
+        <button class="btn btn-primary" id="save-settings">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="new-project-modal">
+    <div class="modal small">
+      <div class="modal-head">
+        <h3>+ 新建项目</h3>
+        <button class="btn btn-ghost btn-sm close-modal">关闭</button>
+      </div>
+      <div class="modal-grid">
+        <label><span>项目名</span><input id="new-project-name" value="小小战机 Demo 副本" /></label>
+        <label><span>题材/分类</span><input value="飞行射击" /></label>
+        <label class="wide"><span>说明</span><textarea>静态 Demo 只模拟创建项目，不写入真实数据。</textarea></label>
+      </div>
+      <div class="row-actions">
+        <button class="btn btn-primary" id="create-project">创建项目</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="wizard-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>🚀 新翻译任务 · 当前项目：小小战机</h3>
+        <button class="btn btn-ghost btn-sm close-modal">返回项目概览</button>
+      </div>
+      <div class="steps-nav" id="wizard-steps"></div>
+      <div class="step-body">
+        <h4 id="wizard-title"></h4>
+        <p id="wizard-desc"></p>
+        <div id="wizard-extra"></div>
+      </div>
+      <div class="row-actions">
+        <button class="btn btn-ghost" id="wizard-prev">← 上一步</button>
+        <button class="btn btn-primary" id="wizard-next">下一步 →</button>
       </div>
     </div>
   </div>
@@ -523,11 +714,180 @@
       clearTimeout(timer);
       timer = setTimeout(() => toast.classList.remove("show"), 2200);
     }
+    function openModal(id) {
+      document.getElementById(id).classList.add("open");
+    }
+    function closeModals() {
+      document.querySelectorAll(".modal-backdrop").forEach((modal) => modal.classList.remove("open"));
+    }
     document.querySelectorAll(".view-tab").forEach((tab) => {
       tab.addEventListener("click", () => {
         document.querySelectorAll(".view-tab").forEach((item) => item.classList.toggle("active", item === tab));
         document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === tab.dataset.tab));
       });
+    });
+    document.getElementById("open-settings").addEventListener("click", () => openModal("settings-modal"));
+    document.getElementById("open-new-project").addEventListener("click", () => openModal("new-project-modal"));
+    document.querySelectorAll(".close-modal").forEach((button) => button.addEventListener("click", closeModals));
+    document.querySelectorAll(".modal-backdrop").forEach((modal) => {
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) closeModals();
+      });
+    });
+    document.getElementById("save-settings").addEventListener("click", () => {
+      const provider = document.getElementById("demo-provider").value;
+      const preset = document.getElementById("demo-preset").value;
+      show(`设置已保存：${provider} / ${preset}。静态 Demo 不保存密钥。`);
+      closeModals();
+    });
+    document.getElementById("create-project").addEventListener("click", () => {
+      const name = document.getElementById("new-project-name").value.trim() || "未命名项目";
+      show(`已模拟创建项目：${name}。完整版本会写入私有数据目录。`);
+      closeModals();
+    });
+
+    const wizardSteps = [
+      ["输入游戏信息", "录入项目说明、题材、目标用户和参考素材。"],
+      ["AI 分析", "生成项目元信息、翻译提示词和项目规则。"],
+      ["导入术语表", "预览、导入、编辑并保存到项目术语库。"],
+      ["导入原文", "选择或上传待翻译语言表 workbook。"],
+      ["高频词扫描", "从语言表生成候选术语，按中文去重并保守补全。"],
+      ["选择语言", "v1 正式闭环只进入英语 EN。"],
+      ["AI 翻译", "使用提示词、术语库快照和项目规则分批翻译。"],
+      ["自动校对", "运行规则 QA、项目规则 QA 和模型修复入口。"],
+      ["输出译文", "QA 通过后生成最终表和修改表。"]
+    ];
+    let wizardIndex = 0;
+    const wizardStepsEl = document.getElementById("wizard-steps");
+    const wizardTitle = document.getElementById("wizard-title");
+    const wizardDesc = document.getElementById("wizard-desc");
+    const wizardExtra = document.getElementById("wizard-extra");
+    function renderWizard() {
+      wizardStepsEl.innerHTML = wizardSteps.map((step, index) => `<button class="step-item ${index === wizardIndex ? "active" : ""}" data-step="${index}"><span>${index + 1}</span>${step[0]}</button>`).join("");
+      wizardTitle.textContent = `STEP ${wizardIndex + 1} ${wizardSteps[wizardIndex][0]}`;
+      wizardDesc.textContent = wizardSteps[wizardIndex][1];
+      wizardExtra.innerHTML = wizardIndex === 2
+        ? '<div class="upload-box">📊 点击上传 glossary.xlsx</div>'
+        : wizardIndex === 7
+          ? '<div class="workflow-note-grid"><div><strong>输入</strong><span>前一步翻译结果</span></div><div><strong>术语</strong><span>402 条快照</span></div><div><strong>状态</strong><span>可运行 QA</span></div></div>'
+          : '<span class="action-status">当前状态：准备就绪</span>';
+      wizardStepsEl.querySelectorAll(".step-item").forEach((button) => {
+        button.addEventListener("click", () => {
+          wizardIndex = Number(button.dataset.step);
+          renderWizard();
+        });
+      });
+    }
+    document.querySelectorAll(".open-wizard").forEach((button) => {
+      button.addEventListener("click", () => {
+        wizardIndex = 0;
+        renderWizard();
+        openModal("wizard-modal");
+        show("已进入新翻译任务向导。");
+      });
+    });
+    document.getElementById("wizard-prev").addEventListener("click", () => {
+      wizardIndex = Math.max(0, wizardIndex - 1);
+      renderWizard();
+    });
+    document.getElementById("wizard-next").addEventListener("click", () => {
+      if (wizardIndex === wizardSteps.length - 1) {
+        show("Demo 已完成向导预览；完整版本会生成交付文件。");
+        closeModals();
+        return;
+      }
+      wizardIndex += 1;
+      renderWizard();
+    });
+
+    const promptView = document.getElementById("prompt-view");
+    const promptEditBox = document.getElementById("prompt-edit-box");
+    const promptEditor = document.getElementById("prompt-editor");
+    document.getElementById("copy-prompt").addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(promptView.textContent || ""); } catch {}
+      show("提示词已复制。");
+    });
+    document.getElementById("edit-prompt").addEventListener("click", () => {
+      promptEditor.value = promptView.textContent.trim();
+      promptView.classList.add("hidden");
+      promptEditBox.classList.remove("hidden");
+      show("已进入提示词编辑状态。");
+    });
+    document.getElementById("cancel-prompt").addEventListener("click", () => {
+      promptEditBox.classList.add("hidden");
+      promptView.classList.remove("hidden");
+    });
+    document.getElementById("save-prompt").addEventListener("click", () => {
+      promptView.textContent = promptEditor.value;
+      promptEditBox.classList.add("hidden");
+      promptView.classList.remove("hidden");
+      show("提示词已保存到当前项目 Demo。");
+    });
+    document.getElementById("regen-prompt").addEventListener("click", () => {
+      promptView.textContent = `${promptView.textContent.trim()}\n6. 使用项目术语库时优先采用 EN，EN2 仅作为稳定替代译法参考。`;
+      show("已模拟重新生成并保存提示词。");
+    });
+
+    document.getElementById("toggle-glossary-tools").addEventListener("click", () => {
+      document.getElementById("glossary-tools").classList.toggle("hidden");
+      show("已切换术语导入 / 生成 / 导出看板。");
+    });
+    document.querySelectorAll("[data-action-status]").forEach((item) => {
+      item.addEventListener("click", (event) => {
+        event.preventDefault();
+        show(item.dataset.actionStatus);
+      });
+    });
+    function bindTermEdit(button) {
+      button.addEventListener("click", () => {
+        const row = button.closest("tr");
+        const cells = [...row.children].slice(0, 6);
+        if (button.textContent === "编辑") {
+          cells.forEach((cell) => {
+            const value = cell.textContent.trim() === "-" ? "" : cell.textContent.trim();
+            cell.innerHTML = `<input value="${value.replaceAll('"', '&quot;')}" />`;
+          });
+          row.lastElementChild.innerHTML = '<div class="table-actions"><button class="btn btn-primary btn-sm save-term">保存</button><button class="btn btn-sm delete-term">删除</button></div>';
+          row.querySelector(".save-term").addEventListener("click", () => {
+            [...row.children].slice(0, 6).forEach((cell) => {
+              const value = cell.querySelector("input").value.trim();
+              cell.textContent = value || "-";
+            });
+            row.lastElementChild.innerHTML = '<button class="btn btn-sm edit-term">编辑</button>';
+            bindTermEdit(row.querySelector(".edit-term"));
+            show("词条已保存，可参与下一次术语快照。");
+          });
+          row.querySelector(".delete-term").addEventListener("click", () => {
+            row.remove();
+            show("词条已从 Demo 表格中删除。");
+          });
+          show("已进入词条编辑状态。");
+        }
+      });
+    }
+    document.querySelectorAll(".edit-term").forEach(bindTermEdit);
+    document.getElementById("add-term").addEventListener("click", () => {
+      const values = ["term-id", "term-cn", "term-en", "term-en2", "term-category", "term-note"].map((id) => document.getElementById(id).value.trim());
+      if (!values[1]) {
+        show("请先填写 CN。");
+        return;
+      }
+      const tbody = document.querySelector("#glossary tbody");
+      const row = document.createElement("tr");
+      row.innerHTML = `${values.map((value) => `<td>${value || "-"}</td>`).join("")}<td><button class="btn btn-sm edit-term">编辑</button></td>`;
+      tbody.prepend(row);
+      bindTermEdit(row.querySelector(".edit-term"));
+      document.querySelectorAll(".glossary-form input").forEach((input) => input.value = "");
+      show("新增词条已加入 Demo 术语表。");
+    });
+    document.getElementById("show-run-detail").addEventListener("click", (event) => {
+      event.preventDefault();
+      document.getElementById("run-detail").classList.toggle("hidden");
+      show("已切换翻译任务详情。");
+    });
+    document.getElementById("make-delivery").addEventListener("click", () => {
+      document.querySelector("#delivery .delivery-head span").textContent = "2026-05-20 14:30 · 2033 条 · QA passed · 已刷新";
+      show("最终交付文件已刷新：final.xlsx / changes.xlsx。");
     });
     document.querySelectorAll("[data-demo]").forEach((item) => {
       item.addEventListener("click", (event) => {
