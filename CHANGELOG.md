@@ -2,6 +2,17 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.6 - 2026-05-21
+
+- Added a GitHub Pages static demo entry using `小小战机` sample data, with read-only project tabs for metadata, glossary, translation, QA, delivery, and deployment guidance.
+- Added GitHub Actions Pages deployment for the `docs/` homepage.
+- Documented the full deployment split: static frontend, FastAPI backend, private metadata database, private file storage, and server-side provider secrets.
+- Added a dedicated storage model document covering public repository boundaries, local runtime data, `.gitignore` coverage, and shared deployment storage recommendations.
+- Added configurable backend CORS origins and `VITE_API_BASE_URL` frontend builds for separated frontend/backend deployments.
+- Tightened generated glossary backfill so high-frequency term scans dedupe by normalized Chinese source text, conservatively fill only blank EN/EN2 fields, and surface pending-confirmation counts.
+- Added model-first QA repair flow so configured GPT/Claude providers can propose row-level fixes before manual editing remains necessary.
+- Cleaned workflow UI surfaces by hiding empty reference-material archive blocks and reducing raw QA labels in user-facing issue repair views.
+
 ## 0.4.5 - 2026-05-20
 
 - Reworked the delivery page into final deliverable task cards instead of pending placeholder files.

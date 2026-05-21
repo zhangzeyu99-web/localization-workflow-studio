@@ -106,6 +106,11 @@ class ManualFixRequest(BaseModel):
     rerun_qa: bool = True
 
 
+class ModelFixRequest(BaseModel):
+    max_issues: int = 80
+    rerun_qa: bool = True
+
+
 class GlossaryExtractRequest(BaseModel):
     input_artifact_id: str
     project_name: str | None = None

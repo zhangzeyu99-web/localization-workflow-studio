@@ -296,7 +296,6 @@ a { color: #a5b4fc; text-decoration: none; }
   vertical-align: top;
   line-height: 1.7;
 }
-.harness-summary-table th { width: 22%; }
 .edit-panel .card { margin-top: 14px; }
 .glossary-tools-panel { margin-bottom: 16px; }
 .glossary-form {
@@ -438,6 +437,48 @@ a { color: #a5b4fc; text-decoration: none; }
 .issue-summary {
   margin-top: 14px;
 }
+.issue-guide {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(245,158,11,.1);
+  border: 1px solid rgba(245,158,11,.2);
+}
+.issue-guide div {
+  display: grid;
+  gap: 4px;
+}
+.issue-guide strong { color: #fff; }
+.issue-guide span,
+.issue-guide p {
+  color: #fde68a;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.issue-guide p { margin: 0; }
+.model-fix-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(99,102,241,.12);
+  border: 1px solid rgba(139,92,246,.24);
+}
+.model-fix-bar div {
+  display: grid;
+  gap: 4px;
+}
+.model-fix-bar strong { color: #fff; }
+.model-fix-bar span {
+  color: #c4b5fd;
+  font-size: 12px;
+  line-height: 1.5;
+}
 .repair-panel {
   border: 1px solid rgba(248,113,113,.24);
   border-radius: 10px;
@@ -538,6 +579,16 @@ a { color: #a5b4fc; text-decoration: none; }
   font-size: 11px;
 }
 .failed-message { color: #fecaca; font-size: 12px; }
+.failed-field,
+.failed-edit {
+  display: grid;
+  gap: 6px;
+}
+.failed-field span,
+.failed-edit span {
+  color: #a1a1aa;
+  font-size: 12px;
+}
 .failed-current {
   color: #f8fafc;
   font-size: 13px;

@@ -445,7 +445,17 @@ def get_glossary_term(term_id: str, conn: sqlite3.Connection | None = None) -> d
 def list_glossary_terms(project_id: str) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM glossary_terms WHERE project_id = ? ORDER BY created_at DESC",
+            """
+            SELECT * FROM glossary_terms
+            WHERE project_id = ?
+            ORDER BY
+              confirmed ASC,
+              CASE
+                WHEN TRIM(target) = '' AND TRIM(target_alt) = '' THEN 0
+                ELSE 1
+              END ASC,
+              updated_at DESC
+            """,
             (project_id,),
         ).fetchall()
         result = []

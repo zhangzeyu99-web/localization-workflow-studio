@@ -623,43 +623,79 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
 
 
 def backfill_project_glossary_from_final(project_id: str, final_output: Path, run_id: str | None = None) -> dict[str, Any]:
-    """Apply generated glossary rows to the project term table without overwriting curated decisions."""
+    """Merge generated glossary candidates into project terms without overwriting curated terms."""
+    result = {
+        "candidates": 0,
+        "unique_candidates": 0,
+        "inserted": 0,
+        "updated": 0,
+        "skipped_existing": 0,
+        "skipped_empty": 0,
+        "skipped_duplicate": 0,
+        "conflicts": 0,
+        "pending_confirmation": 0,
+    }
     if not final_output.exists():
-        result = {"candidates": 0, "inserted": 0, "updated": 0, "skipped_existing": 0, "skipped_empty": 0}
         if run_id:
-            db.add_event(run_id, "高频词补充跳过：未找到生成的 ID/CN/EN/EN2 术语文件。", level="warn")
+            db.add_event(run_id, "Glossary backfill skipped: generated ID/CN/EN/EN2 file was not found.", level="warn")
         return result
+
     rows, _columns = _read_glossary_rows(final_output, limit=None)
-    existing = {str(term.get("source", "")).strip(): term for term in db.list_glossary_terms(project_id) if str(term.get("source", "")).strip()}
-    result = {"candidates": len(rows), "inserted": 0, "updated": 0, "skipped_existing": 0, "skipped_empty": 0}
+    result["candidates"] = len(rows)
+
+    existing: dict[str, dict[str, Any]] = {}
+    for term in db.list_glossary_terms(project_id):
+        source_key = _glossary_source_key(term.get("source"))
+        if not source_key:
+            continue
+        current = existing.get(source_key)
+        if current is None or _glossary_term_rank(term) < _glossary_term_rank(current):
+            existing[source_key] = term
+
+    deduped_rows: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        source = str(row.get("source") or "").strip()
+        source_key = _glossary_source_key(source)
+        if not source_key:
+            result["skipped_empty"] += 1
+            continue
+        current = deduped_rows.get(source_key)
+        if current:
+            result["skipped_duplicate"] += 1
+            _fill_blank_glossary_fields(current, row)
+            continue
+        deduped_rows[source_key] = dict(row, source=source)
+
+    result["unique_candidates"] = len(deduped_rows)
     if run_id:
         db.add_event(
             run_id,
-            "高频词补充策略：读取生成的 ID/CN/EN/EN2 候选；项目中不存在的候选会新增，"
-            "EN/EN2 为空时作为待补译词条；已有词条只补空白 EN/EN2，不覆盖人工译名或已导入译名。",
+            "Glossary backfill strategy: dedupe by normalized CN; insert missing CN as unconfirmed project terms; "
+            "only fill blank EN/EN2 on existing terms; never overwrite manual/imported translations.",
         )
-    for row in rows:
+
+    for source_key, row in deduped_rows.items():
         source = str(row.get("source") or "").strip()
         target = str(row.get("target") or "").strip()
         target_alt = str(row.get("target_alt") or "").strip()
-        if not source:
-            result["skipped_empty"] += 1
-            continue
-        current = existing.get(source)
+        current = existing.get(source_key)
         if current:
             updates: dict[str, Any] = {}
-            if target and not str(current.get("target") or "").strip():
+            current_target = str(current.get("target") or "").strip()
+            current_target_alt = str(current.get("target_alt") or "").strip()
+            if target and not current_target:
                 updates["target"] = target
-            if target_alt and not str(current.get("target_alt") or "").strip():
+            if target_alt and not current_target_alt:
                 updates["target_alt"] = target_alt
             if updates:
-                updates["note"] = str(current.get("note") or "高频词扫描补充").strip() or "高频词扫描补充"
+                updates["note"] = str(current.get("note") or "").strip() or "高频词扫描补全 EN/EN2"
                 db.update_glossary_term(current["id"], updates)
                 current.update(updates)
                 result["updated"] += 1
-            else:
-                result["skipped_existing"] += 1
+            result["skipped_existing"] += 1
+            existing[source_key] = current
             continue
+
         created = db.insert_glossary_term(
             project_id,
             {
@@ -668,21 +704,41 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
                 "target": target,
                 "target_alt": target_alt,
                 "category": row.get("category", "") or "generated",
-                "note": row.get("note", "") or ("高频词扫描补充" if target or target_alt else "高频词扫描候选，待补译"),
+                "note": row.get("note", "") or ("高频词扫描候选，待补译" if not target and not target_alt else "高频词扫描候选，待确认"),
                 "source_type": "generated",
                 "confirmed": False,
             },
         )
-        existing[source] = created
+        existing[source_key] = created
         result["inserted"] += 1
+        result["pending_confirmation"] += 1
+
     if run_id:
         db.add_event(
             run_id,
-            "高频词补充结果："
-            f"候选 {result['candidates']}，新增 {result['inserted']}，补全 {result['updated']}，"
-            f"保留已有 {result['skipped_existing']}，跳过空项 {result['skipped_empty']}。",
+            "Glossary backfill result: "
+            f"candidates={result['candidates']}, unique={result['unique_candidates']}, inserted={result['inserted']}, "
+            f"updated={result['updated']}, existing={result['skipped_existing']}, duplicates={result['skipped_duplicate']}, "
+            f"conflicts={result['conflicts']}, empty={result['skipped_empty']}.",
         )
     return result
+
+
+def _glossary_source_key(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).casefold()
+
+
+def _glossary_term_rank(term: dict[str, Any]) -> tuple[int, int, int]:
+    has_translation = bool(str(term.get("target") or "").strip() or str(term.get("target_alt") or "").strip())
+    confirmed = bool(term.get("confirmed"))
+    curated_source = str(term.get("source_type") or "") in {"manual", "imported", "curated"}
+    return (0 if confirmed else 1, 0 if has_translation else 1, 0 if curated_source else 1)
+
+
+def _fill_blank_glossary_fields(base: dict[str, Any], incoming: dict[str, Any]) -> None:
+    for field in ("target", "target_alt", "category", "note"):
+        if not str(base.get(field) or "").strip() and str(incoming.get(field) or "").strip():
+            base[field] = incoming.get(field, "")
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -870,7 +926,7 @@ def _effective_task_identity(run: dict[str, Any], seen: set[str] | None = None) 
         return _fallback_task_code(run), run["id"]
     seen.add(run["id"])
     metadata = run.get("metadata", {})
-    source_run_id = metadata.get("manual_fix_source_run_id") or metadata.get("source_run_id")
+    source_run_id = metadata.get("manual_fix_source_run_id") or metadata.get("model_fix_source_run_id") or metadata.get("source_run_id")
     if source_run_id:
         try:
             source_run = db.get_run(str(source_run_id))
@@ -1320,6 +1376,94 @@ def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
     return result
 
 
+def apply_model_fixes(run_id: str, request: Any) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    project = db.get_project(run["project_id"])
+    settings = load_settings()
+    provider = str(settings.get("provider") or "mock")
+    if provider == "mock" or not settings.get("api_key"):
+        raise ValueError("模型修复需要配置 GPT 或 Claude API key；mock 只用于链路测试，不能生成可交付修复。")
+
+    max_issues = max(1, min(int(getattr(request, "max_issues", 80) or 80), 200))
+    issue_payload = list_quality_issues(run_id)
+    issues = [
+        issue
+        for issue in issue_payload.get("issues", [])
+        if issue.get("sheet") and int(issue.get("row") or 0) > 1 and issue.get("severity") in {"hard", "soft"}
+    ][:max_issues]
+    if not issues:
+        raise ValueError("没有可交给模型修复的行级 QA 问题。")
+
+    source_artifact = _workbook_artifact_for_quality_run(run)
+    source_path = Path(source_artifact["path"])
+    if not source_path.exists():
+        raise FileNotFoundError(str(source_path))
+    rows = [_model_fix_row_context(source_path, issue) for issue in issues]
+    prompt = _model_fix_prompt(project, run, rows)
+    text = _call_semantic_provider(settings, prompt)
+    payload = _parse_semantic_qa_payload(text)
+    fixes = _normalize_model_fixes(payload, rows)
+    if not fixes:
+        raise ValueError("模型没有返回可应用的修复。")
+
+    output_dir = run_dir(run_id) / "model_fixes"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fixed_path = output_dir / f"{source_path.stem}_model_fixed.xlsx"
+    shutil.copy2(source_path, fixed_path)
+    applied = _apply_workbook_fixes(fixed_path, fixes, run_id)
+    fixed_artifact = db.add_artifact(
+        project["id"],
+        "Model fixed workbook",
+        fixed_path,
+        "manual_fixed_workbook",
+        run_id=run_id,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        origin="provider",
+        metadata={
+            "source_run_id": run_id,
+            "source_artifact_id": source_artifact["id"],
+            "model_fix_count": len(applied),
+            "provider": provider,
+            "model": settings.get("model") or "",
+        },
+    )
+    _append_improvement_items(
+        project["id"],
+        [
+            _improvement_item(
+                "project_harness",
+                run_id,
+                "Review model fixes for reusable project rules",
+                "Model QA fixes were applied; review whether repeated fixes should become project terms, fixed names, or project-specific rules.",
+            )
+        ],
+    )
+
+    result: dict[str, Any] = {
+        "source_run": run,
+        "fixed_artifact": fixed_artifact,
+        "model_fixes": applied,
+        "qa_result": None,
+    }
+    if getattr(request, "rerun_qa", True):
+        qa_run = db.insert_run(
+            project["id"],
+            kind="qa",
+            language=run.get("language", "en"),
+            metadata={
+                "input_artifact_id": fixed_artifact["id"],
+                "model_fix_source_run_id": run_id,
+                "model_fix_source_artifact_id": source_artifact["id"],
+                "model_fix_count": len(applied),
+                "manual_fixes": applied,
+                "task_origin": "model_fix_continuation",
+                "task_code": (run.get("metadata") or {}).get("task_code"),
+            },
+        )
+        result["qa_result"] = run_qa_sync(qa_run["id"])
+    return result
+
+
 def create_semantic_qa_context(run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     project = db.get_project(run["project_id"])
@@ -1463,6 +1607,8 @@ def run_localization_qa(
     metadata = run_metadata or {}
     if metadata.get("manual_fix_source_run_id"):
         summary["sources"]["manual_fix_source_run"] = metadata["manual_fix_source_run_id"]
+    if metadata.get("model_fix_source_run_id"):
+        summary["sources"]["model_fix_source_run"] = metadata["model_fix_source_run_id"]
     summary_path = output_dir / "quality_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     auto_fixes = _collect_workbook_translation_changes(workbook_path, qa_workbook)
@@ -1533,7 +1679,7 @@ def write_qa_changes_report(output_dir: Path, manual_fixes: list[dict[str, Any]]
                     fix.get("issue_id", ""),
                     fix.get("previous_translation", ""),
                     fix.get("translation", ""),
-                    "manual_fix",
+                    fix.get("rule_source", "manual_fix"),
                     fix.get("note", ""),
                 ]
             )
@@ -1799,6 +1945,86 @@ def _workbook_artifact_for_quality_run(run: dict[str, Any]) -> dict[str, Any]:
     raise KeyError("translation workbook artifact not found")
 
 
+def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        sheet_name = str(issue.get("sheet") or wb.sheetnames[0])
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        headers = {
+            str(value).strip().lower(): index
+            for index, value in enumerate(header_row, start=1)
+            if value is not None and str(value).strip()
+        }
+        source_col = _first_col(headers, ["cn", "source", "original", "原文", "中文"])
+        target_col = _first_col(headers, ["en", "target", "translation", "译文", "英文"])
+        id_col = _first_col(headers, ["id", "key", "编号", "序号"])
+        row_index = int(issue.get("row") or 0)
+        row_values = next(ws.iter_rows(min_row=row_index, max_row=row_index, values_only=True), ())
+        return {
+            "issue_id": issue.get("id", ""),
+            "sheet": ws.title,
+            "row": row_index,
+            "record_id": _row_cell(row_values, id_col) if id_col else "",
+            "source_text": _row_cell(row_values, source_col) if source_col else "",
+            "current_translation": _row_cell(row_values, target_col) if target_col else issue.get("current_translation", ""),
+            "severity": issue.get("severity", "hard"),
+            "check_type": issue.get("check_type", ""),
+            "message": issue.get("message", ""),
+            "rule_source": issue.get("rule_source") or issue.get("source") or "qa",
+        }
+    finally:
+        wb.close()
+
+
+def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    prompt = str(project.get("prompt_text") or "").strip()
+    harness = read_project_harness(project["id"])
+    return (
+        "你是游戏本地化 QA 修复模型。请根据项目提示词、项目规则、术语要求和 QA 问题，"
+        "只修复译文，不改原文，不解释过程。必须保留变量、数字、HTML/BBCode 标签、换行和占位符。"
+        "如果无法确定，保留原译文并在 note 写明需要人工确认。\n\n"
+        "返回严格 JSON：{\"fixes\":[{\"issue_id\":\"...\",\"sheet\":\"...\",\"row\":2,\"translation\":\"...\",\"note\":\"...\"}]}。\n"
+        f"项目：{project.get('name','')}\n"
+        f"任务：{run.get('id','')}\n"
+        f"项目提示词：\n{prompt}\n\n"
+        f"项目规则：\n{json.dumps(harness, ensure_ascii=False)}\n\n"
+        f"待修复行：\n{json.dumps(rows, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _normalize_model_fixes(payload: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fixes_by_issue = {str(row["issue_id"]): row for row in rows}
+    fixes_by_position = {(str(row["sheet"]), int(row["row"])): row for row in rows}
+    fixes: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in payload.get("fixes", []) if isinstance(payload.get("fixes"), list) else []:
+        issue_id = str(item.get("issue_id") or "")
+        sheet = str(item.get("sheet") or "")
+        row_index = int(item.get("row") or 0)
+        source = fixes_by_issue.get(issue_id) or fixes_by_position.get((sheet, row_index))
+        if not source:
+            continue
+        key = (str(source["sheet"]), int(source["row"]))
+        if key in seen:
+            continue
+        translation = str(item.get("translation") or "").strip()
+        if not translation:
+            continue
+        seen.add(key)
+        fixes.append(
+            {
+                "issue_id": source["issue_id"],
+                "sheet": source["sheet"],
+                "row": source["row"],
+                "translation": translation,
+                "note": str(item.get("note") or f"model_fix:{source['check_type']}").strip(),
+                "rule_source": "model_fix",
+            }
+        )
+    return fixes
+
+
 def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id: str) -> list[dict[str, Any]]:
     wb = load_workbook(path)
     applied: list[dict[str, Any]] = []
@@ -1829,6 +2055,7 @@ def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id
                     "previous_translation": previous,
                     "translation": translation,
                     "note": str(fix.get("note") or "").strip(),
+                    "rule_source": str(fix.get("rule_source") or "manual_fix").strip() or "manual_fix",
                     "applied_at": db.now_iso(),
                 }
             )

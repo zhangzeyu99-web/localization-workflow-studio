@@ -141,7 +141,7 @@ type DeliverableTask = {
   }
 }
 
-const API = ''
+const API = import.meta.env.VITE_API_BASE_URL || ''
 const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付归档']
 const langOptions = ['🇺🇸 英语 EN', '🇫🇷 法语 FR', '🇩🇪 德语 DE', '🇧🇷 巴葡 PT-BR', '🇷🇺 俄语 RU', '🇯🇵 日语 JA', '🇰🇷 韩语 KO', '🇪🇸 西语 ES', '🇸🇦 阿语 AR']
 type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'delivery'
@@ -280,7 +280,7 @@ function ruleSummary(project: Project): string {
   const hard = (harness.hard_rules || []).length
   const soft = (harness.soft_rules || []).length
   if (!hard && !soft) return '未设置'
-  return `hard ${hard} 条，soft ${soft} 条`
+  return `必须规则 ${hard} 条，建议规则 ${soft} 条`
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -460,7 +460,20 @@ function App() {
     setBusy(true)
     setStatus('正在提取术语并生成 project brief...')
     try {
-      const result = await api<{ run: Run; artifacts: Artifact[]; glossary_backfill?: { inserted?: number; updated?: number; candidates?: number } }>(`/api/projects/${current.id}/glossary/extract`, {
+      const result = await api<{
+        run: Run
+        artifacts: Artifact[]
+        glossary_backfill?: {
+          candidates?: number
+          unique_candidates?: number
+          inserted?: number
+          updated?: number
+          skipped_existing?: number
+          skipped_duplicate?: number
+          conflicts?: number
+          pending_confirmation?: number
+        }
+      }>(`/api/projects/${current.id}/glossary/extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -479,7 +492,8 @@ function App() {
       setLatestRun(result.run)
       await refreshCurrent()
       const backfill = result.glossary_backfill || {}
-      setStatus(`术语扫描完成：候选 ${backfill.candidates ?? 0}，新增 ${backfill.inserted ?? 0}，补全 ${backfill.updated ?? 0}`)
+      const pendingConfirmation = backfill.pending_confirmation ?? backfill.inserted ?? 0
+      setStatus(`术语扫描完成：候选 ${backfill.candidates ?? 0}，去重后 ${backfill.unique_candidates ?? 0}，新增待确认 ${pendingConfirmation}，补全 ${backfill.updated ?? 0}，重复跳过 ${backfill.skipped_duplicate ?? 0}，冲突保留 ${backfill.conflicts ?? 0}`)
     } catch (error) {
       setStatus(`术语提取失败：${errorText(error)}`)
     } finally {
@@ -634,6 +648,36 @@ function App() {
     }
   }
 
+  async function applyModelFixes() {
+    if (!current || !latestRun) return
+    setBusy(true)
+    setStatus('正在调用模型修复 QA 问题并重新校对...')
+    try {
+      const result = await api<{
+        fixed_artifact: Artifact
+        model_fixes: Record<string, unknown>[]
+        qa_result?: { run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }
+      }>(`/api/runs/${latestRun.id}/model-fixes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_issues: 80, rerun_qa: true })
+      })
+      if (result.qa_result) {
+        setLatestRun({ ...result.qa_result.run, artifacts: result.qa_result.artifacts })
+        setQualityIssues([])
+        setStatus(`模型已修复 ${result.model_fixes.length} 条并重新 QA：${result.qa_result.run.status}`)
+      } else {
+        setQaArtifact(result.fixed_artifact)
+        setStatus(`模型已修复 ${result.model_fixes.length} 条，等待重新 QA`)
+      }
+      await refreshCurrent()
+    } catch (error) {
+      setStatus(`模型修复失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function uploadAsset(file: File) {
     const artifact = await upload(file, 'asset')
     if (artifact) {
@@ -688,7 +732,7 @@ function App() {
       body: JSON.stringify(updates)
     })
     await refreshCurrent()
-    setStatus('Project Harness 已保存，仅对当前项目生效')
+    setStatus('项目规则已保存，仅对当前项目生效')
   }
 
   async function uploadTranslationWorkbook(file: File) {
@@ -796,6 +840,7 @@ function App() {
                 onTranslate={() => runTranslate('T')}
                 onDirectQA={() => runDirectQA('QA')}
                 onManualFixes={applyManualFixes}
+                onModelFixes={applyModelFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
                 onCreateDelivery={createDeliveryPackage}
                 onStartTask={() => setView('wizard')}
@@ -832,6 +877,7 @@ function App() {
                 onTranslate={() => runTranslate('A')}
                 onDirectQA={() => runDirectQA('QA')}
                 onManualFixes={applyManualFixes}
+                onModelFixes={applyModelFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
                 onFreq={() => setFreqOpen(true)}
                 onSaveHarness={saveHarness}
@@ -886,6 +932,7 @@ function ProjectOverview({
   onTranslate,
   onDirectQA,
   onManualFixes,
+  onModelFixes,
   onUploadTranslation,
   onCreateDelivery,
   onStartTask
@@ -922,6 +969,7 @@ function ProjectOverview({
   onTranslate: () => void
   onDirectQA: () => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
+  onModelFixes: () => void
   onUploadTranslation: (file: File) => void
   onCreateDelivery: (runId: string) => void
   onStartTask: () => void
@@ -991,6 +1039,7 @@ function ProjectOverview({
           setQaArtifact={setQaArtifact}
           onDirectQA={onDirectQA}
           onManualFixes={onManualFixes}
+          onModelFixes={onModelFixes}
           onUploadTranslation={onUploadTranslation}
           busy={busy}
           status={status}
@@ -1069,7 +1118,6 @@ function MetaTab({
           <pre>{project.prompt_text || '尚未生成。点击“重新生成”后会自动保存到当前项目。'}</pre>
         )}
       </div>
-      <ProjectHarnessSummary project={project} />
       <ProjectMetaTable project={project} />
       <details className="advanced-panel edit-panel">
         <summary>编辑项目元信息 / 重新生成输入</summary>
@@ -1099,28 +1147,12 @@ function MetaTab({
   )
 }
 
-function ProjectHarnessSummary({ project }: { project: Project }) {
-  const harness = getProjectHarness(project)
-  return (
-    <div className="card reference-card">
-      <div className="card-title">
-        <div className="left">🧭 项目 Harness</div>
-      </div>
-      <table className="meta-table harness-summary-table">
-        <tbody>
-          <tr><th>目标受众</th><td>{fieldText(harness.target_audience)}</td></tr>
-          <tr><th>语气</th><td>{fieldText(harness.tone)}</td></tr>
-          <tr><th>风格要求</th><td>{fieldText(harness.style_guidance)}</td></tr>
-          <tr><th>固定译名</th><td>{fixedTermsSummary(project)}</td></tr>
-          <tr><th>项目规则</th><td>{ruleSummary(project)}</td></tr>
-          <tr><th>保存时间</th><td>{formatDate(harness.updated_at)}</td></tr>
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
 function ProjectMetaTable({ project }: { project: Project }) {
+  const harness = getProjectHarness(project)
+  const forbidden = fieldText(harness.forbidden_translations, '未设置')
+  const fixedTerms = fixedTermsSummary(project)
+  const rules = ruleSummary(project)
+  const ruleUpdated = harness.updated_at ? `保存于 ${formatDate(harness.updated_at)}` : '未单独保存'
   return (
     <div className="card reference-card">
       <div className="card-title">
@@ -1134,6 +1166,7 @@ function ProjectMetaTable({ project }: { project: Project }) {
           <tr><th>翻译风格</th><td>{profileText(project, 'translation_style')}</td></tr>
           <tr><th>语言资产</th><td>{profileText(project, 'language_assets')}</td></tr>
           <tr><th>素材来源</th><td>{profileText(project, 'source_materials')}</td></tr>
+          <tr><th>质量规则摘要</th><td>固定译名：{fixedTerms}；禁用译法：{forbidden}；项目规则：{rules}。{ruleUpdated}</td></tr>
           <tr><th>生成日期</th><td>{profileText(project, 'generated_date', formatDate(project.updated_at))}</td></tr>
         </tbody>
       </table>
@@ -1221,17 +1254,17 @@ function HarnessEditor({
   return (
     <div className={`card ${compact ? 'compact-harness' : ''}`}>
       <div className="card-title">
-        <div className="left">项目 Harness 编辑</div>
-        <button className="btn btn-primary btn-sm" disabled={saving} onClick={submit}>{saving ? '保存中...' : '保存 Project Harness'}</button>
+        <div className="left">项目规则编辑</div>
+        <button className="btn btn-primary btn-sm" disabled={saving} onClick={submit}>{saving ? '保存中...' : '保存项目规则'}</button>
       </div>
       <div className="harness-editor">
         <label><span>目标受众</span><input value={targetAudience} onChange={(event) => setTargetAudience(event.target.value)} placeholder="欧美移动端玩家 / 核心策略用户" /></label>
         <label><span>语气</span><input value={tone} onChange={(event) => setTone(event.target.value)} placeholder="冷静、现代、军事化 / 轻松、活泼" /></label>
-        <label className="wide"><span>项目风格要求</span><textarea value={styleGuidance} onChange={(event) => setStyleGuidance(event.target.value)} placeholder="只写当前项目特有要求，不写进整体 harness。" /></label>
+        <label className="wide"><span>项目风格要求</span><textarea value={styleGuidance} onChange={(event) => setStyleGuidance(event.target.value)} placeholder="只写当前项目特有要求，不写进整体通用规则。" /></label>
         <label><span>禁用译法（一行一个）</span><textarea value={forbidden} onChange={(event) => setForbidden(event.target.value)} placeholder={'例如：\nMock\nraw CN'} /></label>
         <label><span>固定译名（一行一个 source =&gt; target）</span><textarea value={fixedTerms} onChange={(event) => setFixedTerms(event.target.value)} placeholder={'例如：\n最强指挥官 => Strongest Commander'} /></label>
-        <label><span>项目硬规则（一行一个 label | description | regex）</span><textarea value={hardRules} onChange={(event) => setHardRules(event.target.value)} placeholder={'例如：\nNo mock marker | Mock marker must not ship | Mock'} /></label>
-        <label><span>项目软规则（一行一个 label | description）</span><textarea value={softRules} onChange={(event) => setSoftRules(event.target.value)} placeholder="例如：短 UI 文案优先用动词开头" /></label>
+        <label><span>必须规则（一行一个 label | description | regex）</span><textarea value={hardRules} onChange={(event) => setHardRules(event.target.value)} placeholder={'例如：\nNo mock marker | Mock marker must not ship | Mock'} /></label>
+        <label><span>建议规则（一行一个 label | description）</span><textarea value={softRules} onChange={(event) => setSoftRules(event.target.value)} placeholder="例如：短 UI 文案优先用动词开头" /></label>
       </div>
     </div>
   )
@@ -1473,7 +1506,7 @@ function TranslationTab({
         <div className="workflow-note-grid">
           <div><strong>提示词</strong><span>{project.prompt_text ? '已在元信息页生成' : '未生成'}</span></div>
           <div><strong>项目术语库</strong><span>{glossaryCount} 条，run 开始时生成快照</span></div>
-          <div><strong>质量门槛</strong><span>QA hard error 为 0 才能交付</span></div>
+          <div><strong>质量门槛</strong><span>必须修复问题为 0 才能交付</span></div>
         </div>
       </div>
       <TaskHistoryTable project={project} kind="translation" title="🕒 翻译历史记录" />
@@ -1521,7 +1554,7 @@ function DeliveryTab({
                 <div><strong>处理条数</strong><span>{task.processed_rows || 0}</span></div>
                 <div><strong>完成状态</strong><span>{task.status}</span></div>
                 <div><strong>模型/来源</strong><span>{[task.provider, task.model].filter((item) => item && item !== '-').join(' / ') || '-'}</span></div>
-                <div><strong>QA 结果</strong><span>hard {task.qa_hard_errors ?? 0} / soft {task.qa_soft_warnings ?? 0}</span></div>
+                <div><strong>QA 结果</strong><span>必须修复 {task.qa_hard_errors ?? 0} / 建议修复 {task.qa_soft_warnings ?? 0}</span></div>
               </div>
               <div className="row-actions">
                 <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成/刷新最终交付文件</button>
@@ -1589,6 +1622,7 @@ function Wizard(props: {
   onTranslate: () => void
   onDirectQA: () => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
+  onModelFixes: () => void
   onUploadTranslation: (file: File) => void
   onFreq: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
@@ -1655,10 +1689,12 @@ function StepIntro({
       </div>
       <div className="upload-row">
         <FileBox label="上传图片 / PDF / 音视频素材" onFile={onUploadAsset} />
-        <div className="asset-list">
-          <div className="ai-header">已归档参考素材</div>
-          {assetArtifacts.length ? assetArtifacts.map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />) : <div className="muted-left">暂无素材；可直接继续，不阻断语言表流程。</div>}
-        </div>
+        {assetArtifacts.length ? (
+          <div className="asset-list">
+            <div className="ai-header">已归档参考素材</div>
+            {assetArtifacts.map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
+          </div>
+        ) : null}
       </div>
     </>
   )
@@ -1678,10 +1714,9 @@ function StepAnalyze({
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 2</span>AI 分析与专属提示词生成</div>
-      <div className="panel-desc">基于文字资料、已归档素材和项目资产生成提示词、项目 Harness 与元信息。生成后会自动保存到当前项目。当前素材：{assetArtifacts.length} 个。</div>
+      <div className="panel-desc">基于文字资料、已归档素材和项目资产生成提示词、项目规则与元信息。生成后会自动保存到当前项目。当前素材：{assetArtifacts.length} 个。</div>
       <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>🤖 启动 AI 分析</button>
       <div className="ai-card"><div className="ai-header">当前提示词</div><pre>{project.prompt_text || '尚未生成'}</pre></div>
-      <ProjectHarnessSummary project={project} />
       <ProjectMetaTable project={project} />
     </>
   )
@@ -1777,9 +1812,13 @@ function StepFreq({
       {backfill ? (
         <div className="workflow-note-grid">
           <div><strong>候选词</strong><span>{String(backfill.candidates ?? 0)}</span></div>
+          <div><strong>去重后</strong><span>{String(backfill.unique_candidates ?? backfill.candidates ?? 0)}</span></div>
           <div><strong>新增词条</strong><span>{String(backfill.inserted ?? 0)}</span></div>
+          <div><strong>待确认</strong><span>{String(backfill.pending_confirmation ?? backfill.inserted ?? 0)}</span></div>
           <div><strong>补全词条</strong><span>{String(backfill.updated ?? 0)}</span></div>
           <div><strong>保留已有</strong><span>{String(backfill.skipped_existing ?? 0)}</span></div>
+          <div><strong>重复跳过</strong><span>{String(backfill.skipped_duplicate ?? 0)}</span></div>
+          <div><strong>冲突保留</strong><span>{String(backfill.conflicts ?? 0)}</span></div>
         </div>
       ) : null}
     </>
@@ -1830,7 +1869,7 @@ function StepTranslate({
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 7</span>模型翻译进行中</div>
-      <div className="panel-desc">选择语言表后生成 workpack，使用项目术语库快照、提示词和 Project Harness 调用 GPT / Claude。</div>
+      <div className="panel-desc">选择语言表后生成 workpack，使用项目术语库快照、提示词和项目规则调用 GPT / Claude。</div>
       <div className="action-card">
         <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
         <button className="btn btn-primary" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>⚡ 开始翻译</button>
@@ -1855,6 +1894,7 @@ function StepQA({
   setQaArtifact,
   onDirectQA,
   onManualFixes,
+  onModelFixes,
   onUploadTranslation,
   busy,
   status
@@ -1866,6 +1906,7 @@ function StepQA({
   setQaArtifact: (artifact: Artifact | null) => void
   onDirectQA: () => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
+  onModelFixes: () => void
   onUploadTranslation: (file: File) => void
   busy: boolean
   status: string
@@ -1886,7 +1927,7 @@ function StepQA({
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 8</span>自动校对与优化</div>
-      <div className="panel-desc">可继续处理前一步翻译，也可上传已有译文；QA 会使用项目术语库快照、项目 Harness 和本地化校对规则。</div>
+      <div className="panel-desc">可继续处理前一步翻译，也可上传已有译文；QA 会使用项目术语库快照、项目规则和本地化校对规则。</div>
       <div className="action-card">
         <button className="btn btn-ghost" disabled={!previousTranslationArtifact || busy} onClick={() => setQaArtifact(previousTranslationArtifact)}>继续前一步翻译结果</button>
         <AssetSelect label="已有译文 workbook" project={project} role="translation_workbook" value={qaArtifact} onChange={setQaArtifact} allowEmpty />
@@ -1904,7 +1945,7 @@ function StepQA({
       </div>
       <TaskHistoryTable project={project} kind="qa" title="🕒 校对历史记录" />
       {latestRun ? <TaskRunSummary run={latestRun} issues={qaIssues} projectHardErrors={projectHardErrors} /> : null}
-      {qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onApply={onManualFixes} /> : null}
+      {qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onModelFix={onModelFixes} onApply={onManualFixes} /> : null}
     </>
   )
 }
@@ -1912,10 +1953,12 @@ function StepQA({
 function FailedRowEditor({
   issues,
   busy,
+  onModelFix,
   onApply
 }: {
   issues: QualityIssue[]
   busy: boolean
+  onModelFix: () => void
   onApply: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
 }) {
   const editable = issues.filter((issue) => issue.sheet && issue.row > 1)
@@ -1945,30 +1988,44 @@ function FailedRowEditor({
   return (
     <div className="issue-summary">
       <div className="card-title"><div className="left">QA 问题摘要</div></div>
+      <IssueGuide issues={issues} editableCount={editable.length} />
       <IssueChips issues={issues} />
+      <div className="model-fix-bar">
+        <div>
+          <strong>推荐处理顺序</strong>
+          <span>先用模型批量修复并重跑 QA；仍失败的行再人工逐条改。</span>
+        </div>
+        <button className="btn btn-primary btn-sm" disabled={busy || editable.length === 0} onClick={onModelFix}>🤖 模型修复并重跑 QA</button>
+      </div>
       <details className="repair-panel" data-testid="failed-row-editor">
-        <summary>展开问题修复（显示前 {visibleIssues.length} / {editable.length} 条可编辑问题）</summary>
+        <summary>展开可编辑问题（显示前 {visibleIssues.length} / {editable.length} 条）</summary>
         <div className="failed-editor">
           <div className="card-title">
-            <div className="left">问题修复</div>
+            <div className="left">逐行修复</div>
             <button className="btn btn-primary btn-sm" data-testid="manual-fix-rerun" disabled={busy || fixes.length === 0} onClick={() => onApply(fixes)}>保存修复并重新 QA</button>
           </div>
           <div className="failed-rows">
             {visibleIssues.map((issue, index) => (
               <div key={`${issue.id}-${issue.sheet}-${issue.row}-${issue.check_type}-${issue.source}-${index}`} className="failed-row">
                 <div className="failed-meta">
-                  <span>{issue.severity}</span>
-                  <span>{issue.source}</span>
-                  <span>{issue.sheet}#{issue.row}</span>
-                  <span>{issue.check_type}</span>
+                  <span>{severityLabel(issue.severity)}</span>
+                  <span>{issueTypeLabel(issue.check_type)}</span>
+                  <span>{issue.sheet} 第 {issue.row} 行</span>
+                  <span>{issueSourceLabel(issue.source)}</span>
                 </div>
-                <div className="failed-message">{issue.message}</div>
-                <div className="failed-current">{issue.current_translation || '-'}</div>
-                <textarea
-                  data-testid={`manual-fix-input-${issue.row}`}
-                  value={drafts[issue.id] ?? issue.current_translation}
-                  onChange={(event) => setDrafts((prev) => ({ ...prev, [issue.id]: event.target.value }))}
-                />
+                <div className="failed-message">{issueHumanMessage(issue)}</div>
+                <div className="failed-field">
+                  <span>当前译文</span>
+                  <div className="failed-current">{issue.current_translation || '-'}</div>
+                </div>
+                <label className="failed-edit">
+                  <span>修改为</span>
+                  <textarea
+                    data-testid={`manual-fix-input-${issue.row}`}
+                    value={drafts[issue.id] ?? issue.current_translation}
+                    onChange={(event) => setDrafts((prev) => ({ ...prev, [issue.id]: event.target.value }))}
+                  />
+                </label>
               </div>
             ))}
           </div>
@@ -2055,7 +2112,7 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
     ['源/译文', inputs.source_workbook || inputs.translation_workbook],
     ['术语快照', inputs.glossary_snapshot],
     ['提示词快照', inputs.prompt_snapshot],
-    ['Harness 快照', inputs.harness_snapshot],
+    ['规则快照', inputs.harness_snapshot],
   ].filter(([, id]) => Boolean(id))
   return (
     <div className="history-detail">
@@ -2071,7 +2128,7 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
         <div><strong>创建时间</strong><span>{new Date(run.created_at).toLocaleString()}</span></div>
         <div><strong>更新时间</strong><span>{new Date(run.updated_at).toLocaleString()}</span></div>
         <div><strong>来源文件</strong><span>{inputArtifactName(project, run) || '-'}</span></div>
-        <div><strong>QA 结果</strong><span>hard {Number(quality.hard_errors || 0)}</span></div>
+        <div><strong>QA 结果</strong><span>必须修复 {Number(quality.hard_errors || 0)}</span></div>
       </div>
       <div className="artifact-links">
         {visibleArtifacts.map((artifact) => (
@@ -2137,7 +2194,7 @@ function TaskRunSummary({
 }) {
   const title = run.kind === 'qa' ? '最近校对任务' : run.kind === 'translation' ? '最近翻译任务' : '最近任务'
   const issueText = issues.length ? `待处理问题 ${issues.length} 条` : '无待处理问题'
-  const projectGate = typeof projectHardErrors === 'number' ? `，项目规则 hard=${projectHardErrors}` : ''
+  const projectGate = typeof projectHardErrors === 'number' ? `，项目规则必须修复 ${projectHardErrors}` : ''
   return (
     <div className="task-summary">
       <div>
@@ -2156,6 +2213,7 @@ function IssueSummary({ issues }: { issues: QualityIssue[] }) {
   return (
     <div className="issue-summary">
       <div className="card-title"><div className="left">QA 问题摘要</div></div>
+      <IssueGuide issues={issues} editableCount={0} />
       <IssueChips issues={issues} />
       <div className="muted-left">这些问题缺少可直接编辑的 workbook 行定位；请查看 QA 报告，或重新生成带行号的问题列表后再批量修复。</div>
     </div>
@@ -2164,7 +2222,7 @@ function IssueSummary({ issues }: { issues: QualityIssue[] }) {
 
 function IssueChips({ issues }: { issues: QualityIssue[] }) {
   const counts = issues.reduce<Record<string, number>>((acc, issue) => {
-    const key = issue.check_type || issue.source || 'issue'
+    const key = issueTypeLabel(issue.check_type || issue.source)
     acc[key] = (acc[key] || 0) + 1
     return acc
   }, {})
@@ -2174,6 +2232,64 @@ function IssueChips({ issues }: { issues: QualityIssue[] }) {
       {top.map(([name, count]) => <span key={name}>{name}: {count}</span>)}
     </div>
   )
+}
+
+function IssueGuide({ issues, editableCount }: { issues: QualityIssue[]; editableCount: number }) {
+  const hard = issues.filter((issue) => issue.severity === 'hard').length
+  const soft = issues.filter((issue) => issue.severity !== 'hard').length
+  return (
+    <div className="issue-guide">
+      <div>
+        <strong>当前不能作为最终交付</strong>
+        <span>{hard} 个必须修复，{soft} 个建议修复；其中 {editableCount} 个可在网页直接改后重跑 QA。</span>
+      </div>
+      <p>这些是规则 QA 抓到的问题。模拟翻译通常会产生大量术语缺失；正式接入 GPT / Claude 后会按提示词和术语快照翻译，问题量会下降，但不会承诺自动清零，最终仍以“必须修复问题 = 0”作为交付标准。</p>
+    </div>
+  )
+}
+
+function issueTypeLabel(value: string): string {
+  const key = String(value || '').toLowerCase()
+  const labels: Record<string, string> = {
+    term_missing: '术语未命中',
+    term_partial_hit: '术语只命中一部分',
+    ui_length_overflow: '界面长度超限',
+    title_case_overuse: '大小写风格异常',
+    placeholder_mismatch: '变量占位符错误',
+    tag_mismatch: '标签不一致',
+    newline_mismatch: '换行不一致',
+    raw_cn: '译文残留中文',
+    global_harness: '通用 QA 规则',
+    project_harness: '项目规则',
+    semantic_qa: '模型语义校对'
+  }
+  return labels[key] || value || '质量问题'
+}
+
+function severityLabel(value: string): string {
+  return String(value).toLowerCase() === 'hard' ? '必须修复' : '建议修复'
+}
+
+function issueSourceLabel(value: string): string {
+  const key = String(value || '').toLowerCase()
+  if (key === 'global_harness') return '通用规则'
+  if (key === 'project_harness') return '项目规则'
+  if (key === 'semantic_qa') return '模型校对'
+  return value || 'QA'
+}
+
+function issueHumanMessage(issue: QualityIssue): string {
+  const sourceTerm = issue.message.match(/for ['"](.+?)['"]/)?.[1]
+  const expected = issue.message.match(/expected one of \[(.+?)\]/)?.[1]?.replace(/['"]/g, '').trim()
+  if (issue.check_type === 'term_missing' && sourceTerm && expected) {
+    return `原文术语「${sourceTerm}」未按项目术语表翻译，建议使用：${expected}。`
+  }
+  if (issue.check_type === 'term_partial_hit' && sourceTerm && expected) {
+    return `原文术语「${sourceTerm}」只翻出了一部分，建议完整使用：${expected}。`
+  }
+  if (issue.check_type === 'ui_length_overflow') return '译文可能超出按钮、弹窗或移动端 UI 宽度，需要缩短。'
+  if (issue.check_type === 'title_case_overuse') return '译文大小写风格可能过度标题化，需要改成更自然的界面文案。'
+  return issue.message || issueTypeLabel(issue.check_type)
 }
 
 function CheckItem({ ok, title, detail }: { ok: boolean; title: string; detail: string }) {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import json
+import os
 import shutil
 import sys
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ if __package__ is None or __package__ == "":
         GlossaryTermPayload,
         GlossaryTermUpdate,
         ManualFixRequest,
+        ModelFixRequest,
         ProjectHarnessUpdate,
         ProjectAnalysisRequest,
         ProjectCreate,
@@ -35,8 +37,9 @@ if __package__ is None or __package__ == "":
     )
     from app.workflow import (
         analyze_assets,
-        build_delivery_package,
         apply_manual_fixes,
+        apply_model_fixes,
+        build_delivery_package,
         create_improvement_review,
         create_semantic_qa_context,
         export_glossary,
@@ -64,6 +67,7 @@ else:
         GlossaryTermPayload,
         GlossaryTermUpdate,
         ManualFixRequest,
+        ModelFixRequest,
         ProjectHarnessUpdate,
         ProjectAnalysisRequest,
         ProjectCreate,
@@ -74,8 +78,9 @@ else:
     )
     from .workflow import (
         analyze_assets,
-        build_delivery_package,
         apply_manual_fixes,
+        apply_model_fixes,
+        build_delivery_package,
         create_improvement_review,
         create_semantic_qa_context,
         export_glossary,
@@ -102,10 +107,18 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Localization Workflow Studio", version="0.4.5", lifespan=lifespan)
+
+def _cors_origins() -> list[str]:
+    defaults = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    configured = os.environ.get("LWS_CORS_ORIGINS", "")
+    extra = [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return [*defaults, *[origin for origin in extra if origin not in defaults]]
+
+
+app = FastAPI(title="Localization Workflow Studio", version="0.4.6", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -401,6 +414,18 @@ def manual_fixes(run_id: str, payload: ManualFixRequest) -> dict[str, Any]:
         return apply_manual_fixes(run_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/runs/{run_id}/model-fixes")
+def model_fixes(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
+    try:
+        return apply_model_fixes(run_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

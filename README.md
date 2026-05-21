@@ -4,6 +4,14 @@
 
 Local web studio for game localization workflows. It combines project onboarding, project prompt generation, glossary extraction, EN translation workpack generation, model-provider translation, strict QA, and artifact history.
 
+Static demo entry:
+
+```text
+https://zhangzeyu99-web.github.io/localization-workflow-studio/
+```
+
+The GitHub Pages entry is a read-only product demo based on the `小小战机` sample. It does not upload files, call providers, run QA, or store project data.
+
 ![Use-case map](docs/assets/use-case-map.svg)
 
 ## What It Integrates
@@ -81,6 +89,65 @@ D:\codex\localization-workflow-studio-data
 ```
 
 This directory stores uploaded workbooks, generated workbooks, logs, SQLite, project files, artifacts, and `settings.local.json`.
+
+## GitHub Pages Demo
+
+The repository includes a static GitHub Pages entry at:
+
+```text
+docs/index.html
+```
+
+Repository Settings requirement:
+
+1. Open GitHub repository settings.
+2. Go to `Pages`.
+3. Set `Build and deployment` to `Deploy from a branch`.
+4. Select branch `master` and folder `/docs`.
+5. Save. After the next push, GitHub Pages serves `docs/index.html`.
+
+The demo page is intentionally frontend-only:
+
+- It uses sample `小小战机` project data.
+- It can be shared publicly.
+- It must not include real workbook content, customer files, API keys, SQLite data, or generated delivery files.
+- Buttons show static status messages only; real workflow actions require the FastAPI backend.
+
+## Full Version Deployment
+
+For a usable shared deployment, GitHub Pages can host only the frontend/demo entry. The complete application needs these parts:
+
+| Layer | Local default | Shared deployment recommendation |
+|---|---|---|
+| Frontend | Vite dev server at `http://127.0.0.1:5173` | GitHub Pages, static hosting, or CDN |
+| Backend API | FastAPI at `http://127.0.0.1:8000` | VPS, Render, Fly.io, Railway, internal server, or container platform |
+| Metadata DB | SQLite under `D:\codex\localization-workflow-studio-data` | Postgres for multi-user/shared usage; SQLite only with a persistent private volume |
+| File storage | Project folders under the data directory | S3, Cloudflare R2, OSS, MinIO, or private persistent volume |
+| Provider secrets | `settings.local.json` outside the repo | Backend environment variables or private secret store |
+
+Minimum backend environment:
+
+```powershell
+$env:LWS_DATA_ROOT = "D:\codex\localization-workflow-studio-data"
+$env:LWS_CORS_ORIGINS = "https://zhangzeyu99-web.github.io"
+python -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000
+```
+
+If the real Vite frontend is deployed separately from the backend, build it with the backend API base URL:
+
+```powershell
+cd frontend
+$env:VITE_API_BASE_URL = "https://api.example.com"
+npm run build
+```
+
+Provider keys stay server-side. Do not put `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `settings.local.json` into the frontend, GitHub Pages, public artifacts, or screenshots.
+
+For public sharing, use one of these modes:
+
+- Demo sharing: GitHub Pages only, no real workflow execution.
+- Private production: authenticated backend plus private data storage.
+- Result sharing: export final workbook/change report and share those files separately through a controlled channel.
 
 ## Quick Start
 
@@ -179,6 +246,7 @@ npm run e2e
 
 - [Use cases](docs/USE_CASES.md)
 - [Configuration](docs/CONFIGURATION.md)
+- [Storage model](docs/STORAGE.md)
 - [Iteration model](docs/ITERATION.md)
 - [GitHub management](docs/GITHUB_MANAGEMENT.md)
 - [Quality gates](docs/QUALITY_GATES.md)
@@ -187,7 +255,7 @@ npm run e2e
 
 ## Version
 
-Current version: `0.4.5`
+Current version: `0.4.6`
 
 Version markers:
 

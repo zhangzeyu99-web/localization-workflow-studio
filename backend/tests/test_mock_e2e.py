@@ -7,12 +7,22 @@ from pathlib import Path
 
 os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
 
+import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
+import app.workflow as workflow
+from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
 from app.providers import mock_translate_batch
 from app.workflow import backfill_project_glossary_from_final
+
+
+@pytest.fixture(autouse=True)
+def reset_settings() -> None:
+    save_settings(DEFAULT_SETTINGS)
+    yield
+    save_settings(DEFAULT_SETTINGS)
 
 
 def _sample_workbook(path: Path) -> None:
@@ -305,8 +315,15 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
 
         result = backfill_project_glossary_from_final(project["id"], generated, run["id"])
 
-        assert result == {"candidates": 3, "inserted": 2, "updated": 1, "skipped_existing": 0, "skipped_empty": 0}
+        assert result["candidates"] == 3
+        assert result["unique_candidates"] == 3
+        assert result["inserted"] == 2
+        assert result["updated"] == 1
+        assert result["pending_confirmation"] == 2
+        assert result["skipped_duplicate"] == 0
+        assert result["conflicts"] == 0
         terms = client.get(f"/api/projects/{project['id']}/glossary").json()
+        assert terms[0]["confirmed"] is False
         by_source = {term["source"]: term for term in terms}
         assert by_source["战机"]["target"] == "Manual Warplane"
         assert by_source["战机"]["target_alt"] == "Fighter"
@@ -314,8 +331,37 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
         assert by_source["能量"]["target"] == ""
         assert "待补译" in by_source["能量"]["note"]
         events = client.get(f"/api/runs/{run['id']}/events").json()
-        assert any("高频词补充策略" in event["message"] for event in events)
-        assert any("新增 2，补全 1" in event["message"] for event in events)
+        assert any("Glossary backfill strategy" in event["message"] for event in events)
+        assert any("inserted=2" in event["message"] and "updated=1" in event["message"] for event in events)
+
+
+def test_glossary_backfill_dedupes_generated_terms_by_cn(tmp_path: Path) -> None:
+    generated = tmp_path / "generated_glossary_duplicates.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2"])
+    ws.append(["G-1", "能量", "", ""])
+    ws.append(["G-2", " 能 量 ", "Energy", "Power"])
+    wb.save(generated)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Dedup", "type": "QA"}).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "en"}).json()
+
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"])
+
+        assert result["candidates"] == 2
+        assert result["unique_candidates"] == 1
+        assert result["skipped_duplicate"] == 1
+        assert result["inserted"] == 1
+        terms = client.get(f"/api/projects/{project['id']}/glossary").json()
+        assert len(terms) == 1
+        assert terms[0]["source"] == "能量"
+        assert terms[0]["target"] == "Energy"
+        assert terms[0]["target_alt"] == "Power"
+        assert terms[0]["confirmed"] is False
 
 
 def test_glossary_extract_uses_project_materials_for_brief_and_prompt(tmp_path: Path) -> None:
@@ -618,6 +664,65 @@ def test_manual_fix_creates_fixed_workbook_reruns_qa_and_updates_project_harness
 
         suggestions = client.get(f"/api/projects/{project['id']}/improvements").json()
         assert any(item["category"] == "project_harness" and item["run_id"] == failed_run["id"] for item in suggestions)
+
+
+def test_model_fix_requires_configured_provider(tmp_path: Path) -> None:
+    workbook = tmp_path / "project-failed.xlsx"
+    _project_harness_failed_workbook(workbook)
+
+    with TestClient(app) as client:
+        client.patch("/api/settings", json={"provider": "mock", "api_key": ""})
+        project = client.post("/api/projects", json={"name": "Model Fix Needs Key", "type": "QA"}).json()
+        client.patch(f"/api/projects/{project['id']}/harness", json={"forbidden_translations": ["Forbidden Brand"]})
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("project-failed.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        failed_run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"]},
+        ).json()
+        assert client.post(f"/api/runs/{failed_run['id']}/qa").json()["run"]["status"] == "failed"
+
+        response = client.post(f"/api/runs/{failed_run['id']}/model-fixes", json={"max_issues": 20, "rerun_qa": True})
+        assert response.status_code == 409
+        assert "API key" in response.json()["detail"]
+
+
+def test_model_fix_applies_provider_suggestions_and_reruns_qa(tmp_path: Path, monkeypatch) -> None:
+    workbook = tmp_path / "project-failed.xlsx"
+    _project_harness_failed_workbook(workbook)
+
+    def fake_model(settings: dict, prompt: str) -> str:
+        if "待修复行" not in prompt:
+            return '{"passed": true, "issues": []}'
+        return '{"fixes":[{"issue_id":"project_harness:0:Language:2:forbidden_translation","sheet":"Language","row":2,"translation":"Reward","note":"remove forbidden phrase"}]}'
+
+    monkeypatch.setattr(workflow, "_call_semantic_provider", fake_model)
+    with TestClient(app) as client:
+        client.patch("/api/settings", json={"provider": "openai", "api_key": "test-key", "model": "gpt-test"})
+        project = client.post("/api/projects", json={"name": "Model Fix QA", "type": "QA"}).json()
+        client.patch(f"/api/projects/{project['id']}/harness", json={"forbidden_translations": ["Forbidden Brand"]})
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("project-failed.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        failed_run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"], "task_code": "QA"},
+        ).json()
+        assert client.post(f"/api/runs/{failed_run['id']}/qa").json()["run"]["status"] == "failed"
+
+        response = client.post(f"/api/runs/{failed_run['id']}/model-fixes", json={"max_issues": 20, "rerun_qa": True})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["fixed_artifact"]["origin"] == "provider"
+        assert result["model_fixes"][0]["translation"] == "Reward"
+        assert result["model_fixes"][0]["rule_source"] == "model_fix"
+        assert result["qa_result"]["run"]["status"] == "passed"
+        assert result["qa_result"]["quality_summary"]["sources"]["model_fix_source_run"] == failed_run["id"]
 
 
 def test_project_harness_is_project_scoped_and_affects_only_its_run(tmp_path: Path) -> None:

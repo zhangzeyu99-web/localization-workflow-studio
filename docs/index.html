@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Localization Workflow Studio Demo</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #14182a;
+      --panel: #1f2b46;
+      --panel-2: #18243b;
+      --line: #344462;
+      --muted: #aab2c7;
+      --text: #f2f5ff;
+      --accent: #8b5cf6;
+      --accent-2: #22d3ee;
+      --ok: #34d399;
+      --warn: #facc15;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      background: radial-gradient(circle at top left, rgba(139, 92, 246, 0.22), transparent 28%), var(--bg);
+      color: var(--text);
+    }
+    a { color: inherit; }
+    .app {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      max-width: 1400px;
+      min-height: 100vh;
+      margin: 0 auto;
+      border-left: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      background: rgba(20, 24, 42, 0.82);
+    }
+    aside {
+      padding: 26px 16px;
+      background: #111626;
+      border-right: 1px solid var(--line);
+    }
+    .side-title {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .project-card {
+      width: 100%;
+      padding: 16px;
+      border: 1px solid rgba(139, 92, 246, 0.9);
+      border-radius: 8px;
+      background: #342b63;
+      color: var(--text);
+      text-align: left;
+    }
+    .project-card strong { display: block; font-size: 17px; margin-bottom: 8px; }
+    .project-card span { display: block; color: #c8cce0; font-size: 13px; }
+    .tag {
+      display: inline-flex;
+      margin-top: 10px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(139, 92, 246, 0.55);
+      color: #efeaff;
+      font-size: 12px;
+    }
+    .side-note {
+      margin-top: 22px;
+      padding: 14px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    main { padding: 34px; background: linear-gradient(145deg, #202944, #173757); }
+    .hero {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 26px;
+    }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    .desc { margin-top: 10px; color: var(--muted); line-height: 1.7; }
+    .demo-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #6366f1);
+      font-size: 14px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+    .stat {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .stat strong {
+      display: block;
+      color: #a855f7;
+      font-size: 28px;
+      line-height: 1.2;
+      margin-bottom: 6px;
+    }
+    .stat span { color: var(--muted); font-size: 13px; }
+    .tabs {
+      display: flex;
+      gap: 26px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 22px;
+    }
+    .tab {
+      padding: 12px 2px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .tab.active { color: var(--text); border-color: var(--accent); }
+    .panel {
+      display: none;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(31, 43, 70, 0.86);
+    }
+    .panel.active { display: block; }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 16px;
+    }
+    .panel h2 { margin: 0; font-size: 18px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    button.action, a.action {
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      padding: 8px 12px;
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); font-weight: 700; }
+    pre {
+      margin: 0;
+      padding: 16px;
+      border-radius: 8px;
+      background: #132038;
+      color: #f7f8ff;
+      line-height: 1.75;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 8px;
+      background: #17243b;
+    }
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+    th { background: #373064; color: #dcd5ff; font-weight: 800; }
+    td:first-child { color: #d7d0ff; font-weight: 700; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .mini-card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #17243b;
+    }
+    .mini-card strong { display: block; margin-bottom: 8px; }
+    .mini-card p { margin: 0; color: var(--muted); line-height: 1.7; }
+    .status { color: var(--ok); font-weight: 800; }
+    .warn { color: var(--warn); font-weight: 800; }
+    .toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      max-width: 360px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #10192c;
+      color: var(--text);
+      box-shadow: 0 18px 45px rgba(0,0,0,0.36);
+      opacity: 0;
+      transform: translateY(12px);
+      transition: all 0.18s ease;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    @media (max-width: 900px) {
+      .app { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      main { padding: 22px; }
+      .hero { flex-direction: column; }
+      .stats, .grid { grid-template-columns: 1fr; }
+      .tabs { overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <p class="side-title">📁 示例项目</p>
+      <div class="project-card">
+        <strong>💖 小小战机</strong>
+        <span>6 个任务 · 25,489 字</span>
+        <span class="tag">飞行射击</span>
+      </div>
+      <div class="side-note">
+        这是 GitHub Pages 静态演示入口，仅用于展示页面形态和工作流样例。真实上传、翻译、QA、交付文件下载需要连接 FastAPI 后端和私有数据存储。
+      </div>
+    </aside>
+    <main>
+      <section class="hero">
+        <div>
+          <h1>💖 小小战机</h1>
+          <div class="desc">科幻战机 / 飞行射击 / RPG 养成。面向偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。</div>
+        </div>
+        <span class="demo-pill">🚀 GitHub Pages Demo</span>
+      </section>
+
+      <section class="stats">
+        <div class="stat"><strong>6</strong><span>示例任务</span></div>
+        <div class="stat"><strong>25,489</strong><span>示例处理字数</span></div>
+        <div class="stat"><strong>EN</strong><span>闭环语言</span></div>
+        <div class="stat"><strong>402</strong><span>项目术语</span></div>
+      </section>
+
+      <nav class="tabs" aria-label="Demo tabs">
+        <button class="tab active" data-tab="meta">📌 元信息</button>
+        <button class="tab" data-tab="glossary">📚 术语表</button>
+        <button class="tab" data-tab="translation">⚡ 翻译任务</button>
+        <button class="tab" data-tab="qa">🕒 校对任务</button>
+        <button class="tab" data-tab="delivery">📦 最终交付</button>
+        <button class="tab" data-tab="deploy">🛠 完整部署</button>
+      </nav>
+
+      <section class="panel active" id="meta">
+        <div class="panel-head">
+          <h2>AI 生成的专属翻译提示词</h2>
+          <div class="actions">
+            <button class="action" data-toast="静态 Demo 不连接剪贴板或后端。">复制</button>
+            <button class="action primary" data-toast="完整版本会保存到项目数据目录。">编辑</button>
+          </div>
+        </div>
+        <pre>你是资深游戏本地化译者，正在翻译《小小战机》这款科幻战机 / 飞行射击 / RPG 养成游戏。
+
+要求：
+1. UI、按钮、任务、奖励文案保持短句、清晰、可上屏；
+2. 战机、装备、导弹、资源、技能和数值术语按项目术语库统一；
+3. 保留变量、数字、换行、颜色标签、HTML/富文本标签和占位符；
+4. 无法确认的专名使用 [TBD] 标记，不自行编造设定；
+5. 输出只包含 id 与 translation，供 QA gate 校验和回填。</pre>
+        <br />
+        <h2>项目元信息</h2>
+        <table>
+          <tbody>
+            <tr><td>游戏类型</td><td>科幻战机 / 飞行射击 / RPG 养成</td></tr>
+            <tr><td>目标用户</td><td>偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。</td></tr>
+            <tr><td>内容构成</td><td>战机、导弹、射击、弹幕等战斗内容；英雄、装备、技能、属性和战力成长；建造、升级、采集、生产等基地系统；角色剧情对话、活动、礼包和奖励。</td></tr>
+            <tr><td>翻译风格</td><td>UI/玩法精简适配移动端；剧情自然；战斗、装备、技能和战斗数值专业清晰；避免可爱化、生活化或过度口语化。</td></tr>
+            <tr><td>质量规则摘要</td><td>术语库优先；变量、标签、换行不可破坏；QA 必须修复问题为 0 后才可交付。</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel" id="glossary">
+        <div class="panel-head">
+          <h2>项目术语表（示例 6 / 402 条）</h2>
+          <div class="actions">
+            <button class="action" data-toast="静态 Demo 不执行导入。完整版本会写入项目术语库。">导入</button>
+            <button class="action primary" data-toast="静态 Demo 不生成文件。完整版本可导出 xlsx/csv/json。">导出</button>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th></tr></thead>
+          <tbody>
+            <tr><td>398</td><td>钻石</td><td>Diamonds</td><td>-</td><td>货币</td><td>付费货币</td></tr>
+            <tr><td>397</td><td>金条</td><td>Gold Bar</td><td>-</td><td>货币</td><td>资源</td></tr>
+            <tr><td>400</td><td>增伤</td><td>DMG Boost</td><td>-</td><td>属性</td><td>战斗数值</td></tr>
+            <tr><td>28</td><td>消灭怪物-12</td><td>-</td><td>-</td><td>待确认</td><td>高频词扫描候选，待补译</td></tr>
+            <tr><td>237</td><td>特训</td><td>-</td><td>-</td><td>待确认</td><td>高频词扫描候选，待补译</td></tr>
+            <tr><td>1</td><td>使用后获得等量电能</td><td>Use to gain the same amount of Power</td><td>-</td><td>道具</td><td>短 UI 文案</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel" id="translation">
+        <div class="panel-head">
+          <h2>翻译任务记录</h2>
+          <button class="action primary" data-toast="完整版本需要 GPT/Claude key 和 FastAPI 后端。">开始正式翻译</button>
+        </div>
+        <table>
+          <thead><tr><th>时间</th><th>任务</th><th>输入</th><th>模型</th><th>处理</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr><td>2026-05-20 14:30</td><td>T-3481e4</td><td>战机英语5.18翻译需求.xlsx</td><td>GPT deep</td><td>2033 条</td><td><span class="status">QA passed</span></td></tr>
+            <tr><td>2026-05-20 13:40</td><td>T-6feaea</td><td>战机英语语言表校对.xlsx</td><td>mock</td><td>400 条</td><td><span class="warn">blocked for delivery</span></td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel" id="qa">
+        <div class="panel-head">
+          <h2>校对任务记录</h2>
+          <button class="action primary" data-toast="完整版本会运行规则 QA、项目规则 QA 和模型语义 QA。">运行 QA</button>
+        </div>
+        <div class="grid">
+          <div class="mini-card"><strong>QA 输入</strong><p>可继续前一步翻译结果，也可导入已有译文 workbook。</p></div>
+          <div class="mini-card"><strong>质量门槛</strong><p>术语、变量、标签、换行、中文残留、UI 长度等必须修复问题为 0。</p></div>
+          <div class="mini-card"><strong>模型修复</strong><p>接入 GPT / Claude key 后，优先用模型批量修复并重跑 QA，剩余问题再人工改。</p></div>
+          <div class="mini-card"><strong>变更表</strong><p>最终输出只保留 final workbook 和 changes workbook，不展示 debug 中间产物。</p></div>
+        </div>
+      </section>
+
+      <section class="panel" id="delivery">
+        <div class="panel-head">
+          <h2>最终交付</h2>
+          <button class="action primary" data-toast="静态 Demo 无下载文件。完整版本会从后端生成固定命名交付包。">生成/刷新最终交付</button>
+        </div>
+        <table>
+          <thead><tr><th>任务</th><th>最终表</th><th>修改表</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr><td>T-3481e4</td><td>小小战机_EN_202605201430_T-3481e4_final.xlsx</td><td>小小战机_EN_202605201430_T-3481e4_changes.xlsx</td><td><span class="status">可交付</span></td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel" id="deploy">
+        <div class="panel-head"><h2>完整版本部署方式</h2></div>
+        <div class="grid">
+          <div class="mini-card"><strong>GitHub Pages</strong><p>只托管这个静态 Demo 和产品入口，不保存真实项目文件，也不调用模型。</p></div>
+          <div class="mini-card"><strong>FastAPI 后端</strong><p>运行上传、翻译、QA、交付下载接口。可部署到 VPS、Render、Fly.io、Railway 或内网服务器。</p></div>
+          <div class="mini-card"><strong>数据存储</strong><p>本地默认使用 D:\codex\localization-workflow-studio-data；云端建议数据库 + 对象存储。</p></div>
+          <div class="mini-card"><strong>密钥</strong><p>GPT / Claude API key 只放后端环境变量或私有 settings.local.json，不能进入前端或公开仓库。</p></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script>
+    const tabs = [...document.querySelectorAll(".tab")];
+    const panels = [...document.querySelectorAll(".panel")];
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        tabs.forEach((item) => item.classList.toggle("active", item === tab));
+        panels.forEach((panel) => panel.classList.toggle("active", panel.id === tab.dataset.tab));
+      });
+    });
+    const toast = document.getElementById("toast");
+    let timer = 0;
+    document.querySelectorAll("[data-toast]").forEach((button) => {
+      button.addEventListener("click", () => {
+        toast.textContent = button.dataset.toast;
+        toast.classList.add("show");
+        clearTimeout(timer);
+        timer = setTimeout(() => toast.classList.remove("show"), 2200);
+      });
+    });
+  </script>
+</body>
+</html>
