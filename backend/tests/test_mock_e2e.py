@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
+import app.db as db
 import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
@@ -19,7 +21,11 @@ from app.workflow import backfill_project_glossary_from_final
 
 
 @pytest.fixture(autouse=True)
-def reset_settings() -> None:
+def reset_test_state() -> None:
+    data_root = Path(os.environ["LWS_DATA_ROOT"])
+    if data_root.exists():
+        shutil.rmtree(data_root)
+    db.init_db()
     save_settings(DEFAULT_SETTINGS)
     yield
     save_settings(DEFAULT_SETTINGS)
@@ -153,11 +159,64 @@ def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert metadata["input_artifacts"]["source_workbook"] == source_artifact["id"]
         assert metadata["input_artifacts"]["qa_final_workbook"] == final_artifact["id"]
         assert metadata["semantic_qa"]["status"] == "skipped_no_key"
+        assert metadata["translation_archive"]["imported_count"] == 5
         assert result["run"]["metadata"]["harness"]["source"] == "project_harness"
+        progress = metadata["translation_progress"]
+        assert progress["batch_size"] == 3
+        assert progress["total_batches"] == 2
+        assert progress["completed_batches"] == 2
+        assert progress["percent"] == 100
+        batch_dir = Path(os.environ["LWS_DATA_ROOT"]) / "runs" / run["id"] / "translation" / "batches_3"
+        assert (batch_dir / "batch_00001.jsonl").exists()
+        assert (batch_dir / "batch_00002.jsonl").exists()
+        events = client.get(f"/api/runs/{run['id']}/events").json()
+        assert any("completed and persisted" in event["message"] for event in events)
         project_detail_response = client.get(f"/api/projects/{project['id']}")
         assert project_detail_response.status_code == 200
         assert project_detail_response.json()["stats"]["words"] == "33"
+        assert project_detail_response.json()["stats"]["archived_rows"] == 5
+        assert project_detail_response.json()["stats"]["translation_runs"] == 1
+        assert project_detail_response.json()["stats"]["qa_runs"] == 0
         assert project_detail_response.json()["stats"]["langs"] == 1
+        resume_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True, "batch_size": 3})
+        assert resume_response.status_code == 200, resume_response.text
+        resume_events = client.get(f"/api/runs/{run['id']}/events").json()
+        assert any("resume: batch 1/2 already completed" in event["message"] for event in resume_events)
+
+
+def test_translation_batch_retry_persists_after_transient_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workbook = tmp_path / "retry-language.xlsx"
+    _sample_workbook(workbook)
+    calls = {"count": 0}
+
+    async def flaky_translate_batch(batch, settings, project_prompt, provider_override=None, protocol_override=None):
+        _ = settings, project_prompt, provider_override, protocol_override
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("transient provider failure")
+        return mock_translate_batch(batch, settings)
+
+    monkeypatch.setattr(workflow, "translate_batch", flaky_translate_batch)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "E2E Retry", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("retry-language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": source_artifact["id"], "batch_size": 3},
+        ).json()
+        response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True, "batch_size": 3})
+        assert response.status_code == 200, response.text
+        events = client.get(f"/api/runs/{run['id']}/events").json()
+        assert any("failed attempt 1/3" in event["message"] for event in events)
+        assert any("batch 1/2 completed and persisted" in event["message"] for event in events)
+        batch_dir = Path(os.environ["LWS_DATA_ROOT"]) / "runs" / run["id"] / "translation" / "batches_3"
+        assert (batch_dir / "batch_00001.jsonl").exists()
+        assert not (batch_dir / "batch_00001.error.json").exists()
 
 
 def test_mock_provider_is_blocked_for_real_project_without_explicit_allow(tmp_path: Path) -> None:
@@ -212,6 +271,104 @@ def test_assets_register_role_and_origin_with_legacy_kind_mapping(tmp_path: Path
         assert patch_response.status_code == 200
         assert patch_response.json()["role"] == "translation_workbook"
         assert patch_response.json()["origin"] == "imported"
+
+
+def test_markdown_reference_material_uploads_and_feeds_analysis(tmp_path: Path) -> None:
+    material = tmp_path / "project_brief.md"
+    material.write_text(
+        "# Tomorrow 2\n\nGame type: Sci-fi SLG.\nTarget players: mobile strategy players.\nGameplay: base building and alliance war.",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Markdown Material", "type": "QA"}).json()
+        with material.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("project_brief.md", fh, "text/markdown")},
+            )
+        assert upload_response.status_code == 200
+        artifact = upload_response.json()
+        assert artifact["kind"] == "asset"
+        assert artifact["origin"] == "uploaded"
+        assert artifact["mime"] == "text/markdown"
+        assert Path(artifact["path"]).exists()
+
+        notes = workflow.analyze_assets([artifact["id"]], DEFAULT_SETTINGS)
+        assert notes and "text_material:" in notes[0]
+        assert "Sci-fi SLG" in notes[0]
+
+        analysis_response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "", "asset_artifact_ids": [artifact["id"]]},
+        )
+        assert analysis_response.status_code == 200
+        profile = analysis_response.json()["project"]["profile"]
+        assert profile["asset_notes"]
+        assert "Sci-fi SLG" in profile["asset_notes"][0]
+
+
+def test_duplicate_reference_material_upload_reuses_existing_artifact(tmp_path: Path) -> None:
+    material = tmp_path / "project_brief.md"
+    material.write_text("# Tomorrow 2\n\nSame project brief.", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Duplicate Material", "type": "QA"}).json()
+        with material.open("rb") as fh:
+            first_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("project_brief.md", fh, "text/markdown")},
+            )
+        assert first_response.status_code == 200
+        first = first_response.json()
+        assert first["duplicate"] is False
+
+        with material.open("rb") as fh:
+            second_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("project_brief-copy.md", fh, "text/markdown")},
+            )
+        assert second_response.status_code == 200
+        second = second_response.json()
+        assert second["duplicate"] is True
+        assert second["id"] == first["id"]
+
+        detail = client.get(f"/api/projects/{project['id']}").json()
+        assets = [artifact for artifact in detail["artifacts"] if artifact["kind"] == "asset"]
+        assert [artifact["id"] for artifact in assets] == [first["id"]]
+
+
+def test_translation_readiness_skips_filled_translation_workbook(tmp_path: Path) -> None:
+    workbook = tmp_path / "translated.xlsx"
+    _translated_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Readiness Skip", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("translated.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        artifact = upload_response.json()
+
+        readiness_response = client.get(f"/api/artifacts/{artifact['id']}/translation-readiness?batch_size=90")
+        assert readiness_response.status_code == 200
+        readiness = readiness_response.json()
+        assert readiness["ready_for_qa"] is True
+        assert readiness["needs_translation"] is False
+        assert readiness["source_rows"] == 5
+        assert readiness["translated_rows"] == 5
+
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": artifact["id"]},
+        ).json()
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
+        assert translate_response.status_code == 200
+        result = translate_response.json()
+        assert result["run"]["status"] == "needs_input"
+        assert result["run"]["metadata"]["reason"] == "input already contains target translations; run QA instead"
+        assert result["artifacts"] == []
 
 
 def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
@@ -293,6 +450,88 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
             wb.close()
 
 
+def test_glossary_manual_save_replaces_duplicate_cn() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Save Dedup", "type": "QA"}).json()
+        created = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={
+                "term_key": "28",
+                "source": "消灭怪物",
+                "target": "",
+                "target_alt": "",
+                "category": "",
+                "note": "manual candidate",
+                "source_type": "manual",
+                "confirmed": True,
+            },
+        ).json()
+        db.insert_glossary_term(
+            project["id"],
+            {
+                "term_key": "28",
+                "source": " 消 灭 怪 物 ",
+                "target": "Destroy Monsters",
+                "target_alt": "",
+                "category": "generated",
+                "note": "generated duplicate",
+                "source_type": "generated",
+                "confirmed": False,
+            },
+        )
+
+        update_response = client.patch(
+            f"/api/projects/{project['id']}/glossary/{created['id']}",
+            json={"source": "消灭怪物", "target": "Defeat Monsters", "category": "任务目标", "note": "saved edit"},
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["id"] == created["id"]
+
+        terms = client.get(f"/api/projects/{project['id']}/glossary").json()
+        matching = [term for term in terms if re.sub(r"\s+", "", term["source"]) == "消灭怪物"]
+        assert len(matching) == 1
+        assert matching[0]["id"] == created["id"]
+        assert matching[0]["target"] == "Defeat Monsters"
+        assert matching[0]["category"] == "任务目标"
+        assert matching[0]["note"] == "saved edit"
+
+
+def test_glossary_manual_add_upserts_existing_cn() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Add Upsert", "type": "QA"}).json()
+        first = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"term_key": "1", "source": "钻石", "target": "Diamonds", "category": "资源", "source_type": "manual", "confirmed": True},
+        ).json()
+
+        second_response = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"term_key": "1", "source": " 钻 石 ", "target": "Gems", "target_alt": "Diamonds", "category": "货币", "source_type": "manual", "confirmed": True},
+        )
+        assert second_response.status_code == 200
+        assert second_response.json()["id"] == first["id"]
+
+        terms = client.get(f"/api/projects/{project['id']}/glossary").json()
+        assert len([term for term in terms if re.sub(r"\s+", "", term["source"]) == "钻石"]) == 1
+        assert terms[0]["target"] == "Gems"
+        assert terms[0]["target_alt"] == "Diamonds"
+        assert terms[0]["category"] == "货币"
+
+
+def test_duplicate_project_name_returns_existing_project() -> None:
+    with TestClient(app) as client:
+        first = client.post("/api/projects", json={"name": "明日2", "type": "科幻 SLG"}).json()
+        second_response = client.post("/api/projects", json={"name": " 明日2 ", "type": "其他"})
+
+        assert second_response.status_code == 200
+        second = second_response.json()
+        assert second["id"] == first["id"]
+        assert second["type"] == "科幻 SLG"
+        assert second["duplicate"] is True
+        matching = [project for project in client.get("/api/projects").json() if project["name"] == "明日2"]
+        assert len(matching) == 1
+
+
 def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: Path) -> None:
     generated = tmp_path / "generated_glossary.xlsx"
     wb = Workbook()
@@ -319,17 +558,40 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
         assert result["unique_candidates"] == 3
         assert result["inserted"] == 2
         assert result["updated"] == 1
-        assert result["pending_confirmation"] == 2
+        assert result["pending_confirmation"] == 3
         assert result["skipped_duplicate"] == 0
         assert result["conflicts"] == 0
         terms = client.get(f"/api/projects/{project['id']}/glossary").json()
-        assert terms[0]["confirmed"] is False
-        by_source = {term["source"]: term for term in terms}
-        assert by_source["战机"]["target"] == "Manual Warplane"
-        assert by_source["战机"]["target_alt"] == "Fighter"
-        assert by_source["钻石"]["target"] == "Diamonds"
-        assert by_source["能量"]["target"] == ""
-        assert "待补译" in by_source["能量"]["note"]
+        assert len(terms) == 1
+        assert terms[0]["source"] == "战机"
+        assert terms[0]["target"] == "Manual Warplane"
+        assert terms[0]["target_alt"] == ""
+        batches = client.get(f"/api/projects/{project['id']}/glossary/batches").json()
+        assert batches["active_batch"]["id"] == result["batch_id"]
+        assert batches["active_batch"]["counts"]["pending"] == 3
+        candidates = {candidate["source"]: candidate for candidate in batches["candidates"]}
+        assert candidates["战机"]["action"] == "supplement"
+        assert candidates["战机"]["existing_term_id"] == existing["id"]
+        assert candidates["战机"]["target"] == "Manual Warplane"
+        assert candidates["战机"]["target_alt"] == "Fighter"
+        assert candidates["钻石"]["action"] == "new"
+        assert candidates["能量"]["note"].endswith("待补译")
+
+        reject_response = client.post(
+            f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/reject",
+            json={"candidate_ids": [candidates["能量"]["id"]]},
+        )
+        assert reject_response.status_code == 200
+        accept_response = client.post(
+            f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/accept",
+            json={"candidate_ids": [candidates["战机"]["id"], candidates["钻石"]["id"]]},
+        )
+        assert accept_response.status_code == 200
+        accepted_terms = client.get(f"/api/projects/{project['id']}/glossary").json()
+        accepted_by_source = {term["source"]: term for term in accepted_terms}
+        assert accepted_by_source["战机"]["target_alt"] == "Fighter"
+        assert accepted_by_source["钻石"]["target"] == "Diamonds"
+        assert "能量" not in accepted_by_source
         events = client.get(f"/api/runs/{run['id']}/events").json()
         assert any("Glossary backfill strategy" in event["message"] for event in events)
         assert any("inserted=2" in event["message"] and "updated=1" in event["message"] for event in events)
@@ -357,11 +619,12 @@ def test_glossary_backfill_dedupes_generated_terms_by_cn(tmp_path: Path) -> None
         assert result["skipped_duplicate"] == 1
         assert result["inserted"] == 1
         terms = client.get(f"/api/projects/{project['id']}/glossary").json()
-        assert len(terms) == 1
-        assert terms[0]["source"] == "能量"
-        assert terms[0]["target"] == "Energy"
-        assert terms[0]["target_alt"] == "Power"
-        assert terms[0]["confirmed"] is False
+        assert terms == []
+        batches = client.get(f"/api/projects/{project['id']}/glossary/batches").json()
+        assert len(batches["candidates"]) == 1
+        assert batches["candidates"][0]["source"] == "能量"
+        assert batches["candidates"][0]["target"] == "Energy"
+        assert batches["candidates"][0]["target_alt"] == "Power"
 
 
 def test_glossary_extract_uses_project_materials_for_brief_and_prompt(tmp_path: Path) -> None:
@@ -457,6 +720,76 @@ def test_existing_translation_workbook_can_run_qa_without_translation_workpack(t
         project_detail = client.get(f"/api/projects/{project['id']}").json()
         assert int(project_detail["stats"]["words"]) > 0
         assert project_detail["stats"]["langs"] == 1
+        archived = client.get(f"/api/projects/{project['id']}/translations").json()
+        assert len(archived) == 5
+        assert archived[0]["entry_key"] == "1"
+        assert archived[0]["target"] == "Claim Rewards"
+
+
+def test_language_source_with_existing_translations_can_run_direct_qa(tmp_path: Path) -> None:
+    workbook = tmp_path / "translated_language_table.xlsx"
+    _translated_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Language Source QA", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("translated_language_table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        artifact = upload_response.json()
+        assert artifact["role"] == "language_source"
+
+        readiness = client.get(f"/api/artifacts/{artifact['id']}/translation-readiness?batch_size=90").json()
+        assert readiness["ready_for_qa"] is True
+
+        run_response = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "qa",
+                "language": "en",
+                "input_artifact_id": artifact["id"],
+            },
+        )
+        assert run_response.status_code == 200
+        qa_response = client.post(f"/api/runs/{run_response.json()['id']}/qa")
+        assert qa_response.status_code == 200, qa_response.text
+        result = qa_response.json()
+        assert result["run"]["status"] == "passed"
+        assert result["quality_summary"]["sources"]["translation_workbook"] == artifact["id"]
+        assert result["run"]["metadata"]["input_artifacts"]["translation_workbook"] == artifact["id"]
+        archived = client.get(f"/api/projects/{project['id']}/translations").json()
+        assert len(archived) == 5
+        assert archived[1]["entry_key"] == "2"
+
+
+def test_translation_archive_import_edit_and_export(tmp_path: Path) -> None:
+    workbook = tmp_path / "translated.xlsx"
+    _translated_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Archive", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("translated.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        imported = client.post(f"/api/projects/{project['id']}/translations/import", json={"artifact_id": artifact["id"]}).json()
+        assert imported["imported_count"] == 5
+        entries = client.get(f"/api/projects/{project['id']}/translations").json()
+        assert [entry["entry_key"] for entry in entries[:3]] == ["1", "2", "3"]
+
+        updated = client.patch(
+            f"/api/projects/{project['id']}/translations/{entries[0]['id']}",
+            json={"target": "Claim"},
+        ).json()
+        assert updated["target"] == "Claim"
+        export_json = client.get(f"/api/projects/{project['id']}/translations/export?format=json").json()
+        assert export_json["entries"][0]["target"] == "Claim"
+        export_xlsx = client.get(f"/api/projects/{project['id']}/translations/export?format=xlsx")
+        assert export_xlsx.status_code == 200
+        assert export_xlsx.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument")
 
 
 def test_delivery_package_contains_only_task_outputs(tmp_path: Path) -> None:
@@ -493,6 +826,8 @@ def test_delivery_package_contains_only_task_outputs(tmp_path: Path) -> None:
         assert len(deliverables) == 1
         assert deliverables[0]["task_label"] == f"QA-{run['id'].replace('run_', '')[:6]}"
         assert deliverables[0]["processed_rows"] == 5
+        assert deliverables[0]["provider"] == "rules-only"
+        assert deliverables[0]["model"] == "-"
         assert deliverables[0]["status"] == "passed"
 
         package_response = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}")
@@ -517,6 +852,30 @@ def test_delivery_package_contains_only_task_outputs(tmp_path: Path) -> None:
         refreshed = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"][0]
         assert refreshed["files"]["final"]["download_url"].endswith("_final.xlsx")
         assert refreshed["files"]["changes"]["download_url"].endswith("_changes.xlsx")
+
+
+def test_delivery_filename_sanitizes_invalid_project_name_without_double_spaces(tmp_path: Path) -> None:
+    workbook = tmp_path / "translated.xlsx"
+    _translated_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "E2E ?? Demo", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("translated.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"], "task_code": "QA"},
+        ).json()
+        response = client.post(f"/api/runs/{run['id']}/qa")
+        assert response.status_code == 200
+        package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}").json()
+        filename = package["files"][0]["filename"]
+        assert "??" not in filename
+        assert "  " not in filename
+        assert filename.startswith("E2E Demo_EN_")
 
 
 def test_qa_continuation_inherits_translation_delivery_identity(tmp_path: Path) -> None:

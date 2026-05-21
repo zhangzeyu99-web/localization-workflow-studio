@@ -18,11 +18,21 @@ type Project = {
   created_at?: string
   updated_at?: string
   profile?: Record<string, unknown>
-  stats: { tasks: number; words: string; langs: number; glossary: number }
+  stats: {
+    tasks: number
+    translation_runs?: number
+    qa_runs?: number
+    words: string
+    archived_rows?: number
+    langs: number
+    glossary: number
+  }
   artifacts?: Artifact[]
   runs?: Run[]
   glossary?: GlossaryTerm[]
+  translations?: TranslationEntry[]
   harness?: ProjectHarness
+  duplicate?: boolean
 }
 
 type ProjectHarness = {
@@ -52,6 +62,7 @@ type Artifact = {
   size: number
   created_at: string
   run_id?: string | null
+  duplicate?: boolean
 }
 
 type Run = {
@@ -79,6 +90,20 @@ type GlossaryTerm = {
   confirmed: boolean
 }
 
+type TranslationEntry = {
+  id: string
+  entry_key: string
+  source: string
+  target: string
+  target_alt: string
+  language: string
+  sheet: string
+  row_number: number
+  note: string
+  source_type: string
+  source_artifact_id: string
+}
+
 type GlossaryPreviewRow = {
   term_key?: string
   source: string
@@ -86,6 +111,41 @@ type GlossaryPreviewRow = {
   target_alt?: string
   category: string
   note: string
+}
+
+type GlossaryBatch = {
+  id: string
+  project_id: string
+  run_id?: string
+  source_artifact_id?: string
+  label: string
+  status: string
+  metadata?: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  counts: {
+    total: number
+    pending: number
+    accepted: number
+    rejected: number
+    pending_new: number
+    pending_supplement: number
+  }
+}
+
+type GlossaryCandidate = {
+  id: string
+  batch_id: string
+  project_id: string
+  existing_term_id?: string
+  action: 'new' | 'supplement' | string
+  term_key?: string
+  source: string
+  target: string
+  target_alt?: string
+  category: string
+  note: string
+  status: 'pending' | 'accepted' | 'rejected' | string
 }
 
 type QualityIssue = {
@@ -107,6 +167,36 @@ type AppSettings = {
   model?: string
   reasoning_effort?: string
   batch_size?: number
+}
+
+type TranslationReadiness = {
+  artifact_id: string
+  label: string
+  target_language: string
+  source_rows: number
+  translated_rows: number
+  empty_target_rows: number
+  cjk_target_rows: number
+  needs_translation: boolean
+  ready_for_qa: boolean
+  reason: string
+  batch_size: number
+  estimated_batches: number
+}
+
+type TranslationProgress = {
+  total_rows: number
+  completed_rows: number
+  total_batches: number
+  completed_batches: number
+  remaining_batches: number
+  current_batch?: number | null
+  failed_batch?: number | null
+  batch_size: number
+  percent: number
+  elapsed_seconds?: number | null
+  average_batch_seconds?: number | null
+  eta_seconds?: number | null
 }
 
 type DeliveryFile = {
@@ -142,9 +232,14 @@ type DeliverableTask = {
 }
 
 const API = import.meta.env.VITE_API_BASE_URL || ''
-const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付归档']
+const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
 const langOptions = ['🇺🇸 英语 EN', '🇫🇷 法语 FR', '🇩🇪 德语 DE', '🇧🇷 巴葡 PT-BR', '🇷🇺 俄语 RU', '🇯🇵 日语 JA', '🇰🇷 韩语 KO', '🇪🇸 西语 ES', '🇸🇦 阿语 AR']
-type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'delivery'
+const batchPresets = [
+  { key: 'safe', label: '稳妥', size: 40, desc: '失败成本低，适合长文本/术语多' },
+  { key: 'balanced', label: '平衡', size: 90, desc: '推荐默认，速度和稳定性折中' },
+  { key: 'fast', label: '高速', size: 160, desc: '批次数少，适合短 UI 文案' }
+]
+type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'archive' | 'delivery'
 
 function getProjectHarness(project: Project): ProjectHarness {
   return project.harness || {}
@@ -192,6 +287,22 @@ function newestArtifact(artifacts: Artifact[] | undefined, kinds: string[]): Art
     .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] || null
 }
 
+function artifactContentKey(artifact: Artifact): string {
+  const sha256 = artifact.metadata?.sha256
+  if (typeof sha256 === 'string' && sha256) return `sha:${sha256}`
+  return `fallback:${artifact.kind}:${artifact.label}:${artifact.size}`
+}
+
+function uniqueArtifactsByContent(artifacts: Artifact[]): Artifact[] {
+  const seen = new Set<string>()
+  return artifacts.filter((artifact) => {
+    const key = artifactContentKey(artifact)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 function runArtifacts(project: Project, runId: string | undefined): Artifact[] {
   if (!runId) return []
   return (project.artifacts || []).filter((artifact) => artifact.run_id === runId)
@@ -231,6 +342,51 @@ function artifactsByRoles(project: Project, roles: string | string[]): Artifact[
 function errorText(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error)
+}
+
+function clampBatchSize(value: number): number {
+  if (!Number.isFinite(value)) return 90
+  return Math.max(1, Math.min(200, Math.round(value)))
+}
+
+function estimateBatches(rows: number | undefined, batchSize: number): number {
+  const total = Number(rows || 0)
+  return total > 0 ? Math.ceil(total / Math.max(1, batchSize)) : 0
+}
+
+function getTranslationProgress(run: Run | null): TranslationProgress | null {
+  const progress = run?.metadata?.translation_progress
+  if (!progress || typeof progress !== 'object') return null
+  return progress as TranslationProgress
+}
+
+function canSkipModelTranslation(readiness: TranslationReadiness | null | undefined): boolean {
+  if (!readiness || readiness.source_rows <= 0) return false
+  if (readiness.ready_for_qa) return true
+  if (readiness.empty_target_rows > 0 || readiness.translated_rows <= 0) return false
+  const cjkLimit = Math.max(5, Math.ceil(readiness.source_rows * 0.01))
+  return readiness.translated_rows >= readiness.source_rows * 0.8 && readiness.cjk_target_rows <= cjkLimit
+}
+
+function latestRunOfKind(project: Project, kind: string): Run | null {
+  return (project.runs || []).find((run) => run.kind === kind) || null
+}
+
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(Number(seconds))) return '首批完成后估算'
+  const value = Math.max(0, Math.round(Number(seconds)))
+  const hours = Math.floor(value / 3600)
+  const minutes = Math.floor((value % 3600) / 60)
+  const secs = value % 60
+  if (hours) return `${hours}h ${minutes}m`
+  if (minutes) return `${minutes}m ${secs}s`
+  return `${secs}s`
+}
+
+function normalizeGlossaryNote(value: string | undefined): string {
+  const note = String(value || '')
+  if (/高频词扫描补全 EN\/EN2\?+/.test(note)) return '高频词扫描补全 EN/EN2，待确认'
+  return note
 }
 
 function formatDate(value?: string): string {
@@ -307,13 +463,18 @@ function App() {
   const [sourceArtifact, setSourceArtifact] = useState<Artifact | null>(null)
   const [termArtifact, setTermArtifact] = useState<Artifact | null>(null)
   const [qaArtifact, setQaArtifact] = useState<Artifact | null>(null)
+  const [archiveArtifact, setArchiveArtifact] = useState<Artifact | null>(null)
   const [assetArtifacts, setAssetArtifacts] = useState<Artifact[]>([])
   const [latestRun, setLatestRun] = useState<Run | null>(null)
   const [selectedLangs, setSelectedLangs] = useState<string[]>(['🇺🇸 英语 EN'])
   const [glossaryPreview, setGlossaryPreview] = useState<GlossaryPreviewRow[]>([])
+  const [glossaryBatches, setGlossaryBatches] = useState<GlossaryBatch[]>([])
+  const [glossaryCandidates, setGlossaryCandidates] = useState<GlossaryCandidate[]>([])
   const [qualityIssues, setQualityIssues] = useState<QualityIssue[]>([])
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [deliverables, setDeliverables] = useState<DeliverableTask[]>([])
+  const [translationReadiness, setTranslationReadiness] = useState<TranslationReadiness | null>(null)
+  const [translationBatchSize, setTranslationBatchSize] = useState(90)
 
   useEffect(() => {
     refreshProjects()
@@ -336,9 +497,12 @@ function App() {
       setSourceArtifact(null)
       setTermArtifact(null)
       setQaArtifact(null)
+      setArchiveArtifact(null)
       setAssetArtifacts([])
       setLatestRun(null)
       setGlossaryPreview([])
+      setGlossaryBatches([])
+      setGlossaryCandidates([])
       setQualityIssues([])
       setDeliverables([])
       return
@@ -349,16 +513,35 @@ function App() {
     setSourceArtifact(artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['language_table']))
     setTermArtifact(artifactsByRole(current, 'glossary_curated')[0] || artifactsByRole(current, 'glossary_source')[0] || newestArtifact(artifacts, ['glossary_final', 'term_base']))
     setQaArtifact(artifactsByRole(current, 'translation_workbook')[0] || newestArtifact(artifacts, ['final_workbook']))
-    setAssetArtifacts(artifacts.filter((artifact) => artifact.kind === 'asset'))
+    setArchiveArtifact(artifactsByRole(current, 'translation_workbook')[0] || artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['final_workbook', 'language_table']))
+    setAssetArtifacts(uniqueArtifactsByContent(artifacts.filter((artifact) => artifact.kind === 'asset')))
     setLatestRun(hydratedRun)
     setDeliverables([])
   }, [current?.id, current?.artifacts?.length, current?.runs?.length])
+
+  useEffect(() => {
+    if (current?.id) refreshGlossaryBatches(current.id)
+  }, [current?.id, latestRun?.id])
 
   useEffect(() => {
     if (current?.id && tab === 'delivery') {
       refreshDeliverables()
     }
   }, [current?.id, current?.runs?.length, tab])
+
+  useEffect(() => {
+    if (!sourceArtifact?.id) {
+      setTranslationReadiness(null)
+      return
+    }
+    refreshTranslationReadiness(sourceArtifact.id)
+  }, [sourceArtifact?.id, translationBatchSize])
+
+  useEffect(() => {
+    if (!qaArtifact && sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && canSkipModelTranslation(translationReadiness)) {
+      setQaArtifact(sourceArtifact)
+    }
+  }, [qaArtifact?.id, sourceArtifact?.id, translationReadiness?.artifact_id, translationReadiness?.ready_for_qa, translationReadiness?.translated_rows, translationReadiness?.empty_target_rows, translationReadiness?.cjk_target_rows])
 
   useEffect(() => {
     if (!latestRun || !['failed', 'needs_input'].includes(latestRun.status)) {
@@ -378,6 +561,13 @@ function App() {
     if (!currentId) return
     const loaded = await api<Project>(`/api/projects/${currentId}`)
     setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
+  }
+
+  async function refreshGlossaryBatches(projectId = currentId) {
+    if (!projectId) return
+    const loaded = await api<{ batches: GlossaryBatch[]; active_batch: GlossaryBatch | null; candidates: GlossaryCandidate[] }>(`/api/projects/${projectId}/glossary/batches`)
+    setGlossaryBatches(loaded.batches || [])
+    setGlossaryCandidates(loaded.candidates || [])
   }
 
   async function refreshSettings() {
@@ -417,20 +607,35 @@ function App() {
     })
     setNewProjectOpen(false)
     await refreshProjects(created.id)
+    setView('overview')
+    setTab('meta')
+    setStatus(created.duplicate ? `项目“${created.name}”已存在，已切换到已有项目。` : `项目“${created.name}”已创建。`)
   }
 
   async function upload(file: File, kind: string) {
     if (!current) return null
+    setBusy(true)
     setStatus(`正在上传：${file.name}`)
-    const data = new FormData()
-    data.append('file', file)
-    const artifact = await api<Artifact>(`/api/projects/${current.id}/files?kind=${kind}`, {
-      method: 'POST',
-      body: data
-    })
-    await refreshCurrent()
-    setStatus(`已上传：${artifact.label}`)
-    return artifact
+    try {
+      const data = new FormData()
+      data.append('file', file)
+      const artifact = await api<Artifact>(`/api/projects/${current.id}/files?kind=${kind}`, {
+        method: 'POST',
+        body: data
+      })
+      await refreshCurrent()
+      if (artifact.duplicate) {
+        setStatus(`已存在，已复用：${artifact.label}`)
+      } else {
+        setStatus(`已上传：${artifact.label}`)
+      }
+      return artifact
+    } catch (error) {
+      setStatus(`上传失败：${errorText(error)}`)
+      return null
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function runAnalysis() {
@@ -491,6 +696,7 @@ function App() {
       setTermArtifact(result.artifacts.find((a) => a.kind === 'glossary_final') || null)
       setLatestRun(result.run)
       await refreshCurrent()
+      await refreshGlossaryBatches(current.id)
       const backfill = result.glossary_backfill || {}
       const pendingConfirmation = backfill.pending_confirmation ?? backfill.inserted ?? 0
       setStatus(`术语扫描完成：候选 ${backfill.candidates ?? 0}，去重后 ${backfill.unique_candidates ?? 0}，新增待确认 ${pendingConfirmation}，补全 ${backfill.updated ?? 0}，重复跳过 ${backfill.skipped_duplicate ?? 0}，冲突保留 ${backfill.conflicts ?? 0}`)
@@ -539,8 +745,30 @@ function App() {
     }
   }
 
+  async function refreshTranslationReadiness(artifactId: string) {
+    const batchSize = clampBatchSize(translationBatchSize)
+    try {
+      const result = await api<TranslationReadiness>(`/api/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}`)
+      setTranslationReadiness(result)
+      return result
+    } catch {
+      setTranslationReadiness(null)
+      return null
+    }
+  }
+
   async function runTranslate(taskCode: 'A' | 'T' = 'T') {
     if (!current || !sourceArtifact) return
+    const selectedBatchSize = clampBatchSize(translationBatchSize)
+    const readiness = translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === selectedBatchSize
+      ? translationReadiness
+      : await refreshTranslationReadiness(sourceArtifact.id)
+    if (readiness && canSkipModelTranslation(readiness)) {
+      setQaArtifact(sourceArtifact)
+      setStep(8)
+      setStatus(`已检测到 ${readiness.translated_rows}/${readiness.source_rows} 行已有译文，无需模型翻译，请直接运行 QA。`)
+      return
+    }
     const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current)
     if (blockReason) {
       setStatus(`无法开始翻译：${blockReason}`)
@@ -551,30 +779,55 @@ function App() {
       return
     }
     setBusy(true)
-    setStatus('正在创建 EN run 并调用 provider...')
+    setStatus(`翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
     try {
-      const run = await api<Run>('/api/runs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: current.id,
-          kind: 'translation',
-          language: 'en',
-          input_artifact_id: sourceArtifact.id,
-          term_artifact_id: termArtifact?.id || null,
-          batch_size: 90,
-          task_code: taskCode
+      const batchSize = selectedBatchSize
+      const resumableRun = latestRun?.kind === 'translation'
+        && latestRun.status === 'failed'
+        && latestRun.metadata?.input_artifact_id === sourceArtifact.id
+        ? latestRun
+        : null
+      const run = resumableRun || await api<Run>('/api/runs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_id: current.id,
+            kind: 'translation',
+            language: 'en',
+            input_artifact_id: sourceArtifact.id,
+            term_artifact_id: termArtifact?.id || null,
+            batch_size: batchSize,
+            task_code: taskCode
+          })
         })
-      })
-      const result = await api<{ run: Run; artifacts: Artifact[]; quality?: Record<string, unknown> }>(`/api/runs/${run.id}/translate`, {
+      setLatestRun(run)
+      if (resumableRun) setStatus(`继续失败翻译任务：复用已落盘批次，按 ${batchSize} 行/批续跑。`)
+      const translatePromise = api<{ run: Run; artifacts: Artifact[]; quality?: Record<string, unknown>; translation_readiness?: TranslationReadiness }>(`/api/runs/${run.id}/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
       })
+      const poller = window.setInterval(async () => {
+        try {
+          const updated = await api<Run>(`/api/runs/${run.id}`)
+          setLatestRun(updated)
+          const latestEvent = updated.events?.[updated.events.length - 1]
+          if (latestEvent?.message) setStatus(`翻译任务${updated.status === 'running' ? '运行中' : updated.status}：${latestEvent.message}`)
+        } catch {
+          // Keep the in-flight translation request as the source of truth.
+        }
+      }, 2000)
+      const result = await translatePromise.finally(() => window.clearInterval(poller))
       setLatestRun({ ...result.run, artifacts: result.artifacts })
       await refreshCurrent()
       if (tab === 'delivery') await refreshDeliverables()
-      setStatus(result.run.status === 'passed' ? 'EN 闭环通过，产物已归档' : `运行结束：${result.run.status}`)
+      if (result.run.metadata?.reason === 'input already contains target translations; run QA instead') {
+        setQaArtifact(sourceArtifact)
+        setStep(8)
+        setStatus('已跳过模型翻译：输入表已有目标译文，请继续运行 QA。')
+      } else {
+        setStatus(result.run.status === 'passed' ? 'EN 翻译和 QA 已通过，最终产物已归档。' : `翻译任务结束：${result.run.status}`)
+      }
     } catch (error) {
       setStatus(`翻译失败：${errorText(error)}`)
     } finally {
@@ -584,6 +837,15 @@ function App() {
 
   async function runDirectQA(taskCode: 'QA' = 'QA') {
     if (!current || !qaArtifact) return
+    if (artifactRole(qaArtifact) === 'language_source') {
+      const readiness = await refreshTranslationReadiness(qaArtifact.id)
+      if (!canSkipModelTranslation(readiness)) {
+        setSourceArtifact(qaArtifact)
+        setStep(7)
+        setStatus('这份语言表还不像完整译文表：请先进入模型翻译补齐空译文或明显非目标语言内容，再运行 QA。')
+        return
+      }
+    }
     const sourceRunId = qaArtifact.run_id && (current.runs || []).some((run) => run.id === qaArtifact.run_id && run.kind === 'translation')
       ? qaArtifact.run_id
       : null
@@ -681,8 +943,8 @@ function App() {
   async function uploadAsset(file: File) {
     const artifact = await upload(file, 'asset')
     if (artifact) {
-      setAssetArtifacts((prev) => [artifact, ...prev.filter((item) => item.id !== artifact.id)])
-      setStatus(`参考素材已归档：${artifact.label}`)
+      setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
+      setStatus(artifact.duplicate ? `参考素材已存在，已复用：${artifact.label}` : `参考素材已归档：${artifact.label}`)
     }
   }
 
@@ -717,11 +979,102 @@ function App() {
     setStatus('词条已保存')
   }
 
+  async function updateGlossaryCandidate(candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) {
+    if (!current) return
+    await api(`/api/projects/${current.id}/glossary/candidates/${candidate.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    })
+    await refreshGlossaryBatches(current.id)
+    setStatus('候选词条已保存')
+  }
+
+  async function resolveGlossaryCandidates(batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') {
+    if (!current || !batchId || !candidates.length) return
+    setBusy(true)
+    setStatus(action === 'accept' ? `正在确认加入 ${candidates.length} 条术语...` : `正在跳过 ${candidates.length} 条候选...`)
+    try {
+      await api(`/api/projects/${current.id}/glossary/batches/${batchId}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candidate_ids: candidates.map((candidate) => candidate.id) })
+      })
+      await refreshCurrent()
+      await refreshGlossaryBatches(current.id)
+      setStatus(action === 'accept' ? `已加入 ${candidates.length} 条术语，后续翻译和 QA 会使用项目术语库。` : `已跳过 ${candidates.length} 条候选，不会进入项目术语库。`)
+    } catch (error) {
+      setStatus(`术语批次处理失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function deleteGlossaryTerm(term: GlossaryTerm) {
     if (!current) return
     await api(`/api/projects/${current.id}/glossary/${term.id}`, { method: 'DELETE' })
     await refreshCurrent()
     setStatus('词条已删除')
+  }
+
+  async function addTranslationEntry(form: FormData) {
+    if (!current) return
+    await api(`/api/projects/${current.id}/translations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entry_key: String(form.get('entry_key') || ''),
+        source: String(form.get('source') || ''),
+        target: String(form.get('target') || ''),
+        target_alt: String(form.get('target_alt') || ''),
+        note: String(form.get('note') || ''),
+        source_type: 'manual'
+      })
+    })
+    await refreshCurrent()
+    setStatus('译文条目已保存')
+  }
+
+  async function updateTranslationEntry(entry: TranslationEntry, updates: Partial<TranslationEntry>) {
+    if (!current) return
+    await api(`/api/projects/${current.id}/translations/${entry.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    })
+    await refreshCurrent()
+    setStatus('译文条目已保存')
+  }
+
+  async function deleteTranslationEntry(entry: TranslationEntry) {
+    if (!current) return
+    await api(`/api/projects/${current.id}/translations/${entry.id}`, { method: 'DELETE' })
+    await refreshCurrent()
+    setStatus('译文条目已删除')
+  }
+
+  async function uploadArchiveWorkbook(file: File) {
+    const artifact = await upload(file, 'final_workbook')
+    if (artifact) setArchiveArtifact(artifact)
+  }
+
+  async function importTranslationArchive() {
+    if (!current || !archiveArtifact) return
+    setBusy(true)
+    setStatus('正在导入译文归档...')
+    try {
+      const result = await api<{ imported_count: number }>(`/api/projects/${current.id}/translations/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artifact_id: archiveArtifact.id, language: 'en' })
+      })
+      await refreshCurrent()
+      setStatus(`译文归档已导入：${result.imported_count} 条`)
+    } catch (error) {
+      setStatus(`译文归档导入失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function saveHarness(updates: Partial<ProjectHarness>) {
@@ -792,7 +1145,7 @@ function App() {
               {projects.map((project) => (
                 <button key={project.id} className={`project-item ${project.id === currentId ? 'active' : ''}`} onClick={() => { setCurrentId(project.id); setView('overview') }}>
                   <span className="pname">{project.icon ? `${project.icon} ` : ''}{project.name}</span>
-                  <span className="pmeta">{project.stats.tasks} 个任务 · {project.stats.words} 字</span>
+                  <span className="pmeta">{project.stats.tasks} 个任务 · {project.stats.archived_rows || 0} 条归档</span>
                   {project.type ? <span className="ptag">{project.type}</span> : null}
                 </button>
               ))}
@@ -819,13 +1172,16 @@ function App() {
                 sourceArtifact={sourceArtifact}
                 termArtifact={termArtifact}
                 qaArtifact={qaArtifact}
+                archiveArtifact={archiveArtifact}
                 latestRun={latestRun}
+                translationReadiness={translationReadiness}
                 qualityIssues={qualityIssues}
                 glossaryPreview={glossaryPreview}
                 deliverables={deliverables}
                 setSourceArtifact={setSourceArtifact}
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={setQaArtifact}
+                setArchiveArtifact={setArchiveArtifact}
                 onSaveMeta={saveProjectMeta}
                 onAnalyze={runAnalysis}
                 onUploadSource={async (file) => setSourceArtifact(await upload(file, 'language_table'))}
@@ -836,6 +1192,11 @@ function App() {
                 onAddTerm={addGlossaryTerm}
                 onUpdateTerm={updateGlossaryTerm}
                 onDeleteTerm={deleteGlossaryTerm}
+                onAddTranslation={addTranslationEntry}
+                onUpdateTranslation={updateTranslationEntry}
+                onDeleteTranslation={deleteTranslationEntry}
+                onUploadArchive={uploadArchiveWorkbook}
+                onImportArchive={importTranslationArchive}
                 onSaveHarness={saveHarness}
                 onTranslate={() => runTranslate('T')}
                 onDirectQA={() => runDirectQA('QA')}
@@ -857,6 +1218,11 @@ function App() {
                 qaArtifact={qaArtifact}
                 assetArtifacts={assetArtifacts}
                 latestRun={latestRun}
+                translationReadiness={translationReadiness}
+                translationBatchSize={translationBatchSize}
+                setTranslationBatchSize={setTranslationBatchSize}
+                glossaryBatches={glossaryBatches}
+                glossaryCandidates={glossaryCandidates}
                 qualityIssues={qualityIssues}
                 selectedLangs={selectedLangs}
                 setSelectedLangs={setSelectedLangs}
@@ -881,6 +1247,8 @@ function App() {
                 onUploadTranslation={uploadTranslationWorkbook}
                 onFreq={() => setFreqOpen(true)}
                 onSaveHarness={saveHarness}
+                onUpdateCandidate={updateGlossaryCandidate}
+                onResolveCandidates={resolveGlossaryCandidates}
                 busy={busy}
               />
             )}
@@ -911,13 +1279,16 @@ function ProjectOverview({
   sourceArtifact,
   termArtifact,
   qaArtifact,
+  archiveArtifact,
   latestRun,
+  translationReadiness,
   qualityIssues,
   glossaryPreview,
   deliverables,
   setSourceArtifact,
   setTermArtifact,
   setQaArtifact,
+  setArchiveArtifact,
   onSaveMeta,
   onAnalyze,
   onUploadSource,
@@ -928,6 +1299,11 @@ function ProjectOverview({
   onAddTerm,
   onUpdateTerm,
   onDeleteTerm,
+  onAddTranslation,
+  onUpdateTranslation,
+  onDeleteTranslation,
+  onUploadArchive,
+  onImportArchive,
   onSaveHarness,
   onTranslate,
   onDirectQA,
@@ -948,13 +1324,16 @@ function ProjectOverview({
   sourceArtifact: Artifact | null
   termArtifact: Artifact | null
   qaArtifact: Artifact | null
+  archiveArtifact: Artifact | null
   latestRun: Run | null
+  translationReadiness: TranslationReadiness | null
   qualityIssues: QualityIssue[]
   glossaryPreview: GlossaryPreviewRow[]
   deliverables: DeliverableTask[]
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
   setQaArtifact: (artifact: Artifact | null) => void
+  setArchiveArtifact: (artifact: Artifact | null) => void
   onSaveMeta: (updates: Partial<Project>) => Promise<void>
   onAnalyze: () => void
   onUploadSource: (file: File) => void
@@ -965,6 +1344,11 @@ function ProjectOverview({
   onAddTerm: (form: FormData) => void
   onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => Promise<void>
   onDeleteTerm: (term: GlossaryTerm) => Promise<void>
+  onAddTranslation: (form: FormData) => void
+  onUpdateTranslation: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
+  onDeleteTranslation: (entry: TranslationEntry) => Promise<void>
+  onUploadArchive: (file: File) => void
+  onImportArchive: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onTranslate: () => void
   onDirectQA: () => void
@@ -984,9 +1368,9 @@ function ProjectOverview({
         <button className="btn btn-primary" onClick={onStartTask}>🚀 启动新翻译任务</button>
       </div>
       <div className="stat-grid">
-        <div className="stat-card"><div className="num">{project.stats.tasks}</div><div className="lbl">累计翻译任务</div></div>
-        <div className="stat-card"><div className="num">{project.stats.words}</div><div className="lbl">已翻译字数</div></div>
-        <div className="stat-card"><div className="num">{project.stats.langs}</div><div className="lbl">闭环语言数</div></div>
+        <div className="stat-card"><div className="num">{project.stats.tasks}</div><div className="lbl">累计任务</div></div>
+        <div className="stat-card"><div className="num">{project.stats.words}</div><div className="lbl">归档译文字数</div></div>
+        <div className="stat-card"><div className="num">{project.stats.archived_rows || 0}</div><div className="lbl">累计归档条数</div></div>
         <div className="stat-card"><div className="num">{project.stats.glossary}</div><div className="lbl">术语表词条</div></div>
       </div>
       <div className="view-tabs">
@@ -994,6 +1378,7 @@ function ProjectOverview({
         <button className={`view-tab ${tab === 'glossary' ? 'active' : ''}`} onClick={() => setTab('glossary')}>📚 术语表</button>
         <button className={`view-tab ${tab === 'translation' ? 'active' : ''}`} onClick={() => setTab('translation')}>⚡ 翻译</button>
         <button className={`view-tab ${tab === 'qa' ? 'active' : ''}`} onClick={() => setTab('qa')}>🔧 校对</button>
+        <button className={`view-tab ${tab === 'archive' ? 'active' : ''}`} onClick={() => setTab('archive')}>🗄️ 译文归档</button>
         <button className={`view-tab ${tab === 'delivery' ? 'active' : ''}`} onClick={() => setTab('delivery')}>📥 交付</button>
       </div>
       {tab === 'meta' ? <MetaTab project={project} intro={intro} setIntro={setIntro} busy={busy} onSaveMeta={onSaveMeta} onAnalyze={onAnalyze} onSaveHarness={onSaveHarness} /> : null}
@@ -1034,6 +1419,8 @@ function ProjectOverview({
         <StepQA
           project={project}
           latestRun={latestRun}
+          sourceArtifact={sourceArtifact}
+          translationReadiness={translationReadiness}
           qualityIssues={qualityIssues}
           qaArtifact={qaArtifact}
           setQaArtifact={setQaArtifact}
@@ -1043,6 +1430,20 @@ function ProjectOverview({
           onUploadTranslation={onUploadTranslation}
           busy={busy}
           status={status}
+        />
+      ) : null}
+      {tab === 'archive' ? (
+        <TranslationArchiveTab
+          project={project}
+          archiveArtifact={archiveArtifact}
+          setArchiveArtifact={setArchiveArtifact}
+          busy={busy}
+          status={status}
+          onUploadArchive={onUploadArchive}
+          onImportArchive={onImportArchive}
+          onAddTranslation={onAddTranslation}
+          onUpdateTranslation={onUpdateTranslation}
+          onDeleteTranslation={onDeleteTranslation}
         />
       ) : null}
       {tab === 'delivery' ? <DeliveryTab project={project} deliverables={deliverables} busy={busy} status={status} onCreateDelivery={onCreateDelivery} /> : null}
@@ -1405,7 +1806,7 @@ function GlossaryTermRow({
     target: row.target || '',
     target_alt: row.target_alt || '',
     category: row.category || '',
-    note: row.note || ''
+    note: normalizeGlossaryNote(row.note)
   })
 
   useEffect(() => {
@@ -1415,7 +1816,7 @@ function GlossaryTermRow({
       target: row.target || '',
       target_alt: row.target_alt || '',
       category: row.category || '',
-      note: row.note || ''
+      note: normalizeGlossaryNote(row.note)
     })
     setEditing(false)
   }, [row.id, row.term_key, row.source, row.target, row.target_alt, row.category, row.note])
@@ -1458,6 +1859,137 @@ function GlossaryTermRow({
   )
 }
 
+function TranslationArchiveTab({
+  project,
+  archiveArtifact,
+  setArchiveArtifact,
+  busy,
+  status,
+  onUploadArchive,
+  onImportArchive,
+  onAddTranslation,
+  onUpdateTranslation,
+  onDeleteTranslation
+}: {
+  project: Project
+  archiveArtifact: Artifact | null
+  setArchiveArtifact: (artifact: Artifact | null) => void
+  busy: boolean
+  status: string
+  onUploadArchive: (file: File) => void
+  onImportArchive: () => void
+  onAddTranslation: (form: FormData) => void
+  onUpdateTranslation: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
+  onDeleteTranslation: (entry: TranslationEntry) => Promise<void>
+}) {
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const entries = project.translations || []
+  return (
+    <div className="card">
+      <div className="card-title">
+        <div className="left">项目译文归档（{entries.length} 条）</div>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 导出'}</button>
+      </div>
+      {toolsOpen ? (
+        <div className="glossary-tools-panel">
+          <div className="action-card">
+            <AssetSelect label="使用已有译文资产" project={project} role={['translation_workbook', 'language_source']} value={archiveArtifact} onChange={setArchiveArtifact} allowEmpty />
+            <FileBox label="上传译文 workbook/csv/json" onFile={onUploadArchive} />
+            <div className="row-actions">
+              <button type="button" className="btn btn-primary" disabled={!archiveArtifact || busy} onClick={onImportArchive}>导入到项目译文归档</button>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=xlsx`}>导出 XLSX</a>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=csv`}>导出 CSV</a>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=json`}>导出 JSON</a>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <ActionStatus status={status} busy={busy} />
+      <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTranslation(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
+        <input name="entry_key" placeholder="ID" />
+        <input name="source" placeholder="CN" required />
+        <input name="target" placeholder="EN" />
+        <input name="target_alt" placeholder="EN2" />
+        <input name="note" placeholder="备注" />
+        <button className="btn btn-primary btn-sm">+ 新增</button>
+      </form>
+      <div className="table-scroll">
+        <table className="glossary-table translation-archive-table">
+          <thead><tr><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>备注</th><th>操作</th></tr></thead>
+          <tbody>
+            {entries.map((entry) => (
+              <TranslationEntryRow key={entry.id} entry={entry} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
+            ))}
+            {!entries.length ? <tr><td colSpan={6} className="muted">暂无译文归档。QA 通过后会自动写入，也可以从已有译文表导入。</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function TranslationEntryRow({
+  entry,
+  onUpdate,
+  onDelete
+}: {
+  entry: TranslationEntry
+  onUpdate: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
+  onDelete: (entry: TranslationEntry) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({
+    entry_key: entry.entry_key || '',
+    source: entry.source || '',
+    target: entry.target || '',
+    target_alt: entry.target_alt || '',
+    note: entry.note || ''
+  })
+
+  useEffect(() => {
+    setDraft({
+      entry_key: entry.entry_key || '',
+      source: entry.source || '',
+      target: entry.target || '',
+      target_alt: entry.target_alt || '',
+      note: entry.note || ''
+    })
+    setEditing(false)
+  }, [entry.id, entry.entry_key, entry.source, entry.target, entry.target_alt, entry.note])
+
+  async function save() {
+    await onUpdate(entry, draft)
+    setEditing(false)
+  }
+
+  function cell(key: keyof typeof draft) {
+    if (!editing) return <span className="readonly-cell">{draft[key] || '-'}</span>
+    return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
+  }
+
+  return (
+    <tr>
+      <td>{cell('entry_key')}</td>
+      <td>{cell('source')}</td>
+      <td>{cell('target')}</td>
+      <td>{cell('target_alt')}</td>
+      <td>{cell('note')}</td>
+      <td>
+        <div className="table-actions">
+          {editing ? (
+            <>
+              <button type="button" className="btn btn-primary btn-sm" onClick={save}>保存</button>
+              <button type="button" className="btn btn-sm btn-danger" onClick={() => onDelete(entry)}>删除</button>
+            </>
+          ) : (
+            <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>编辑</button>
+          )}
+        </div>
+      </td>
+    </tr>
+  )
+}
+
 function TranslationTab({
   project,
   settings,
@@ -1484,17 +2016,11 @@ function TranslationTab({
   onTranslate: () => void
 }) {
   const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project)
-  const provider = providerName(settings)
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   return (
     <>
       <div className="card">
         <div className="card-title"><div className="left">翻译任务</div></div>
-        <div className="provider-strip">
-          <div><strong>当前 Provider</strong><span>{provider}</span></div>
-          <div><strong>模型</strong><span>{settings?.model || '-'}</span></div>
-          <div><strong>思考配置</strong><span>{settings?.reasoning_effort || '-'}</span></div>
-        </div>
         <div className="action-card">
           <AssetSelect label="待翻译语言表" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} allowEmpty />
           <FileBox label="上传待翻译 workbook" onFile={onUploadSource} />
@@ -1602,6 +2128,11 @@ function Wizard(props: {
   qaArtifact: Artifact | null
   assetArtifacts: Artifact[]
   latestRun: Run | null
+  translationReadiness: TranslationReadiness | null
+  translationBatchSize: number
+  setTranslationBatchSize: (value: number) => void
+  glossaryBatches: GlossaryBatch[]
+  glossaryCandidates: GlossaryCandidate[]
   qualityIssues: QualityIssue[]
   settings: AppSettings | null
   status: string
@@ -1626,6 +2157,8 @@ function Wizard(props: {
   onUploadTranslation: (file: File) => void
   onFreq: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
+  onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
+  onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
   busy: boolean
 }) {
   const { project, step, setStep } = props
@@ -1645,7 +2178,7 @@ function Wizard(props: {
           </button>
         ))}
       </div>
-      <ActionStatus status={props.status} busy={props.busy} />
+      {step !== 7 ? <ActionStatus status={props.status} busy={props.busy} /> : null}
       <div className="step-panel active">
         {step === 1 ? <StepIntro {...props} /> : null}
         {step === 2 ? <StepAnalyze {...props} /> : null}
@@ -1688,7 +2221,7 @@ function StepIntro({
         <span className={intro.trim().length > 20 || project.description ? 'ok' : 'warn'}>{intro.trim().length > 20 || project.description ? '✓ 信息可用于生成 prompt' : '⚠ 建议补充更多信息'}</span>
       </div>
       <div className="upload-row">
-        <FileBox label="上传图片 / PDF / 音视频素材" onFile={onUploadAsset} />
+        <FileBox label="上传 Markdown / 文档 / 图片 / PDF / 音视频素材" onFile={onUploadAsset} />
         {assetArtifacts.length ? (
           <div className="asset-list">
             <div className="ai-header">已归档参考素材</div>
@@ -1785,43 +2318,184 @@ function StepSource({
 }
 
 function StepFreq({
+  project,
   onGlossaryExtract,
   onFreq,
   sourceArtifact,
   assetArtifacts,
   latestRun,
-  busy
+  glossaryBatches,
+  glossaryCandidates,
+  busy,
+  onUpdateCandidate,
+  onResolveCandidates
 }: {
+  project: Project
   onGlossaryExtract: () => void
   onFreq: () => void
   sourceArtifact: Artifact | null
   assetArtifacts: Artifact[]
   latestRun: Run | null
+  glossaryBatches: GlossaryBatch[]
+  glossaryCandidates: GlossaryCandidate[]
   busy: boolean
+  onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
+  onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
 }) {
+  const [expanded, setExpanded] = useState(false)
   const backfill = latestRun?.kind === 'glossary' ? latestRun.metadata?.glossary_backfill as Record<string, unknown> | undefined : undefined
+  const activeBatch = glossaryBatches[0] || null
+  const pendingCandidates = glossaryCandidates.filter((candidate) => candidate.status === 'pending')
+  const newCandidates = pendingCandidates.filter((candidate) => candidate.action === 'new')
+  const supplementCandidates = pendingCandidates.filter((candidate) => candidate.action === 'supplement')
+  const reviewPreview = expanded ? pendingCandidates : pendingCandidates.slice(0, 12)
+  const reviewCount = pendingCandidates.length
+  const inserted = Number(backfill?.inserted ?? newCandidates.length)
+  const updated = Number(backfill?.updated ?? 0)
+  const existing = Number(backfill?.skipped_existing ?? 0)
+  const candidates = Number(backfill?.candidates ?? 0)
+  const uniqueCandidates = Number(backfill?.unique_candidates ?? candidates)
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 5</span>高频词扫描 & 术语表智能补充</div>
       <div className="panel-desc">扫描语言表候选术语，和当前项目术语对比后只新增缺失词条，已有词条只补空白 EN/EN2，不覆盖人工译名。</div>
       <div className="row-actions action-card">
-        <span className="asset-meta">Project materials: {assetArtifacts.length}</span>
+        <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
+        <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
         <button className="btn btn-primary" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>🔍 开始扫描</button>
         <button className="btn btn-ghost" onClick={onFreq}>💡 查看补充策略</button>
       </div>
       {backfill ? (
-        <div className="workflow-note-grid">
-          <div><strong>候选词</strong><span>{String(backfill.candidates ?? 0)}</span></div>
-          <div><strong>去重后</strong><span>{String(backfill.unique_candidates ?? backfill.candidates ?? 0)}</span></div>
-          <div><strong>新增词条</strong><span>{String(backfill.inserted ?? 0)}</span></div>
-          <div><strong>待确认</strong><span>{String(backfill.pending_confirmation ?? backfill.inserted ?? 0)}</span></div>
-          <div><strong>补全词条</strong><span>{String(backfill.updated ?? 0)}</span></div>
-          <div><strong>保留已有</strong><span>{String(backfill.skipped_existing ?? 0)}</span></div>
-          <div><strong>重复跳过</strong><span>{String(backfill.skipped_duplicate ?? 0)}</span></div>
-          <div><strong>冲突保留</strong><span>{String(backfill.conflicts ?? 0)}</span></div>
-        </div>
+        <>
+          <div className="scan-explain">
+            <strong>本次扫描结果</strong>
+            <span>扫描到 {candidates} 个候选，去重后 {uniqueCandidates} 个；其中 {existing} 个已在项目术语库，{updated} 个补全了空白译文。新增和补全都需要过一遍，下方待复核共 {reviewCount} 条。</span>
+          </div>
+          <div className="workflow-note-grid compact-grid">
+            <div><strong>待复核</strong><span>{reviewCount}</span></div>
+            <div><strong>新增词条</strong><span>{inserted}</span></div>
+            <div><strong>补全待确认</strong><span>{supplementCandidates.length || updated}</span></div>
+            <div><strong>已在库中</strong><span>{existing}</span></div>
+          </div>
+          <div className="confirm-panel">
+            <div className="confirm-head">
+              <div>
+                <strong>待复核词条</strong>
+                <span>{activeBatch ? `批次：${activeBatch.label}` : '暂无扫描批次'}。新增词条和自动补全词条都先停在批次里；可编辑后加入项目术语库，也可跳过。</span>
+              </div>
+              <div className="confirm-actions">
+                <button className="btn btn-ghost btn-sm" disabled={!activeBatch || !pendingCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, pendingCandidates, 'reject')}>全部跳过</button>
+                <button className="btn btn-primary btn-sm" disabled={!activeBatch || !pendingCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, pendingCandidates, 'accept')}>全部加入术语库</button>
+              </div>
+            </div>
+            {reviewPreview.length ? (
+              <div className="table-scroll">
+                <table className="pending-term-table">
+                  <thead><tr><th>类型</th><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
+                  <tbody>
+                    {reviewPreview.map((term) => (
+                      <PendingTermReviewRow
+                        key={term.id}
+                        candidate={term}
+                        batchId={activeBatch?.id || ''}
+                        busy={busy}
+                        onUpdateCandidate={onUpdateCandidate}
+                        onResolveCandidates={onResolveCandidates}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="empty-inline">暂无待复核词条，可以继续下一步。</div>
+            )}
+            {pendingCandidates.length > 12 ? (
+              <div className="review-table-foot">
+                <span>{expanded ? `已展开全部 ${pendingCandidates.length} 条。` : `当前仅展示前 ${reviewPreview.length} 条；可查看并编辑全部 ${pendingCandidates.length} 条。`}</span>
+                <button className="btn btn-ghost btn-sm" disabled={!pendingCandidates.length} onClick={() => setExpanded((value) => !value)}>{expanded ? '▲ 收起' : `▼ 展开全部 ${pendingCandidates.length} 条`}</button>
+              </div>
+            ) : null}
+          </div>
+        </>
       ) : null}
     </>
+  )
+}
+
+function PendingTermReviewRow({
+  candidate,
+  batchId,
+  busy,
+  onUpdateCandidate,
+  onResolveCandidates
+}: {
+  candidate: GlossaryCandidate
+  batchId: string
+  busy: boolean
+  onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
+  onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({
+    term_key: candidate.term_key || '',
+    source: candidate.source || '',
+    target: candidate.target || '',
+    target_alt: candidate.target_alt || '',
+    category: candidate.category || '',
+    note: normalizeGlossaryNote(candidate.note)
+  })
+
+  useEffect(() => {
+    setDraft({
+      term_key: candidate.term_key || '',
+      source: candidate.source || '',
+      target: candidate.target || '',
+      target_alt: candidate.target_alt || '',
+      category: candidate.category || '',
+      note: normalizeGlossaryNote(candidate.note)
+    })
+    setEditing(false)
+  }, [candidate.id, candidate.term_key, candidate.source, candidate.target, candidate.target_alt, candidate.category, candidate.note])
+
+  async function save(confirmAfter = false) {
+    await onUpdateCandidate(candidate, draft)
+    setEditing(false)
+    if (confirmAfter) onResolveCandidates(batchId, [candidate], 'accept')
+  }
+
+  function cell(key: keyof typeof draft) {
+    if (!editing) return <span className="readonly-cell">{draft[key] || '-'}</span>
+    return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
+  }
+
+  const kind = candidate.action === 'new' ? '新增' : '补全'
+  return (
+    <tr>
+      <td><span className={`term-kind ${candidate.action === 'new' ? 'new' : 'filled'}`}>{kind}</span></td>
+      <td>{cell('term_key')}</td>
+      <td>{cell('source')}</td>
+      <td>{cell('target')}</td>
+      <td>{cell('target_alt')}</td>
+      <td>{cell('category')}</td>
+      <td>{cell('note')}</td>
+      <td>
+        <div className="term-review-actions">
+          {editing ? (
+            <>
+              <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => save(false)}>保存</button>
+              <button type="button" className="btn btn-sm" disabled={busy || !batchId} onClick={() => save(true)}>保存并加入</button>
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setEditing(false)}>取消</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setEditing(true)}>编辑</button>
+              <button type="button" className="btn btn-sm" disabled={busy || !batchId} onClick={() => onResolveCandidates(batchId, [candidate], 'accept')}>加入</button>
+              <button type="button" className="btn btn-sm" disabled={busy || !batchId} onClick={() => onResolveCandidates(batchId, [candidate], 'reject')}>跳过</button>
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
   )
 }
 
@@ -1848,10 +2522,15 @@ function StepTranslate({
   onTranslate,
   busy,
   latestRun,
+  translationReadiness,
+  translationBatchSize,
+  setTranslationBatchSize,
   sourceArtifact,
   termArtifact,
   setSourceArtifact,
-  setTermArtifact
+  setTermArtifact,
+  setQaArtifact,
+  setStep
 }: {
   project: Project
   settings: AppSettings | null
@@ -1859,36 +2538,132 @@ function StepTranslate({
   onTranslate: () => void
   busy: boolean
   latestRun: Run | null
+  translationReadiness: TranslationReadiness | null
+  translationBatchSize: number
+  setTranslationBatchSize: (value: number) => void
   sourceArtifact: Artifact | null
   termArtifact: Artifact | null
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
+  setQaArtifact: (artifact: Artifact | null) => void
+  setStep: (step: number) => void
 }) {
   const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project)
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
+  const batchSize = clampBatchSize(translationBatchSize)
+  const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === batchSize ? translationReadiness : null
+  const alreadyTranslated = canSkipModelTranslation(readiness)
+  const estimatedBatches = estimateBatches(readiness?.source_rows, batchSize)
+  const progress = getTranslationProgress(latestRun)
+  const resumable = Boolean(latestRun?.kind === 'translation' && latestRun.status === 'failed' && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
+  const selectedBatchPreset = batchPresets.find((preset) => preset.size === batchSize)
+  const readinessText = readiness
+    ? `${readiness.source_rows} 行原文 / ${readiness.translated_rows} 行已有译文 / 空译文 ${readiness.empty_target_rows} / 中文残留 ${readiness.cjk_target_rows} / 预计 ${readiness.estimated_batches} 批`
+    : '选择语言表后自动检查'
+  const readinessState = !sourceArtifact
+    ? { label: '未选择语言表', tone: 'idle' }
+    : !readiness
+      ? { label: '正在检查', tone: 'checking' }
+      : alreadyTranslated
+        ? { label: '可直接校对', tone: 'ready' }
+        : { label: '需要翻译', tone: 'todo' }
+  const showTranslateStatus = busy
+    || Boolean(progress)
+    || /翻译|provider|API|mock|workpack|批|QA/i.test(status)
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 7</span>模型翻译进行中</div>
-      <div className="panel-desc">选择语言表后生成 workpack，使用项目术语库快照、提示词和项目规则调用 GPT / Claude。</div>
+      <div className="panel-title"><span className="badge">STEP 7</span>模型翻译</div>
+      <div className="panel-desc">先检查语言表是否已有目标译文；已有译文则跳过模型翻译并进入校对，空译文或中文残留才生成 workpack 分批调用 GPT / Claude。</div>
       <div className="action-card">
         <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
-        <button className="btn btn-primary" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>⚡ 开始翻译</button>
-        {blockReason ? <div className="warn-line">{blockReason}</div> : null}
-        <ActionStatus status={status} busy={busy} />
+        <div className={`translation-readiness-box ${readinessState.tone}`}>
+          <div className="readiness-head">
+            <strong>译文检查</strong>
+            <span>{readinessState.label}</span>
+          </div>
+          <p>{readinessText}</p>
+        </div>
+        <div className="translation-batch-panel">
+          <div className="batch-control-head">
+            <div>
+              <strong>批处理</strong>
+              <span>每批落盘、失败批次重试、可断点续跑。</span>
+            </div>
+            <em>当前 {batchSize} 行/批 · 预计 {estimatedBatches || '-'} 批</em>
+          </div>
+          <div className="batch-button-row" role="group" aria-label="批次大小">
+            {batchPresets.map((preset) => (
+              <button
+                key={preset.key}
+                type="button"
+                className={`batch-size-button ${batchSize === preset.size ? 'selected' : ''}`}
+                disabled={busy}
+                onClick={() => setTranslationBatchSize(preset.size)}
+                title={preset.desc}
+              >
+                <strong>{preset.label}</strong>
+                <span>{preset.size} 行/批</span>
+              </button>
+            ))}
+            <label className={`batch-custom-button ${selectedBatchPreset ? '' : 'selected'}`}>
+              <span>自定义</span>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={batchSize}
+                disabled={busy}
+                onChange={(event) => setTranslationBatchSize(clampBatchSize(Number(event.target.value)))}
+              />
+            </label>
+          </div>
+        </div>
+        <div className="translation-actions">
+          {alreadyTranslated ? (
+            <>
+              <div className="ok-line">检测到这份表已有可校对译文，不需要重新走整表翻译；残留问题交给 QA 处理。</div>
+              <button className="btn btn-primary" disabled={busy} onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>跳到校对</button>
+            </>
+          ) : (
+            <button className="btn btn-primary" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>⚡ 开始正式翻译</button>
+          )}
+          {blockReason && !alreadyTranslated ? <div className="warn-line inline-warning">{blockReason}</div> : null}
+        </div>
+        {showTranslateStatus ? <ActionStatus status={status} busy={busy} /> : null}
+        {progress ? <TranslationProgressBar progress={progress} /> : null}
       </div>
-      <div className="workflow-note-grid">
-        <div><strong>项目术语库</strong><span>{glossaryCount} 条</span></div>
-        <div><strong>提示词</strong><span>{project.prompt_text ? '已生成' : '未生成'}</span></div>
-        <div><strong>校对门槛</strong><span>QA 通过后才生成最终交付</span></div>
+      <div className="translation-guard-strip">
+        <span>项目术语库 <strong>{glossaryCount} 条</strong></span>
+        <span>提示词 <strong>{project.prompt_text ? '已生成' : '未生成'}</strong></span>
+        <span>校对门槛 <strong>QA 通过后交付</strong></span>
       </div>
       {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} /> : null}
     </>
   )
 }
 
+function TranslationProgressBar({ progress }: { progress: TranslationProgress }) {
+  const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)))
+  return (
+    <div className="translation-progress">
+      <div className="progress-head">
+        <strong>翻译进度</strong>
+        <span>{progress.completed_batches}/{progress.total_batches} 批 · {progress.completed_rows}/{progress.total_rows} 行 · ETA {formatDuration(progress.eta_seconds)}</span>
+      </div>
+      <div className="progress-track"><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
+      <div className="progress-foot">
+        <span>{percent.toFixed(1)}%</span>
+        <span>{progress.failed_batch ? `失败批次：${progress.failed_batch}` : `当前批次：${progress.current_batch || '-'}`}</span>
+      </div>
+    </div>
+  )
+}
+
 function StepQA({
   project,
   latestRun,
+  sourceArtifact,
+  translationReadiness,
   qualityIssues,
   qaArtifact,
   setQaArtifact,
@@ -1901,6 +2676,8 @@ function StepQA({
 }: {
   project: Project
   latestRun: Run | null
+  sourceArtifact: Artifact | null
+  translationReadiness: TranslationReadiness | null
   qualityIssues: QualityIssue[]
   qaArtifact: Artifact | null
   setQaArtifact: (artifact: Artifact | null) => void
@@ -1911,40 +2688,53 @@ function StepQA({
   busy: boolean
   status: string
 }) {
-  const projectQuality = latestRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
+  const latestQaRun = latestRun?.kind === 'qa' ? latestRun : latestRunOfKind(project, 'qa')
+  const projectQuality = latestQaRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
   const projectHardErrors = projectQuality?.hard_errors ?? 0
-  const qaIssues = qualityIssues.filter((issue) => issue.severity === 'hard' || issue.severity === 'soft')
-  const previousTranslationRun = (project.runs || []).find((run) => run.kind === 'translation')
+  const qaIssues = latestRun?.id === latestQaRun?.id ? qualityIssues.filter((issue) => issue.severity === 'hard' || issue.severity === 'soft') : []
+  const previousTranslationRun = latestRunOfKind(project, 'translation')
   const previousTranslationArtifact = previousTranslationRun
     ? newestArtifact(runArtifacts(project, previousTranslationRun.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
     : null
+  const qaRole = qaArtifact ? artifactRole(qaArtifact) : ''
+  const selectedReadiness = qaArtifact && translationReadiness?.artifact_id === qaArtifact.id ? translationReadiness : null
   const originText = qaArtifact?.run_id && previousTranslationRun?.id === qaArtifact.run_id
-    ? `继续前一步翻译结果：${previousTranslationRun.id.slice(0, 8)}`
-    : qaArtifact
-      ? '新导入/手动选择译文 workbook'
-      : '未选择'
+    ? `上一翻译结果：${previousTranslationRun.id.slice(0, 8)}`
+    : qaRole === 'language_source'
+      ? selectedReadiness
+        ? `此前导入的语言表：${selectedReadiness.translated_rows}/${selectedReadiness.source_rows} 行已有译文`
+        : '此前导入的语言表；运行前会按译文表检查'
+      : qaArtifact
+        ? '直接导入的译文 workbook'
+        : sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && canSkipModelTranslation(translationReadiness)
+          ? '已检测到当前语言表可进入校对，可直接选择运行'
+          : '请选择要校对的译文表'
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
+  const qaStatus = latestQaRun ? latestQaRun.status : '未运行'
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 8</span>自动校对与优化</div>
-      <div className="panel-desc">可继续处理前一步翻译，也可上传已有译文；QA 会使用项目术语库快照、项目规则和本地化校对规则。</div>
+      <div className="panel-title"><span className="badge">STEP 8</span>校对任务</div>
+      <div className="panel-desc">这里是校对入口：可以接上一步翻译结果，也可以选择之前导入且已有译文的语言表，或上传一份新的译文 workbook。</div>
       <div className="action-card">
-        <button className="btn btn-ghost" disabled={!previousTranslationArtifact || busy} onClick={() => setQaArtifact(previousTranslationArtifact)}>继续前一步翻译结果</button>
-        <AssetSelect label="已有译文 workbook" project={project} role="translation_workbook" value={qaArtifact} onChange={setQaArtifact} allowEmpty />
-        <FileBox label="上传已有译文 workbook" onFile={onUploadTranslation} />
+        <div className="qa-entry-row">
+          <button className="btn btn-ghost" disabled={!previousTranslationArtifact || busy} onClick={() => setQaArtifact(previousTranslationArtifact)}>使用上一翻译结果</button>
+          <button className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={() => sourceArtifact && setQaArtifact(sourceArtifact)}>使用当前语言表</button>
+        </div>
+        <AssetSelect label="选择已译表 / 翻译结果" project={project} role={['translation_workbook', 'language_source']} value={qaArtifact} onChange={setQaArtifact} allowEmpty />
+        <FileBox label="上传新的译文 workbook" onFile={onUploadTranslation} />
         <button className="btn btn-primary" data-testid="run-qa" disabled={!qaArtifact || busy} onClick={onDirectQA}>运行 QA</button>
-        {!qaArtifact ? <div className="warn-line">请选择或上传已有译文 workbook 后再运行 QA。</div> : null}
+        {!qaArtifact ? <div className="warn-line">请选择“上一翻译结果”、此前导入的已译语言表，或上传新的译文 workbook 后再运行 QA。</div> : null}
         <ActionStatus status={status} busy={busy} />
       </div>
       <div className="check-list">
-        <CheckItem ok={Boolean(qaArtifact)} title="译文 workbook" detail={qaArtifact ? qaArtifact.label : '未选择'} />
-        <CheckItem ok={Boolean(qaArtifact)} title="任务起点" detail={originText} />
+        <CheckItem ok={Boolean(qaArtifact)} title="处理文件" detail={qaArtifact ? qaArtifact.label : '未选择'} />
+        <CheckItem ok={Boolean(qaArtifact)} title="来源说明" detail={originText} />
         <CheckItem ok={glossaryCount > 0} title="项目术语库" detail={`${glossaryCount} 条，运行时生成快照`} />
-        <CheckItem ok={!latestRun || latestRun.status === 'passed'} title="QA 状态" detail={latestRun ? latestRun.status : '未运行'} />
+        <CheckItem ok={!latestQaRun || latestQaRun.status === 'passed'} title="最近 QA" detail={qaStatus} />
         <CheckItem ok={qaIssues.length === 0} title="待处理问题" detail={qaIssues.length ? `${qaIssues.length} 条` : '无'} />
       </div>
       <TaskHistoryTable project={project} kind="qa" title="🕒 校对历史记录" />
-      {latestRun ? <TaskRunSummary run={latestRun} issues={qaIssues} projectHardErrors={projectHardErrors} /> : null}
+      {latestQaRun ? <TaskRunSummary run={latestQaRun} issues={qaIssues} projectHardErrors={projectHardErrors} /> : null}
       {qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onModelFix={onModelFixes} onApply={onManualFixes} /> : null}
     </>
   )
@@ -2063,7 +2853,7 @@ function TaskHistoryTable({ project, kind, title }: { project: Project; kind: Hi
       </div>
       <table className="history-table">
         <thead>
-          <tr><th>日期</th><th>任务名称</th><th>目标语言</th><th>产物</th><th>状态</th><th>操作</th></tr>
+          <tr><th>日期</th><th>任务名称</th><th>目标语言</th><th>处理量</th><th>状态</th><th>操作</th></tr>
         </thead>
         <tbody>
           {runs.map((run) => {
@@ -2075,7 +2865,7 @@ function TaskHistoryTable({ project, kind, title }: { project: Project; kind: Hi
                 <td>{formatDate(run.created_at)}</td>
                 <td>{task.taskType} · {task.taskLabel}</td>
                 <td>{run.language?.toUpperCase() || '-'}</td>
-                <td>{artifacts.length}</td>
+                <td>{runProcessedLabel(run)}</td>
                 <td><span className={`tag ${run.status === 'passed' ? 'tag-done' : run.status === 'failed' ? 'tag-warn' : 'tag-doing'}`}>{run.status}</span></td>
                 <td>
                   <div className="link-actions">
@@ -2108,6 +2898,7 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
   const artifactById = new Map((project.artifacts || []).map((artifact) => [artifact.id, artifact]))
   const task = runTaskSummary(project, run)
   const quality = (run.metadata?.quality_summary || {}) as Record<string, unknown>
+  const archiveCount = runArchiveCount(run)
   const inputItems = [
     ['源/译文', inputs.source_workbook || inputs.translation_workbook],
     ['术语快照', inputs.glossary_snapshot],
@@ -2129,6 +2920,11 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
         <div><strong>更新时间</strong><span>{new Date(run.updated_at).toLocaleString()}</span></div>
         <div><strong>来源文件</strong><span>{inputArtifactName(project, run) || '-'}</span></div>
         <div><strong>QA 结果</strong><span>必须修复 {Number(quality.hard_errors || 0)}</span></div>
+        <div><strong>翻译处理</strong><span>{runTranslationProgressText(run)}</span></div>
+        <div><strong>校对处理</strong><span>{runQaRowsText(run)}</span></div>
+        <div><strong>本次归档</strong><span>{archiveCount > 0 ? `${archiveCount} 条` : '未归档'}</span></div>
+        <div><strong>累计归档</strong><span>{project.stats.archived_rows || 0} 条</span></div>
+        <div><strong>交付状态</strong><span>{runDeliveryState(run, visibleArtifacts)}</span></div>
       </div>
       <div className="artifact-links">
         {visibleArtifacts.map((artifact) => (
@@ -2172,6 +2968,64 @@ function inputArtifactName(project: Project, run: Run): string {
   const artifactId = inputs.source_workbook || inputs.translation_workbook || String(run.metadata?.input_artifact_id || '')
   if (!artifactId) return ''
   return (project.artifacts || []).find((artifact) => artifact.id === artifactId)?.label || artifactId
+}
+
+function runArchiveCount(run: Run): number {
+  const archive = run.metadata?.translation_archive as { imported_count?: number } | undefined
+  return Number(archive?.imported_count || 0)
+}
+
+function runProcessedLabel(run: Run): string {
+  const archiveCount = runArchiveCount(run)
+  if (archiveCount > 0) return `${archiveCount} 条归档`
+  const progress = run.metadata?.translation_progress as TranslationProgress | undefined
+  if (progress?.total_rows) return `${progress.completed_rows || 0}/${progress.total_rows} 行`
+  const readiness = run.metadata?.translation_readiness as TranslationReadiness | undefined
+  if (readiness?.source_rows) {
+    if (readiness.ready_for_qa) return `${readiness.translated_rows}/${readiness.source_rows} 行已译`
+    return `${readiness.source_rows} 行待译`
+  }
+  const qualityRows = qualityRowsScanned(run)
+  if (qualityRows > 0) return `${qualityRows} 行校对`
+  return '-'
+}
+
+function runTranslationProgressText(run: Run): string {
+  const progress = run.metadata?.translation_progress as TranslationProgress | undefined
+  if (progress?.total_rows) {
+    const percent = typeof progress.percent === 'number' ? `，${progress.percent}%` : ''
+    return `${progress.completed_rows || 0}/${progress.total_rows} 行${percent}`
+  }
+  const readiness = run.metadata?.translation_readiness as TranslationReadiness | undefined
+  if (readiness?.source_rows) {
+    return readiness.ready_for_qa
+      ? `输入已含译文 ${readiness.translated_rows}/${readiness.source_rows} 行，跳过模型翻译`
+      : `${readiness.source_rows} 行待翻译，预计 ${readiness.estimated_batches || 0} 批`
+  }
+  return run.kind === 'translation' ? '未开始' : '不涉及'
+}
+
+function runQaRowsText(run: Run): string {
+  const rows = qualityRowsScanned(run)
+  if (rows > 0) return `${rows} 行`
+  const archiveCount = runArchiveCount(run)
+  if (archiveCount > 0) return `${archiveCount} 行`
+  return run.kind === 'qa' || run.metadata?.quality_summary ? '已运行，未返回行数' : '未运行'
+}
+
+function qualityRowsScanned(run: Run): number {
+  const quality = (run.metadata?.quality_summary || {}) as Record<string, unknown>
+  const globalQuality = quality.global_harness_quality as { rows_scanned?: number } | undefined
+  const projectQuality = quality.project_harness_quality as { rows_scanned?: number } | undefined
+  return Number(globalQuality?.rows_scanned || projectQuality?.rows_scanned || 0)
+}
+
+function runDeliveryState(run: Run, visibleArtifacts: Artifact[]): string {
+  if (visibleArtifacts.some((artifact) => artifact.kind === 'qa_final_workbook' || artifact.role === 'translation_workbook')) return '可生成最终交付'
+  if (run.status === 'passed') return '已通过，等待生成交付文件'
+  if (run.status === 'needs_input') return '需要补充输入'
+  if (run.status === 'failed') return 'QA 未通过'
+  return '处理中'
 }
 
 function SelectedInput({ label, artifact }: { label: string; artifact: Artifact | null }) {
@@ -2379,6 +3233,7 @@ function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compa
 }
 
 function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate: (form: FormData) => void }) {
+  const [typeMode, setTypeMode] = useState('科幻 SLG')
   return (
     <div className="modal-mask show">
       <form className="modal" onSubmit={(event) => { event.preventDefault(); onCreate(new FormData(event.currentTarget)) }}>
@@ -2387,7 +3242,18 @@ function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate:
         <label className="field-label">项目名称</label>
         <input name="name" placeholder="例如：星际边境 / 机甲纪元" required />
         <label className="field-label">项目类型</label>
-        <select name="type"><option>科幻 SLG</option><option>女性向恋爱</option><option>休闲合成</option><option>武侠 RPG</option><option>其他</option></select>
+        <select value={typeMode} onChange={(event) => setTypeMode(event.target.value)}>
+          <option>科幻 SLG</option>
+          <option>女性向恋爱</option>
+          <option>休闲合成</option>
+          <option>武侠 RPG</option>
+          <option>其他</option>
+        </select>
+        {typeMode === '其他' ? (
+          <input name="type" placeholder="手动填写项目类型 / 标签" required autoFocus />
+        ) : (
+          <input name="type" type="hidden" value={typeMode} />
+        )}
         <label className="field-label">图标</label>
         <input name="icon" placeholder="🎮" />
         <label className="field-label">描述</label>
@@ -2423,33 +3289,36 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
     setSettings(saved)
     onClose()
   }
-  const presets = settings?.provider_presets as Record<string, Record<string, { label: string; model: string; reasoning_effort: string }>> | undefined
-  const selectedPreset = presets?.[provider]?.[preset]
   return (
     <div className="modal-mask show">
-      <form className="modal" onSubmit={(event) => { event.preventDefault(); submit(new FormData(event.currentTarget)) }}>
-        <h3>⚙ 模型设置</h3>
-        <p>只保留 GPT 与 Claude。每家固定三档预设：快速响应、平衡、深度思考；密钥写入仓库外 `settings.local.json`。</p>
-        <label className="field-label">Provider</label>
-        <select name="provider" value={provider} onChange={(event) => setProvider(event.target.value)}>
-          <option value="openai">GPT</option>
-          <option value="anthropic">Claude</option>
-        </select>
-        <label className="field-label">响应预设</label>
-        <select name="preset" value={preset} onChange={(event) => setPreset(event.target.value)}>
-          <option value="fast">快速响应</option>
-          <option value="balanced">平衡</option>
-          <option value="deep">深度思考</option>
-        </select>
-        <div className="preset-note">
-          <div><strong>当前模型</strong><span>{selectedPreset?.model || String(settings?.model || '-')}</span></div>
-          <div><strong>思考配置</strong><span>{selectedPreset?.reasoning_effort || String(settings?.reasoning_effort || '-')}</span></div>
+      <form className="modal settings-modal" onSubmit={(event) => { event.preventDefault(); submit(new FormData(event.currentTarget)) }}>
+        <div className="settings-head">
+          <h3>⚙ 设置</h3>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>关闭</button>
         </div>
-        <label className="field-label">API Key</label>
-        <input name="api_key" type="password" placeholder={String(settings?.api_key || '')} />
-        <label className="field-label">Batch size</label>
-        <input name="batch_size" type="number" defaultValue={Number(settings?.batch_size || 90)} min={1} max={200} />
-        <div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={onClose}>取消</button><button className="btn btn-primary">保存</button></div>
+        <div className="settings-grid">
+          <label>
+            <span>Provider</span>
+            <select name="provider" value={provider} onChange={(event) => setProvider(event.target.value)}>
+              <option value="openai">GPT</option>
+              <option value="anthropic">Claude</option>
+            </select>
+          </label>
+          <label>
+            <span>预设</span>
+            <select name="preset" value={preset} onChange={(event) => setPreset(event.target.value)}>
+              <option value="fast">快速响应</option>
+              <option value="balanced">平衡</option>
+              <option value="deep">深度思考</option>
+            </select>
+          </label>
+          <label className="settings-wide">
+            <span>API key</span>
+            <input name="api_key" type="password" placeholder="完整版写入私有 settings.local.json" />
+          </label>
+        </div>
+        <input name="batch_size" type="hidden" value={Number(settings?.batch_size || 90)} />
+        <div className="settings-actions"><button className="btn btn-primary">保存设置</button></div>
       </form>
     </div>
   )

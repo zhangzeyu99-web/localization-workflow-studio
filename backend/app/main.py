@@ -3,8 +3,8 @@ from __future__ import annotations
 import mimetypes
 import json
 import os
-import shutil
 import sys
+import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,8 @@ if __package__ is None or __package__ == "":
     from app.schemas import (
         ArtifactUpdate,
         GlossaryExtractRequest,
+        GlossaryBatchResolveRequest,
+        GlossaryCandidateUpdate,
         GlossaryImportRequest,
         GlossaryTermPayload,
         GlossaryTermUpdate,
@@ -34,6 +36,9 @@ if __package__ is None or __package__ == "":
         RunCreate,
         SettingsUpdate,
         TranslateRequest,
+        TranslationArchiveImportRequest,
+        TranslationEntryPayload,
+        TranslationEntryUpdate,
     )
     from app.workflow import (
         analyze_assets,
@@ -43,9 +48,12 @@ if __package__ is None or __package__ == "":
         create_improvement_review,
         create_semantic_qa_context,
         export_glossary,
+        export_translation_archive,
         extract_glossary,
         harness_overview,
         import_glossary,
+        import_translation_archive,
+        inspect_translation_readiness,
         list_project_deliverables,
         list_improvements,
         list_quality_issues,
@@ -63,6 +71,8 @@ else:
     from .schemas import (
         ArtifactUpdate,
         GlossaryExtractRequest,
+        GlossaryBatchResolveRequest,
+        GlossaryCandidateUpdate,
         GlossaryImportRequest,
         GlossaryTermPayload,
         GlossaryTermUpdate,
@@ -75,6 +85,9 @@ else:
         RunCreate,
         SettingsUpdate,
         TranslateRequest,
+        TranslationArchiveImportRequest,
+        TranslationEntryPayload,
+        TranslationEntryUpdate,
     )
     from .workflow import (
         analyze_assets,
@@ -84,9 +97,12 @@ else:
         create_improvement_review,
         create_semantic_qa_context,
         export_glossary,
+        export_translation_archive,
         extract_glossary,
         harness_overview,
         import_glossary,
+        import_translation_archive,
+        inspect_translation_readiness,
         list_project_deliverables,
         list_improvements,
         list_quality_issues,
@@ -153,9 +169,12 @@ def get_projects() -> list[dict[str, Any]]:
 
 @app.post("/api/projects")
 def create_project(payload: ProjectCreate) -> dict[str, Any]:
+    existing = db.find_project_by_name(payload.name)
+    if existing:
+        return {**_with_project_stats(existing), "duplicate": True}
     project = db.insert_project(payload.name, payload.type, payload.description, payload.icon)
     project_dir(project["id"])
-    return _with_project_stats(project)
+    return {**_with_project_stats(project), "duplicate": False}
 
 
 @app.get("/api/projects/{project_id}")
@@ -215,11 +234,27 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     safe_name = _safe_filename(file.filename or "upload.bin")
+    upload_bytes = file.file.read()
+    digest = hashlib.sha256(upload_bytes).hexdigest()
+    if kind == "asset":
+        duplicate = _find_duplicate_project_upload(project_id, kind, digest)
+        if duplicate:
+            duplicate["duplicate"] = True
+            return duplicate
     destination = _unique_path(project_dir(project_id) / "uploads" / safe_name)
     with destination.open("wb") as fh:
-        shutil.copyfileobj(file.file, fh)
+        fh.write(upload_bytes)
     mime = file.content_type or mimetypes.guess_type(str(destination))[0] or "application/octet-stream"
-    artifact = db.add_artifact(project_id, safe_name, destination, kind, mime=mime, origin="uploaded")
+    artifact = db.add_artifact(
+        project_id,
+        safe_name,
+        destination,
+        kind,
+        mime=mime,
+        origin="uploaded",
+        metadata={"sha256": digest, "original_filename": safe_name},
+    )
+    artifact["duplicate"] = False
     return artifact
 
 
@@ -232,9 +267,48 @@ def list_project_assets(project_id: str, role: str | None = None, origin: str | 
     return db.list_artifacts(project_id=project_id, run_id=run_id, role=role, origin=origin)
 
 
+@app.get("/api/artifacts/{artifact_id}/translation-readiness")
+def artifact_translation_readiness(artifact_id: str, batch_size: int | None = None) -> dict[str, Any]:
+    try:
+        return inspect_translation_readiness(artifact_id, batch_size=batch_size)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
+
+
 @app.get("/api/projects/{project_id}/glossary")
 def list_project_glossary(project_id: str) -> list[dict[str, Any]]:
     return db.list_glossary_terms(project_id)
+
+
+@app.get("/api/projects/{project_id}/glossary/batches")
+def list_project_glossary_batches(project_id: str) -> dict[str, Any]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    batches = db.list_glossary_batches(project_id)
+    latest = batches[0] if batches else None
+    candidates = db.list_glossary_candidates(project_id, batch_id=latest["id"]) if latest else []
+    return {"batches": batches, "active_batch": latest, "candidates": candidates}
+
+
+@app.patch("/api/projects/{project_id}/glossary/candidates/{candidate_id}")
+def update_project_glossary_candidate(project_id: str, candidate_id: str, payload: GlossaryCandidateUpdate) -> dict[str, Any]:
+    candidate = _require_project_candidate(project_id, candidate_id)
+    _ = candidate
+    return db.update_glossary_candidate(candidate_id, payload.model_dump(exclude_unset=True))
+
+
+@app.post("/api/projects/{project_id}/glossary/batches/{batch_id}/accept")
+def accept_project_glossary_candidates(project_id: str, batch_id: str, payload: GlossaryBatchResolveRequest) -> dict[str, Any]:
+    _require_project_batch(project_id, batch_id)
+    return db.accept_glossary_candidates(project_id, batch_id, payload.candidate_ids or None)
+
+
+@app.post("/api/projects/{project_id}/glossary/batches/{batch_id}/reject")
+def reject_project_glossary_candidates(project_id: str, batch_id: str, payload: GlossaryBatchResolveRequest) -> dict[str, Any]:
+    _require_project_batch(project_id, batch_id)
+    return db.reject_glossary_candidates(project_id, batch_id, payload.candidate_ids or None)
 
 
 @app.post("/api/projects/{project_id}/glossary")
@@ -243,13 +317,15 @@ def create_glossary_term(project_id: str, payload: GlossaryTermPayload) -> dict[
         db.get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
-    return db.insert_glossary_term(project_id, payload.model_dump())
+    return db.upsert_glossary_term(project_id, payload.model_dump())
 
 
 @app.patch("/api/projects/{project_id}/glossary/{term_id}")
 def update_glossary_term(project_id: str, term_id: str, payload: GlossaryTermUpdate) -> dict[str, Any]:
     _require_project_term(project_id, term_id)
-    return db.update_glossary_term(term_id, payload.model_dump(exclude_unset=True))
+    updated = db.update_glossary_term(term_id, payload.model_dump(exclude_unset=True))
+    db.dedupe_project_glossary_terms(project_id, preferred_term_id=term_id, merge_duplicates=False)
+    return db.get_glossary_term(updated["id"])
 
 
 @app.delete("/api/projects/{project_id}/glossary/{term_id}")
@@ -279,6 +355,59 @@ def import_project_glossary(project_id: str, payload: GlossaryImportRequest) -> 
 def export_project_glossary(project_id: str, format: str = "xlsx") -> Any:
     try:
         exported = export_glossary(project_id, format)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    if isinstance(exported, dict):
+        return exported
+    media_type = "text/csv" if exported.suffix.lower() == ".csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return FileResponse(exported, media_type=media_type, filename=exported.name)
+
+
+@app.get("/api/projects/{project_id}/translations")
+def list_project_translations(project_id: str) -> list[dict[str, Any]]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    return db.list_translation_entries(project_id)
+
+
+@app.post("/api/projects/{project_id}/translations")
+def create_translation_entry(project_id: str, payload: TranslationEntryPayload) -> dict[str, Any]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    return db.upsert_translation_entry(project_id, payload.model_dump())
+
+
+@app.patch("/api/projects/{project_id}/translations/{entry_id}")
+def update_translation_entry(project_id: str, entry_id: str, payload: TranslationEntryUpdate) -> dict[str, Any]:
+    _require_project_translation(project_id, entry_id)
+    return db.update_translation_entry(entry_id, payload.model_dump(exclude_unset=True))
+
+
+@app.delete("/api/projects/{project_id}/translations/{entry_id}")
+def delete_translation_entry(project_id: str, entry_id: str) -> dict[str, bool]:
+    _require_project_translation(project_id, entry_id)
+    db.delete_translation_entry(entry_id)
+    return {"deleted": True}
+
+
+@app.post("/api/projects/{project_id}/translations/import")
+def import_project_translations(project_id: str, payload: TranslationArchiveImportRequest) -> dict[str, Any]:
+    try:
+        return import_translation_archive(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/translations/export")
+def export_project_translations(project_id: str, format: str = "xlsx") -> Any:
+    try:
+        exported = export_translation_archive(project_id, format)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     if isinstance(exported, dict):
@@ -536,6 +665,32 @@ def _unique_path(path: Path) -> Path:
         index += 1
 
 
+def _find_duplicate_project_upload(project_id: str, kind: str, digest: str) -> dict[str, Any] | None:
+    for artifact in db.list_artifacts(project_id=project_id):
+        if artifact.get("kind") != kind:
+            continue
+        metadata = dict(artifact.get("metadata") or {})
+        existing_digest = metadata.get("sha256")
+        if not existing_digest:
+            existing_digest = _file_sha256(Path(artifact.get("path") or ""))
+            if existing_digest:
+                metadata["sha256"] = existing_digest
+                artifact = db.update_artifact(artifact["id"], {"metadata": metadata})
+        if existing_digest == digest:
+            return artifact
+    return None
+
+
+def _file_sha256(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _require_project_term(project_id: str, term_id: str) -> dict[str, Any]:
     try:
         term = db.get_glossary_term(term_id)
@@ -546,24 +701,75 @@ def _require_project_term(project_id: str, term_id: str) -> dict[str, Any]:
     return term
 
 
+def _require_project_batch(project_id: str, batch_id: str) -> dict[str, Any]:
+    try:
+        batch = db.get_glossary_batch(batch_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="glossary batch not found") from exc
+    if batch["project_id"] != project_id:
+        raise HTTPException(status_code=404, detail="glossary batch not found")
+    return batch
+
+
+def _require_project_candidate(project_id: str, candidate_id: str) -> dict[str, Any]:
+    try:
+        candidate = db.get_glossary_candidate(candidate_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="glossary candidate not found") from exc
+    if candidate["project_id"] != project_id:
+        raise HTTPException(status_code=404, detail="glossary candidate not found")
+    return candidate
+
+
+def _require_project_translation(project_id: str, entry_id: str) -> dict[str, Any]:
+    try:
+        entry = db.get_translation_entry(entry_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="translation entry not found") from exc
+    if entry["project_id"] != project_id:
+        raise HTTPException(status_code=404, detail="translation entry not found")
+    return entry
+
+
 def _with_project_stats(project: dict[str, Any], include_details: bool = False) -> dict[str, Any]:
     artifacts = db.list_artifacts(project_id=project["id"])
     runs = db.list_runs(project["id"])
     terms = db.list_glossary_terms(project["id"])
-    runs_by_id = {run["id"]: run for run in runs}
-    workbook_metrics = [_translation_workbook_metrics(artifact, runs_by_id) for artifact in artifacts]
+    translation_entries = db.list_translation_entries(project["id"])
+    archive_metrics = _translation_archive_metrics(translation_entries)
+    translation_runs = len([run for run in runs if run["kind"] == "translation"])
+    qa_runs = len([run for run in runs if run["kind"] == "qa"])
     project["stats"] = {
         "tasks": len(runs),
-        "words": str(sum(metric["source_chars"] for metric in workbook_metrics)),
-        "langs": len({metric["language"] for metric in workbook_metrics if metric["valid_rows"] > 0}),
+        "translation_runs": translation_runs,
+        "qa_runs": qa_runs,
+        "words": str(archive_metrics["source_chars"]),
+        "archived_rows": archive_metrics["archived_rows"],
+        "langs": len(archive_metrics["languages"]),
         "glossary": len(terms),
     }
     if include_details:
         project["artifacts"] = artifacts
         project["runs"] = runs
         project["glossary"] = terms
+        project["translations"] = translation_entries
         project["harness"] = read_project_harness(project["id"])
     return project
+
+
+def _translation_archive_metrics(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    source_chars = 0
+    archived_rows = 0
+    languages: set[str] = set()
+    for entry in entries:
+        source = str(entry.get("source") or "").strip()
+        target = str(entry.get("target") or "").strip()
+        if not source or not target:
+            continue
+        archived_rows += 1
+        source_chars += len("".join(source.split()))
+        languages.add(str(entry.get("language") or "en").lower())
+    return {"source_chars": source_chars, "archived_rows": archived_rows, "languages": languages}
 
 
 def _translation_workbook_metrics(artifact: dict[str, Any], runs_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:

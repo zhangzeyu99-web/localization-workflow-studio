@@ -55,7 +55,7 @@ class GlossaryTermPayload(BaseModel):
     category: str = ""
     note: str = ""
     source_type: str = "manual"
-    confirmed: bool = False
+    confirmed: bool = True
 
 
 class GlossaryTermUpdate(BaseModel):
@@ -69,6 +69,19 @@ class GlossaryTermUpdate(BaseModel):
     confirmed: bool | None = None
 
 
+class GlossaryCandidateUpdate(BaseModel):
+    term_key: str | None = None
+    source: str | None = None
+    target: str | None = None
+    target_alt: str | None = None
+    category: str | None = None
+    note: str | None = None
+
+
+class GlossaryBatchResolveRequest(BaseModel):
+    candidate_ids: list[str] = Field(default_factory=list)
+
+
 class GlossaryImportRequest(BaseModel):
     artifact_id: str
     sheet: str | None = None
@@ -79,6 +92,43 @@ class GlossaryImportRequest(BaseModel):
     category_column: str | None = None
     note_column: str | None = None
     limit: int = 100
+
+
+class TranslationEntryPayload(BaseModel):
+    entry_key: str = ""
+    source: str = ""
+    target: str = ""
+    target_alt: str = ""
+    language: str = "en"
+    sheet: str = ""
+    row_number: int = 0
+    note: str = ""
+    source_type: str = "manual"
+    source_artifact_id: str = ""
+
+
+class TranslationEntryUpdate(BaseModel):
+    entry_key: str | None = None
+    source: str | None = None
+    target: str | None = None
+    target_alt: str | None = None
+    language: str | None = None
+    sheet: str | None = None
+    row_number: int | None = None
+    note: str | None = None
+    source_type: str | None = None
+    source_artifact_id: str | None = None
+
+
+class TranslationArchiveImportRequest(BaseModel):
+    artifact_id: str
+    sheet: str | None = None
+    id_column: str | None = None
+    source_column: str | None = None
+    target_column: str | None = None
+    target_alt_column: str | None = None
+    note_column: str | None = None
+    language: str = "en"
 
 
 class RunCreate(BaseModel):

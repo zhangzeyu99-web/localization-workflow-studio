@@ -91,6 +91,54 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES projects(id)
             );
+            CREATE TABLE IF NOT EXISTS glossary_batches (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                run_id TEXT,
+                source_artifact_id TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id),
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
+            CREATE TABLE IF NOT EXISTS glossary_candidates (
+                id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                existing_term_id TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL DEFAULT 'new',
+                term_key TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                target TEXT NOT NULL DEFAULT '',
+                target_alt TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(batch_id) REFERENCES glossary_batches(id),
+                FOREIGN KEY(project_id) REFERENCES projects(id)
+            );
+            CREATE TABLE IF NOT EXISTS translation_entries (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                entry_key TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                target TEXT NOT NULL DEFAULT '',
+                target_alt TEXT NOT NULL DEFAULT '',
+                language TEXT NOT NULL DEFAULT 'en',
+                sheet TEXT NOT NULL DEFAULT '',
+                row_number INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT 'manual',
+                source_artifact_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id)
+            );
             CREATE TABLE IF NOT EXISTS runs (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -133,6 +181,10 @@ def init_db() -> None:
         _ensure_column(conn, "artifacts", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(conn, "glossary_terms", "term_key", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "glossary_terms", "target_alt", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "glossary_batches", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "translation_entries", "target_alt", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "translation_entries", "language", "TEXT NOT NULL DEFAULT 'en'")
+        _ensure_column(conn, "translation_entries", "source_artifact_id", "TEXT NOT NULL DEFAULT ''")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
@@ -177,6 +229,22 @@ def insert_project(name: str, project_type: str = "", description: str = "", ico
             (project_id, name, project_type, icon, description, ts, ts),
         )
         return get_project(project_id, conn=conn)
+
+
+def find_project_by_name(name: str) -> dict[str, Any] | None:
+    normalized = _project_name_key(name)
+    if not normalized:
+        return None
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM projects ORDER BY created_at ASC").fetchall()
+        for row in rows:
+            if _project_name_key(row["name"]) == normalized:
+                return row_to_dict(row)
+    return None
+
+
+def _project_name_key(value: Any) -> str:
+    return " ".join(str(value or "").strip().split()).casefold()
 
 
 def get_project(project_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
@@ -398,11 +466,277 @@ def update_artifact(artifact_id: str, updates: dict[str, Any]) -> dict[str, Any]
         return get_artifact(artifact_id, conn=conn)
 
 
-def insert_glossary_term(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    term_id = new_id("term")
+def batch_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(row)
+    payload["metadata"] = json.loads(payload.pop("metadata_json", "{}") or "{}")
+    return payload
+
+
+def create_glossary_batch(
+    project_id: str,
+    run_id: str | None = None,
+    source_artifact_id: str = "",
+    label: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    batch_id = new_id("gb")
     ts = now_iso()
     with connect() as conn:
         conn.execute(
+            """
+            INSERT INTO glossary_batches
+              (id, project_id, run_id, source_artifact_id, label, status, metadata_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                batch_id,
+                project_id,
+                run_id,
+                source_artifact_id,
+                label or "Glossary scan batch",
+                "pending",
+                json.dumps(metadata or {}, ensure_ascii=False),
+                ts,
+                ts,
+            ),
+        )
+        return get_glossary_batch(batch_id, conn=conn)
+
+
+def get_glossary_batch(batch_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        row = active.execute("SELECT * FROM glossary_batches WHERE id = ?", (batch_id,)).fetchone()
+        if row is None:
+            raise KeyError(batch_id)
+        return batch_row_to_dict(row)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def list_glossary_batches(project_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        batches = [
+            _with_candidate_counts(conn, batch_row_to_dict(row))
+            for row in conn.execute(
+                "SELECT * FROM glossary_batches WHERE project_id = ? ORDER BY created_at DESC",
+                (project_id,),
+            ).fetchall()
+        ]
+        return batches
+
+
+def latest_glossary_batch(project_id: str) -> dict[str, Any] | None:
+    batches = list_glossary_batches(project_id)
+    return batches[0] if batches else None
+
+
+def _with_candidate_counts(conn: sqlite3.Connection, batch: dict[str, Any]) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+          SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+          SUM(CASE WHEN action = 'new' AND status = 'pending' THEN 1 ELSE 0 END) AS pending_new,
+          SUM(CASE WHEN action = 'supplement' AND status = 'pending' THEN 1 ELSE 0 END) AS pending_supplement
+        FROM glossary_candidates
+        WHERE batch_id = ?
+        """,
+        (batch["id"],),
+    ).fetchone()
+    batch["counts"] = {key: int(rows[key] or 0) for key in rows.keys()}
+    return batch
+
+
+def add_glossary_candidate(project_id: str, batch_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    candidate_id = new_id("gc")
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO glossary_candidates
+              (id, batch_id, project_id, existing_term_id, action, term_key, source, target, target_alt, category, note, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate_id,
+                batch_id,
+                project_id,
+                payload.get("existing_term_id", ""),
+                payload.get("action", "new"),
+                payload.get("term_key", ""),
+                payload.get("source", ""),
+                payload.get("target", ""),
+                payload.get("target_alt", ""),
+                payload.get("category", ""),
+                payload.get("note", ""),
+                payload.get("status", "pending"),
+                ts,
+                ts,
+            ),
+        )
+        return get_glossary_candidate(candidate_id, conn=conn)
+
+
+def get_glossary_candidate(candidate_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        row = active.execute("SELECT * FROM glossary_candidates WHERE id = ?", (candidate_id,)).fetchone()
+        if row is None:
+            raise KeyError(candidate_id)
+        return dict(row)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def list_glossary_candidates(project_id: str, batch_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+    with connect() as conn:
+        return _list_glossary_candidates(conn, project_id, batch_id, status)
+
+
+def _list_glossary_candidates(
+    conn: sqlite3.Connection,
+    project_id: str,
+    batch_id: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses = ["project_id = ?"]
+    values: list[Any] = [project_id]
+    if batch_id:
+        clauses.append("batch_id = ?")
+        values.append(batch_id)
+    if status:
+        clauses.append("status = ?")
+        values.append(status)
+    query = "SELECT * FROM glossary_candidates WHERE " + " AND ".join(clauses)
+    query += """
+        ORDER BY
+          CASE status WHEN 'pending' THEN 0 WHEN 'accepted' THEN 1 ELSE 2 END,
+          CASE action WHEN 'new' THEN 0 ELSE 1 END,
+          updated_at DESC
+    """
+    return [dict(row) for row in conn.execute(query, values).fetchall()]
+
+
+def update_glossary_candidate(candidate_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"term_key", "source", "target", "target_alt", "category", "note", "status"}
+    fields: list[str] = []
+    values: list[Any] = []
+    for key, value in updates.items():
+        if key in allowed:
+            fields.append(f"{key} = ?")
+            values.append(value or "")
+    if not fields:
+        return get_glossary_candidate(candidate_id)
+    fields.append("updated_at = ?")
+    values.append(now_iso())
+    values.append(candidate_id)
+    with connect() as conn:
+        conn.execute(f"UPDATE glossary_candidates SET {', '.join(fields)} WHERE id = ?", values)
+        candidate = get_glossary_candidate(candidate_id, conn=conn)
+        _refresh_glossary_batch_status(conn, candidate["batch_id"])
+        return candidate
+
+
+def accept_glossary_candidates(project_id: str, batch_id: str, candidate_ids: list[str] | None = None) -> dict[str, Any]:
+    return _resolve_glossary_candidates(project_id, batch_id, "accepted", candidate_ids)
+
+
+def reject_glossary_candidates(project_id: str, batch_id: str, candidate_ids: list[str] | None = None) -> dict[str, Any]:
+    return _resolve_glossary_candidates(project_id, batch_id, "rejected", candidate_ids)
+
+
+def _resolve_glossary_candidates(project_id: str, batch_id: str, status: str, candidate_ids: list[str] | None = None) -> dict[str, Any]:
+    if status not in {"accepted", "rejected"}:
+        raise ValueError(status)
+    with connect() as conn:
+        batch = get_glossary_batch(batch_id, conn=conn)
+        if batch["project_id"] != project_id:
+            raise KeyError(batch_id)
+        clauses = ["project_id = ?", "batch_id = ?", "status = 'pending'"]
+        values: list[Any] = [project_id, batch_id]
+        if candidate_ids:
+            clauses.append("id IN ({0})".format(",".join("?" for _ in candidate_ids)))
+            values.extend(candidate_ids)
+        rows = conn.execute("SELECT * FROM glossary_candidates WHERE " + " AND ".join(clauses), values).fetchall()
+        candidates = [dict(row) for row in rows]
+        accepted_terms: list[dict[str, Any]] = []
+        for candidate in candidates:
+            if status == "accepted":
+                accepted_terms.append(_apply_glossary_candidate(conn, candidate))
+            conn.execute(
+                "UPDATE glossary_candidates SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now_iso(), candidate["id"]),
+            )
+        _refresh_glossary_batch_status(conn, batch_id)
+        return {
+            "batch": _with_candidate_counts(conn, get_glossary_batch(batch_id, conn=conn)),
+            "resolved_count": len(candidates),
+            "accepted_terms": accepted_terms,
+            "candidates": _list_glossary_candidates(conn, project_id, batch_id=batch_id),
+        }
+
+
+def _apply_glossary_candidate(conn: sqlite3.Connection, candidate: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "term_key": candidate.get("term_key", ""),
+        "source": candidate.get("source", ""),
+        "target": candidate.get("target", ""),
+        "target_alt": candidate.get("target_alt", ""),
+        "category": candidate.get("category", ""),
+        "note": candidate.get("note", ""),
+        "confirmed": True,
+    }
+    existing_term_id = str(candidate.get("existing_term_id") or "")
+    if existing_term_id:
+        existing = get_glossary_term(existing_term_id, conn=conn)
+        updates = {
+            "term_key": payload["term_key"] or existing.get("term_key", ""),
+            "source": payload["source"] or existing.get("source", ""),
+            "target": payload["target"],
+            "target_alt": payload["target_alt"],
+            "category": payload["category"] or existing.get("category", ""),
+            "note": payload["note"],
+            "confirmed": True,
+        }
+        return update_glossary_term(existing_term_id, updates, conn=conn)
+    payload["source_type"] = "generated"
+    return insert_glossary_term(candidate["project_id"], payload, conn=conn)
+
+
+def _refresh_glossary_batch_status(conn: sqlite3.Connection, batch_id: str) -> None:
+    row = conn.execute(
+        """
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending
+        FROM glossary_candidates
+        WHERE batch_id = ?
+        """,
+        (batch_id,),
+    ).fetchone()
+    total = int(row["total"] or 0)
+    pending = int(row["pending"] or 0)
+    status = "empty" if total == 0 else "pending" if pending else "resolved"
+    conn.execute("UPDATE glossary_batches SET status = ?, updated_at = ? WHERE id = ?", (status, now_iso(), batch_id))
+
+
+def insert_glossary_term(project_id: str, payload: dict[str, Any], conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    term_id = new_id("term")
+    ts = now_iso()
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        active.execute(
             """
             INSERT INTO glossary_terms
               (id, project_id, term_key, source, target, target_alt, category, note, source_type, confirmed, created_at, updated_at)
@@ -423,7 +757,34 @@ def insert_glossary_term(project_id: str, payload: dict[str, Any]) -> dict[str, 
                 ts,
             ),
         )
-        return get_glossary_term(term_id, conn=conn)
+        return get_glossary_term(term_id, conn=active)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def upsert_glossary_term(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    source_key = _glossary_source_key(payload.get("source"))
+    if not source_key:
+        return insert_glossary_term(project_id, payload)
+    with connect() as conn:
+        rows = _glossary_rows_by_source_key(conn, project_id, source_key)
+        if not rows:
+            return insert_glossary_term(project_id, payload)
+        canonical = _choose_glossary_canonical(rows)
+        updates: dict[str, Any] = {}
+        for field in ("term_key", "source", "target", "target_alt", "category", "note"):
+            value = payload.get(field)
+            if value is not None and str(value).strip():
+                updates[field] = value
+        if payload.get("source_type"):
+            updates["source_type"] = payload["source_type"]
+        if "confirmed" in payload:
+            updates["confirmed"] = bool(payload.get("confirmed"))
+        if updates:
+            update_glossary_term(canonical["id"], updates)
+        dedupe_project_glossary_terms(project_id, preferred_term_id=canonical["id"], merge_duplicates=False)
+        return get_glossary_term(canonical["id"])
 
 
 def get_glossary_term(term_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
@@ -443,11 +804,12 @@ def get_glossary_term(term_id: str, conn: sqlite3.Connection | None = None) -> d
 
 
 def list_glossary_terms(project_id: str) -> list[dict[str, Any]]:
+    dedupe_project_glossary_terms(project_id)
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT * FROM glossary_terms
-            WHERE project_id = ?
+            WHERE project_id = ? AND confirmed = 1
             ORDER BY
               confirmed ASC,
               CASE
@@ -466,7 +828,101 @@ def list_glossary_terms(project_id: str) -> list[dict[str, Any]]:
         return result
 
 
-def update_glossary_term(term_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def dedupe_project_glossary_terms(project_id: str, preferred_term_id: str | None = None, merge_duplicates: bool = True) -> dict[str, Any]:
+    result = {"groups": 0, "deleted": 0, "updated": 0, "canonical_id": ""}
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM glossary_terms WHERE project_id = ?", (project_id,)).fetchall()
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            payload = dict(row)
+            key = _glossary_source_key(payload.get("source"))
+            if not key:
+                continue
+            groups.setdefault(key, []).append(payload)
+
+        for terms in groups.values():
+            if len(terms) < 2:
+                continue
+            result["groups"] += 1
+            canonical = _choose_glossary_canonical(terms, preferred_term_id)
+            result["canonical_id"] = canonical["id"]
+            duplicates = [term for term in terms if term["id"] != canonical["id"]]
+            updates: dict[str, Any] = {}
+            if merge_duplicates:
+                for duplicate in duplicates:
+                    for field in ("term_key", "target", "target_alt", "category", "note"):
+                        incoming = duplicate.get(field)
+                        if _glossary_blank(canonical.get(field)) and not _glossary_blank(incoming):
+                            canonical[field] = incoming
+                            updates[field] = incoming
+                    if not bool(canonical.get("confirmed")) and bool(duplicate.get("confirmed")):
+                        canonical["confirmed"] = True
+                        updates["confirmed"] = True
+                    if _glossary_source_type_rank(canonical.get("source_type")) > _glossary_source_type_rank(duplicate.get("source_type")):
+                        canonical["source_type"] = duplicate.get("source_type") or ""
+                        updates["source_type"] = canonical["source_type"]
+            if updates:
+                assignments = []
+                values: list[Any] = []
+                for key, value in updates.items():
+                    assignments.append(f"{key} = ?")
+                    values.append(1 if key == "confirmed" and value else value)
+                assignments.append("updated_at = ?")
+                values.append(now_iso())
+                values.append(canonical["id"])
+                conn.execute(f"UPDATE glossary_terms SET {', '.join(assignments)} WHERE id = ?", values)
+                result["updated"] += 1
+            duplicate_ids = [term["id"] for term in duplicates]
+            if duplicate_ids:
+                conn.executemany("DELETE FROM glossary_terms WHERE id = ?", [(term_id,) for term_id in duplicate_ids])
+                result["deleted"] += len(duplicate_ids)
+    return result
+
+
+def _glossary_rows_by_source_key(conn: sqlite3.Connection, project_id: str, source_key: str) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM glossary_terms WHERE project_id = ?", (project_id,)).fetchall()
+    return [dict(row) for row in rows if _glossary_source_key(row["source"]) == source_key]
+
+
+def _choose_glossary_canonical(terms: list[dict[str, Any]], preferred_term_id: str | None = None) -> dict[str, Any]:
+    if preferred_term_id:
+        for term in terms:
+            if term["id"] == preferred_term_id:
+                return term
+    return sorted(terms, key=_glossary_term_rank)[0]
+
+
+def _glossary_term_rank(term: dict[str, Any]) -> tuple[int, int, int, str]:
+    has_translation = not _glossary_blank(term.get("target")) or not _glossary_blank(term.get("target_alt"))
+    confirmed = bool(term.get("confirmed"))
+    return (
+        0 if confirmed else 1,
+        0 if has_translation else 1,
+        _glossary_source_type_rank(term.get("source_type")),
+        str(term.get("updated_at") or ""),
+    )
+
+
+def _glossary_source_type_rank(value: Any) -> int:
+    source_type = str(value or "").strip()
+    if source_type in {"manual", "curated"}:
+        return 0
+    if source_type == "imported":
+        return 1
+    if source_type == "generated":
+        return 2
+    return 3
+
+
+def _glossary_source_key(value: Any) -> str:
+    return "".join(str(value or "").split()).casefold()
+
+
+def _glossary_blank(value: Any) -> bool:
+    return str(value or "").strip() in {"", "-"}
+
+
+def update_glossary_term(term_id: str, payload: dict[str, Any], conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     allowed = {"term_key", "source", "target", "target_alt", "category", "note", "source_type", "confirmed"}
     fields = []
     values: list[Any] = []
@@ -478,11 +934,149 @@ def update_glossary_term(term_id: str, payload: dict[str, Any]) -> dict[str, Any
     fields.append("updated_at = ?")
     values.append(now_iso())
     values.append(term_id)
-    with connect() as conn:
-        conn.execute(f"UPDATE glossary_terms SET {', '.join(fields)} WHERE id = ?", values)
-        return get_glossary_term(term_id, conn=conn)
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        active.execute(f"UPDATE glossary_terms SET {', '.join(fields)} WHERE id = ?", values)
+        return get_glossary_term(term_id, conn=active)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
 
 
 def delete_glossary_term(term_id: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM glossary_terms WHERE id = ?", (term_id,))
+
+
+def insert_translation_entry(project_id: str, payload: dict[str, Any], conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    entry_id = new_id("tr")
+    ts = now_iso()
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        active.execute(
+            """
+            INSERT INTO translation_entries
+              (id, project_id, entry_key, source, target, target_alt, language, sheet, row_number, note, source_type, source_artifact_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry_id,
+                project_id,
+                str(payload.get("entry_key") or "").strip(),
+                str(payload.get("source") or "").strip(),
+                str(payload.get("target") or "").strip(),
+                str(payload.get("target_alt") or "").strip(),
+                str(payload.get("language") or "en").strip().lower() or "en",
+                str(payload.get("sheet") or "").strip(),
+                int(payload.get("row_number") or 0),
+                str(payload.get("note") or "").strip(),
+                str(payload.get("source_type") or "manual").strip() or "manual",
+                str(payload.get("source_artifact_id") or "").strip(),
+                ts,
+                ts,
+            ),
+        )
+        return get_translation_entry(entry_id, conn=active)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def upsert_translation_entry(project_id: str, payload: dict[str, Any], conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        existing = _find_translation_entry(active, project_id, payload)
+        if existing is None:
+            return insert_translation_entry(project_id, payload, conn=active)
+        updates = {
+            key: payload.get(key)
+            for key in ("entry_key", "source", "target", "target_alt", "language", "sheet", "row_number", "note", "source_type", "source_artifact_id")
+            if payload.get(key) not in (None, "")
+        }
+        return update_translation_entry(existing["id"], updates, conn=active)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def _find_translation_entry(conn: sqlite3.Connection, project_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    entry_key = str(payload.get("entry_key") or "").strip()
+    if entry_key:
+        row = conn.execute(
+            "SELECT * FROM translation_entries WHERE project_id = ? AND entry_key = ? LIMIT 1",
+            (project_id, entry_key),
+        ).fetchone()
+        if row:
+            return dict(row)
+    source_key = _translation_source_key(payload.get("source"))
+    if source_key:
+        rows = conn.execute("SELECT * FROM translation_entries WHERE project_id = ?", (project_id,)).fetchall()
+        for row in rows:
+            if _translation_source_key(row["source"]) == source_key:
+                return dict(row)
+    return None
+
+
+def get_translation_entry(entry_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        row = active.execute("SELECT * FROM translation_entries WHERE id = ?", (entry_id,)).fetchone()
+        if row is None:
+            raise KeyError(entry_id)
+        return dict(row)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def list_translation_entries(project_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = [dict(row) for row in conn.execute("SELECT * FROM translation_entries WHERE project_id = ?", (project_id,)).fetchall()]
+    return sorted(rows, key=_translation_entry_rank)
+
+
+def update_translation_entry(entry_id: str, payload: dict[str, Any], conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    allowed = {"entry_key", "source", "target", "target_alt", "language", "sheet", "row_number", "note", "source_type", "source_artifact_id"}
+    fields: list[str] = []
+    values: list[Any] = []
+    for key, value in payload.items():
+        if key not in allowed:
+            continue
+        fields.append(f"{key} = ?")
+        values.append(value)
+    fields.append("updated_at = ?")
+    values.append(now_iso())
+    values.append(entry_id)
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        active.execute(f"UPDATE translation_entries SET {', '.join(fields)} WHERE id = ?", values)
+        return get_translation_entry(entry_id, conn=active)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def delete_translation_entry(entry_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM translation_entries WHERE id = ?", (entry_id,))
+
+
+def _translation_entry_rank(entry: dict[str, Any]) -> tuple[int, int, str, str]:
+    key = str(entry.get("entry_key") or "").strip()
+    if key.isdigit():
+        return (0, int(key), str(entry.get("sheet") or ""), str(entry.get("source") or ""))
+    return (1, int(entry.get("row_number") or 0), key, str(entry.get("source") or ""))
+
+
+def _translation_source_key(value: Any) -> str:
+    return "".join(str(value or "").split()).casefold()

@@ -8,6 +8,8 @@ import re
 import shutil
 import subprocess
 import sys
+import math
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,11 +31,13 @@ GLOBAL_HARNESS_CONTRACT: dict[str, Any] = {
     "qa_sources": ["workflow/localization/utils/quality_harness.py", "workflow/localization/fixtures/quality_regression.json"],
 }
 
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+
 
 def project_dir(project_id: str) -> Path:
     path = DATA_ROOT / "projects" / project_id
     path.mkdir(parents=True, exist_ok=True)
-    for child in ("uploads", "profile", "glossary", "runs", "assets"):
+    for child in ("uploads", "profile", "glossary", "runs", "assets", "translations"):
         (path / child).mkdir(exist_ok=True)
     return path
 
@@ -163,7 +167,7 @@ def _project_material_labels(project_id: str) -> list[str]:
     return labels
 
 
-def _is_warplane_project(project: dict[str, Any], intro: str, material_labels: list[str]) -> bool:
+def _is_warplane_project(project: dict[str, Any], intro: str, material_labels: list[str], asset_notes: list[str] | None = None) -> bool:
     text = " ".join(
         [
             str(project.get("name") or ""),
@@ -171,6 +175,7 @@ def _is_warplane_project(project: dict[str, Any], intro: str, material_labels: l
             str(project.get("description") or ""),
             intro,
             *material_labels,
+            *(asset_notes or []),
         ]
     )
     return any(token in text for token in ("战机", "飞行射击", "导弹", "装备", "Warplane", "warplane"))
@@ -178,8 +183,8 @@ def _is_warplane_project(project: dict[str, Any], intro: str, material_labels: l
 
 def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: list[str]) -> dict[str, Any]:
     material_labels = _project_material_labels(project["id"])
-    description = project.get("description", "") or intro
-    is_warplane = _is_warplane_project(project, intro, material_labels)
+    description = project.get("description", "") or intro or "；".join(asset_notes[:3])
+    is_warplane = _is_warplane_project(project, intro, material_labels, asset_notes)
     if is_warplane:
         game_type = "科幻战机 / 飞行射击 / RPG养成"
         target_audience = "偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。"
@@ -374,11 +379,14 @@ def analyze_assets(artifact_ids: list[str], settings: dict[str, Any]) -> list[st
     notes: list[str] = []
     for artifact_id in artifact_ids:
         artifact = db.get_artifact(artifact_id)
-        suffix = Path(artifact["path"]).suffix.lower()
+        path = Path(artifact["path"])
+        suffix = path.suffix.lower()
         if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
             state = "analyzed" if support.get("images") else "archived_only:image_not_supported"
         elif suffix == ".pdf":
             state = "analyzed_text_first" if support.get("pdf") else "archived_only:pdf_not_supported"
+        elif suffix in {".md", ".markdown", ".txt"}:
+            state = _text_asset_note(path)
         elif suffix in {".mp4", ".mov", ".mkv"}:
             state = "analyzed" if support.get("video") else "archived_only:video_not_supported"
         elif suffix in {".mp3", ".wav", ".m4a"}:
@@ -387,6 +395,99 @@ def analyze_assets(artifact_ids: list[str], settings: dict[str, Any]) -> list[st
             state = "archived_only:unknown_type"
         notes.append(f"{artifact['label']}={state}")
     return notes
+
+
+def _text_asset_note(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as exc:
+        return f"text_material:read_failed:{exc}"
+    compact = re.sub(r"\s+", " ", text).strip()
+    if not compact:
+        return "text_material:empty"
+    return f"text_material:{compact[:800]}"
+
+
+def inspect_translation_readiness(artifact_id: str, batch_size: int | None = None) -> dict[str, Any]:
+    artifact = db.get_artifact(artifact_id)
+    path = Path(artifact["path"])
+    effective_batch_size = max(1, min(int(batch_size or load_settings().get("batch_size") or 90), 200))
+    summary = {
+        "artifact_id": artifact_id,
+        "label": artifact.get("label", ""),
+        "target_language": "en",
+        "source_rows": 0,
+        "translated_rows": 0,
+        "empty_target_rows": 0,
+        "cjk_target_rows": 0,
+        "needs_translation": False,
+        "ready_for_qa": False,
+        "reason": "unsupported_file",
+        "batch_size": effective_batch_size,
+        "estimated_batches": 0,
+    }
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"} or not path.exists():
+        return summary
+
+    found_target_column = False
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            for ws in wb.worksheets:
+                try:
+                    headers = _header_map(ws)
+                except Exception:
+                    continue
+                source_col = _first_col(headers, ["cn", "source", "original", "zh", "chinese", "原文", "中文"])
+                target_col = _first_col(headers, ["en", "target", "translation", "english", "译文", "英文"])
+                if source_col is None:
+                    continue
+                if target_col is not None:
+                    found_target_column = True
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    source = _row_cell(row, source_col)
+                    if not source:
+                        continue
+                    summary["source_rows"] += 1
+                    target = _row_cell(row, target_col) if target_col is not None else ""
+                    if not target:
+                        summary["empty_target_rows"] += 1
+                    elif _CJK_RE.search(target):
+                        summary["cjk_target_rows"] += 1
+                    else:
+                        summary["translated_rows"] += 1
+        finally:
+            wb.close()
+    except Exception as exc:
+        summary["reason"] = f"inspect_failed:{exc}"
+        return summary
+
+    source_rows = int(summary["source_rows"])
+    empty_rows = int(summary["empty_target_rows"])
+    cjk_rows = int(summary["cjk_target_rows"])
+    translated_rows = int(summary["translated_rows"])
+    summary["estimated_batches"] = math.ceil(source_rows / effective_batch_size) if source_rows else 0
+    if not source_rows:
+        summary["reason"] = "no_source_rows"
+        return summary
+    if not found_target_column:
+        summary["needs_translation"] = True
+        summary["reason"] = "target_column_missing"
+        return summary
+    if empty_rows == 0 and cjk_rows == 0 and translated_rows > 0:
+        summary["ready_for_qa"] = True
+        summary["reason"] = "existing_target_translation"
+        return summary
+    summary["needs_translation"] = True
+    if empty_rows and cjk_rows:
+        summary["reason"] = "empty_or_cjk_target_rows"
+    elif empty_rows:
+        summary["reason"] = "empty_target_rows"
+    elif cjk_rows:
+        summary["reason"] = "cjk_target_rows"
+    else:
+        summary["reason"] = "needs_translation"
+    return summary
 
 
 def _sanitize_harness(payload: dict[str, Any]) -> dict[str, Any]:
@@ -634,6 +735,7 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
         "skipped_duplicate": 0,
         "conflicts": 0,
         "pending_confirmation": 0,
+        "batch_id": "",
     }
     if not final_output.exists():
         if run_id:
@@ -667,11 +769,19 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
         deduped_rows[source_key] = dict(row, source=source)
 
     result["unique_candidates"] = len(deduped_rows)
+    batch = db.create_glossary_batch(
+        project_id,
+        run_id=run_id,
+        source_artifact_id="",
+        label=f"Glossary scan {datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M')}",
+        metadata={"strategy": "stage_candidates_then_accept", "source": str(final_output)},
+    )
+    result["batch_id"] = batch["id"]
     if run_id:
         db.add_event(
             run_id,
-            "Glossary backfill strategy: dedupe by normalized CN; insert missing CN as unconfirmed project terms; "
-            "only fill blank EN/EN2 on existing terms; never overwrite manual/imported translations.",
+            "Glossary backfill strategy: dedupe by normalized CN; stage missing CN and blank EN/EN2 supplements "
+            "as review candidates; only accepted candidates enter the project glossary.",
         )
 
     for source_key, row in deduped_rows.items():
@@ -688,16 +798,29 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
             if target_alt and not current_target_alt:
                 updates["target_alt"] = target_alt
             if updates:
-                updates["note"] = str(current.get("note") or "").strip() or "高频词扫描补全 EN/EN2"
-                db.update_glossary_term(current["id"], updates)
-                current.update(updates)
+                db.add_glossary_candidate(
+                    project_id,
+                    batch["id"],
+                    {
+                        "existing_term_id": current["id"],
+                        "action": "supplement",
+                        "term_key": current.get("term_key") or row.get("term_key", ""),
+                        "source": current.get("source") or source,
+                        "target": updates.get("target", current_target),
+                        "target_alt": updates.get("target_alt", current_target_alt),
+                        "category": current.get("category") or row.get("category", ""),
+                        "note": "高频词扫描补全 EN/EN2，待确认",
+                    },
+                )
                 result["updated"] += 1
+                result["pending_confirmation"] += 1
             result["skipped_existing"] += 1
             existing[source_key] = current
             continue
 
-        created = db.insert_glossary_term(
+        db.add_glossary_candidate(
             project_id,
+            batch["id"],
             {
                 "term_key": row.get("term_key", ""),
                 "source": source,
@@ -705,11 +828,9 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
                 "target_alt": target_alt,
                 "category": row.get("category", "") or "generated",
                 "note": row.get("note", "") or ("高频词扫描候选，待补译" if not target and not target_alt else "高频词扫描候选，待确认"),
-                "source_type": "generated",
-                "confirmed": False,
+                "action": "new",
             },
         )
-        existing[source_key] = created
         result["inserted"] += 1
         result["pending_confirmation"] += 1
 
@@ -775,7 +896,7 @@ def import_glossary(project_id: str, request: Any) -> dict[str, Any]:
         if not row.get("source"):
             continue
         imported.append(
-            db.insert_glossary_term(
+            db.upsert_glossary_term(
                 project_id,
                 {
                     "term_key": row.get("term_key", ""),
@@ -833,6 +954,193 @@ def _glossary_export_row(term: dict[str, Any]) -> list[Any]:
     ]
 
 
+def import_translation_archive(project_id: str, request: Any, source_type: str = "imported") -> dict[str, Any]:
+    artifact = db.get_artifact(request.artifact_id)
+    if artifact["project_id"] != project_id:
+        raise KeyError("artifact")
+    rows = _read_translation_rows(
+        Path(artifact["path"]),
+        sheet=getattr(request, "sheet", None),
+        id_column=getattr(request, "id_column", None),
+        source_column=getattr(request, "source_column", None),
+        target_column=getattr(request, "target_column", None),
+        target_alt_column=getattr(request, "target_alt_column", None),
+        note_column=getattr(request, "note_column", None),
+        language=getattr(request, "language", "en") or "en",
+        source_artifact_id=artifact["id"],
+        source_type=source_type,
+    )
+    imported = [db.upsert_translation_entry(project_id, row) for row in rows if row.get("source") or row.get("target")]
+    return {"project_id": project_id, "artifact_id": artifact["id"], "imported_count": len(imported), "entries": imported}
+
+
+def archive_translation_artifact(project_id: str, artifact_id: str, language: str = "en", source_type: str = "qa_passed") -> dict[str, Any]:
+    class Request:
+        pass
+
+    request = Request()
+    request.artifact_id = artifact_id
+    request.language = language
+    request.sheet = None
+    request.id_column = None
+    request.source_column = None
+    request.target_column = None
+    request.target_alt_column = None
+    request.note_column = None
+    return import_translation_archive(project_id, request, source_type=source_type)
+
+
+def export_translation_archive(project_id: str, fmt: str) -> dict[str, Any] | Path:
+    entries = db.list_translation_entries(project_id)
+    if fmt == "json":
+        return {"project_id": project_id, "entries": [_translation_export_payload(entry) for entry in entries]}
+    output_dir = project_dir(project_id) / "translations" / "exports"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    columns = ["ID", "CN", "EN", "EN2", "备注"]
+    if fmt == "csv":
+        path = output_dir / "project_translations.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(columns)
+            for entry in entries:
+                writer.writerow(_translation_export_row(entry))
+        return path
+    path = output_dir / "project_translations.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Translations"
+    ws.append(columns)
+    for entry in entries:
+        ws.append(_translation_export_row(entry))
+    wb.save(path)
+    wb.close()
+    return path
+
+
+def _read_translation_rows(
+    path: Path,
+    sheet: str | None = None,
+    id_column: str | None = None,
+    source_column: str | None = None,
+    target_column: str | None = None,
+    target_alt_column: str | None = None,
+    note_column: str | None = None,
+    language: str = "en",
+    source_artifact_id: str = "",
+    source_type: str = "imported",
+) -> list[dict[str, Any]]:
+    if path.suffix.lower() == ".json":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw_rows = payload.get("entries") if isinstance(payload, dict) else payload
+        return [
+            {
+                "entry_key": str(row.get("entry_key") or row.get("id") or "").strip(),
+                "source": str(row.get("source") or row.get("cn") or "").strip(),
+                "target": str(row.get("target") or row.get("en") or row.get("translation") or "").strip(),
+                "target_alt": str(row.get("target_alt") or row.get("en2") or "").strip(),
+                "language": str(row.get("language") or language or "en").lower(),
+                "sheet": str(row.get("sheet") or "").strip(),
+                "row_number": int(row.get("row_number") or 0),
+                "note": str(row.get("note") or "").strip(),
+                "source_type": source_type,
+                "source_artifact_id": source_artifact_id,
+            }
+            for row in (raw_rows or [])
+            if isinstance(row, dict)
+        ]
+    if path.suffix.lower() == ".csv":
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            reader = csv.DictReader(fh)
+            rows = []
+            for index, row in enumerate(reader, start=2):
+                normalized = {str(key or "").strip().lower(): value for key, value in row.items()}
+                rows.append(_translation_row_from_mapping(normalized, index, "", language, source_artifact_id, source_type))
+            return rows
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
+        headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        normalized = {header.lower(): index for index, header in enumerate(headers) if header}
+        id_idx = _column_index(normalized, id_column, ["id", "key", "编号", "序号"], required=False)
+        source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "原文", "中文"])
+        target_idx = _column_index(normalized, target_column, ["target", "translation", "en", "english", "译文", "英文"])
+        target_alt_idx = _column_index(normalized, target_alt_column, ["en2", "en 2", "alt", "alternate", "variant"], required=False)
+        note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
+        rows = []
+        for row_index, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            source = _value_at(row, source_idx)
+            target = _value_at(row, target_idx)
+            if not source and not target:
+                continue
+            rows.append(
+                {
+                    "entry_key": _value_at(row, id_idx) if id_idx is not None else "",
+                    "source": source,
+                    "target": target,
+                    "target_alt": _value_at(row, target_alt_idx) if target_alt_idx is not None else "",
+                    "language": language.lower(),
+                    "sheet": ws.title,
+                    "row_number": row_index,
+                    "note": _value_at(row, note_idx) if note_idx is not None else "",
+                    "source_type": source_type,
+                    "source_artifact_id": source_artifact_id,
+                }
+            )
+        return rows
+    finally:
+        wb.close()
+
+
+def _translation_row_from_mapping(
+    row: dict[str, Any],
+    row_number: int,
+    sheet: str,
+    language: str,
+    source_artifact_id: str,
+    source_type: str,
+) -> dict[str, Any]:
+    def pick(*names: str) -> str:
+        for name in names:
+            value = row.get(name.lower())
+            if value not in (None, ""):
+                return str(value).strip()
+        return ""
+
+    return {
+        "entry_key": pick("id", "key", "entry_key", "编号", "序号"),
+        "source": pick("cn", "source", "original", "原文", "中文"),
+        "target": pick("en", "target", "translation", "译文", "英文"),
+        "target_alt": pick("en2", "target_alt", "alt"),
+        "language": language.lower(),
+        "sheet": sheet,
+        "row_number": row_number,
+        "note": pick("note", "notes", "comment", "备注"),
+        "source_type": source_type,
+        "source_artifact_id": source_artifact_id,
+    }
+
+
+def _translation_export_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "entry_key": entry.get("entry_key", ""),
+        "source": entry.get("source", ""),
+        "target": entry.get("target", ""),
+        "target_alt": entry.get("target_alt", ""),
+        "note": entry.get("note", ""),
+    }
+
+
+def _translation_export_row(entry: dict[str, Any]) -> list[Any]:
+    return [
+        entry.get("entry_key", ""),
+        entry.get("source", ""),
+        entry.get("target", ""),
+        entry.get("target_alt", ""),
+        entry.get("note", ""),
+    ]
+
+
 def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
     project = db.get_project(project_id)
     deliverables: list[dict[str, Any]] = []
@@ -886,8 +1194,7 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
     task_code, task_run_id = _effective_task_identity(run)
     metadata = run.get("metadata", {})
     quality_summary = metadata.get("quality_summary") or {}
-    model_info = metadata.get("model") if isinstance(metadata.get("model"), dict) else {}
-    semantic_qa = metadata.get("semantic_qa") if isinstance(metadata.get("semantic_qa"), dict) else quality_summary.get("semantic_qa", {})
+    provider, model = _deliverable_provider_model(metadata, quality_summary)
     input_label = _input_artifact_label(metadata, run["project_id"])
     processed = _workbook_processed_rows(Path(final_artifact["path"]))
     return {
@@ -903,8 +1210,8 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
         "processed_rows": processed["processed_rows"] or int(metadata.get("translated_rows") or 0),
         "source_rows": processed["source_rows"],
         "translated_rows": processed["translated_rows"],
-        "provider": model_info.get("provider") or semantic_qa.get("provider") or "-",
-        "model": model_info.get("model") or semantic_qa.get("model") or "-",
+        "provider": provider,
+        "model": model,
         "input_label": input_label,
         "qa_status": "passed" if quality_summary.get("passed", run.get("status") == "passed") else "failed",
         "qa_hard_errors": int(quality_summary.get("hard_errors") or 0),
@@ -1042,8 +1349,22 @@ def _soft_warning_count(summary: dict[str, Any]) -> int:
     return total
 
 
+def _deliverable_provider_model(metadata: dict[str, Any], quality_summary: dict[str, Any]) -> tuple[str, str]:
+    model_info = metadata.get("model") if isinstance(metadata.get("model"), dict) else {}
+    if model_info.get("provider"):
+        return str(model_info.get("provider") or "-"), str(model_info.get("model") or "-")
+    semantic_qa = metadata.get("semantic_qa") if isinstance(metadata.get("semantic_qa"), dict) else quality_summary.get("semantic_qa", {})
+    if not isinstance(semantic_qa, dict):
+        return "-", "-"
+    status = str(semantic_qa.get("status") or "")
+    if status == "skipped_no_key":
+        return "rules-only", "-"
+    return str(semantic_qa.get("provider") or "-"), str(semantic_qa.get("model") or "-")
+
+
 def _safe_delivery_name(name: str) -> str:
-    cleaned = "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip()
+    cleaned = "".join(ch if ch not in '<>:"/\\|?*' else " " for ch in name)
+    cleaned = " ".join(cleaned.split()).strip(" .")
     return cleaned or "project"
 
 
@@ -1524,6 +1845,14 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
     if qa_result.get("qa_final_artifact"):
         input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
     status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
+    archive_result = None
+    if status == "passed" and qa_result.get("qa_final_artifact"):
+        archive_result = archive_translation_artifact(
+            project["id"],
+            qa_result["qa_final_artifact"]["id"],
+            language=run.get("language") or "en",
+            source_type="qa_passed",
+        )
     db.update_run(
         run_id,
         status=status,
@@ -1535,6 +1864,7 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
             "project_harness_quality": qa_result["project_harness_quality"],
             "semantic_qa": qa_result["semantic_qa"],
             "quality_summary": qa_result["quality_summary"],
+            "translation_archive": archive_result,
         },
     )
     return {"run": db.get_run(run_id), "artifacts": qa_result["artifacts"], "quality_summary": qa_result["quality_summary"]}
@@ -1937,9 +2267,9 @@ def _workbook_artifact_for_quality_run(run: dict[str, Any]) -> dict[str, Any]:
     input_artifact_id = metadata.get("input_artifacts", {}).get("translation_workbook") or metadata.get("input_artifact_id")
     if input_artifact_id:
         artifact = db.get_artifact(input_artifact_id)
-        if artifact["role"] in {"translation_workbook", "translation_draft"}:
+        if artifact["role"] in {"translation_workbook", "translation_draft", "language_source"}:
             return artifact
-    artifacts = db.list_artifacts(run_id=run["id"], role="translation_workbook")
+    artifacts = db.list_artifacts(run_id=run["id"], role="translation_workbook") or db.list_artifacts(run_id=run["id"], role="language_source")
     if artifacts:
         return artifacts[0]
     raise KeyError("translation workbook artifact not found")
@@ -2126,6 +2456,75 @@ def _improvement_item(category: str, run_id: str, title: str, detail: str) -> di
     }
 
 
+def _completed_batch_rows(path: Path, batch: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    if not path.exists():
+        return None
+    try:
+        rows = read_jsonl(path)
+    except Exception:
+        return None
+    expected_ids = [int(row["id"]) for row in batch]
+    actual_ids = [int(row.get("id")) for row in rows if "id" in row]
+    if actual_ids != expected_ids:
+        return None
+    if any("translation" not in row for row in rows):
+        return None
+    return rows
+
+
+def _write_batch_error(path: Path, batch_index: int, attempt: int, exc: Exception) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "batch_index": batch_index,
+                "attempt": attempt,
+                "error": str(exc),
+                "created_at": db.now_iso(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _translation_progress(
+    *,
+    total_rows: int,
+    total_batches: int,
+    completed_batches: int,
+    completed_rows: int,
+    batch_size: int,
+    started_at: float,
+    current_batch: int | None = None,
+    failed_batch: int | None = None,
+) -> dict[str, Any]:
+    elapsed_seconds = max(0.0, time.monotonic() - started_at)
+    average_batch_seconds = elapsed_seconds / completed_batches if completed_batches else None
+    remaining_batches = max(0, total_batches - completed_batches)
+    eta_seconds = int(average_batch_seconds * remaining_batches) if average_batch_seconds is not None else None
+    percent = round((completed_batches / total_batches) * 100, 2) if total_batches else 100.0
+    return {
+        "total_rows": total_rows,
+        "completed_rows": completed_rows,
+        "total_batches": total_batches,
+        "completed_batches": completed_batches,
+        "remaining_batches": remaining_batches,
+        "current_batch": current_batch,
+        "failed_batch": failed_batch,
+        "batch_size": batch_size,
+        "percent": percent,
+        "elapsed_seconds": int(elapsed_seconds),
+        "average_batch_seconds": round(average_batch_seconds, 2) if average_batch_seconds is not None else None,
+        "eta_seconds": eta_seconds,
+    }
+
+
+def _update_translation_progress(run_id: str, progress: dict[str, Any], status: str = "running") -> None:
+    current = db.get_run(run_id)
+    db.update_run(run_id, status=status, metadata={**current.get("metadata", {}), "translation_progress": progress})
+
+
 async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
     run = db.get_run(run_id)
     if run["language"] != "en":
@@ -2143,6 +2542,19 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         settings["preset"] = request.preset
     batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
     batch_size = max(1, min(batch_size, 200))
+    readiness = inspect_translation_readiness(input_artifact["id"], batch_size=batch_size)
+    if readiness.get("ready_for_qa"):
+        db.update_run(
+            run_id,
+            status="needs_input",
+            metadata={
+                **metadata,
+                "reason": "input already contains target translations; run QA instead",
+                "translation_readiness": readiness,
+            },
+        )
+        db.add_event(run_id, "translation skipped: input already contains target translations; run QA instead")
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
     effective_provider = str(settings.get("provider") or "mock")
     allow_mock = bool(getattr(request, "allow_mock", False)) or str(project.get("name", "")).startswith("E2E ")
     if effective_provider == "mock" and not allow_mock:
@@ -2161,6 +2573,12 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
 
     db.update_run(run_id, status="running")
+    db.add_event(
+        run_id,
+        f"translation preflight: source_rows={readiness['source_rows']}, translated_rows={readiness['translated_rows']}, "
+        f"empty_target_rows={readiness['empty_target_rows']}, cjk_target_rows={readiness['cjk_target_rows']}, "
+        f"batch_size={batch_size}, estimated_batches={readiness['estimated_batches']}",
+    )
     work_dir = run_dir(run_id) / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir = work_dir / "snapshots"
@@ -2186,19 +2604,97 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         glossary_snapshot["path"],
     ]
     try:
+        db.add_event(run_id, "preparing translation workpack with localization workflow")
         run_subprocess(prepare_args, LOCALIZATION_ROOT, run_id)
         workpack_path = work_dir / "translation_workpack.jsonl"
         rows = read_jsonl(workpack_path)
+        total_batches = math.ceil(len(rows) / batch_size) if rows else 0
+        db.add_event(run_id, f"workpack prepared: rows={len(rows)}, batch_size={batch_size}, batches={total_batches}")
+        started_at = time.monotonic()
+        batches_dir = work_dir / f"batches_{batch_size}"
+        batches_dir.mkdir(parents=True, exist_ok=True)
         translated_rows: list[dict[str, Any]] = []
+        completed_batches = 0
+        completed_rows = 0
+        max_attempts = 3
         for start in range(0, len(rows), batch_size):
+            batch_index = start // batch_size + 1
             batch = rows[start : start + batch_size]
-            db.add_event(run_id, f"translating batch {start // batch_size + 1}: rows={len(batch)}")
-            items = await translate_batch(batch, settings, prompt, provider_override=request.provider, protocol_override=request.protocol)
-            translated_rows.extend([{"id": item.id, "translation": item.translation} for item in items])
+            batch_path = batches_dir / f"batch_{batch_index:05d}.jsonl"
+            error_path = batches_dir / f"batch_{batch_index:05d}.error.json"
+            completed = _completed_batch_rows(batch_path, batch)
+            if completed is not None:
+                translated_rows.extend(completed)
+                completed_batches += 1
+                completed_rows += len(completed)
+                db.add_event(run_id, f"resume: batch {batch_index}/{total_batches} already completed; rows={len(completed)}")
+                _update_translation_progress(
+                    run_id,
+                    _translation_progress(
+                        total_rows=len(rows),
+                        total_batches=total_batches,
+                        completed_batches=completed_batches,
+                        completed_rows=completed_rows,
+                        batch_size=batch_size,
+                        started_at=started_at,
+                        current_batch=batch_index,
+                    ),
+                )
+                continue
+
+            batch_rows: list[dict[str, Any]] | None = None
+            for attempt in range(1, max_attempts + 1):
+                db.add_event(run_id, f"translating batch {batch_index}/{total_batches}: rows={len(batch)}, attempt={attempt}/{max_attempts}")
+                try:
+                    items = await translate_batch(batch, settings, prompt, provider_override=request.provider, protocol_override=request.protocol)
+                    batch_rows = [{"id": item.id, "translation": item.translation} for item in items]
+                    expected_ids = [int(row["id"]) for row in batch]
+                    actual_ids = [int(row["id"]) for row in batch_rows]
+                    if actual_ids != expected_ids:
+                        raise ValueError(f"batch {batch_index} response IDs mismatch: expected={expected_ids[:5]}..., actual={actual_ids[:5]}...")
+                    write_jsonl(batch_path, batch_rows)
+                    if error_path.exists():
+                        error_path.unlink()
+                    db.add_event(run_id, f"batch {batch_index}/{total_batches} completed and persisted: rows={len(batch_rows)}")
+                    break
+                except Exception as exc:
+                    _write_batch_error(error_path, batch_index, attempt, exc)
+                    db.add_event(run_id, f"batch {batch_index}/{total_batches} failed attempt {attempt}/{max_attempts}: {exc}", level="warning")
+                    if attempt >= max_attempts:
+                        progress = _translation_progress(
+                            total_rows=len(rows),
+                            total_batches=total_batches,
+                            completed_batches=completed_batches,
+                            completed_rows=completed_rows,
+                            batch_size=batch_size,
+                            started_at=started_at,
+                            current_batch=batch_index,
+                            failed_batch=batch_index,
+                        )
+                        _update_translation_progress(run_id, progress, status="failed")
+                        raise
+            if batch_rows is None:
+                raise RuntimeError(f"batch {batch_index} produced no rows")
+            translated_rows.extend(batch_rows)
+            completed_batches += 1
+            completed_rows += len(batch_rows)
+            _update_translation_progress(
+                run_id,
+                _translation_progress(
+                    total_rows=len(rows),
+                    total_batches=total_batches,
+                    completed_batches=completed_batches,
+                    completed_rows=completed_rows,
+                    batch_size=batch_size,
+                    started_at=started_at,
+                    current_batch=batch_index,
+                ),
+            )
         response_path = work_dir / "translation_response.jsonl"
         write_jsonl(response_path, translated_rows)
         db.add_artifact(project["id"], "Translation response JSONL", response_path, "translation_response", run_id=run_id, mime="application/jsonl")
 
+        db.add_event(run_id, "applying translation response and running strict harness validation")
         apply_args = [
             sys.executable,
             str(LOCALIZATION_ROOT / "scripts" / "run_translation_harness.py"),
@@ -2226,6 +2722,7 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             metadata={"language": "en", "source_workbook": input_artifact["id"]},
         )
+        db.add_event(run_id, "running localization QA gate after translation")
         qa_result = run_localization_qa(
             project=project,
             run_id=run_id,
@@ -2256,11 +2753,22 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         if qa_result.get("qa_final_artifact"):
             input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
             input_artifacts["translation_workbook"] = qa_result["qa_final_artifact"]["id"]
+        archive_result = None
+        if status == "passed" and qa_result.get("qa_final_artifact"):
+            archive_result = archive_translation_artifact(
+                project["id"],
+                qa_result["qa_final_artifact"]["id"],
+                language=run.get("language") or "en",
+                source_type="qa_passed",
+            )
+            db.add_event(run_id, f"translation archive updated: rows={archive_result['imported_count']}")
+        db.add_event(run_id, f"translation run finished: status={status}")
+        final_metadata = db.get_run(run_id).get("metadata", {})
         db.update_run(
             run_id,
             status=status,
             metadata={
-                **metadata,
+                **final_metadata,
                 "task_origin": metadata.get("task_origin") or "translation_run",
                 "input_artifacts": input_artifacts,
                 "quality": qa_result["quality"],
@@ -2276,6 +2784,8 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
                     "reasoning_effort": settings.get("reasoning_effort"),
                 },
                 "batch_size": batch_size,
+                "translation_readiness": readiness,
+                "translation_archive": archive_result,
             },
         )
         return {
@@ -2287,7 +2797,8 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         }
     except Exception as exc:
         db.add_event(run_id, str(exc), level="error")
-        db.update_run(run_id, status="failed", metadata={**metadata, "error": str(exc)})
+        failed_metadata = db.get_run(run_id).get("metadata", {})
+        db.update_run(run_id, status="failed", metadata={**failed_metadata, "error": str(exc)})
         raise
 
 
