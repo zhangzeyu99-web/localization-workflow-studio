@@ -3,392 +3,536 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Localization Workflow Studio Demo</title>
+  <title>Localization Workflow Studio</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #14182a;
-      --panel: #1f2b46;
-      --panel-2: #18243b;
-      --line: #344462;
-      --muted: #aab2c7;
-      --text: #f2f5ff;
-      --accent: #8b5cf6;
-      --accent-2: #22d3ee;
-      --ok: #34d399;
-      --warn: #facc15;
-    }
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
       min-height: 100vh;
-      font-family: Inter, "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
-      background: radial-gradient(circle at top left, rgba(139, 92, 246, 0.22), transparent 28%), var(--bg);
-      color: var(--text);
+      color: #e4e4e7;
     }
-    a { color: inherit; }
+    button, input, textarea, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    a { color: #a5b4fc; text-decoration: none; }
+    .shell { min-height: 100vh; padding: 20px; }
     .app {
-      display: grid;
-      grid-template-columns: 260px minmax(0, 1fr);
       max-width: 1400px;
-      min-height: 100vh;
+      min-height: calc(100vh - 40px);
       margin: 0 auto;
-      border-left: 1px solid var(--line);
-      border-right: 1px solid var(--line);
-      background: rgba(20, 24, 42, 0.82);
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      overflow: hidden;
+      backdrop-filter: blur(10px);
     }
-    aside {
-      padding: 26px 16px;
-      background: #111626;
-      border-right: 1px solid var(--line);
-    }
-    .side-title {
-      margin: 0 0 14px;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 700;
-    }
-    .project-card {
-      width: 100%;
-      padding: 16px;
-      border: 1px solid rgba(139, 92, 246, 0.9);
-      border-radius: 8px;
-      background: #342b63;
-      color: var(--text);
-      text-align: left;
-    }
-    .project-card strong { display: block; font-size: 17px; margin-bottom: 8px; }
-    .project-card span { display: block; color: #c8cce0; font-size: 13px; }
-    .tag {
-      display: inline-flex;
-      margin-top: 10px;
-      padding: 4px 8px;
-      border-radius: 4px;
-      background: rgba(139, 92, 246, 0.55);
-      color: #efeaff;
-      font-size: 12px;
-    }
-    .side-note {
-      margin-top: 22px;
-      padding: 14px;
-      border: 1px dashed var(--line);
-      border-radius: 8px;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.7;
-    }
-    main { padding: 34px; background: linear-gradient(145deg, #202944, #173757); }
-    .hero {
+    .header {
+      padding: 22px 28px;
+      background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%);
       display: flex;
-      align-items: flex-start;
       justify-content: space-between;
-      gap: 24px;
-      margin-bottom: 26px;
+      align-items: center;
+      gap: 20px;
     }
-    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
-    .desc { margin-top: 10px; color: var(--muted); line-height: 1.7; }
-    .demo-pill {
+    .header h1 { font-size: 22px; letter-spacing: 0; }
+    .header p { opacity: 0.9; font-size: 13px; margin-top: 4px; }
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .status {
+      min-width: 180px;
+      max-width: 420px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.22);
+      font-size: 12px;
+      color: #fff;
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      background: linear-gradient(135deg, var(--accent), #6366f1);
-      font-size: 14px;
-      font-weight: 700;
-      white-space: nowrap;
     }
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 14px;
-      margin-bottom: 28px;
+    .layout { display: flex; min-height: 760px; }
+    .sidebar {
+      width: 260px;
+      background: rgba(0,0,0,0.25);
+      border-right: 1px solid rgba(255,255,255,0.08);
+      padding: 18px 14px;
+      flex-shrink: 0;
     }
-    .stat {
-      padding: 18px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.05);
+    .sidebar-title {
+      font-size: 12px;
+      color: #a1a1aa;
+      letter-spacing: 1px;
+      padding: 0 10px 10px;
+      text-transform: uppercase;
     }
-    .stat strong {
+    .sidebar-title.quick { margin-top: 22px; }
+    .project-list { max-height: 430px; overflow: auto; padding-right: 2px; }
+    .project-item {
       display: block;
-      color: #a855f7;
-      font-size: 28px;
-      line-height: 1.2;
+      width: 100%;
+      text-align: left;
+      color: inherit;
+      padding: 12px 14px;
+      border-radius: 10px;
       margin-bottom: 6px;
+      transition: all 0.2s;
+      border: 1px solid transparent;
+      background: transparent;
     }
-    .stat span { color: var(--muted); font-size: 13px; }
-    .tabs {
+    .project-item.active {
+      background: linear-gradient(135deg, rgba(99,102,241,0.25), rgba(139,92,246,0.25));
+      border-color: rgba(139,92,246,0.5);
+    }
+    .pname {
+      font-size: 14px;
+      color: #fff;
+      font-weight: 500;
       display: flex;
-      gap: 26px;
-      border-bottom: 1px solid var(--line);
-      margin-bottom: 22px;
+      align-items: center;
+      gap: 6px;
     }
-    .tab {
-      padding: 12px 2px;
+    .pmeta {
+      display: block;
+      font-size: 11px;
+      color: #a1a1aa;
+      margin-top: 4px;
+    }
+    .ptag {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      background: rgba(139,92,246,0.2);
+      color: #c4b5fd;
+      margin-top: 5px;
+    }
+    .new-project-btn {
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px dashed rgba(255,255,255,.22);
+      background: rgba(255,255,255,.04);
+      color: #c4b5fd;
+    }
+    .main { flex: 1; padding: 28px 32px; overflow: auto; }
+    .proj-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+    .proj-head h2 { font-size: 24px; margin-bottom: 6px; }
+    .desc { color: #a1a1aa; font-size: 13px; line-height: 1.6; max-width: 820px; }
+    .btn {
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 9px;
+      padding: 9px 13px;
+      background: rgba(255,255,255,.06);
+      color: #f4f4f5;
+      transition: all .15s;
+    }
+    .btn:hover { transform: translateY(-1px); background: rgba(255,255,255,.1); }
+    .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); border-color: transparent; }
+    .btn-ghost { background: rgba(255,255,255,.06); }
+    .btn-sm { padding: 6px 9px; font-size: 12px; }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .stat-card .num {
+      color: #fff;
+      font-size: 26px;
+      font-weight: 700;
+      background: linear-gradient(90deg, #8b5cf6, #ec4899);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .lbl { color: #a1a1aa; font-size: 12px; margin-top: 4px; }
+    .view-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 22px;
+      border-bottom: 1px solid rgba(255,255,255,.1);
+    }
+    .view-tab {
+      padding: 10px 18px;
       border: 0;
       border-bottom: 2px solid transparent;
       background: transparent;
-      color: var(--muted);
-      font: inherit;
-      font-weight: 700;
-      cursor: pointer;
+      color: #a1a1aa;
+      font-size: 14px;
+      transition: color .2s, border-color .2s;
     }
-    .tab.active { color: var(--text); border-color: var(--accent); }
-    .panel {
-      display: none;
+    .view-tab:hover { color: #fff; }
+    .view-tab.active { color: #fff; border-bottom-color: #8b5cf6; }
+    .card {
+      background: rgba(255,255,255,.03);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 12px;
       padding: 20px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: rgba(31, 43, 70, 0.86);
+      margin-bottom: 16px;
     }
-    .panel.active { display: block; }
-    .panel-head {
+    .card-title {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 18px;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
+      gap: 12px;
     }
-    .panel h2 { margin: 0; font-size: 18px; }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    button.action, a.action {
-      border: 1px solid rgba(255,255,255,0.16);
+    .left { color: #fff; font-weight: 600; }
+    .card-actions, .row-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .action-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #c4b5fd;
+      background: rgba(139,92,246,.18);
+      border: 1px solid rgba(139,92,246,.32);
       border-radius: 8px;
-      background: rgba(255,255,255,0.08);
-      color: var(--text);
-      padding: 8px 12px;
-      text-decoration: none;
-      cursor: pointer;
-      font: inherit;
-      font-size: 13px;
+      padding: 7px 10px;
+      font-size: 12px;
+      margin-bottom: 12px;
     }
-    button.primary { background: var(--accent); border-color: var(--accent); font-weight: 700; }
     pre {
-      margin: 0;
-      padding: 16px;
-      border-radius: 8px;
-      background: #132038;
-      color: #f7f8ff;
-      line-height: 1.75;
-      overflow: auto;
       white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(0,0,0,.22);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      padding: 12px;
+      color: #d4d4d8;
+      font-size: 12px;
+      line-height: 1.6;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      overflow: hidden;
+      font-size: 13px;
+      background: rgba(0,0,0,.2);
       border-radius: 8px;
-      background: #17243b;
+      overflow: hidden;
     }
     th, td {
-      padding: 12px 14px;
-      border-bottom: 1px solid rgba(255,255,255,0.07);
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
       text-align: left;
       vertical-align: top;
-      font-size: 14px;
     }
-    th { background: #373064; color: #dcd5ff; font-weight: 800; }
-    td:first-child { color: #d7d0ff; font-weight: 700; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
+    th {
+      background: rgba(139,92,246,.18);
+      color: #c4b5fd;
+      font-weight: 600;
+      font-size: 12px;
     }
-    .mini-card {
-      padding: 16px;
-      border: 1px solid var(--line);
+    tr:hover td { background: rgba(255,255,255,.03); }
+    input, textarea, select {
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(0,0,0,.2);
+      color: #f4f4f5;
       border-radius: 8px;
-      background: #17243b;
+      padding: 9px 10px;
+      outline: none;
+      width: 100%;
     }
-    .mini-card strong { display: block; margin-bottom: 8px; }
-    .mini-card p { margin: 0; color: var(--muted); line-height: 1.7; }
-    .status { color: var(--ok); font-weight: 800; }
-    .warn { color: var(--warn); font-weight: 800; }
+    textarea { min-height: 110px; resize: vertical; }
+    .glossary-form {
+      display: grid;
+      grid-template-columns: .6fr 1fr 1fr 1fr .8fr 1fr auto;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .table-scroll { overflow: auto; }
+    .readonly-cell { display: inline-block; min-width: 60px; color: #f4f4f5; }
+    .table-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+    }
+    .tag-done { background: rgba(16,185,129,.2); color: #6ee7b7; }
+    .tag-warn { background: rgba(239,68,68,.2); color: #fca5a5; }
+    .meta-table th { width: 30%; background: rgba(139,92,246,.22); }
+    .meta-table td { background: rgba(0,0,0,.12); }
+    .meta-table th, .meta-table td { vertical-align: top; line-height: 1.7; }
+    .provider-strip, .delivery-meta, .workflow-note-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .provider-strip div, .delivery-meta div, .workflow-note-grid div {
+      display: grid;
+      gap: 4px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 10px;
+      padding: 12px;
+      background: rgba(255,255,255,.04);
+    }
+    .provider-strip strong, .delivery-meta strong, .workflow-note-grid strong { color: #fff; font-size: 12px; }
+    .provider-strip span, .delivery-meta span, .workflow-note-grid span { color: #a1a1aa; font-size: 12px; }
+    .delivery-card {
+      display: grid;
+      gap: 12px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 10px;
+      padding: 12px;
+      background: rgba(255,255,255,.04);
+    }
+    .delivery-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .delivery-head strong { color: #fff; }
+    .delivery-head span { color: #a1a1aa; font-size: 12px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
     .toast {
       position: fixed;
       right: 24px;
       bottom: 24px;
       max-width: 360px;
       padding: 12px 14px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #10192c;
-      color: var(--text);
-      box-shadow: 0 18px 45px rgba(0,0,0,0.36);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 9px;
+      background: #17172a;
+      color: #fff;
+      box-shadow: 0 18px 45px rgba(0,0,0,.4);
       opacity: 0;
-      transform: translateY(12px);
-      transition: all 0.18s ease;
+      transform: translateY(10px);
+      transition: all .18s;
       pointer-events: none;
     }
     .toast.show { opacity: 1; transform: translateY(0); }
     @media (max-width: 900px) {
-      .app { grid-template-columns: 1fr; }
-      aside { border-right: 0; border-bottom: 1px solid var(--line); }
-      main { padding: 22px; }
-      .hero { flex-direction: column; }
-      .stats, .grid { grid-template-columns: 1fr; }
-      .tabs { overflow-x: auto; }
+      .shell { padding: 0; }
+      .app { border-radius: 0; min-height: 100vh; }
+      .layout, .proj-head, .header { flex-direction: column; }
+      .sidebar { width: 100%; border-right: 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+      .main { padding: 20px; }
+      .glossary-form, .provider-strip, .delivery-meta, .workflow-note-grid { grid-template-columns: 1fr; }
+      .view-tabs { overflow-x: auto; }
     }
   </style>
 </head>
 <body>
-  <div class="app">
-    <aside>
-      <p class="side-title">📁 示例项目</p>
-      <div class="project-card">
-        <strong>💖 小小战机</strong>
-        <span>6 个任务 · 25,489 字</span>
-        <span class="tag">飞行射击</span>
-      </div>
-      <div class="side-note">
-        这是 GitHub Pages 静态演示入口，仅用于展示页面形态和工作流样例。真实上传、翻译、QA、交付文件下载需要连接 FastAPI 后端和私有数据存储。
-      </div>
-    </aside>
-    <main>
-      <section class="hero">
+  <div class="shell">
+    <div class="app">
+      <header class="header">
         <div>
-          <h1>💖 小小战机</h1>
-          <div class="desc">科幻战机 / 飞行射击 / RPG 养成。面向偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。</div>
+          <h1>🎮 游戏翻译本地化 · 项目工作台</h1>
+          <p>Localization Workflow Studio</p>
         </div>
-        <span class="demo-pill">🚀 GitHub Pages Demo</span>
-      </section>
+        <div class="header-actions">
+          <span class="status" id="status">准备就绪</span>
+          <button class="btn btn-ghost" data-demo="设置仅在完整后端版本中可用。">⚙ 设置</button>
+        </div>
+      </header>
 
-      <section class="stats">
-        <div class="stat"><strong>6</strong><span>示例任务</span></div>
-        <div class="stat"><strong>25,489</strong><span>示例处理字数</span></div>
-        <div class="stat"><strong>EN</strong><span>闭环语言</span></div>
-        <div class="stat"><strong>402</strong><span>项目术语</span></div>
-      </section>
-
-      <nav class="tabs" aria-label="Demo tabs">
-        <button class="tab active" data-tab="meta">📌 元信息</button>
-        <button class="tab" data-tab="glossary">📚 术语表</button>
-        <button class="tab" data-tab="translation">⚡ 翻译任务</button>
-        <button class="tab" data-tab="qa">🕒 校对任务</button>
-        <button class="tab" data-tab="delivery">📦 最终交付</button>
-        <button class="tab" data-tab="deploy">🛠 完整部署</button>
-      </nav>
-
-      <section class="panel active" id="meta">
-        <div class="panel-head">
-          <h2>AI 生成的专属翻译提示词</h2>
-          <div class="actions">
-            <button class="action" data-toast="静态 Demo 不连接剪贴板或后端。">复制</button>
-            <button class="action primary" data-toast="完整版本会保存到项目数据目录。">编辑</button>
+      <div class="layout">
+        <aside class="sidebar">
+          <div class="sidebar-title">📁 我的项目</div>
+          <div class="project-list">
+            <button class="project-item active" data-demo="静态 Demo 只有小小战机示例项目。">
+              <span class="pname">小小战机</span>
+              <span class="pmeta">6 个任务 · 25489 字</span>
+              <span class="ptag">飞行射击</span>
+            </button>
           </div>
-        </div>
-        <pre>你是资深游戏本地化译者，正在翻译《小小战机》这款科幻战机 / 飞行射击 / RPG 养成游戏。
+          <button class="new-project-btn" data-demo="静态 Demo 不创建项目；完整版本会写入私有数据目录。">+ 新建项目</button>
+          <div class="sidebar-title quick">⚡ 快捷入口</div>
+          <button class="project-item quick-entry" data-demo="完整版本会进入 9 步向导；Demo 保留当前项目概览。">
+            <span class="pname">🚀 开始新翻译任务</span>
+            <span class="pmeta">基于当前项目启动工作流</span>
+          </button>
+        </aside>
+
+        <main class="main">
+          <div class="proj-head">
+            <div>
+              <h2>小小战机</h2>
+              <div class="desc">来源：战机术语表.xlsx；战机英语5.18翻译需求.xlsx；战机英语语言表校对.xlsx。目标语言：英语 EN。风格：UI 短句清晰，战机、装备、资源、任务术语统一。</div>
+            </div>
+            <button class="btn btn-primary" data-demo="完整版本会进入新翻译任务向导。">🚀 启动新翻译任务</button>
+          </div>
+
+          <div class="stat-grid">
+            <div class="stat-card"><div class="num">6</div><div class="lbl">累计翻译任务</div></div>
+            <div class="stat-card"><div class="num">25489</div><div class="lbl">已翻译字数</div></div>
+            <div class="stat-card"><div class="num">1</div><div class="lbl">闭环语言数</div></div>
+            <div class="stat-card"><div class="num">402</div><div class="lbl">术语表词条</div></div>
+          </div>
+
+          <div class="view-tabs">
+            <button class="view-tab" data-tab="meta">📝 元信息</button>
+            <button class="view-tab active" data-tab="glossary">📚 术语表</button>
+            <button class="view-tab" data-tab="translation">⚡ 翻译</button>
+            <button class="view-tab" data-tab="qa">🔧 校对</button>
+            <button class="view-tab" data-tab="delivery">📥 交付</button>
+          </div>
+
+          <section id="meta" class="panel">
+            <div class="card reference-card">
+              <div class="card-title">
+                <div class="left">🤖 AI 生成的专属翻译提示词</div>
+                <div class="card-actions">
+                  <button class="btn btn-ghost btn-sm" data-demo="静态 Demo 不操作剪贴板。">📋 复制</button>
+                  <button class="btn btn-ghost btn-sm" data-demo="完整版本可直接编辑并保存提示词。">✏️ 编辑</button>
+                  <button class="btn btn-ghost btn-sm" data-demo="完整版本会调用项目分析并保存到当前项目。">🔄 重新生成</button>
+                </div>
+              </div>
+              <pre>你是资深游戏本地化译者，正在翻译《小小战机》这款科幻战机 / 飞行射击 / RPG 养成游戏。
 
 要求：
-1. UI、按钮、任务、奖励文案保持短句、清晰、可上屏；
-2. 战机、装备、导弹、资源、技能和数值术语按项目术语库统一；
-3. 保留变量、数字、换行、颜色标签、HTML/富文本标签和占位符；
-4. 无法确认的专名使用 [TBD] 标记，不自行编造设定；
-5. 输出只包含 id 与 translation，供 QA gate 校验和回填。</pre>
-        <br />
-        <h2>项目元信息</h2>
-        <table>
-          <tbody>
-            <tr><td>游戏类型</td><td>科幻战机 / 飞行射击 / RPG 养成</td></tr>
-            <tr><td>目标用户</td><td>偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。</td></tr>
-            <tr><td>内容构成</td><td>战机、导弹、射击、弹幕等战斗内容；英雄、装备、技能、属性和战力成长；建造、升级、采集、生产等基地系统；角色剧情对话、活动、礼包和奖励。</td></tr>
-            <tr><td>翻译风格</td><td>UI/玩法精简适配移动端；剧情自然；战斗、装备、技能和战斗数值专业清晰；避免可爱化、生活化或过度口语化。</td></tr>
-            <tr><td>质量规则摘要</td><td>术语库优先；变量、标签、换行不可破坏；QA 必须修复问题为 0 后才可交付。</td></tr>
-          </tbody>
-        </table>
-      </section>
+1. 游戏内容 / UI / 玩法说明尽量精简，适配移动端按钮、弹窗、任务、道具和奖励说明。
+2. 剧情对白自然、地道、通顺，参考美剧日常对白节奏，不逐字直译。
+3. 战机、装备、导弹、技能和战斗数值要专业清晰。
+4. 关键术语以术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法。
+5. 保留变量、占位符、富文本标签、颜色标签、换行和数字。</pre>
+            </div>
+            <div class="card reference-card">
+              <div class="card-title"><div class="left">📌 项目元信息</div></div>
+              <table class="meta-table">
+                <tbody>
+                  <tr><th>游戏类型</th><td>科幻战机 / 飞行射击 / RPG 养成</td></tr>
+                  <tr><th>目标用户</th><td>偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。</td></tr>
+                  <tr><th>内容构成</th><td>战机、导弹、射击、弹幕等战斗内容；英雄、装备、技能、属性和战力成长；建造、升级、采集、生产等基地系统；角色剧情对话、活动、礼包和奖励。</td></tr>
+                  <tr><th>翻译风格</th><td>UI / 玩法精简适配移动端；剧情自然、地道、通顺；战机、装备、导弹、技能和战斗数值要专业清晰。</td></tr>
+                  <tr><th>语言资产</th><td>2033 条文本，已有英文 2033 条。</td></tr>
+                  <tr><th>质量规则摘要</th><td>术语库优先；变量、标签、换行不可破坏；必须修复问题为 0 后才可交付。</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
 
-      <section class="panel" id="glossary">
-        <div class="panel-head">
-          <h2>项目术语表（示例 6 / 402 条）</h2>
-          <div class="actions">
-            <button class="action" data-toast="静态 Demo 不执行导入。完整版本会写入项目术语库。">导入</button>
-            <button class="action primary" data-toast="静态 Demo 不生成文件。完整版本可导出 xlsx/csv/json。">导出</button>
-          </div>
-        </div>
-        <table>
-          <thead><tr><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th></tr></thead>
-          <tbody>
-            <tr><td>398</td><td>钻石</td><td>Diamonds</td><td>-</td><td>货币</td><td>付费货币</td></tr>
-            <tr><td>397</td><td>金条</td><td>Gold Bar</td><td>-</td><td>货币</td><td>资源</td></tr>
-            <tr><td>400</td><td>增伤</td><td>DMG Boost</td><td>-</td><td>属性</td><td>战斗数值</td></tr>
-            <tr><td>28</td><td>消灭怪物-12</td><td>-</td><td>-</td><td>待确认</td><td>高频词扫描候选，待补译</td></tr>
-            <tr><td>237</td><td>特训</td><td>-</td><td>-</td><td>待确认</td><td>高频词扫描候选，待补译</td></tr>
-            <tr><td>1</td><td>使用后获得等量电能</td><td>Use to gain the same amount of Power</td><td>-</td><td>道具</td><td>短 UI 文案</td></tr>
-          </tbody>
-        </table>
-      </section>
+          <section id="glossary" class="panel active">
+            <div class="card">
+              <div class="card-title">
+                <div class="left">项目术语表（402 条）</div>
+                <button type="button" class="btn btn-ghost btn-sm" data-demo="完整版本会展开导入 / 生成 / 导出看板。">导入 / 生成 / 导出</button>
+              </div>
+              <span class="action-status">当前状态：准备就绪</span>
+              <form class="glossary-form">
+                <input placeholder="ID" />
+                <input placeholder="CN" />
+                <input placeholder="EN" />
+                <input placeholder="EN2" />
+                <input placeholder="分类" />
+                <input placeholder="备注" />
+                <button class="btn btn-primary btn-sm" type="button" data-demo="完整版本会新增到项目术语库并参与下一次快照。">+ 新增</button>
+              </form>
+              <div class="table-scroll">
+                <table class="glossary-table">
+                  <thead><tr><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
+                  <tbody>
+                    <tr><td>28</td><td>消灭怪物</td><td>-</td><td>-</td><td>-</td><td>高频词扫描候选，待补译</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
+                    <tr><td>237</td><td>特训</td><td>-</td><td>-</td><td>-</td><td>高频词扫描候选，待补译</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
+                    <tr><td>400</td><td>增伤</td><td>DMG Boost</td><td>-</td><td>战斗属性/数值</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
+                    <tr><td>399</td><td>输出军工厂</td><td>DPS Armory</td><td>-</td><td>核心系统/功能名</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
+                    <tr><td>398</td><td>钻石</td><td>Diamonds</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
+                    <tr><td>397</td><td>金条</td><td>Gold Bar</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
+                    <tr><td>396</td><td>超频核心</td><td>Overclock Core</td><td>-</td><td>资源/货币/材料</td><td>-</td><td><button class="btn btn-sm" data-demo="完整版本点击后进入行内编辑。">编辑</button></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
 
-      <section class="panel" id="translation">
-        <div class="panel-head">
-          <h2>翻译任务记录</h2>
-          <button class="action primary" data-toast="完整版本需要 GPT/Claude key 和 FastAPI 后端。">开始正式翻译</button>
-        </div>
-        <table>
-          <thead><tr><th>时间</th><th>任务</th><th>输入</th><th>模型</th><th>处理</th><th>状态</th></tr></thead>
-          <tbody>
-            <tr><td>2026-05-20 14:30</td><td>T-3481e4</td><td>战机英语5.18翻译需求.xlsx</td><td>GPT deep</td><td>2033 条</td><td><span class="status">QA passed</span></td></tr>
-            <tr><td>2026-05-20 13:40</td><td>T-6feaea</td><td>战机英语语言表校对.xlsx</td><td>mock</td><td>400 条</td><td><span class="warn">blocked for delivery</span></td></tr>
-          </tbody>
-        </table>
-      </section>
+          <section id="translation" class="panel">
+            <div class="card">
+              <div class="card-title"><div class="left">翻译任务</div></div>
+              <div class="provider-strip">
+                <div><strong>Provider</strong><span>GPT / Claude，Demo 不调用</span></div>
+                <div><strong>术语库</strong><span>402 条，run 开始时生成快照</span></div>
+                <div><strong>质量门槛</strong><span>必须修复问题为 0 才能交付</span></div>
+              </div>
+              <table>
+                <thead><tr><th>日期</th><th>任务名称</th><th>目标语言</th><th>产物</th><th>状态</th><th>操作</th></tr></thead>
+                <tbody>
+                  <tr><td>2026-05-20</td><td>翻译任务 · run_3481</td><td>EN</td><td>4</td><td><span class="tag tag-done">passed</span></td><td><a href="#" data-demo="Demo 不下载文件。">查看</a>　<a href="#" data-demo="完整版本会下载 QA 后最终 workbook。">下载</a></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
 
-      <section class="panel" id="qa">
-        <div class="panel-head">
-          <h2>校对任务记录</h2>
-          <button class="action primary" data-toast="完整版本会运行规则 QA、项目规则 QA 和模型语义 QA。">运行 QA</button>
-        </div>
-        <div class="grid">
-          <div class="mini-card"><strong>QA 输入</strong><p>可继续前一步翻译结果，也可导入已有译文 workbook。</p></div>
-          <div class="mini-card"><strong>质量门槛</strong><p>术语、变量、标签、换行、中文残留、UI 长度等必须修复问题为 0。</p></div>
-          <div class="mini-card"><strong>模型修复</strong><p>接入 GPT / Claude key 后，优先用模型批量修复并重跑 QA，剩余问题再人工改。</p></div>
-          <div class="mini-card"><strong>变更表</strong><p>最终输出只保留 final workbook 和 changes workbook，不展示 debug 中间产物。</p></div>
-        </div>
-      </section>
+          <section id="qa" class="panel">
+            <div class="card">
+              <div class="card-title"><div class="left">自动校对与优化</div></div>
+              <div class="workflow-note-grid">
+                <div><strong>输入</strong><span>继续前一步翻译结果 / 上传已有译文</span></div>
+                <div><strong>规则 QA</strong><span>术语、变量、标签、换行、UI 长度</span></div>
+                <div><strong>模型修复</strong><span>有 key 时先模型批量修复，再人工兜底</span></div>
+              </div>
+              <table>
+                <thead><tr><th>日期</th><th>任务</th><th>来源</th><th>处理条数</th><th>状态</th></tr></thead>
+                <tbody>
+                  <tr><td>2026-05-20</td><td>QA-3481e4</td><td>战机英语语言表校对.xlsx</td><td>2033</td><td><span class="tag tag-done">passed</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
 
-      <section class="panel" id="delivery">
-        <div class="panel-head">
-          <h2>最终交付</h2>
-          <button class="action primary" data-toast="静态 Demo 无下载文件。完整版本会从后端生成固定命名交付包。">生成/刷新最终交付</button>
-        </div>
-        <table>
-          <thead><tr><th>任务</th><th>最终表</th><th>修改表</th><th>状态</th></tr></thead>
-          <tbody>
-            <tr><td>T-3481e4</td><td>小小战机_EN_202605201430_T-3481e4_final.xlsx</td><td>小小战机_EN_202605201430_T-3481e4_changes.xlsx</td><td><span class="status">可交付</span></td></tr>
-          </tbody>
-        </table>
-      </section>
-
-      <section class="panel" id="deploy">
-        <div class="panel-head"><h2>完整版本部署方式</h2></div>
-        <div class="grid">
-          <div class="mini-card"><strong>GitHub Pages</strong><p>只托管这个静态 Demo 和产品入口，不保存真实项目文件，也不调用模型。</p></div>
-          <div class="mini-card"><strong>FastAPI 后端</strong><p>运行上传、翻译、QA、交付下载接口。可部署到 VPS、Render、Fly.io、Railway 或内网服务器。</p></div>
-          <div class="mini-card"><strong>数据存储</strong><p>本地默认使用 D:\codex\localization-workflow-studio-data；云端建议数据库 + 对象存储。</p></div>
-          <div class="mini-card"><strong>密钥</strong><p>GPT / Claude API key 只放后端环境变量或私有 settings.local.json，不能进入前端或公开仓库。</p></div>
-        </div>
-      </section>
-    </main>
+          <section id="delivery" class="panel">
+            <div class="card">
+              <div class="card-title"><div class="left">最终交付</div></div>
+              <div class="delivery-card">
+                <div class="delivery-head">
+                  <div><strong>T-3481e4 · EN</strong><span>2026-05-20 14:30 · 2033 条 · QA passed</span></div>
+                  <button class="btn btn-primary btn-sm" data-demo="完整版本会生成固定命名交付文件。">生成/刷新最终交付文件</button>
+                </div>
+                <div class="delivery-meta">
+                  <div><strong>最终表</strong><span>小小战机_EN_202605201430_T-3481e4_final.xlsx</span></div>
+                  <div><strong>修改表</strong><span>小小战机_EN_202605201430_T-3481e4_changes.xlsx</span></div>
+                  <div><strong>来源</strong><span>战机英语5.18翻译需求.xlsx</span></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
   </div>
+
   <div class="toast" id="toast"></div>
   <script>
-    const tabs = [...document.querySelectorAll(".tab")];
-    const panels = [...document.querySelectorAll(".panel")];
-    tabs.forEach((tab) => {
-      tab.addEventListener("click", () => {
-        tabs.forEach((item) => item.classList.toggle("active", item === tab));
-        panels.forEach((panel) => panel.classList.toggle("active", panel.id === tab.dataset.tab));
-      });
-    });
+    const status = document.getElementById("status");
     const toast = document.getElementById("toast");
     let timer = 0;
-    document.querySelectorAll("[data-toast]").forEach((button) => {
-      button.addEventListener("click", () => {
-        toast.textContent = button.dataset.toast;
-        toast.classList.add("show");
-        clearTimeout(timer);
-        timer = setTimeout(() => toast.classList.remove("show"), 2200);
+    function show(message) {
+      status.textContent = message;
+      toast.textContent = message;
+      toast.classList.add("show");
+      clearTimeout(timer);
+      timer = setTimeout(() => toast.classList.remove("show"), 2200);
+    }
+    document.querySelectorAll(".view-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".view-tab").forEach((item) => item.classList.toggle("active", item === tab));
+        document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === tab.dataset.tab));
+      });
+    });
+    document.querySelectorAll("[data-demo]").forEach((item) => {
+      item.addEventListener("click", (event) => {
+        event.preventDefault();
+        show(item.dataset.demo || "GitHub Pages Demo 只展示当前工作台静态样例。");
       });
     });
   </script>

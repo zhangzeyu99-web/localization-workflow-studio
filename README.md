@@ -255,7 +255,7 @@ npm run e2e
 
 ## Version
 
-Current version: `0.4.6`
+Current version: `0.4.7`
 
 Version markers:
 

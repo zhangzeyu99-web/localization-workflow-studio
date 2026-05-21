@@ -2,6 +2,11 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.7 - 2026-05-21
+
+- Reworked the GitHub Pages demo to mirror the local workbench layout directly: same top header, sidebar, project overview, stat cards, tabs, glossary table, and static action feedback.
+- Removed the separate marketing-style demo treatment so the public entry looks like the product UI rather than a standalone showcase page.
+
 ## 0.4.6 - 2026-05-21
 
 - Added a GitHub Pages static demo entry using `小小战机` sample data, with read-only project tabs for metadata, glossary, translation, QA, delivery, and deployment guidance.
