@@ -9,7 +9,7 @@ The GitHub repository stores only product code, documentation, fixtures, and saf
 - `frontend/`: React/Vite application source.
 - `backend/`: FastAPI application source.
 - `workflow/`: embedded reusable localization and glossary workflow code.
-- `docs/`: documentation and the GitHub Pages static demo.
+- `docs/`: documentation and the GitHub Pages static workbench entry.
 - `examples/`: synthetic sample files only.
 - `settings.example.json`: non-secret configuration shape.
 
@@ -84,7 +84,7 @@ For a single-user private server, SQLite plus a persistent private volume is acc
 
 Use one of three sharing modes:
 
-- Public demo: GitHub Pages static page only, with no real data or backend.
+- Public Pages entry: GitHub Pages static page only, with no real data or backend.
 - Private app: authenticated backend plus private storage.
 - Result sharing: export final workbook and change report, then share those files through a controlled channel.
 

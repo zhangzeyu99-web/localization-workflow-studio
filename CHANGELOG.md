@@ -2,6 +2,12 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.4.9 - 2026-05-21
+
+- Reworked the GitHub Pages workbench entry to match the local product navigation: starting a new translation task now replaces the main project overview with the 9-step workflow view instead of opening a modal.
+- Removed public "demo/full version/static" wording from the Pages workbench UI and status messages so the hosted page reads like the product surface.
+- Kept the existing workbench controls and sample `小小战机` data while aligning the workflow step labels, back navigation, status strip, and step panel layout with the local app.
+
 ## 0.4.8 - 2026-05-21
 
 - Added static GitHub Pages interactions to the workbench demo: settings modal, new project modal, 9-step task wizard, prompt edit/copy/regenerate controls, glossary import panel, term add/edit/delete, run detail toggle, QA action feedback, and delivery refresh feedback.

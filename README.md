@@ -4,13 +4,13 @@
 
 Local web studio for game localization workflows. It combines project onboarding, project prompt generation, glossary extraction, EN translation workpack generation, model-provider translation, strict QA, and artifact history.
 
-Static demo entry:
+GitHub Pages workbench entry:
 
 ```text
 https://zhangzeyu99-web.github.io/localization-workflow-studio/
 ```
 
-The GitHub Pages entry is a read-only product demo based on the `小小战机` sample. It does not upload files, call providers, run QA, or store project data.
+The GitHub Pages entry is a read-only workbench view based on the `小小战机` sample. It mirrors the product UI but does not upload files, call providers, run QA, or store project data.
 
 ![Use-case map](docs/assets/use-case-map.svg)
 
@@ -90,7 +90,7 @@ D:\codex\localization-workflow-studio-data
 
 This directory stores uploaded workbooks, generated workbooks, logs, SQLite, project files, artifacts, and `settings.local.json`.
 
-## GitHub Pages Demo
+## GitHub Pages Workbench
 
 The repository includes a static GitHub Pages entry at:
 
@@ -106,7 +106,7 @@ Repository Settings requirement:
 4. Select branch `master` and folder `/docs`.
 5. Save. After the next push, GitHub Pages serves `docs/index.html`.
 
-The demo page is intentionally frontend-only:
+The Pages workbench is intentionally frontend-only:
 
 - It uses sample `小小战机` project data.
 - It can be shared publicly.
@@ -115,7 +115,7 @@ The demo page is intentionally frontend-only:
 
 ## Full Version Deployment
 
-For a usable shared deployment, GitHub Pages can host only the frontend/demo entry. The complete application needs these parts:
+For a usable shared deployment, GitHub Pages can host only the frontend entry. The complete application needs these parts:
 
 | Layer | Local default | Shared deployment recommendation |
 |---|---|---|
@@ -145,7 +145,7 @@ Provider keys stay server-side. Do not put `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
 
 For public sharing, use one of these modes:
 
-- Demo sharing: GitHub Pages only, no real workflow execution.
+- Public Pages sharing: GitHub Pages only, no real workflow execution.
 - Private production: authenticated backend plus private data storage.
 - Result sharing: export final workbook/change report and share those files separately through a controlled channel.
 
@@ -255,7 +255,7 @@ npm run e2e
 
 ## Version
 
-Current version: `0.4.8`
+Current version: `0.4.9`
 
 Version markers:
 
