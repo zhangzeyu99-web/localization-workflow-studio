@@ -9,8 +9,10 @@ output/
 test-results/
 playwright-report/
 .env
+.env.*
 *.local
 settings.local.json
+*.secret.*
 *.sqlite
 *.sqlite3
 *.db
@@ -26,3 +28,7 @@ api_key*
 *_translated.xlsx
 *_final.xlsx
 *_output.xlsx
+*_qa_changes.xlsx
+*_changes.xlsx
+*.tmp
+*.bak

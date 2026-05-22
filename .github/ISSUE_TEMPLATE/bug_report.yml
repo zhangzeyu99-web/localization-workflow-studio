@@ -1,7 +1,7 @@
 name: Bug report
 description: Report a reproducible defect in the studio workflow.
 title: "[Bug]: "
-labels: ["bug"]
+labels: ["type:bug"]
 body:
   - type: textarea
     id: summary
@@ -33,12 +33,22 @@ body:
     attributes:
       label: Area
       options:
-        - Frontend
-        - Backend API
-        - Localization workflow
-        - Glossary workflow
-        - Provider adapter
-        - QA / artifact output
-        - CI / tests
+        - area:frontend
+        - area:backend
+        - area:workflow
+        - area:qa
+        - area:storage
+        - area:docs
+        - ci
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - priority:p0
+        - priority:p1
+        - priority:p2
     validations:
       required: true

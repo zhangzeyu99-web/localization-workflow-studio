@@ -2,6 +2,14 @@
 
 - 
 
+## Scope
+
+- [ ] Product behavior
+- [ ] Frontend/UI
+- [ ] Backend/API
+- [ ] Workflow/QA harness
+- [ ] Documentation/GitHub management
+
 ## Validation
 
 - [ ] `python -m pytest -q`
@@ -17,6 +25,7 @@
 - [ ] Workpack / JSONL protocol unchanged
 - [ ] QA output contract unchanged
 - [ ] Artifact paths remain outside the public repo
+- [ ] No real workbook, SQLite, API key, or runtime artifact is committed
 
 ## Notes
 

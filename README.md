@@ -2,223 +2,153 @@
 
 [![CI](https://github.com/zhangzeyu99-web/localization-workflow-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/zhangzeyu99-web/localization-workflow-studio/actions/workflows/ci.yml)
 
-Local web studio for game localization workflows. It combines project onboarding, project prompt generation, glossary extraction, EN translation workpack generation, model-provider translation, strict QA, and artifact history.
+Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web 工作台。它把项目资料、项目元信息、翻译提示词、术语库、模型翻译、规则 QA、译文归档和最终交付集中到同一个项目视图里。
 
-GitHub Pages workbench entry:
+## 入口
 
-```text
-https://zhangzeyu99-web.github.io/localization-workflow-studio/
-```
-
-Repository:
-
-```text
-https://github.com/zhangzeyu99-web/localization-workflow-studio
-```
-
-Feishu user guide:
-
-```text
-https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc
-```
-
-The GitHub Pages entry is a read-only workbench view based on the `小小战机` sample. It mirrors the product UI but does not upload files, call providers, run QA, or store project data.
+| 入口 | 地址 | 说明 |
+|---|---|---|
+| GitHub 仓库 | https://github.com/zhangzeyu99-web/localization-workflow-studio | 源码、文档、CI 和版本管理 |
+| GitHub Pages Demo | https://zhangzeyu99-web.github.io/localization-workflow-studio/ | 只读静态示例，不上传文件、不调用模型、不保存数据 |
+| 飞书使用说明书 | https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc | 面向准备使用项目的同事，包含图文流程和优化建议 |
 
 ![Use-case map](docs/assets/use-case-map.svg)
 
-## What It Integrates
+## 当前能力边界
 
-This repository is the product shell around two workflow codebases:
+- 前端：React + Vite。
+- 后端：FastAPI + SQLite。
+- 自动闭环：v1 以英语 EN 为主。
+- Provider：正式入口保留 GPT 和 Claude；mock 仅用于 CI、本地 E2E 和无 key 链路验证。
+- 真实项目翻译：当 provider 是 mock 或 API key 缺失时必须阻断，不能把 mock 结果当正式交付。
+- 其他语言：保留配置和 QA 入口，不伪装自动翻译完成。
+- GitHub Pages：仅是公开演示入口，完整功能需要 FastAPI 后端和私有数据目录。
 
-- [`zhangzeyu99-web/localization-workflow`](https://github.com/zhangzeyu99-web/localization-workflow)
-- [`zhangzeyu99-web/glossary-extraction-workflow`](https://github.com/zhangzeyu99-web/glossary-extraction-workflow)
-
-The copied workflow code lives under:
-
-```text
-workflow/localization
-workflow/glossary
-```
-
-The web app and backend adapter live outside those workflow folders so upstream workflow changes can be re-applied with a narrow adapter check.
-
-## Workflow
+## 项目主流程
 
 ```mermaid
 flowchart TD
-  A["新建/选择项目"] --> B["录入项目资料与上传素材"]
-  B --> C["多模态分析<br/>能力探测，失败则归档并降级"]
-  C --> D["生成 project_profile + translation_prompt"]
-  D --> E["导入语言表 Excel"]
-  E --> F["导入/编辑/复用术语表"]
-  F --> G["术语提取 + project brief<br/>extract_glossary.py"]
-  G --> H["选择目标语言"]
-  H --> I{"EN?"}
-  I -- "是" --> J["生成 workpack / manifest"]
-  J --> K["调用 LLM Provider<br/>Chat Completions 默认，Responses 可选"]
-  K --> L["统一输出 JSONL<br/>id + translation"]
-  L --> M["严格校验<br/>ID、占位符、标签、换行、指纹"]
-  M --> N{"通过?"}
-  N -- "否" --> O["失败行编辑器<br/>人工改 / 单批重跑 / 重新 QA"]
-  O --> M
-  N -- "是" --> P["回填最终 workbook"]
-  P --> Q["保守 auto-fix + QA"]
-  Q --> R["quality_harness 最终 gate"]
-  R --> S{"hard error = 0?"}
-  S -- "否" --> O
-  S -- "是" --> T["归档产物与项目历史"]
-  I -- "否" --> U["保留配置/QA入口<br/>不进入自动翻译闭环"]
+  A["创建或选择项目"] --> B["录入项目资料与参考素材"]
+  B --> C["AI 分析生成元信息、提示词、项目规则"]
+  C --> D["导入或生成项目术语库"]
+  D --> E["导入语言表"]
+  E --> F{"语言表已有目标译文？"}
+  F -- "是" --> G["跳过模型翻译，进入校对"]
+  F -- "否" --> H["生成 workpack，按 batch size 分批翻译"]
+  H --> I["每批落盘、失败批次重试、断点续跑"]
+  I --> J["回填 raw workbook"]
+  J --> K["规则 QA + 项目规则 QA + 模型语义 QA"]
+  G --> K
+  K --> L{"hard issue = 0？"}
+  L -- "否" --> M["人工修复或模型辅助修复后重跑 QA"]
+  M --> K
+  L -- "是" --> N["写入译文归档"]
+  N --> O["生成最终交付 final + changes"]
 ```
 
-## Current Scope
+## 仓库结构
 
-- Frontend: React + Vite.
-- Backend: FastAPI + SQLite.
-- Provider presets: GPT and Claude only, each with `fast`, `balanced`, and `deep` presets.
-- Test provider: internal `mock`, used by CI and local E2E when no API key is available.
-- Real project translation is blocked when the active provider is `mock` or a required API key is missing. Mock output must not be treated as a deliverable translation.
-- True v1 closed loop: EN translation.
-- Project brief and translation prompt generation can use auxiliary project materials via the embedded glossary workflow `--project-material` / `--project-note` adapter; Studio passes uploaded project assets into glossary extraction.
-- Other languages: visible configuration entry only; they do not pretend to be completed by automation.
+```text
+localization-workflow-studio/
+  .github/                GitHub Actions、Issue 模板、PR 模板、依赖更新配置
+  backend/                FastAPI 后端、SQLite 访问、provider adapter、workflow adapter
+  frontend/               React/Vite 本地工作台
+  workflow/
+    localization/         本地化翻译与质量校验核心
+    glossary/             术语提取与术语 harness 核心
+  examples/               可公开的合成样例
+  docs/                   项目文档与 GitHub Pages 静态 Demo
+  tests/                  跨模块 mock E2E / 回归测试
+  settings.example.json   可公开的配置样例
+```
 
-## Quality Gates
-
-Formal translation delivery is accepted only when all quality evidence exists for the same run:
-
-1. Prompt snapshot: project prompt plus project harness are compiled into the run style hint.
-2. Pre-translation pack: the workpack records row ID, source text, text type, placeholders, tags, newline shape, terminology hits, UI length metadata, and input fingerprint.
-3. Pre-backfill validation: response JSONL must match IDs and order, preserve placeholders, tags, newline shape, and pass input drift checks before the workbook is written.
-4. Pre-delivery gate: machine QA and project harness QA must pass with zero hard errors.
-
-Direct QA of an uploaded translated workbook is supported, but it is a QA run, not proof that Studio performed the translation. See [Quality gates](docs/QUALITY_GATES.md).
-
-## Data Policy
-
-Runtime data is outside the public repository:
+不要把真实项目数据放进仓库。运行数据默认放在：
 
 ```text
 D:\codex\localization-workflow-studio-data
 ```
 
-This directory stores uploaded workbooks, generated workbooks, logs, SQLite, project files, artifacts, and `settings.local.json`.
+该目录保存 `settings.local.json`、SQLite、上传 workbook、参考素材、run 日志、workpack、QA 报告、最终 workbook 和交付文件。
 
-## GitHub Pages Workbench
+## 本地启动
 
-The repository includes a static GitHub Pages entry at:
-
-```text
-docs/index.html
-```
-
-Repository Settings requirement:
-
-1. Open GitHub repository settings.
-2. Go to `Pages`.
-3. Set `Build and deployment` to `Deploy from a branch`.
-4. Select branch `master` and folder `/docs`.
-5. Save. After the next push, GitHub Pages serves `docs/index.html`.
-
-The Pages workbench is intentionally frontend-only:
-
-- It uses sample `小小战机` project data.
-- It can be shared publicly.
-- It must not include real workbook content, customer files, API keys, SQLite data, or generated delivery files.
-- Buttons show static status messages only; real workflow actions require the FastAPI backend.
-
-## Full Version Deployment
-
-For a usable shared deployment, GitHub Pages can host only the frontend entry. The complete application needs these parts:
-
-| Layer | Local default | Shared deployment recommendation |
-|---|---|---|
-| Frontend | Vite dev server at `http://127.0.0.1:5173` | GitHub Pages, static hosting, or CDN |
-| Backend API | FastAPI at `http://127.0.0.1:8000` | VPS, Render, Fly.io, Railway, internal server, or container platform |
-| Metadata DB | SQLite under `D:\codex\localization-workflow-studio-data` | Postgres for multi-user/shared usage; SQLite only with a persistent private volume |
-| File storage | Project folders under the data directory | S3, Cloudflare R2, OSS, MinIO, or private persistent volume |
-| Provider secrets | `settings.local.json` outside the repo | Backend environment variables or private secret store |
-
-Minimum backend environment:
-
-```powershell
-$env:LWS_DATA_ROOT = "D:\codex\localization-workflow-studio-data"
-$env:LWS_CORS_ORIGINS = "https://zhangzeyu99-web.github.io"
-python -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000
-```
-
-If the real Vite frontend is deployed separately from the backend, build it with the backend API base URL:
-
-```powershell
-cd frontend
-$env:VITE_API_BASE_URL = "https://api.example.com"
-npm run build
-```
-
-Provider keys stay server-side. Do not put `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `settings.local.json` into the frontend, GitHub Pages, public artifacts, or screenshots.
-
-For public sharing, use one of these modes:
-
-- Public Pages sharing: GitHub Pages only, no real workflow execution.
-- Private production: authenticated backend plus private data storage.
-- Result sharing: export final workbook/change report and share those files separately through a controlled channel.
-
-## Quick Start
+安装 Python 依赖：
 
 ```powershell
 cd D:\codex\localization-workflow-studio
 python -m pip install -r backend\requirements.txt
+```
 
-cd frontend
+安装并构建前端：
+
+```powershell
+cd D:\codex\localization-workflow-studio\frontend
 npm ci
 npm run build
-cd ..
+```
 
+启动后端：
+
+```powershell
+cd D:\codex\localization-workflow-studio
 python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-In another terminal:
+启动前端：
 
 ```powershell
 cd D:\codex\localization-workflow-studio\frontend
 npm run dev
 ```
 
-Open:
+打开：
 
 ```text
 http://127.0.0.1:5173
 ```
 
-## Provider Settings
+## Provider 配置
 
-Public repository files only include `settings.example.json`. Runtime secrets are stored in:
+公开仓只保留 `settings.example.json`。真实配置写入仓库外：
 
 ```text
 D:\codex\localization-workflow-studio-data\settings.local.json
 ```
 
-For a real provider, open the web settings modal and configure:
+网页右上角“设置”支持配置：
 
-- provider: `GPT` or `Claude`
-- preset: `快速响应`, `平衡`, or `深度思考`
-- API key
-- batch size
+- Provider：GPT 或 Claude。
+- 预设：快速、平衡、深度思考。
+- API key。
+- batch size。
 
-Preset model map:
+Provider key 必须留在后端或本地私有配置中，不要写入前端、GitHub Pages、截图、README 或公开 issue。
 
-| Provider | 快速响应 | 平衡 | 深度思考 |
-|---|---|---|---|
-| GPT | `gpt-5.4-mini` | `gpt-5.5` | `gpt-5.5-pro` |
-| Claude | `claude-haiku-4-5-20251001` | `claude-sonnet-4-6` | `claude-opus-4-7` |
+## 质量门槛
 
-See [Configuration](docs/CONFIGURATION.md) for data-root overrides, API key handling, batch sizing, mock boundaries, and API examples.
+正式交付必须同时满足：
 
-## Test Matrix
+1. 本次 run 有 prompt snapshot、project harness snapshot、glossary snapshot。
+2. 翻译 workpack 记录 ID、源文、文本类型、占位符、标签、换行形态、术语命中、UI 长度和输入指纹。
+3. 模型返回必须遵守 JSONL 行协议：每行只允许 `id` 和 `translation`。
+4. 回填前校验 ID、顺序、占位符、标签、换行和输入指纹。
+5. 最终 workbook 通过规则 QA 和项目规则 QA，hard issue 必须为 0。
+6. QA 通过后才写入译文归档并进入最终交付页。
 
-Run backend and workflow tests:
+直接上传已有译文 workbook 做 QA 是支持的，但它证明的是“Studio 做过校对”，不是“Studio 做过翻译”。
+
+## 测试
+
+后端和集成测试：
 
 ```powershell
+cd D:\codex\localization-workflow-studio
 python -m pytest -q
+```
 
+工作流基线测试：
+
+```powershell
 Push-Location workflow\localization
 python -m pytest -q
 Pop-Location
@@ -228,14 +158,14 @@ python -m pytest -q
 Pop-Location
 ```
 
-Run frontend build:
+前端构建：
 
 ```powershell
 cd frontend
 npm run build
 ```
 
-Run browser E2E after local backend and frontend are running:
+浏览器 E2E 需要先启动后端和前端：
 
 ```powershell
 cd frontend
@@ -243,37 +173,41 @@ $env:E2E_BASE_URL = "http://127.0.0.1:5173"
 npm run e2e
 ```
 
-Replay a recent real project with mock provider:
+CI 会在 GitHub Actions 上跑 Python tests、workflow tests、frontend build 和浏览器 E2E。
 
-```powershell
-cd frontend
-$root = "C:\Users\Administrator\Desktop\本地化处理\明日2_5.15"
-$env:E2E_BASE_URL = "http://127.0.0.1:5173"
-$env:E2E_SOURCE_WORKBOOK = Join-Path $root "2.0欧美翻译需求0515NT全语.xlsx"
-$env:E2E_TERM_WORKBOOK = Join-Path $root "明日2术语表.xlsx"
-npm run e2e
-```
+## GitHub Pages
 
-## Documentation
+GitHub Pages 使用 `docs/index.html`，作为公开静态 Demo：
 
-- [Feishu user guide](https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc)
-- [Use cases](docs/USE_CASES.md)
-- [Configuration](docs/CONFIGURATION.md)
-- [Storage model](docs/STORAGE.md)
-- [Iteration model](docs/ITERATION.md)
-- [GitHub management](docs/GITHUB_MANAGEMENT.md)
-- [Quality gates](docs/QUALITY_GATES.md)
-- [Changelog](CHANGELOG.md)
-- [License](LICENSE)
+1. Repository Settings。
+2. Pages。
+3. Build and deployment 选择 `Deploy from a branch`。
+4. Branch 选择 `master`，目录选择 `/docs`。
+5. 保存后，下一次 push 会发布 Demo。
 
-## Version
+Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run 日志或生成交付文件。
 
-Current version: `0.4.9`
+## 文档
 
-Version markers:
+- [飞书图文使用说明书](https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc)
+- [配置说明](docs/CONFIGURATION.md)
+- [文件与数据管理](docs/FILE_MANAGEMENT.md)
+- [存储模型](docs/STORAGE.md)
+- [用例说明](docs/USE_CASES.md)
+- [质量门槛](docs/QUALITY_GATES.md)
+- [迭代方式](docs/ITERATION.md)
+- [GitHub 管理](docs/GITHUB_MANAGEMENT.md)
+- [更新日志](CHANGELOG.md)
+- [许可证](LICENSE)
+
+## 版本
+
+当前版本：`0.4.9`
+
+版本号需要同步维护：
 
 - `VERSION`
 - `backend/app/main.py`
 - `frontend/package.json`
 
-See [GitHub management](docs/GITHUB_MANAGEMENT.md) for release and tag rules.
+发布和打 tag 前按 [GitHub 管理](docs/GITHUB_MANAGEMENT.md) 的 release checklist 执行。

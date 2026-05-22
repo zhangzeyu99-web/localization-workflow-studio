@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Feishu user guide
+    url: https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc
+    about: Read the illustrated usage guide before filing workflow questions.
+  - name: GitHub Pages demo
+    url: https://zhangzeyu99-web.github.io/localization-workflow-studio/
+    about: Public static demo for UI reference only.

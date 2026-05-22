@@ -1,7 +1,7 @@
 name: Feature request
 description: Propose an improvement or new workflow capability.
 title: "[Feature]: "
-labels: ["enhancement"]
+labels: ["type:enhancement"]
 body:
   - type: textarea
     id: problem
@@ -24,6 +24,29 @@ body:
       description: List testable outcomes.
       value: |
         - 
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - area:frontend
+        - area:backend
+        - area:workflow
+        - area:qa
+        - area:storage
+        - area:docs
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - priority:p0
+        - priority:p1
+        - priority:p2
     validations:
       required: true
   - type: dropdown

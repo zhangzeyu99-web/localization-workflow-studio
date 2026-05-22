@@ -1,0 +1,42 @@
+- name: type:bug
+  color: d73a4a
+  description: Product behavior is incorrect or misleading.
+- name: type:enhancement
+  color: a2eeef
+  description: New or improved user-facing capability.
+- name: type:docs
+  color: 0075ca
+  description: Documentation, README, release notes, or examples.
+- name: type:maintenance
+  color: cfd3d7
+  description: Dependency, CI, repository, or housekeeping work.
+- name: area:frontend
+  color: 5319e7
+  description: UI, copy, navigation, or browser workflow.
+- name: area:backend
+  color: 0e8a16
+  description: API, data model, settings, or run orchestration.
+- name: area:workflow
+  color: fbca04
+  description: Localization or glossary workflow code.
+- name: area:qa
+  color: d4c5f9
+  description: Quality harness, validation, fixes, or reports.
+- name: area:storage
+  color: 1d76db
+  description: Data directory, artifacts, uploads, or delivery files.
+- name: area:docs
+  color: 0052cc
+  description: Documentation and GitHub Pages content.
+- name: ci
+  color: bfdadc
+  description: GitHub Actions, test automation, or build pipeline.
+- name: priority:p0
+  color: b60205
+  description: Blocks real delivery.
+- name: priority:p1
+  color: d93f0b
+  description: Blocks acceptance or causes serious confusion.
+- name: priority:p2
+  color: fbca04
+  description: Important but not blocking.
