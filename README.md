@@ -10,6 +10,18 @@ GitHub Pages workbench entry:
 https://zhangzeyu99-web.github.io/localization-workflow-studio/
 ```
 
+Repository:
+
+```text
+https://github.com/zhangzeyu99-web/localization-workflow-studio
+```
+
+Feishu user guide:
+
+```text
+https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc
+```
+
 The GitHub Pages entry is a read-only workbench view based on the `小小战机` sample. It mirrors the product UI but does not upload files, call providers, run QA, or store project data.
 
 ![Use-case map](docs/assets/use-case-map.svg)
@@ -244,6 +256,7 @@ npm run e2e
 
 ## Documentation
 
+- [Feishu user guide](https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc)
 - [Use cases](docs/USE_CASES.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Storage model](docs/STORAGE.md)
