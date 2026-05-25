@@ -385,7 +385,7 @@ function formatDuration(seconds: number | null | undefined): string {
 
 function normalizeGlossaryNote(value: string | undefined): string {
   const note = String(value || '')
-  if (/高频词扫描补全 EN\/EN2\?+/.test(note)) return '高频词扫描补全 EN/EN2，待确认'
+  if (/高频词扫描补全 EN\/EN2\?+/.test(note)) return '高频词候选，需人工确认'
   return note
 }
 
@@ -699,7 +699,7 @@ function App() {
       await refreshGlossaryBatches(current.id)
       const backfill = result.glossary_backfill || {}
       const pendingConfirmation = backfill.pending_confirmation ?? backfill.inserted ?? 0
-      setStatus(`术语扫描完成：候选 ${backfill.candidates ?? 0}，去重后 ${backfill.unique_candidates ?? 0}，新增待确认 ${pendingConfirmation}，补全 ${backfill.updated ?? 0}，重复跳过 ${backfill.skipped_duplicate ?? 0}，冲突保留 ${backfill.conflicts ?? 0}`)
+      setStatus(`术语扫描完成：候选 ${backfill.candidates ?? 0}，按中文去重后 ${backfill.unique_candidates ?? 0}，已在库中跳过 ${backfill.skipped_existing ?? 0}，新增待审核 ${pendingConfirmation}，重复跳过 ${backfill.skipped_duplicate ?? 0}`)
     } catch (error) {
       setStatus(`术语提取失败：${errorText(error)}`)
     } finally {
@@ -2347,18 +2347,16 @@ function StepFreq({
   const activeBatch = glossaryBatches[0] || null
   const pendingCandidates = glossaryCandidates.filter((candidate) => candidate.status === 'pending')
   const newCandidates = pendingCandidates.filter((candidate) => candidate.action === 'new')
-  const supplementCandidates = pendingCandidates.filter((candidate) => candidate.action === 'supplement')
   const reviewPreview = expanded ? pendingCandidates : pendingCandidates.slice(0, 12)
   const reviewCount = pendingCandidates.length
   const inserted = Number(backfill?.inserted ?? newCandidates.length)
-  const updated = Number(backfill?.updated ?? 0)
   const existing = Number(backfill?.skipped_existing ?? 0)
   const candidates = Number(backfill?.candidates ?? 0)
   const uniqueCandidates = Number(backfill?.unique_candidates ?? candidates)
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 5</span>高频词扫描 & 术语表智能补充</div>
-      <div className="panel-desc">扫描语言表候选术语，和当前项目术语对比后只新增缺失词条，已有词条只补空白 EN/EN2，不覆盖人工译名。</div>
+      <div className="panel-title"><span className="badge">STEP 5</span>高频词扫描 & 术语候选审核</div>
+      <div className="panel-desc">先从语言表筛选高频中文词，再和项目术语库按中文去重；已存在词条直接跳过，不自动补 EN/EN2。新增候选需人工确认译文后才会加入项目术语库。</div>
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
         <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
@@ -2369,19 +2367,19 @@ function StepFreq({
         <>
           <div className="scan-explain">
             <strong>本次扫描结果</strong>
-            <span>扫描到 {candidates} 个候选，去重后 {uniqueCandidates} 个；其中 {existing} 个已在项目术语库，{updated} 个补全了空白译文。新增和补全都需要过一遍，下方待复核共 {reviewCount} 条。</span>
+            <span>扫描到 {candidates} 个候选，按中文去重后 {uniqueCandidates} 个；其中 {existing} 个已在项目术语库并跳过，下方仅保留 {reviewCount} 条新增候选，需编辑/确认后才能加入项目术语库。</span>
           </div>
           <div className="workflow-note-grid compact-grid">
             <div><strong>待复核</strong><span>{reviewCount}</span></div>
-            <div><strong>新增词条</strong><span>{inserted}</span></div>
-            <div><strong>补全待确认</strong><span>{supplementCandidates.length || updated}</span></div>
+            <div><strong>新增候选</strong><span>{inserted}</span></div>
+            <div><strong>自动补全</strong><span>0</span></div>
             <div><strong>已在库中</strong><span>{existing}</span></div>
           </div>
           <div className="confirm-panel">
             <div className="confirm-head">
               <div>
                 <strong>待复核词条</strong>
-                <span>{activeBatch ? `批次：${activeBatch.label}` : '暂无扫描批次'}。新增词条和自动补全词条都先停在批次里；可编辑后加入项目术语库，也可跳过。</span>
+                <span>{activeBatch ? `批次：${activeBatch.label}` : '暂无扫描批次'}。这些词条尚未进入项目术语库；可先编辑 EN / EN2 / 分类 / 备注，再单条加入或跳过。</span>
               </div>
               <div className="confirm-actions">
                 <button className="btn btn-ghost btn-sm" disabled={!activeBatch || !pendingCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, pendingCandidates, 'reject')}>全部跳过</button>
@@ -2468,7 +2466,7 @@ function PendingTermReviewRow({
     return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
   }
 
-  const kind = candidate.action === 'new' ? '新增' : '补全'
+  const kind = candidate.action === 'new' ? '新增' : '候选'
   return (
     <tr>
       <td><span className={`term-kind ${candidate.action === 'new' ? 'new' : 'filled'}`}>{kind}</span></td>
@@ -3329,12 +3327,12 @@ function FrequencyModal({ onClose }: { onClose: () => void }) {
     <div className="modal-mask show">
       <div className="modal">
         <h3>💡 高频词补充策略</h3>
-        <p>系统会从完整语言表中提取高频、易混淆和需要统一维护的术语，生成 details、ID/CN/EN/EN2、project brief 和 prompt。</p>
+        <p>系统会从完整语言表中提取高频、易混淆和需要统一维护的中文术语，生成候选批次、project brief 和 prompt。</p>
         <ul className="strategy-list">
-          <li>新增：项目术语表里不存在的候选会进入项目术语；EN/EN2 为空时标记为待补译。</li>
-          <li>补全：项目术语已存在但 EN/EN2 为空，只填空白字段。</li>
-          <li>保护：已有人工译名、导入译名和 EN2 不被扫描结果覆盖。</li>
-          <li>审计：每次扫描会在 run 日志里记录策略、候选数、新增数、补全数和跳过数。</li>
+          <li>筛选：先按中文提取候选，再按项目术语库中文去重。</li>
+          <li>跳过：项目术语表已存在的中文不会进入候选，也不会自动补 EN/EN2。</li>
+          <li>审核：新增候选必须在表格里确认 EN / EN2 / 分类 / 备注后，点加入才会进入项目术语库。</li>
+          <li>审计：每次扫描会在 run 日志里记录候选数、去重数、新增数和跳过数。</li>
         </ul>
         <div className="modal-foot"><button className="btn btn-primary" onClick={onClose}>知道了</button></div>
       </div>

@@ -546,7 +546,7 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
 
     with TestClient(app) as client:
         project = client.post("/api/projects", json={"name": "Glossary Backfill", "type": "QA"}).json()
-        existing = client.post(
+        client.post(
             f"/api/projects/{project['id']}/glossary",
             json={"source": "战机", "target": "Manual Warplane", "target_alt": "", "source_type": "manual", "confirmed": True},
         ).json()
@@ -557,8 +557,9 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
         assert result["candidates"] == 3
         assert result["unique_candidates"] == 3
         assert result["inserted"] == 2
-        assert result["updated"] == 1
-        assert result["pending_confirmation"] == 3
+        assert result["updated"] == 0
+        assert result["pending_confirmation"] == 2
+        assert result["skipped_existing"] == 1
         assert result["skipped_duplicate"] == 0
         assert result["conflicts"] == 0
         terms = client.get(f"/api/projects/{project['id']}/glossary").json()
@@ -568,14 +569,11 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
         assert terms[0]["target_alt"] == ""
         batches = client.get(f"/api/projects/{project['id']}/glossary/batches").json()
         assert batches["active_batch"]["id"] == result["batch_id"]
-        assert batches["active_batch"]["counts"]["pending"] == 3
+        assert batches["active_batch"]["counts"]["pending"] == 2
         candidates = {candidate["source"]: candidate for candidate in batches["candidates"]}
-        assert candidates["战机"]["action"] == "supplement"
-        assert candidates["战机"]["existing_term_id"] == existing["id"]
-        assert candidates["战机"]["target"] == "Manual Warplane"
-        assert candidates["战机"]["target_alt"] == "Fighter"
+        assert "战机" not in candidates
         assert candidates["钻石"]["action"] == "new"
-        assert candidates["能量"]["note"].endswith("待补译")
+        assert candidates["能量"]["note"].endswith("人工确认")
 
         reject_response = client.post(
             f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/reject",
@@ -584,17 +582,17 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
         assert reject_response.status_code == 200
         accept_response = client.post(
             f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/accept",
-            json={"candidate_ids": [candidates["战机"]["id"], candidates["钻石"]["id"]]},
+            json={"candidate_ids": [candidates["钻石"]["id"]]},
         )
         assert accept_response.status_code == 200
         accepted_terms = client.get(f"/api/projects/{project['id']}/glossary").json()
         accepted_by_source = {term["source"]: term for term in accepted_terms}
-        assert accepted_by_source["战机"]["target_alt"] == "Fighter"
+        assert accepted_by_source["战机"]["target_alt"] == ""
         assert accepted_by_source["钻石"]["target"] == "Diamonds"
         assert "能量" not in accepted_by_source
         events = client.get(f"/api/runs/{run['id']}/events").json()
         assert any("Glossary backfill strategy" in event["message"] for event in events)
-        assert any("inserted=2" in event["message"] and "updated=1" in event["message"] for event in events)
+        assert any("inserted=2" in event["message"] and "updated=0" in event["message"] for event in events)
 
 
 def test_glossary_backfill_dedupes_generated_terms_by_cn(tmp_path: Path) -> None:

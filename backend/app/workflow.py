@@ -724,7 +724,7 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
 
 
 def backfill_project_glossary_from_final(project_id: str, final_output: Path, run_id: str | None = None) -> dict[str, Any]:
-    """Merge generated glossary candidates into project terms without overwriting curated terms."""
+    """Stage generated high-frequency terms for review without changing the project glossary."""
     result = {
         "candidates": 0,
         "unique_candidates": 0,
@@ -780,8 +780,8 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
     if run_id:
         db.add_event(
             run_id,
-            "Glossary backfill strategy: dedupe by normalized CN; stage missing CN and blank EN/EN2 supplements "
-            "as review candidates; only accepted candidates enter the project glossary.",
+            "Glossary backfill strategy: dedupe by normalized CN; stage only missing CN as review candidates; "
+            "existing project glossary terms are skipped and never auto-filled.",
         )
 
     for source_key, row in deduped_rows.items():
@@ -790,30 +790,6 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
         target_alt = str(row.get("target_alt") or "").strip()
         current = existing.get(source_key)
         if current:
-            updates: dict[str, Any] = {}
-            current_target = str(current.get("target") or "").strip()
-            current_target_alt = str(current.get("target_alt") or "").strip()
-            if target and not current_target:
-                updates["target"] = target
-            if target_alt and not current_target_alt:
-                updates["target_alt"] = target_alt
-            if updates:
-                db.add_glossary_candidate(
-                    project_id,
-                    batch["id"],
-                    {
-                        "existing_term_id": current["id"],
-                        "action": "supplement",
-                        "term_key": current.get("term_key") or row.get("term_key", ""),
-                        "source": current.get("source") or source,
-                        "target": updates.get("target", current_target),
-                        "target_alt": updates.get("target_alt", current_target_alt),
-                        "category": current.get("category") or row.get("category", ""),
-                        "note": "高频词扫描补全 EN/EN2，待确认",
-                    },
-                )
-                result["updated"] += 1
-                result["pending_confirmation"] += 1
             result["skipped_existing"] += 1
             existing[source_key] = current
             continue
@@ -826,8 +802,8 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
                 "source": source,
                 "target": target,
                 "target_alt": target_alt,
-                "category": row.get("category", "") or "generated",
-                "note": row.get("note", "") or ("高频词扫描候选，待补译" if not target and not target_alt else "高频词扫描候选，待确认"),
+                "category": row.get("category", ""),
+                "note": row.get("note", "") or ("高频词候选，需补译后人工确认" if not target and not target_alt else "高频词候选，需人工确认"),
                 "action": "new",
             },
         )
