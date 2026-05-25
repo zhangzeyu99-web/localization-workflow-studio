@@ -76,6 +76,9 @@ class GlossaryCandidateUpdate(BaseModel):
     target_alt: str | None = None
     category: str | None = None
     note: str | None = None
+    translation_status: str | None = None
+    translation_source: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class GlossaryBatchResolveRequest(BaseModel):

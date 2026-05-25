@@ -145,6 +145,9 @@ type GlossaryCandidate = {
   target_alt?: string
   category: string
   note: string
+  translation_status?: 'needs_translation' | 'suggested' | 'reviewed' | string
+  translation_source?: 'language_table' | 'model' | 'manual' | 'none' | string
+  metadata?: Record<string, unknown>
   status: 'pending' | 'accepted' | 'rejected' | string
 }
 
@@ -990,6 +993,23 @@ function App() {
     setStatus('候选词条已保存')
   }
 
+  async function translateMissingGlossaryCandidates(batchId: string) {
+    if (!current || !batchId) return
+    setBusy(true)
+    setStatus('正在补齐缺失 EN 译文...')
+    try {
+      const result = await api<{ translated_count: number; skipped_count: number }>(`/api/projects/${current.id}/glossary/batches/${batchId}/translate-missing`, {
+        method: 'POST'
+      })
+      await refreshGlossaryBatches(current.id)
+      setStatus(`候选译文已补齐 ${result.translated_count} 条，跳过已有译文 ${result.skipped_count} 条；请人工审核后加入术语库。`)
+    } catch (error) {
+      setStatus(`候选译文补齐失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function resolveGlossaryCandidates(batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') {
     if (!current || !batchId || !candidates.length) return
     setBusy(true)
@@ -1249,6 +1269,7 @@ function App() {
                 onSaveHarness={saveHarness}
                 onUpdateCandidate={updateGlossaryCandidate}
                 onResolveCandidates={resolveGlossaryCandidates}
+                onTranslateMissingCandidates={translateMissingGlossaryCandidates}
                 busy={busy}
               />
             )}
@@ -2159,6 +2180,7 @@ function Wizard(props: {
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
+  onTranslateMissingCandidates: (batchId: string) => void
   busy: boolean
 }) {
   const { project, step, setStep } = props
@@ -2184,7 +2206,7 @@ function Wizard(props: {
         {step === 2 ? <StepAnalyze {...props} /> : null}
         {step === 3 ? <StepTerm {...props} /> : null}
         {step === 4 ? <StepSource {...props} /> : null}
-        {step === 5 ? <StepFreq {...props} /> : null}
+        {step === 5 ? <StepFreqV2 {...props} /> : null}
         {step === 6 ? <StepLang {...props} /> : null}
         {step === 7 ? <StepTranslate {...props} /> : null}
         {step === 8 ? <StepQA {...props} /> : null}
@@ -2314,6 +2336,192 @@ function StepSource({
       </div>
       {sourceArtifact ? <ArtifactNote artifact={sourceArtifact} /> : null}
     </>
+  )
+}
+
+function StepFreqV2({
+  onGlossaryExtract,
+  onFreq,
+  sourceArtifact,
+  assetArtifacts,
+  latestRun,
+  glossaryBatches,
+  glossaryCandidates,
+  busy,
+  onUpdateCandidate,
+  onResolveCandidates,
+  onTranslateMissingCandidates
+}: {
+  project: Project
+  onGlossaryExtract: () => void
+  onFreq: () => void
+  sourceArtifact: Artifact | null
+  assetArtifacts: Artifact[]
+  latestRun: Run | null
+  glossaryBatches: GlossaryBatch[]
+  glossaryCandidates: GlossaryCandidate[]
+  busy: boolean
+  onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
+  onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
+  onTranslateMissingCandidates: (batchId: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const backfill = latestRun?.kind === 'glossary' ? latestRun.metadata?.glossary_backfill as Record<string, unknown> | undefined : undefined
+  const activeBatch = glossaryBatches[0] || null
+  const pendingCandidates = glossaryCandidates.filter((candidate) => candidate.status === 'pending')
+  const needsTranslation = pendingCandidates.filter((candidate) => !candidate.target?.trim())
+  const readyCandidates = pendingCandidates.filter((candidate) => candidate.target?.trim())
+  const reviewPreview = expanded ? pendingCandidates : pendingCandidates.slice(0, 12)
+  const candidates = Number(backfill?.candidates ?? 0)
+  const uniqueCandidates = Number(backfill?.unique_candidates ?? candidates)
+  const existing = Number(backfill?.skipped_existing ?? 0)
+  const accepted = activeBatch?.counts?.accepted ?? glossaryCandidates.filter((candidate) => candidate.status === 'accepted').length
+  const rejected = activeBatch?.counts?.rejected ?? glossaryCandidates.filter((candidate) => candidate.status === 'rejected').length
+  return (
+    <>
+      <div className="panel-title"><span className="badge">STEP 5</span>高频词扫描 & 术语候选审核</div>
+      <div className="panel-desc">先扫描语言表中的高频中文词；缺少 EN 的候选需要显式补译或人工填写，审核加入后才进入项目术语库。</div>
+      <div className="row-actions action-card">
+        <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
+        <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
+        <button className="btn btn-primary" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>🔎 开始扫描</button>
+        <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补齐缺失译文</button>
+        <button className="btn btn-ghost" onClick={onFreq}>💡 查看补充策略</button>
+      </div>
+      {backfill ? (
+        <>
+          <div className="scan-explain">
+            <strong>本次扫描结果</strong>
+            <span>扫描 {candidates} 个候选，按中文去重后 {uniqueCandidates} 个；已在库 {existing} 个；待补译 {needsTranslation.length} 个；待审核 {readyCandidates.length} 个。</span>
+          </div>
+          <div className="workflow-note-grid compact-grid">
+            <div><strong>待补译</strong><span>{needsTranslation.length}</span></div>
+            <div><strong>待审核</strong><span>{readyCandidates.length}</span></div>
+            <div><strong>已加入</strong><span>{accepted}</span></div>
+            <div><strong>已跳过</strong><span>{rejected}</span></div>
+          </div>
+          <div className="confirm-panel">
+            <div className="confirm-head">
+              <div>
+                <strong>候选批次审核</strong>
+                <span>{activeBatch ? `批次：${activeBatch.label}` : '暂无扫描批次'}。空 EN 不能加入；可先补译或手工编辑，再加入项目术语库。</span>
+              </div>
+              <div className="confirm-actions">
+                <button className="btn btn-ghost btn-sm" disabled={!activeBatch || !pendingCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, pendingCandidates, 'reject')}>全部跳过</button>
+                <button className="btn btn-primary btn-sm" disabled={!activeBatch || !readyCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, readyCandidates, 'accept')}>全部加入已完成项</button>
+              </div>
+            </div>
+            {reviewPreview.length ? (
+              <div className="table-scroll">
+                <table className="pending-term-table">
+                  <thead><tr><th>状态</th><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
+                  <tbody>
+                    {reviewPreview.map((term) => (
+                      <PendingTermReviewRowV2
+                        key={term.id}
+                        candidate={term}
+                        batchId={activeBatch?.id || ''}
+                        busy={busy}
+                        onUpdateCandidate={onUpdateCandidate}
+                        onResolveCandidates={onResolveCandidates}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="empty-inline">暂无待审核词条，可以继续下一步。</div>
+            )}
+            {pendingCandidates.length > 12 ? (
+              <div className="review-table-foot">
+                <span>{expanded ? `已展开全部 ${pendingCandidates.length} 条。` : `当前展示前 ${reviewPreview.length} 条，展开后可查看并编辑全部 ${pendingCandidates.length} 条。`}</span>
+                <button className="btn btn-ghost btn-sm" disabled={!pendingCandidates.length} onClick={() => setExpanded((value) => !value)}>{expanded ? '收起' : `展开全部 ${pendingCandidates.length} 条`}</button>
+              </div>
+            ) : null}
+          </div>
+        </>
+      ) : null}
+    </>
+  )
+}
+
+function PendingTermReviewRowV2({
+  candidate,
+  batchId,
+  busy,
+  onUpdateCandidate,
+  onResolveCandidates
+}: {
+  candidate: GlossaryCandidate
+  batchId: string
+  busy: boolean
+  onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
+  onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({
+    term_key: candidate.term_key || '',
+    source: candidate.source || '',
+    target: candidate.target || '',
+    target_alt: candidate.target_alt || '',
+    category: candidate.category || '',
+    note: normalizeGlossaryNote(candidate.note)
+  })
+
+  useEffect(() => {
+    setDraft({
+      term_key: candidate.term_key || '',
+      source: candidate.source || '',
+      target: candidate.target || '',
+      target_alt: candidate.target_alt || '',
+      category: candidate.category || '',
+      note: normalizeGlossaryNote(candidate.note)
+    })
+    setEditing(false)
+  }, [candidate.id, candidate.term_key, candidate.source, candidate.target, candidate.target_alt, candidate.category, candidate.note])
+
+  const canAcceptDraft = Boolean(draft.target.trim())
+  const canAcceptCandidate = Boolean(candidate.target?.trim())
+
+  async function save(confirmAfter = false) {
+    await onUpdateCandidate(candidate, draft)
+    setEditing(false)
+    if (confirmAfter && canAcceptDraft) onResolveCandidates(batchId, [candidate], 'accept')
+  }
+
+  function cell(key: keyof typeof draft) {
+    if (!editing) return <span className="readonly-cell">{draft[key] || '-'}</span>
+    return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
+  }
+
+  const statusLabel = canAcceptCandidate ? '待审核' : '待补译'
+  return (
+    <tr>
+      <td><span className={`term-kind ${canAcceptCandidate ? 'filled' : 'new'}`}>{statusLabel}</span></td>
+      <td>{cell('term_key')}</td>
+      <td>{cell('source')}</td>
+      <td>{cell('target')}</td>
+      <td>{cell('target_alt')}</td>
+      <td>{cell('category')}</td>
+      <td>{cell('note')}</td>
+      <td>
+        <div className="term-review-actions">
+          {editing ? (
+            <>
+              <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => save(false)}>保存</button>
+              <button type="button" className="btn btn-sm" disabled={busy || !batchId || !canAcceptDraft} onClick={() => save(true)}>保存并加入</button>
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setEditing(false)}>取消</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setEditing(true)}>编辑</button>
+              <button type="button" className="btn btn-sm" disabled={busy || !batchId || !canAcceptCandidate} onClick={() => onResolveCandidates(batchId, [candidate], 'accept')}>加入</button>
+              <button type="button" className="btn btn-sm" disabled={busy || !batchId} onClick={() => onResolveCandidates(batchId, [candidate], 'reject')}>跳过</button>
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
   )
 }
 

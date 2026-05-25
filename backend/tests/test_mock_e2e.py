@@ -16,7 +16,7 @@ import app.db as db
 import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
-from app.providers import mock_translate_batch
+from app.providers import TranslationItem, mock_translate_batch
 from app.workflow import backfill_project_glossary_from_final
 
 
@@ -571,6 +571,12 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
         assert batches["active_batch"]["id"] == result["batch_id"]
         assert batches["active_batch"]["counts"]["pending"] == 2
         candidates = {candidate["source"]: candidate for candidate in batches["candidates"]}
+        filled_candidate = next(candidate for candidate in batches["candidates"] if candidate["target"] == "Diamonds")
+        empty_candidate = next(candidate for candidate in batches["candidates"] if not candidate["target"])
+        assert filled_candidate["translation_status"] == "suggested"
+        assert filled_candidate["translation_source"] == "language_table"
+        assert empty_candidate["translation_status"] == "needs_translation"
+        assert empty_candidate["translation_source"] == "none"
         assert "战机" not in candidates
         assert candidates["钻石"]["action"] == "new"
         assert candidates["能量"]["note"].endswith("人工确认")
@@ -623,6 +629,111 @@ def test_glossary_backfill_dedupes_generated_terms_by_cn(tmp_path: Path) -> None
         assert batches["candidates"][0]["source"] == "能量"
         assert batches["candidates"][0]["target"] == "Energy"
         assert batches["candidates"][0]["target_alt"] == "Power"
+
+
+def test_glossary_accept_blocks_candidates_without_en(tmp_path: Path) -> None:
+    generated = tmp_path / "generated_glossary_accept_gate.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2"])
+    ws.append(["G-1", "FILLED_TERM", "Filled Term", ""])
+    ws.append(["G-2", "EMPTY_TERM", "", ""])
+    wb.save(generated)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Accept Gate", "type": "QA"}).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "en"}).json()
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"])
+        candidates = {candidate["source"]: candidate for candidate in client.get(f"/api/projects/{project['id']}/glossary/batches").json()["candidates"]}
+
+        response = client.post(
+            f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/accept",
+            json={"candidate_ids": [candidates["FILLED_TERM"]["id"], candidates["EMPTY_TERM"]["id"]]},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["resolved_count"] == 1
+        assert payload["blocked_count"] == 1
+        assert payload["blocked_candidates"][0]["id"] == candidates["EMPTY_TERM"]["id"]
+        terms = {term["source"]: term for term in client.get(f"/api/projects/{project['id']}/glossary").json()}
+        assert "FILLED_TERM" in terms
+        assert "EMPTY_TERM" not in terms
+
+
+def test_glossary_candidate_missing_translation_endpoint_blocks_without_real_provider(tmp_path: Path) -> None:
+    generated = tmp_path / "generated_glossary_missing.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2"])
+    ws.append(["G-1", "EMPTY_TERM", "", ""])
+    wb.save(generated)
+    wb.close()
+
+    settings = DEFAULT_SETTINGS.copy()
+    settings["provider"] = "mock"
+    settings["api_key"] = ""
+    save_settings(settings)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Candidate Translate", "type": "QA"}).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "en"}).json()
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"])
+
+        response = client.post(f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/translate-missing")
+
+        assert response.status_code == 400
+        assert "mock" in response.json()["detail"]
+        unchanged = client.get(f"/api/projects/{project['id']}/glossary/batches").json()["candidates"][0]
+        assert unchanged["target"] == ""
+        assert unchanged["translation_status"] == "needs_translation"
+
+
+def test_glossary_candidate_translate_missing_fills_only_blank_en(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    generated = tmp_path / "generated_glossary_partial.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2"])
+    ws.append(["G-1", "FILLED_TERM", "Existing Translation", "Existing Alt"])
+    ws.append(["G-2", "EMPTY_TERM", "", ""])
+    wb.save(generated)
+    wb.close()
+
+    settings = DEFAULT_SETTINGS.copy()
+    settings["provider"] = "openai"
+    settings["api_key"] = "test-key"
+    save_settings(settings)
+    seen_rows: list[dict[str, object]] = []
+
+    async def fake_translate_batch(rows: list[dict[str, object]], provider_settings: dict[str, object], prompt: str, **kwargs: object) -> list[TranslationItem]:
+        _ = provider_settings, prompt, kwargs
+        seen_rows.extend(rows)
+        return [TranslationItem(id=int(row["id"]), translation=f"Translated {row['source']}") for row in rows]
+
+    monkeypatch.setattr(workflow, "translate_batch", fake_translate_batch)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Candidate Fill", "type": "QA"}).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "en"}).json()
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"])
+
+        response = client.post(f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/translate-missing")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["translated_count"] == 1
+        assert [row["source"] for row in seen_rows] == ["EMPTY_TERM"]
+        candidates = {candidate["source"]: candidate for candidate in payload["candidates"]}
+        assert candidates["FILLED_TERM"]["target"] == "Existing Translation"
+        assert candidates["FILLED_TERM"]["target_alt"] == "Existing Alt"
+        assert candidates["FILLED_TERM"]["translation_source"] == "language_table"
+        assert candidates["EMPTY_TERM"]["target"] == "Translated EMPTY_TERM"
+        assert candidates["EMPTY_TERM"]["target_alt"] == ""
+        assert candidates["EMPTY_TERM"]["translation_source"] == "model"
 
 
 def test_glossary_extract_uses_project_materials_for_brief_and_prompt(tmp_path: Path) -> None:

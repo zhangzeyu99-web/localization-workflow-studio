@@ -62,6 +62,7 @@ if __package__ is None or __package__ == "":
         read_project_harness,
         run_qa_sync,
         run_translate_sync,
+        translate_missing_glossary_candidates_sync,
         write_project_harness,
         write_project_prompt,
     )
@@ -111,6 +112,7 @@ else:
         read_project_harness,
         run_qa_sync,
         run_translate_sync,
+        translate_missing_glossary_candidates_sync,
         write_project_harness,
         write_project_prompt,
     )
@@ -303,6 +305,15 @@ def update_project_glossary_candidate(project_id: str, candidate_id: str, payloa
 def accept_project_glossary_candidates(project_id: str, batch_id: str, payload: GlossaryBatchResolveRequest) -> dict[str, Any]:
     _require_project_batch(project_id, batch_id)
     return db.accept_glossary_candidates(project_id, batch_id, payload.candidate_ids or None)
+
+
+@app.post("/api/projects/{project_id}/glossary/batches/{batch_id}/translate-missing")
+def translate_missing_project_glossary_candidates(project_id: str, batch_id: str) -> dict[str, Any]:
+    _require_project_batch(project_id, batch_id)
+    try:
+        return translate_missing_glossary_candidates_sync(project_id, batch_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/glossary/batches/{batch_id}/reject")

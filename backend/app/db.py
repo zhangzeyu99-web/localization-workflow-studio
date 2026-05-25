@@ -116,6 +116,9 @@ def init_db() -> None:
                 target_alt TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT '',
                 note TEXT NOT NULL DEFAULT '',
+                translation_status TEXT NOT NULL DEFAULT 'needs_translation',
+                translation_source TEXT NOT NULL DEFAULT 'none',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -182,6 +185,9 @@ def init_db() -> None:
         _ensure_column(conn, "glossary_terms", "term_key", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "glossary_terms", "target_alt", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "glossary_batches", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "glossary_candidates", "translation_status", "TEXT NOT NULL DEFAULT 'needs_translation'")
+        _ensure_column(conn, "glossary_candidates", "translation_source", "TEXT NOT NULL DEFAULT 'none'")
+        _ensure_column(conn, "glossary_candidates", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(conn, "translation_entries", "target_alt", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "translation_entries", "language", "TEXT NOT NULL DEFAULT 'en'")
         _ensure_column(conn, "translation_entries", "source_artifact_id", "TEXT NOT NULL DEFAULT ''")
@@ -556,12 +562,15 @@ def _with_candidate_counts(conn: sqlite3.Connection, batch: dict[str, Any]) -> d
 def add_glossary_candidate(project_id: str, batch_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     candidate_id = new_id("gc")
     ts = now_iso()
+    target = str(payload.get("target") or "").strip()
+    translation_status = payload.get("translation_status") or ("suggested" if target else "needs_translation")
+    translation_source = payload.get("translation_source") or ("language_table" if target else "none")
     with connect() as conn:
         conn.execute(
             """
             INSERT INTO glossary_candidates
-              (id, batch_id, project_id, existing_term_id, action, term_key, source, target, target_alt, category, note, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (id, batch_id, project_id, existing_term_id, action, term_key, source, target, target_alt, category, note, translation_status, translation_source, metadata_json, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 candidate_id,
@@ -571,16 +580,25 @@ def add_glossary_candidate(project_id: str, batch_id: str, payload: dict[str, An
                 payload.get("action", "new"),
                 payload.get("term_key", ""),
                 payload.get("source", ""),
-                payload.get("target", ""),
+                target,
                 payload.get("target_alt", ""),
                 payload.get("category", ""),
                 payload.get("note", ""),
+                translation_status,
+                translation_source,
+                json.dumps(payload.get("metadata") or {}, ensure_ascii=False),
                 payload.get("status", "pending"),
                 ts,
                 ts,
             ),
         )
         return get_glossary_candidate(candidate_id, conn=conn)
+
+
+def candidate_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(row)
+    payload["metadata"] = json.loads(payload.pop("metadata_json", "{}") or "{}")
+    return payload
 
 
 def get_glossary_candidate(candidate_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
@@ -591,7 +609,7 @@ def get_glossary_candidate(candidate_id: str, conn: sqlite3.Connection | None = 
         row = active.execute("SELECT * FROM glossary_candidates WHERE id = ?", (candidate_id,)).fetchone()
         if row is None:
             raise KeyError(candidate_id)
-        return dict(row)
+        return candidate_row_to_dict(row)
     finally:
         if ctx:
             ctx.__exit__(None, None, None)
@@ -623,17 +641,28 @@ def _list_glossary_candidates(
           CASE action WHEN 'new' THEN 0 ELSE 1 END,
           updated_at DESC
     """
-    return [dict(row) for row in conn.execute(query, values).fetchall()]
+    return [candidate_row_to_dict(row) for row in conn.execute(query, values).fetchall()]
 
 
 def update_glossary_candidate(candidate_id: str, updates: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"term_key", "source", "target", "target_alt", "category", "note", "status"}
+    allowed = {"term_key", "source", "target", "target_alt", "category", "note", "status", "translation_status", "translation_source", "metadata"}
     fields: list[str] = []
     values: list[Any] = []
     for key, value in updates.items():
         if key in allowed:
-            fields.append(f"{key} = ?")
-            values.append(value or "")
+            if key == "metadata":
+                fields.append("metadata_json = ?")
+                values.append(json.dumps(value or {}, ensure_ascii=False))
+            else:
+                fields.append(f"{key} = ?")
+                values.append(value or "")
+    if "target" in updates and str(updates.get("target") or "").strip():
+        if "translation_status" not in updates:
+            fields.append("translation_status = ?")
+            values.append("suggested")
+        if "translation_source" not in updates:
+            fields.append("translation_source = ?")
+            values.append("manual")
     if not fields:
         return get_glossary_candidate(candidate_id)
     fields.append("updated_at = ?")
@@ -667,9 +696,13 @@ def _resolve_glossary_candidates(project_id: str, batch_id: str, status: str, ca
             clauses.append("id IN ({0})".format(",".join("?" for _ in candidate_ids)))
             values.extend(candidate_ids)
         rows = conn.execute("SELECT * FROM glossary_candidates WHERE " + " AND ".join(clauses), values).fetchall()
-        candidates = [dict(row) for row in rows]
+        candidates = [candidate_row_to_dict(row) for row in rows]
+        blocked_candidates: list[dict[str, Any]] = []
         accepted_terms: list[dict[str, Any]] = []
         for candidate in candidates:
+            if status == "accepted" and not str(candidate.get("target") or "").strip():
+                blocked_candidates.append({**candidate, "block_reason": "missing_target"})
+                continue
             if status == "accepted":
                 accepted_terms.append(_apply_glossary_candidate(conn, candidate))
             conn.execute(
@@ -679,7 +712,9 @@ def _resolve_glossary_candidates(project_id: str, batch_id: str, status: str, ca
         _refresh_glossary_batch_status(conn, batch_id)
         return {
             "batch": _with_candidate_counts(conn, get_glossary_batch(batch_id, conn=conn)),
-            "resolved_count": len(candidates),
+            "resolved_count": len(candidates) - len(blocked_candidates),
+            "blocked_count": len(blocked_candidates),
+            "blocked_candidates": blocked_candidates,
             "accepted_terms": accepted_terms,
             "candidates": _list_glossary_candidates(conn, project_id, batch_id=batch_id),
         }

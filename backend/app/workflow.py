@@ -821,6 +821,108 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
     return result
 
 
+async def translate_missing_glossary_candidates(project_id: str, batch_id: str) -> dict[str, Any]:
+    project = db.get_project(project_id)
+    batch = db.get_glossary_batch(batch_id)
+    if batch["project_id"] != project_id:
+        raise KeyError(batch_id)
+    settings = load_settings()
+    provider = str(settings.get("provider") or "mock")
+    if provider == "mock":
+        raise ValueError("mock provider cannot translate glossary candidates for a real project")
+    if provider in {"openai", "anthropic"} and not settings.get("api_key"):
+        raise ValueError(f"{provider} api_key is required to translate glossary candidates")
+
+    pending = db.list_glossary_candidates(project_id, batch_id=batch_id, status="pending")
+    missing = [candidate for candidate in pending if not str(candidate.get("target") or "").strip()]
+    if not missing:
+        return {
+            "batch": batch,
+            "translated_count": 0,
+            "skipped_count": len(pending),
+            "candidates": db.list_glossary_candidates(project_id, batch_id=batch_id),
+        }
+
+    rows: list[dict[str, Any]] = []
+    id_to_candidate: dict[int, dict[str, Any]] = {}
+    for index, candidate in enumerate(missing, start=1):
+        rows.append(
+            {
+                "id": index,
+                "source": str(candidate.get("source") or ""),
+                "text_type": "glossary_term_candidate",
+                "term_key": str(candidate.get("term_key") or ""),
+                "note": str(candidate.get("note") or ""),
+            }
+        )
+        id_to_candidate[index] = candidate
+
+    prompt = _glossary_candidate_translation_prompt(project, rows)
+    try:
+        items = await translate_batch(rows, settings, prompt)
+    except Exception as exc:
+        raise ValueError(f"glossary candidate translation failed: {exc}") from exc
+    translated_count = 0
+    for item in items:
+        candidate = id_to_candidate.get(int(item.id))
+        if candidate is None:
+            continue
+        translation = str(item.translation or "").strip()
+        if not translation:
+            continue
+        metadata = dict(candidate.get("metadata") or {})
+        metadata["model"] = {
+            "provider": provider,
+            "model": settings.get("model") or "",
+            "preset": settings.get("preset") or "",
+            "translated_at": db.now_iso(),
+        }
+        db.update_glossary_candidate(
+            candidate["id"],
+            {
+                "target": translation,
+                "translation_status": "suggested",
+                "translation_source": "model",
+                "metadata": metadata,
+            },
+        )
+        translated_count += 1
+
+    if batch.get("run_id"):
+        db.add_event(batch["run_id"], f"Glossary candidate translation filled {translated_count} missing EN values.")
+    return {
+        "batch": db.get_glossary_batch(batch_id),
+        "translated_count": translated_count,
+        "skipped_count": len(pending) - len(missing),
+        "candidates": db.list_glossary_candidates(project_id, batch_id=batch_id),
+    }
+
+
+def translate_missing_glossary_candidates_sync(project_id: str, batch_id: str) -> dict[str, Any]:
+    return asyncio.run(translate_missing_glossary_candidates(project_id, batch_id))
+
+
+def _glossary_candidate_translation_prompt(project: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    profile = project.get("profile") or {}
+    prompt_text = str(project.get("prompt_text") or "").strip()
+    existing_terms = [
+        {"source": term.get("source"), "target": term.get("target"), "target_alt": term.get("target_alt")}
+        for term in db.list_glossary_terms(project["id"])[:200]
+        if str(term.get("source") or "").strip() and str(term.get("target") or "").strip()
+    ]
+    return (
+        "Translate short game glossary term candidates from Chinese to English. "
+        "Return JSONL only; each line must be {\"id\": number, \"translation\": string}. "
+        "Translate only the EN term. Do not create EN2, notes, categories, explanations, or markdown. "
+        "Keep UI terms concise and consistent with existing glossary.\n\n"
+        f"Project: {project.get('name', '')}\n"
+        f"Profile: {json.dumps(profile, ensure_ascii=False)}\n"
+        f"Project prompt:\n{prompt_text}\n\n"
+        f"Existing glossary examples:\n{json.dumps(existing_terms, ensure_ascii=False)}\n\n"
+        f"Candidates:\n" + "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
+    )
+
+
 def _glossary_source_key(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "").strip()).casefold()
 
