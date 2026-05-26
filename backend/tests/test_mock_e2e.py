@@ -71,6 +71,17 @@ def _translated_workbook(path: Path) -> None:
     wb.close()
 
 
+def _string_id_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "cn", "en"])
+    ws.append(["M-001", "暗能电池", ""])
+    ws.append(["M-002", "联盟基地", ""])
+    wb.save(path)
+    wb.close()
+
+
 def _project_harness_failed_workbook(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -369,6 +380,54 @@ def test_translation_readiness_skips_filled_translation_workbook(tmp_path: Path)
         assert result["run"]["status"] == "needs_input"
         assert result["run"]["metadata"]["reason"] == "input already contains target translations; run QA instead"
         assert result["artifacts"] == []
+
+
+def test_string_ids_run_through_translation_and_qa(tmp_path: Path) -> None:
+    workbook = tmp_path / "string-id-language.xlsx"
+    _string_id_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "E2E String ID", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("string-id-language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        artifact = upload_response.json()
+
+        readiness_response = client.get(f"/api/artifacts/{artifact['id']}/translation-readiness?batch_size=90")
+        assert readiness_response.status_code == 200
+        readiness = readiness_response.json()
+        assert readiness["reason"] == "empty_target_rows"
+        assert readiness["source_rows"] == 2
+        assert readiness["invalid_id_rows"] == 0
+        assert readiness["invalid_id_samples"] == []
+        assert readiness["needs_translation"] is True
+        assert readiness["ready_for_qa"] is False
+        assert readiness["estimated_batches"] == 1
+
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": artifact["id"]},
+        ).json()
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
+        assert translate_response.status_code == 200
+        result = translate_response.json()
+        assert result["run"]["status"] == "passed"
+        assert result["run"]["metadata"]["translation_archive"]["imported_count"] == 2
+        assert result["run"]["metadata"]["translation_readiness"]["invalid_id_rows"] == 0
+        final_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "qa_final_workbook")
+
+        final_wb = load_workbook(final_artifact["path"], read_only=True, data_only=True)
+        try:
+            rows = list(final_wb["Language"].iter_rows(min_row=2, max_row=3, values_only=True))
+        finally:
+            final_wb.close()
+        assert rows[0][0] == "M-001"
+        assert rows[0][2]
+
+        archived = client.get(f"/api/projects/{project['id']}/translations").json()
+        assert [entry["entry_key"] for entry in archived] == ["M-001", "M-002"]
 
 
 def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
@@ -775,6 +834,29 @@ def test_glossary_extract_uses_project_materials_for_brief_and_prompt(tmp_path: 
         prompt = Path(artifacts["translation_prompt"]["path"]).read_text(encoding="utf-8")
         assert "aircraft_context.md" in brief
         assert "\u79d1\u5e7b\u519b\u4e8b" in prompt
+
+
+def test_generic_project_prompt_does_not_inherit_warplane_style() -> None:
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/projects",
+            json={
+                "name": "Generic Strategy",
+                "type": "\u79d1\u5e7b SLG",
+                "description": "\u8054\u76df\u3001\u57fa\u5730\u3001\u6307\u6325\u5b98\u517b\u6210\u548c\u8d44\u6e90\u5faa\u73af\u3002",
+            },
+        ).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "\u901a\u7528\u79d1\u5e7b\u7b56\u7565\u9879\u76ee\uff0c\u4e3b\u7ebf\u662f\u8054\u76df\u8fd0\u8425\u548c\u57fa\u5730\u5efa\u8bbe\u3002", "asset_artifact_ids": []},
+        )
+
+        assert response.status_code == 200, response.text
+        prompt = response.json()["prompt"]
+        assert "\u6218\u673a" not in prompt
+        assert "\u5bfc\u5f39" not in prompt
+        assert "\u51c6\u786e\u7ffb\u8bd1\u4e3a\u81ea\u7136\u82f1\u6587" in prompt
 
 
 def test_existing_translation_workbook_can_run_qa_without_translation_workpack(tmp_path: Path) -> None:

@@ -180,6 +180,8 @@ type TranslationReadiness = {
   translated_rows: number
   empty_target_rows: number
   cjk_target_rows: number
+  invalid_id_rows?: number
+  invalid_id_samples?: string[]
   needs_translation: boolean
   ready_for_qa: boolean
   reason: string
@@ -342,8 +344,20 @@ function artifactsByRoles(project: Project, roles: string | string[]): Artifact[
   return (project.artifacts || []).filter((artifact) => accepted.includes(artifactRole(artifact)))
 }
 
+function apiErrorText(text: string, fallback: string): string {
+  if (!text.trim()) return fallback
+  try {
+    const payload = JSON.parse(text) as { detail?: unknown; message?: unknown; error?: unknown }
+    const detail = payload.detail ?? payload.message ?? payload.error
+    if (typeof detail === 'string' && detail.trim()) return detail
+  } catch {
+    // Keep the original text when the backend returns plain text.
+  }
+  return text
+}
+
 function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message
+  if (error instanceof Error) return apiErrorText(error.message, error.message)
   return String(error)
 }
 
@@ -446,7 +460,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, init)
   if (!response.ok) {
     const text = await response.text()
-    throw new Error(text || response.statusText)
+    throw new Error(apiErrorText(text, response.statusText))
   }
   return response.json()
 }
@@ -772,7 +786,7 @@ function App() {
       setStatus(`已检测到 ${readiness.translated_rows}/${readiness.source_rows} 行已有译文，无需模型翻译，请直接运行 QA。`)
       return
     }
-    const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current)
+    const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current, readiness)
     if (blockReason) {
       setStatus(`无法开始翻译：${blockReason}`)
       return
@@ -1430,6 +1444,8 @@ function ProjectOverview({
           sourceArtifact={sourceArtifact}
           termArtifact={termArtifact}
           latestRun={latestRun}
+          translationReadiness={translationReadiness}
+          qualityIssues={qualityIssues}
           setSourceArtifact={setSourceArtifact}
           setTermArtifact={setTermArtifact}
           onUploadSource={onUploadSource}
@@ -2019,6 +2035,8 @@ function TranslationTab({
   sourceArtifact,
   termArtifact,
   latestRun,
+  translationReadiness,
+  qualityIssues,
   setSourceArtifact,
   setTermArtifact,
   onUploadSource,
@@ -2031,12 +2049,15 @@ function TranslationTab({
   sourceArtifact: Artifact | null
   termArtifact: Artifact | null
   latestRun: Run | null
+  translationReadiness: TranslationReadiness | null
+  qualityIssues: QualityIssue[]
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
   onUploadSource: (file: File) => void
   onTranslate: () => void
 }) {
-  const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project)
+  const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id ? translationReadiness : null
+  const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project, readiness)
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   return (
     <>
@@ -2129,12 +2150,24 @@ function providerName(settings: AppSettings | null): string {
   return settings.provider || '未配置'
 }
 
-function formalTranslationBlockReason(settings: AppSettings | null, sourceArtifact: Artifact | null, project?: Project): string {
+function formalTranslationBlockReason(settings: AppSettings | null, sourceArtifact: Artifact | null, project?: Project, readiness?: TranslationReadiness | null): string {
   if (!sourceArtifact) return '请先上传或选择待翻译语言表。'
   if (!settings) return '模型配置尚未加载。'
+  const readinessBlock = translationReadinessBlockReason(readiness)
+  if (readinessBlock) return readinessBlock
   if (settings.provider === 'mock' && project?.name.startsWith('E2E ')) return ''
   if (settings.provider === 'mock') return '当前是 mock provider。真实项目禁止用 mock 假装完成，请先配置 GPT API key。'
   if ((settings.provider === 'openai' || settings.provider === 'anthropic') && !settings.api_key) return `${providerName(settings)} API key 未配置，正式翻译已阻断。`
+  return ''
+}
+
+function translationReadinessBlockReason(readiness?: TranslationReadiness | null): string {
+  if (!readiness) return ''
+  if (Number(readiness.invalid_id_rows || 0) > 0) {
+    const samples = readiness.invalid_id_samples?.length ? ` 示例：${readiness.invalid_id_samples.join(', ')}` : ''
+    return `语言表有 ${readiness.invalid_id_rows} 行缺少可回写 ID；请先补齐非空 ID。${samples}`
+  }
+  if (readiness.reason === 'no_source_rows') return '语言表未检测到原文行。'
   return ''
 }
 
@@ -2728,6 +2761,7 @@ function StepTranslate({
   onTranslate,
   busy,
   latestRun,
+  qualityIssues,
   translationReadiness,
   translationBatchSize,
   setTranslationBatchSize,
@@ -2744,6 +2778,7 @@ function StepTranslate({
   onTranslate: () => void
   busy: boolean
   latestRun: Run | null
+  qualityIssues: QualityIssue[]
   translationReadiness: TranslationReadiness | null
   translationBatchSize: number
   setTranslationBatchSize: (value: number) => void
@@ -2754,22 +2789,25 @@ function StepTranslate({
   setQaArtifact: (artifact: Artifact | null) => void
   setStep: (step: number) => void
 }) {
-  const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project)
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   const batchSize = clampBatchSize(translationBatchSize)
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === batchSize ? translationReadiness : null
+  const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project, readiness)
   const alreadyTranslated = canSkipModelTranslation(readiness)
   const estimatedBatches = estimateBatches(readiness?.source_rows, batchSize)
   const progress = getTranslationProgress(latestRun)
   const resumable = Boolean(latestRun?.kind === 'translation' && latestRun.status === 'failed' && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
   const selectedBatchPreset = batchPresets.find((preset) => preset.size === batchSize)
+  const invalidIdText = readiness?.invalid_id_rows ? ` / 空 ID ${readiness.invalid_id_rows}` : ''
   const readinessText = readiness
-    ? `${readiness.source_rows} 行原文 / ${readiness.translated_rows} 行已有译文 / 空译文 ${readiness.empty_target_rows} / 中文残留 ${readiness.cjk_target_rows} / 预计 ${readiness.estimated_batches} 批`
+    ? `${readiness.source_rows} 行原文 / ${readiness.translated_rows} 行已有译文 / 空译文 ${readiness.empty_target_rows} / 中文残留 ${readiness.cjk_target_rows}${invalidIdText} / 预计 ${readiness.estimated_batches} 批`
     : '选择语言表后自动检查'
   const readinessState = !sourceArtifact
     ? { label: '未选择语言表', tone: 'idle' }
     : !readiness
       ? { label: '正在检查', tone: 'checking' }
+      : translationReadinessBlockReason(readiness)
+        ? { label: '需要修正表结构', tone: 'todo' }
       : alreadyTranslated
         ? { label: '可直接校对', tone: 'ready' }
         : { label: '需要翻译', tone: 'todo' }
@@ -2843,7 +2881,7 @@ function StepTranslate({
         <span>提示词 <strong>{project.prompt_text ? '已生成' : '未生成'}</strong></span>
         <span>校对门槛 <strong>QA 通过后交付</strong></span>
       </div>
-      {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} /> : null}
+      {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} issues={qualityIssues} /> : null}
     </>
   )
 }
@@ -3253,7 +3291,10 @@ function TaskRunSummary({
   projectHardErrors?: number
 }) {
   const title = run.kind === 'qa' ? '最近校对任务' : run.kind === 'translation' ? '最近翻译任务' : '最近任务'
-  const issueText = issues.length ? `待处理问题 ${issues.length} 条` : '无待处理问题'
+  const summary = run.metadata?.quality_summary as { hard_errors?: number } | undefined
+  const metadataHardErrors = Number(summary?.hard_errors ?? 0)
+  const issueCount = issues.length || metadataHardErrors
+  const issueText = issueCount ? `待处理问题 ${issueCount} 条` : '无待处理问题'
   const projectGate = typeof projectHardErrors === 'number' ? `，项目规则必须修复 ${projectHardErrors}` : ''
   return (
     <div className="task-summary">

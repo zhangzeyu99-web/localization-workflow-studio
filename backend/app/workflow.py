@@ -26,12 +26,13 @@ HARNESS_SCHEMA_VERSION = 1
 GLOBAL_HARNESS_CONTRACT: dict[str, Any] = {
     "source": "global_harness",
     "workpack": "translation_workpack.jsonl",
-    "response_protocol": "jsonl:{id:int,translation:str}",
+    "response_protocol": "jsonl:{id:int|str,translation:str}",
     "hard_gates": ["id", "placeholder", "tag", "newline", "input_fingerprint"],
     "qa_sources": ["workflow/localization/utils/quality_harness.py", "workflow/localization/fixtures/quality_regression.json"],
 }
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
+RowId = int | str
 
 
 def project_dir(project_id: str) -> Path:
@@ -221,11 +222,12 @@ def _project_prompt_from_profile(profile: dict[str, Any]) -> str:
         "译文需符合以下要求：\n"
         "1. 游戏内容/UI/玩法说明尽量精简，适配移动游戏按钮、弹窗、任务、道具和奖励说明；\n"
         "2. 剧情对话必须自然、地道、通顺，保留角色语气、冲突、幽默和情绪，不要逐字直译；\n"
-        "3. 整体语气冷静、利落、偏科幻军事；战机、装备、导弹、技能和战斗数值要专业清晰，避免可爱化、生活化或过度口语化；\n"
-        "4. 关键术语以随附术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法；\n"
-        "5. 已有英文译文代表项目历史用法；如现有译法不自然，可以优化，但不要破坏已固定的系统术语；\n"
-        "6. 保留所有游戏代码、变量、数字、换行、颜色标签、HTML/富文本标签和占位符，如 {0}、%s、<color> 等；\n"
-        "7. 无法确认的专有名词或信息缺口用 [TBD] 标记，不要自行编造设定。\n"
+        f"3. 项目内容范围：{profile['content_scope']}\n"
+        f"4. 译文风格：{profile['translation_style']}\n"
+        "5. 关键术语以随附术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法；\n"
+        "6. 已有英文译文代表项目历史用法；如现有译法不自然，可以优化，但不要破坏已固定的系统术语；\n"
+        "7. 保留所有游戏代码、变量、数字、换行、颜色标签、HTML/富文本标签和占位符，如 {0}、%s、<color> 等；\n"
+        "8. 无法确认的专有名词或信息缺口用 [TBD] 标记，不要自行编造设定。\n"
         "输出协议：只返回 JSONL，每行包含 id 和 translation。"
     )
 
@@ -420,6 +422,8 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
         "translated_rows": 0,
         "empty_target_rows": 0,
         "cjk_target_rows": 0,
+        "invalid_id_rows": 0,
+        "invalid_id_samples": [],
         "needs_translation": False,
         "ready_for_qa": False,
         "reason": "unsupported_file",
@@ -440,6 +444,7 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
                     continue
                 source_col = _first_col(headers, ["cn", "source", "original", "zh", "chinese", "原文", "中文"])
                 target_col = _first_col(headers, ["en", "target", "translation", "english", "译文", "英文"])
+                id_col = _first_col(headers, ["id", "编号", "序号"])
                 if source_col is None:
                     continue
                 if target_col is not None:
@@ -449,6 +454,11 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
                     if not source:
                         continue
                     summary["source_rows"] += 1
+                    raw_id = _row_cell(row, id_col) if id_col is not None else ""
+                    if not _is_supported_translation_id(raw_id):
+                        summary["invalid_id_rows"] += 1
+                        if len(summary["invalid_id_samples"]) < 5:
+                            summary["invalid_id_samples"].append(raw_id or "<missing>")
                     target = _row_cell(row, target_col) if target_col is not None else ""
                     if not target:
                         summary["empty_target_rows"] += 1
@@ -469,6 +479,10 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
     summary["estimated_batches"] = math.ceil(source_rows / effective_batch_size) if source_rows else 0
     if not source_rows:
         summary["reason"] = "no_source_rows"
+        return summary
+    if int(summary["invalid_id_rows"]):
+        summary["estimated_batches"] = 0
+        summary["reason"] = "invalid_id_rows"
         return summary
     if not found_target_column:
         summary["needs_translation"] = True
@@ -2302,6 +2316,28 @@ def _row_cell(row: tuple[Any, ...], column: int) -> str:
     return "" if value is None else str(value).strip()
 
 
+def _normalize_translation_id(value: Any) -> RowId | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        text = str(value).strip()
+        return text or None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else str(value).strip()
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r"-?(0|[1-9]\d*)", text):
+        return int(text)
+    return text
+
+
+def _is_supported_translation_id(value: Any) -> bool:
+    return _normalize_translation_id(value) is not None
+
+
 def _normalize_quality_issues(source_key: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index, issue in enumerate(payload.get("issues", []) or []):
@@ -2541,8 +2577,8 @@ def _completed_batch_rows(path: Path, batch: list[dict[str, Any]]) -> list[dict[
         rows = read_jsonl(path)
     except Exception:
         return None
-    expected_ids = [int(row["id"]) for row in batch]
-    actual_ids = [int(row.get("id")) for row in rows if "id" in row]
+    expected_ids = [_normalize_translation_id(row.get("id")) for row in batch]
+    actual_ids = [_normalize_translation_id(row.get("id")) for row in rows if "id" in row]
     if actual_ids != expected_ids:
         return None
     if any("translation" not in row for row in rows):
@@ -2621,6 +2657,19 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
     batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
     batch_size = max(1, min(batch_size, 200))
     readiness = inspect_translation_readiness(input_artifact["id"], batch_size=batch_size)
+    if readiness.get("reason") == "invalid_id_rows":
+        reason = "language table ID column must be present and non-empty before translation or QA"
+        db.update_run(
+            run_id,
+            status="needs_input",
+            metadata={
+                **metadata,
+                "reason": reason,
+                "translation_readiness": readiness,
+            },
+        )
+        db.add_event(run_id, f"translation skipped: {reason}")
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
     if readiness.get("ready_for_qa"):
         db.update_run(
             run_id,
@@ -2726,8 +2775,8 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
                 try:
                     items = await translate_batch(batch, settings, prompt, provider_override=request.provider, protocol_override=request.protocol)
                     batch_rows = [{"id": item.id, "translation": item.translation} for item in items]
-                    expected_ids = [int(row["id"]) for row in batch]
-                    actual_ids = [int(row["id"]) for row in batch_rows]
+                    expected_ids = [_normalize_translation_id(row.get("id")) for row in batch]
+                    actual_ids = [_normalize_translation_id(row.get("id")) for row in batch_rows]
                     if actual_ids != expected_ids:
                         raise ValueError(f"batch {batch_index} response IDs mismatch: expected={expected_ids[:5]}..., actual={actual_ids[:5]}...")
                     write_jsonl(batch_path, batch_rows)

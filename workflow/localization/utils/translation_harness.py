@@ -73,6 +73,8 @@ _RULE_HINTS = (
     "\u5b8c\u6210",
 )
 
+RowId = int | str
+
 
 @dataclass(frozen=True)
 class TargetColumnStatus:
@@ -159,7 +161,7 @@ def prepare_translation_harness(
         "row_ids": [row["id"] for row in rows],
         "target_status": target_status.__dict__,
         "style_profile": _build_style_profile(rows, style_hint=style_hint),
-        "response_protocol": "jsonl:{id:int,translation:str}",
+        "response_protocol": "jsonl:{id:int|str,translation:str}",
     }
 
     workpack_path = output_dir / "translation_workpack.jsonl"
@@ -205,7 +207,7 @@ def apply_translation_response(
 
     workpack_path = manifest_path.parent / "translation_workpack.jsonl"
     workpack = _read_jsonl(workpack_path)
-    expected_ids = [int(row["id"]) for row in workpack]
+    expected_ids = [_coerce_row_id(row["id"]) for row in workpack]
     responses = parse_translation_response(response_path)
     _validate_response_ids(expected_ids, responses)
     _validate_response_surface(workpack, responses)
@@ -288,25 +290,27 @@ def classify_text(source: str, current_target: str = "") -> str:
     return "description"
 
 
-def parse_translation_response(response_path: str | Path) -> dict[int, str]:
-    responses: dict[int, str] = {}
-    duplicate_ids: set[int] = set()
+def parse_translation_response(response_path: str | Path) -> dict[RowId, str]:
+    responses: dict[RowId, str] = {}
+    duplicate_ids: set[RowId] = set()
     for raw_line in Path(response_path).read_text(encoding="utf-8").splitlines():
         line = raw_line.strip().lstrip("\ufeff")
         if not line:
             continue
-        row_id: int
+        row_id: RowId | None
         translation: str
         try:
             item = json.loads(line)
-            row_id = int(item["id"])
+            row_id = _coerce_row_id(item["id"])
             translation = str(item["translation"])
         except json.JSONDecodeError:
             match = re.match(r"^(\d+)\s*\|\s*(.+)$", line)
             if not match:
                 raise ValueError(f"invalid response line: {line}") from None
-            row_id = int(match.group(1))
+            row_id = _coerce_row_id(match.group(1))
             translation = match.group(2)
+        if row_id is None:
+            raise ValueError(f"invalid response ID: {line}")
         if row_id in responses:
             duplicate_ids.add(row_id)
         responses[row_id] = translation
@@ -324,7 +328,7 @@ def _seed_target(source: str, target: str, status: TargetColumnStatus) -> str:
     return target
 
 
-def _build_ui_length_meta(row_id: int, source: str, target: str) -> dict[str, Any] | None:
+def _build_ui_length_meta(row_id: RowId, source: str, target: str) -> dict[str, Any] | None:
     is_ui, _, _ = is_ui_text(source, target)
     assessment = assess_ui_length(row_id, source, target, is_ui=is_ui, lang="en")
     if not assessment:
@@ -361,9 +365,9 @@ def _term_hits(source: str, term_lookup: dict[str, dict]) -> list[dict[str, str]
 
 
 def _build_style_profile(rows: list[dict[str, Any]], style_hint: str = "") -> dict[str, Any]:
-    buckets: dict[str, list[int]] = {}
+    buckets: dict[str, list[RowId]] = {}
     for row in rows:
-        buckets.setdefault(str(row["text_type"]), []).append(int(row["id"]))
+        buckets.setdefault(str(row["text_type"]), []).append(row["id"])
     samples = {key: value[:5] for key, value in buckets.items()}
     return {
         "project_hint": _normalize_style_hint(style_hint),
@@ -386,12 +390,14 @@ def _newline_shape(text: str) -> dict[str, int]:
     }
 
 
-def _validate_response_ids(expected_ids: list[int], responses: dict[int, str]) -> None:
+def _validate_response_ids(expected_ids: list[RowId | None], responses: dict[RowId, str]) -> None:
+    if any(row_id is None for row_id in expected_ids):
+        raise ValueError("manifest contains invalid row IDs")
     actual_ids = list(responses.keys())
-    expected_set = set(expected_ids)
+    expected_set = set(row_id for row_id in expected_ids if row_id is not None)
     actual_set = set(actual_ids)
-    missing = sorted(expected_set - actual_set)
-    extra = sorted(actual_set - expected_set)
+    missing = sorted(expected_set - actual_set, key=lambda value: str(value))
+    extra = sorted(actual_set - expected_set, key=lambda value: str(value))
     if missing:
         raise ValueError(f"missing response IDs: {missing}")
     if extra:
@@ -400,9 +406,11 @@ def _validate_response_ids(expected_ids: list[int], responses: dict[int, str]) -
         raise ValueError("response ID order differs from manifest")
 
 
-def _validate_response_surface(workpack: list[dict[str, Any]], responses: dict[int, str]) -> None:
+def _validate_response_surface(workpack: list[dict[str, Any]], responses: dict[RowId, str]) -> None:
     for row in workpack:
-        row_id = int(row["id"])
+        row_id = _coerce_row_id(row["id"])
+        if row_id is None:
+            raise ValueError(f"invalid workpack ID: {row.get('id')}")
         translation = responses[row_id]
         if not translation.strip():
             raise ValueError(f"empty translation for ID {row_id}")
@@ -419,7 +427,7 @@ def _validate_response_surface(workpack: list[dict[str, Any]], responses: dict[i
             raise ValueError(f"newline mismatch for ID {row_id}")
 
 
-def _write_translations_to_workbook(workbook_path: Path, responses: dict[int, str], lang_index: int) -> None:
+def _write_translations_to_workbook(workbook_path: Path, responses: dict[RowId, str], lang_index: int) -> None:
     df, col_map = read_language_file(str(workbook_path))
     id_col_name = col_map["id_col"]
     trans_col_name = col_map["languages"][lang_index]["translation_col"]
@@ -458,7 +466,7 @@ def _update_translation_cache(
     project_dir: Path,
     lang: str,
     workpack: list[dict[str, Any]],
-    responses: dict[int, str],
+    responses: dict[RowId, str],
     style_hint: str = "",
 ) -> Path:
     cache_dir = project_dir / ".translation_cache"
@@ -471,7 +479,9 @@ def _update_translation_cache(
             cache_key = (str(row.get("source", "")), _normalize_style_hint(row.get("style_hint", "")))
             current[cache_key] = row
     for row in workpack:
-        row_id = int(row["id"])
+        row_id = _coerce_row_id(row["id"])
+        if row_id is None:
+            continue
         source = str(row["source"])
         current[(source, style_hint)] = {
             "source": source,
@@ -489,13 +499,21 @@ def _normalize_style_hint(style_hint: Any) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def _coerce_row_id(value: Any) -> int | None:
-    try:
-        if value is None:
-            return None
-        return int(value)
-    except (TypeError, ValueError):
+def _coerce_row_id(value: Any) -> RowId | None:
+    if value is None:
         return None
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else str(value).strip()
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r"-?(0|[1-9]\d*)", text):
+        return int(text)
+    return text
 
 
 def _sha256_file(path: Path) -> str:

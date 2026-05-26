@@ -1,4 +1,4 @@
-"""Localization QA — main processing script.
+﻿"""Localization QA — main processing script.
 
 Runs all checks on a language Excel file and produces:
   1. result_{lang}.xlsx   — Sheet "完整结果" + Sheet "需确认"
@@ -30,6 +30,9 @@ from utils.ui_length_checker import assess_ui_length, check_ui_length
 from utils.readability_checker import check_readability
 
 
+RowId = int | str
+
+
 # ─────────────────────────────────────────────────────────────
 # Row state tracker
 # ─────────────────────────────────────────────────────────────
@@ -44,7 +47,7 @@ class RowState:
         'short_text_target_len', 'short_text_budget',
     )
 
-    def __init__(self, row_id: int, original: str, translation: str):
+    def __init__(self, row_id: RowId, original: str, translation: str):
         self.row_id = row_id
         self.original = original
         self.translation = translation
@@ -61,6 +64,29 @@ class RowState:
         self.short_text_source_len = 0
         self.short_text_target_len = 0
         self.short_text_budget = 0
+
+
+def _coerce_row_id(value) -> RowId | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, bool):
+        text = str(value).strip()
+        return text or None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else str(value).strip()
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r'-?(0|[1-9]\d*)', text):
+        return int(text)
+    return text
 
 
 # ─────────────────────────────────────────────────────────────
@@ -238,7 +264,7 @@ def _safe_apply_fix(state, new_translation: str, note: str):
     return True
 
 
-def _run_variable_checks(states: dict[int, RowState], auto_fix: bool):
+def _run_variable_checks(states: dict[RowId, RowState], auto_fix: bool):
     for state in states.values():
         for r in check_variables(state.row_id, state.original, state.fixed_translation):
             state.issues.append(r)
@@ -251,7 +277,7 @@ def _run_variable_checks(states: dict[int, RowState], auto_fix: bool):
                 state.review_confidence = r.confidence
 
 
-def _run_surface_fixes(states: dict[int, RowState], auto_fix: bool, lang: str):
+def _run_surface_fixes(states: dict[RowId, RowState], auto_fix: bool, lang: str):
     for state in states.values():
         repaired = repair_translation_surface(state.original, state.fixed_translation, lang=lang)
         if repaired == state.fixed_translation:
@@ -265,7 +291,7 @@ def _run_surface_fixes(states: dict[int, RowState], auto_fix: bool, lang: str):
             state.review_confidence = 0.95
 
 
-def _run_term_checks(states: dict[int, RowState], term_lookup: dict, auto_fix: bool):
+def _run_term_checks(states: dict[RowId, RowState], term_lookup: dict, auto_fix: bool):
     if not term_lookup:
         return
     for state in states.values():
@@ -280,7 +306,7 @@ def _run_term_checks(states: dict[int, RowState], term_lookup: dict, auto_fix: b
                 state.review_confidence = r.confidence
 
 
-def _run_chinese_residue_checks(states: dict[int, RowState]):
+def _run_chinese_residue_checks(states: dict[RowId, RowState]):
     for state in states.values():
         for r in check_chinese_residue(state.row_id, state.fixed_translation):
             state.issues.append(r)
@@ -290,7 +316,7 @@ def _run_chinese_residue_checks(states: dict[int, RowState]):
             state.review_confidence = 0.5
 
 
-def _run_pattern_checks(states: dict[int, RowState], auto_fix: bool):
+def _run_pattern_checks(states: dict[RowId, RowState], auto_fix: bool):
     rows = [
         {'id': s.row_id, 'original': s.original, 'translation': s.fixed_translation}
         for s in states.values()
@@ -321,14 +347,14 @@ def _run_pattern_checks(states: dict[int, RowState], auto_fix: bool):
     return groups
 
 
-def _run_ui_detection(states: dict[int, RowState]):
+def _run_ui_detection(states: dict[RowId, RowState]):
     for state in states.values():
         is_ui_flag, conf, _ = is_ui_text(state.original, state.fixed_translation)
         state.is_ui = is_ui_flag
         state.ui_confidence = conf
 
 
-def _run_ui_length_checks(states: dict[int, RowState], lang: str):
+def _run_ui_length_checks(states: dict[RowId, RowState], lang: str):
     for state in states.values():
         assessment = assess_ui_length(
             row_id=state.row_id,
@@ -356,7 +382,7 @@ def _run_ui_length_checks(states: dict[int, RowState], lang: str):
             state.review_confidence = issue.confidence
 
 
-def _run_readability_checks(states: dict[int, RowState], lang: str):
+def _run_readability_checks(states: dict[RowId, RowState], lang: str):
     for state in states.values():
         for issue in check_readability(
             row_id=state.row_id,
@@ -372,7 +398,7 @@ def _run_readability_checks(states: dict[int, RowState], lang: str):
 
 
 def prepare_ai_review(
-    states: dict[int, RowState],
+    states: dict[RowId, RowState],
     batch_size: int = 200,
     term_lookup: dict | None = None,
     lang: str = 'en',
@@ -451,7 +477,7 @@ def prepare_ai_review(
 def _build_result_full(
     df: pd.DataFrame,
     col_map: dict,
-    states: dict[int, RowState],
+    states: dict[RowId, RowState],
     lang_index: int = 0,
 ) -> pd.DataFrame:
     """Sheet '完整结果': full data with fixes applied + notes column."""
@@ -463,23 +489,24 @@ def _build_result_full(
     if note_col not in result.columns:
         result[note_col] = ''
 
-    for _, row in result.iterrows():
-        rid = row[id_col]
+    normalized_ids = result[id_col].map(_coerce_row_id)
+    for index, row in result.iterrows():
+        rid = normalized_ids.loc[index]
         state = states.get(rid)
         if not state:
             continue
         if state.fixed_translation != state.translation:
-            result.loc[result[id_col] == rid, trans_col] = state.fixed_translation
+            result.loc[normalized_ids == rid, trans_col] = state.fixed_translation
         if state.notes:
-            result.loc[result[id_col] == rid, note_col] = '; '.join(state.notes)
+            result.loc[normalized_ids == rid, note_col] = '; '.join(state.notes)
 
     return result
 
 
 def _build_result_review(
-    states: dict[int, RowState],
-    ai_reviewed_ids: set[int] | None = None,
-    ai_corrected_ids: set[int] | None = None,
+    states: dict[RowId, RowState],
+    ai_reviewed_ids: set[RowId] | None = None,
+    ai_corrected_ids: set[RowId] | None = None,
 ) -> pd.DataFrame:
     """Sheet '需确认': subset of rows needing human review."""
     reviewed = ai_reviewed_ids or set()
@@ -520,7 +547,7 @@ def _build_result_review(
 
 
 def _build_term_only_view(
-    states: dict[int, RowState],
+    states: dict[RowId, RowState],
     term_lookup: dict[str, dict] | None,
 ) -> pd.DataFrame:
     """Sheet '术语行筛选': rows whose source contains term-base CN entries."""
@@ -603,7 +630,7 @@ def _build_term_only_view(
 
 
 def _build_report_sheets(
-    states: dict[int, RowState],
+    states: dict[RowId, RowState],
     groups: list,
     input_file: str,
     lang: str,
@@ -733,21 +760,16 @@ def run_machine_review(
     if profile['source_lang'] != 'zh':
         print(f"       [预警] 源语言检测为 {profile['source_lang']}，术语和句式检查可能降级")
 
-    states: dict[int, RowState] = {}
+    states: dict[RowId, RowState] = {}
     skipped = 0
     for _, row in pairs.iterrows():
-        raw_id = row['id']
-        if pd.isna(raw_id):
-            skipped += 1
-            continue
-        try:
-            rid = int(raw_id)
-        except (ValueError, TypeError):
+        rid = _coerce_row_id(row['id'])
+        if rid is None:
             skipped += 1
             continue
         states[rid] = RowState(rid, str(row['original']), str(row['translation']))
     if skipped:
-        print(f"       (跳过 {skipped} 行无效ID)")
+        print(f"       (跳过 {skipped} 行缺少有效 ID)")
 
     print(f"[2/9] 加载术语库")
     term_lookup = _load_term_base(term_base_path, lang=lang)
@@ -784,7 +806,7 @@ def run_machine_review(
 def write_outputs(
     df: pd.DataFrame,
     col_map: dict,
-    states: dict[int, RowState],
+    states: dict[RowId, RowState],
     groups: list,
     input_path: str,
     lang: str = 'en',
@@ -792,8 +814,8 @@ def write_outputs(
     lang_index: int = 0,
     term_lookup: dict | None = None,
     term_only_view: bool = False,
-    ai_reviewed_ids: set[int] | None = None,
-    ai_corrected_ids: set[int] | None = None,
+    ai_reviewed_ids: set[RowId] | None = None,
+    ai_corrected_ids: set[RowId] | None = None,
 ) -> dict:
     """Phase 3: Write final output files after all reviews are done.
 

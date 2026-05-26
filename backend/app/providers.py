@@ -14,8 +14,21 @@ class ProviderError(RuntimeError):
 
 @dataclass
 class TranslationItem:
-    id: int
+    id: int | str
     translation: str
+
+
+def _normalize_translation_id(value: Any) -> int | str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    text = str(value).strip()
+    if re.fullmatch(r"-?(0|[1-9]\d*)", text):
+        return int(text)
+    return text
 
 
 def _extract_placeholders(text: str) -> list[str]:
@@ -41,7 +54,7 @@ def _newline_suffix(source: str) -> str:
 
 
 def _mock_translate_row(row: dict[str, Any]) -> str:
-    row_id = int(row["id"])
+    row_id = _normalize_translation_id(row["id"])
     term_hits = row.get("term_hits") or []
     term_text = ""
     if term_hits:
@@ -50,19 +63,20 @@ def _mock_translate_row(row: dict[str, Any]) -> str:
             term_text = " " + " ".join(targets[:2])
     placeholders = " ".join(_extract_placeholders(str(row.get("source", ""))))
     placeholder_text = f" {placeholders}" if placeholders else ""
-    base = f"Mock {row_id}{term_text}{placeholder_text}".strip()
+    display_id = str(row_id) if isinstance(row_id, int) else "row"
+    base = f"Mock {display_id}{term_text}{placeholder_text}".strip()
     return base + _newline_suffix(str(row.get("source", "")))
 
 
 def mock_translate_batch(rows: list[dict[str, Any]], settings: dict[str, Any]) -> list[TranslationItem]:
-    return [TranslationItem(id=int(row["id"]), translation=_mock_translate_row(row)) for row in rows]
+    return [TranslationItem(id=_normalize_translation_id(row["id"]), translation=_mock_translate_row(row)) for row in rows]
 
 
 def build_prompt(rows: list[dict[str, Any]], project_prompt: str) -> str:
     payload = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
     return (
         "You are translating a game localization workpack. "
-        "Return JSONL only. Each line must be {\"id\": number, \"translation\": string}. "
+        "Return JSONL only. Each line must be {\"id\": number|string, \"translation\": string}. "
         "Preserve placeholders, tags, escaped newlines, actual newlines, and row order exactly. "
         "Do not add explanations.\n\n"
         f"Project guidance:\n{project_prompt}\n\n"
@@ -193,7 +207,7 @@ def parse_jsonl_items(text: str) -> list[TranslationItem]:
         if line.startswith("```"):
             continue
         payload = json.loads(line)
-        items.append(TranslationItem(id=int(payload["id"]), translation=str(payload["translation"])))
+        items.append(TranslationItem(id=_normalize_translation_id(payload["id"]), translation=str(payload["translation"])))
     if not items:
         raise ProviderError("provider returned no JSONL translation rows")
     return items
