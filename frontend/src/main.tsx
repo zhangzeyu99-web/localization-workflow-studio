@@ -3071,7 +3071,7 @@ function AnnouncementWizard({
               activeTask={activeTask}
               busy={busy}
               effectiveLanguages={effectiveLanguages}
-              onExtract={() => run('extract-terms', 4)}
+              onExtract={(enabled, responseArtifactId) => run('extract-terms', 4, { ai_supplement: enabled, ai_supplement_response_artifact_id: responseArtifactId || undefined })}
               onImportFile={importExtractedTermsFile}
               onUploadAiSupplementResponse={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setAiSupplementResponseArtifactId(artifact.id) }}
               onSaveTerms={saveEditedTerms}
@@ -3129,7 +3129,7 @@ function AnnouncementTermsStep({
   activeTask: AnnouncementTask | null
   busy: boolean
   effectiveLanguages: LanguageCode[]
-  onExtract: () => void
+  onExtract: (aiSupplement: boolean, aiSupplementResponseArtifactId: string) => void
   onImportFile: (file: File) => void
   onUploadAiSupplementResponse: (file: File) => void
   onSaveTerms: (terms: AnnouncementTermRow[], languages: LanguageCode[]) => void
@@ -3191,7 +3191,7 @@ function AnnouncementTermsStep({
         ) : null}
       </div>
       <div className="announcement-terms-toolbar">
-        <button className="btn btn-primary" disabled={!activeTask || busy} onClick={onExtract}>{aiSupplement ? '提取公告术语 + 生成 AI 补充包' : '提取公告术语'}</button>
+        <button className="btn btn-primary" disabled={!activeTask || busy} onClick={() => onExtract(aiSupplement, aiSupplementResponseArtifactId)}>{aiSupplement ? '提取公告术语 + 生成 AI 补充包' : '提取公告术语'}</button>
         <button className="btn btn-ghost" disabled={!activeTask || busy || !draftTerms.length} onClick={() => onSaveTerms(draftTerms, languages)}>保存编辑并生成导出表</button>
         <button className="btn btn-ghost" disabled={busy} onClick={addTerm}>+ 新增术语</button>
         {exportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${exportArtifact.id}/download`}>导出术语表</a> : null}

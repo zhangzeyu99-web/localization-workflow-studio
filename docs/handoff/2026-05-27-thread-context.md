@@ -2,13 +2,43 @@
 
 ## 结论
 
-当前主要改动已集中在 `D:\codex\localization-workflow-studio`，核心目标是把工作台从单 EN 语言包流程扩展为 EN/KR/JP 多语言项目资产 + 项目内公告/外文本工作流，并同步底层公告术语 AI supplement 能力。当前代码未提交，测试通过，但仍需要产品侧人工验收和最终收口提交。
+当前主要改动已集中在 `D:\codex\localization-workflow-studio`，核心目标是把工作台从单 EN 语言包流程扩展为 EN/KR/JP 多语言项目资产 + 项目内公告/外文本工作流，并同步底层公告术语 AI supplement 能力。本轮未收口项已补齐自动化与真实文件验收；等待提交推送和远端 CI 复核。
+
+## 2026-05-27 收束更新
+
+已收束内容：
+
+- 公告 STEP 4 AI supplement 前端烟测已补进 E2E：
+  - 勾选“启用 AI 漏词补充包”；
+  - 上传 AI 补充响应 JSON；
+  - 点击“提取公告术语 + 生成 AI 补充包”；
+  - 校验漏词 `星界裂隙 -> Astral Rift` 并入任务内术语表；
+  - 校验“导出术语表 / 下载 AI 补充包 / 下载 AI 报告”入口可见；
+  - 继续跑到 workpack、AI response 导入、QA 回填、最终 ZIP 交付。
+- 修复两个收束时发现的真实问题：
+  - 公告任务 hydrate 未带出 `announcement_ai_supplement_packet/report`，导致 UI 显示“待生成”但无法下载。
+  - 公告术语表 `ID | CN | JP` 会把首列 `ID` 误判为印尼语 ID；现已保留首个 `ID` 为标识列，只有重复/后续语言列才可作为 IDN。
+- 前端提取按钮改为显式把当前 `aiSupplement` 和 response artifact id 传入 action，避免 React 状态刷新时闭包取旧值。
+- 真实文件模拟跑已完成，按项目分类只选了 `日本主宰`：
+  - 源文档：`C:\Users\Administrator\Desktop\工作台测试\日本主宰\_work\announcement_docx\source_input\主宰5.22版更.docx`
+  - 已提取术语表：`C:\Users\Administrator\Desktop\工作台测试\日本主宰\日本主宰-源语言表公告术语-AI补充-已提取-20260527.xlsx`
+  - AI response：使用同目录历史 `ai_response_ja.jsonl` 的译文内容，按本次 prepare 生成的 segment id 重映射。
+  - 结果：21 段、60 条术语、语言 `JP`，最终 ZIP 内容为 `JP/主宰5.22版更_JP.docx` + `QA摘要.xlsx`，未包含 manifest/workpack/prompt/jsonl 等过程文件。
+- 本轮最新本地验证：
+  - `python -m pytest -q`：50 passed。
+  - `cd frontend; npm run build`：通过。
+  - `cd frontend; npm run e2e`：8 passed。
+  - Google/deep_translator 禁用扫描：`NO_MATCHES`。
+
+剩余项：
+
+- 功能和验收口径已收束；只剩产品视觉偏好可继续看截图/手点调整，不再作为功能阻塞项。
 
 ## 当前代码状态
 
 工作区：`D:\codex\localization-workflow-studio`
 
-未提交改动主要分布：
+本轮业务改动主要分布：
 
 - 后端：
   - `backend/app/db.py`
@@ -33,7 +63,7 @@
   - `workflow/localization/tests/test_announcement_docx_harness.py`
   - 以及多语言 QA / harness 相关文件
 
-注意：`docs/superpowers/` 当前也处于未跟踪状态；是否纳入提交需要单独确认，不要混进业务功能提交。
+注意：当前分支已有 Draft PR；本轮收束改动应追加到同一 PR，避免另开分支造成上下文分裂。
 
 ## 已落地的主要功能改动
 
@@ -187,38 +217,33 @@ rg -n -i "deep_translator|googletrans|GoogleTranslator|translate\.google|google 
 - ZIP 不包含 `manifest.json`、`jsonl`、`prompt`、`workpack` 等过程文件。
 - KR/JP 在 UI、文件名、目录名、表头中使用一致。
 
-本轮 AI supplement 新增后已做自动化回归，但还没有单独做“前端手点启用 AI supplement + 上传 response + 导出术语表”的人工 UI 验收。
+本轮 AI supplement 新增后已做自动化回归，并已补充前端 E2E 覆盖“启用 AI supplement + 上传 response + 导出术语表/packet/report”路径。
 
 ## 未完成任务 / 未收口内容
 
 ### 必须收口
 
-1. **人工 UI 验收公告 STEP 4 AI supplement**
+以下历史必须收口项已处理：
+
+1. **公告 STEP 4 AI supplement UI 验收**
    - 创建公告任务；
    - 上传语言表；
    - STEP 4 勾选“启用 AI 漏词补充包”；
-   - 先不上传 response，确认可生成 packet/report；
-   - 再上传 response JSON，确认漏词并入术语表；
-   - 下载术语表、packet、report 检查文件内容。
+   - 上传 response JSON，确认漏词并入术语表；
+   - 下载入口：术语表、packet、report；
+   - 状态：已由 `frontend/e2e/studio-ui-flow.spec.ts` 覆盖。
 
-2. **确认是否给 AI supplement 补 e2e smoke**
-   - 目前有 backend regression；
-   - 前端 e2e 覆盖公告工作流基础路径，但未覆盖新勾选项和 response JSON 上传。
+2. **AI supplement e2e smoke**
+   - 状态：已补。
+   - 额外覆盖：AI 补充 artifact hydrate 到任务详情，确保 UI 不再显示“待生成”。
 
 3. **提交前整理 git diff**
-   - 当前改动很大，建议按功能拆提交：
-     1. language config + EN/KR/JP normalized storage/display；
-     2. glossary/translations wide view；
-     3. announcement task workflow；
-     4. delivery normalization；
-     5. glossary workflow AI supplement sync；
-     6. frontend UX polish；
-     7. tests/e2e。
-   - 不建议把 `docs/superpowers/` 混进业务提交，除非确认它是必要文档。
+   - 状态：本轮收束改动只涉及 announcement hydrate、ID 表头识别、STEP 4 e2e 和交接文档。
 
 4. **最终真实文件模拟跑**
    - 建议用 `C:\Users\Administrator\Desktop\工作台测试` 下按项目分类挑 1 个 DOCX 或 TXT、1 个 XLSX，不要全量跑。
-   - 重点验收：术语提取、AI supplement packet、译文反查、prepare、外部 response 导入、apply、deliver。
+   - 状态：已选 `日本主宰` 跑通 DOCX + 已提取 JP 术语表 + AI response 导入 + apply + deliver。
+   - 交付 ZIP：只含 `JP/*.docx` 和 `QA摘要.xlsx`。
 
 ### 可后续优化
 
@@ -232,11 +257,9 @@ rg -n -i "deep_translator|googletrans|GoogleTranslator|translate\.google|google 
 
 推荐顺序：
 
-1. 先做人工 UI 验收 STEP 4 AI supplement。
-2. 如果 UI 没问题，补一条 e2e smoke 覆盖“启用 AI supplement + response 上传”。
-3. 跑完整验证：`python -m pytest -q`、`frontend npm run build`、`frontend npm run e2e`、Google 禁用 rg。
-4. 整理 diff，决定是否拆提交。
-5. 再做真实文件模拟跑和交付验收。
+1. 提交并推送本轮收束改动到现有 PR。
+2. 等远端 CI 复核。
+3. 若 CI 通过，PR 可从 Draft 改为 Ready；后续只保留产品视觉微调，不再作为功能阻塞项。
 
 ## 关键原则，后续不要改偏
 

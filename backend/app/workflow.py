@@ -1375,6 +1375,11 @@ def _hydrate_announcement_task(task: dict[str, Any]) -> dict[str, Any]:
         value = metadata.get(mapping_key)
         if isinstance(value, dict):
             artifact_ids.update(str(item) for item in value.values() if item)
+    ai_supplement = metadata.get("ai_supplement")
+    if isinstance(ai_supplement, dict):
+        for key in ("packet_artifact_id", "report_artifact_id"):
+            if ai_supplement.get(key):
+                artifact_ids.add(str(ai_supplement[key]))
     artifacts: list[dict[str, Any]] = []
     for artifact_id in sorted(artifact_ids):
         try:
@@ -1532,9 +1537,11 @@ def _detect_language_columns(path: Path) -> list[str]:
     try:
         for ws in wb.worksheets:
             headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            normalized = {header.lower(): index for index, header in enumerate(headers) if header}
+            normalized = _header_index(headers, prefer_last=True)
+            reserved_indices = set(_reserved_language_table_indices(headers))
             for code in ANNOUNCEMENT_LANGUAGE_ORDER:
-                if _language_column_index(normalized, code) is not None:
+                index = _language_column_index(normalized, code)
+                if index is not None and index not in reserved_indices:
                     found.add(code)
     finally:
         wb.close()
@@ -1547,6 +1554,26 @@ def _language_column_index(normalized_headers: dict[str, int], language: str) ->
         if alias in normalized_headers:
             return normalized_headers[alias]
     return None
+
+
+def _header_index(headers: list[str], *, prefer_last: bool = False) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        key = str(header or "").strip().lower()
+        if not key:
+            continue
+        if prefer_last or key not in normalized:
+            normalized[key] = index
+    return normalized
+
+
+def _reserved_language_table_indices(headers: list[str]) -> list[int]:
+    normalized_first = _header_index(headers)
+    indices = [
+        _column_by_alias(normalized_first, ["id", "key", "编号", "序号"]),
+        _column_by_alias(normalized_first, ["cn", "zh", "source", "chinese", "中文", "原文", "简体中文", "term", "术语"]),
+    ]
+    return [index for index in indices if index is not None]
 
 
 def _column_by_alias(normalized_headers: dict[str, int], aliases: list[str]) -> int | None:
@@ -1612,12 +1639,18 @@ def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str
                 headers = [str(value or "").strip() for value in next(iterator)]
             except StopIteration:
                 continue
-            normalized = {header.lower(): index for index, header in enumerate(headers) if header}
-            id_idx = _column_by_alias(normalized, ["id", "key", "编号", "序号"])
-            source_idx = _column_by_alias(normalized, ["cn", "zh", "source", "chinese", "中文", "原文", "简体中文", "term", "术语"])
+            normalized_first = _header_index(headers)
+            normalized_last = _header_index(headers, prefer_last=True)
+            id_idx = _column_by_alias(normalized_first, ["id", "key", "编号", "序号"])
+            source_idx = _column_by_alias(normalized_first, ["cn", "zh", "source", "chinese", "中文", "原文", "简体中文", "term", "术语"])
             if source_idx is None:
                 continue
-            lang_indices = {language: _language_column_index(normalized, language) for language in languages}
+            reserved_indices = set(index for index in (id_idx, source_idx) if index is not None)
+            lang_indices = {
+                language: index if index not in reserved_indices else None
+                for language in languages
+                for index in [_language_column_index(normalized_last, language)]
+            }
             if not any(index is not None for index in lang_indices.values()):
                 continue
             for values in iterator:

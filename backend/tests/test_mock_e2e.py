@@ -272,6 +272,8 @@ def test_announcement_task_extract_terms_accepts_ai_supplement_response(tmp_path
         assert payload["summary"]["ai_supplement"]["added_to_main"] == 1
         artifact_kinds = {artifact["kind"] for artifact in payload["artifacts"]}
         assert {"announcement_ai_supplement_packet", "announcement_ai_supplement_report"}.issubset(artifact_kinds)
+        task_artifact_kinds = {artifact["kind"] for artifact in payload["task"]["artifacts"]}
+        assert {"announcement_ai_supplement_packet", "announcement_ai_supplement_report"}.issubset(task_artifact_kinds)
 
 
 def test_announcement_task_can_import_edit_and_export_existing_terms(tmp_path: Path) -> None:
@@ -324,6 +326,45 @@ def test_announcement_task_can_import_edit_and_export_existing_terms(tmp_path: P
         assert rows[0] == ("ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TR", "IDN", "TH", "命中次数", "来源", "备注")
         assert rows[1][1] == "公告标题"
         assert rows[1][2] == "Edited Notice"
+
+
+def test_announcement_terms_import_does_not_treat_identifier_id_as_indonesian(tmp_path: Path) -> None:
+    source_path = tmp_path / "notice.txt"
+    terms_path = tmp_path / "jp_terms.xlsx"
+    source_path.write_text("公告：钓鱼玩法开放。", encoding="utf-8")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "JP"])
+    ws.append(["626900", "钓鱼玩法", "釣りコンテンツ"])
+    wb.save(terms_path)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "JP 公告术语", "type": "RPG"}).json()
+        with source_path.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+        with terms_path.open("rb") as fh:
+            terms_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("jp_terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": source_artifact["id"]},
+        ).json()
+        imported = client.post(
+            f"/api/announcement-tasks/{task['id']}/import-terms",
+            json={"terms_artifact_id": terms_artifact["id"]},
+        )
+        assert imported.status_code == 200, imported.text
+        payload = imported.json()["task"]
+        assert payload["selected_languages"] == ["ja"]
+        assert payload["metadata"]["terms"][0]["translations"] == {"ja": "釣りコンテンツ"}
 
 
 def test_announcement_docx_harness_api_prepares_imports_applies_and_delivers(tmp_path: Path) -> None:

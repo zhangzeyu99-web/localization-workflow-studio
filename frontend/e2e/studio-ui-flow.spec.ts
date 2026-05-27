@@ -251,57 +251,121 @@ wb.close()
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP2')
 })
 
-test('project announcement workflow extracts terms and prepares a retrieval workpack', async ({ page, request }) => {
+test('project announcement workflow extracts terms with AI supplement and prepares delivery', async ({ page, request }) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-announcement-supplement-'))
+  const languageTable = path.join(tempDir, 'announcement_language.xlsx')
+  const supplementResponse = path.join(tempDir, 'ai_supplement_response.json')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "CN", "EN"])
+ws.append(["T1", "\u79d8\u5883", "Trial Realm"])
+ws.append(["S1", "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218", "Unlock Astral Rift Challenge"])
+ws.append(["N1", "\u5b8c\u5168\u65e0\u5173\u7cfb\u7edf", "Unrelated System"])
+wb.save(sys.argv[1])
+wb.close()
+`, languageTable])
+  fs.writeFileSync(
+    supplementResponse,
+    JSON.stringify({
+      supplement_terms: [
+        {
+          cn: '\u661f\u754c\u88c2\u9699',
+          translations: { EN: 'Astral Rift' },
+          source_ids: ['S1'],
+          confidence: 'high',
+          reason: 'split from language-table sentence',
+          evidence_ids: ['S1'],
+          action: 'add_to_main',
+        },
+      ],
+    }),
+    'utf-8',
+  )
+
   const projectName = `E2E Announcement Lookup ${Date.now()}`
   const createResponse = await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'RPG', description: 'Announcement lookup e2e.' },
   })
   const project = await createResponse.json()
   await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
-    data: { source: '秘境', target: 'Trial Realm', language: 'en', source_type: 'qa_passed' },
+    data: { source: '\u79d8\u5883', target: 'Trial Realm', language: 'en', source_type: 'qa_passed' },
   })
   await request.post(`${baseURL}/api/projects/${project.id}/files?kind=asset`, {
     multipart: {
       file: {
         name: 'announcement_notice.txt',
         mimeType: 'text/plain',
-        buffer: Buffer.from('本次更新新增秘境玩法，并开放纹章系统。', 'utf-8'),
+        buffer: Buffer.from('\u672c\u6b21\u66f4\u65b0\u65b0\u589e\u79d8\u5883\u548c\u661f\u754c\u88c2\u9699\u73a9\u6cd5\uff0c\u5e76\u5f00\u653e\u7eb9\u7ae0\u7cfb\u7edf\u3002', 'utf-8'),
       },
     },
   })
 
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
-  await page.getByRole('button', { name: /公告翻译/ }).click()
-  await expect(page.getByRole('heading', { name: /公告翻译/ })).toBeVisible()
-  await expect(page.locator('.panel-title', { hasText: '公告资料' })).toBeVisible()
+  await page.getByRole('button', { name: /\u516c\u544a\u7ffb\u8bd1/ }).click()
+  await expect(page.getByRole('heading', { name: /\u516c\u544a\u7ffb\u8bd1/ })).toBeVisible()
+  await expect(page.locator('.panel-title', { hasText: '\u516c\u544a\u8d44\u6599' })).toBeVisible()
   await expect(page.locator('.announcement-side')).toHaveCount(0)
   await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
   await page.locator('.check-row', { hasText: 'announcement_notice.txt' }).locator('input').check()
-  await page.getByRole('button', { name: '创建公告任务' }).click()
-  await expect(page.locator('.panel-title', { hasText: '约束来源' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: '\u521b\u5efa\u516c\u544a\u4efb\u52a1' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u7ea6\u675f\u6765\u6e90' })).toBeVisible({ timeout: 20000 })
   await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
-  await page.getByRole('button', { name: '识别语言与约束' }).click()
-  await expect(page.locator('.panel-title', { hasText: '目标语言' })).toBeVisible({ timeout: 20000 })
+  await page.locator('label.upload-box', { hasText: /XLSX/ }).locator('input[type="file"]').setInputFiles(languageTable)
+  await expect(page.locator('.inline-status')).toContainText(fileName(languageTable), { timeout: 15000 })
+  await expect(page.locator('.check-row', { hasText: fileName(languageTable) }).locator('input')).toBeChecked()
+  await page.getByRole('button', { name: '\u8bc6\u522b\u8bed\u8a00\u4e0e\u7ea6\u675f' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u76ee\u6807\u8bed\u8a00' })).toBeVisible({ timeout: 20000 })
   await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
   await expect(page.locator('.announcement-panel .announcement-lang-card')).toHaveCount(0)
   await expect(page.locator('.announcement-panel .announcement-language-chip')).toHaveCount(13)
-  await expect(page.locator('.announcement-panel .announcement-language-chip').first().locator('input[type="checkbox"]')).toBeChecked()
-  await expect(page.locator('.announcement-panel')).not.toContainText('??')
-  await page.getByRole('button', { name: '确认目标语言' }).click()
-  await expect(page.locator('.panel-title', { hasText: '术语提取' })).toBeVisible({ timeout: 20000 })
-  await expect(page.locator('.announcement-subflow-strip')).toContainText('语言子流程')
-  await page.getByRole('button', { name: '提取公告术语' }).click()
-  await expect(page.locator('.panel-title', { hasText: '译文反查' })).toBeVisible({ timeout: 20000 })
-  await page.getByRole('button', { name: '反查术语译文' }).click()
-  await expect(page.locator('.panel-title', { hasText: '翻译准备' })).toBeVisible({ timeout: 20000 })
-  await page.getByRole('button', { name: '生成翻译准备包' }).click()
-  await expect(page.locator('.panel-title', { hasText: 'AI 翻译 / 导入' })).toBeVisible({ timeout: 30000 })
-  await expect(page.locator('.panel-desc', { hasText: '不会使用谷歌机翻' })).toBeVisible()
+  await expect(page.locator('.announcement-panel')).not.toContainText('\u517c\u5bb9')
+  await expect(page.locator('.announcement-panel')).not.toContainText('KO')
+  await expect(page.locator('.announcement-panel')).not.toContainText('JA')
+  const langChips = page.locator('.announcement-panel .announcement-language-chip')
+  for (let index = 0; index < await langChips.count(); index += 1) {
+    const chip = langChips.nth(index)
+    const input = chip.locator('input[type="checkbox"]')
+    const label = await chip.innerText()
+    if (label.includes('\u82f1\u8bed EN')) {
+      if (!await input.isChecked()) await input.check()
+    } else if (await input.isChecked()) {
+      await input.uncheck()
+    }
+  }
+  await page.getByRole('button', { name: '\u786e\u8ba4\u76ee\u6807\u8bed\u8a00' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u672f\u8bed\u63d0\u53d6' })).toBeVisible({ timeout: 20000 })
+  await expect(page.locator('.announcement-subflow-strip')).toContainText('\u8bed\u8a00\u5b50\u6d41\u7a0b')
+  await page.locator('.check-row', { hasText: '\u542f\u7528 AI \u6f0f\u8bcd\u8865\u5145\u5305' }).locator('input').check()
+  await page.locator('label.upload-box', { hasText: '\u4e0a\u4f20 AI \u8865\u5145\u54cd\u5e94 JSON' }).locator('input[type="file"]').setInputFiles(supplementResponse)
+  await expect(page.locator('.inline-status')).toContainText(fileName(supplementResponse), { timeout: 15000 })
+  await page.getByRole('button', { name: '\u63d0\u53d6\u516c\u544a\u672f\u8bed + \u751f\u6210 AI \u8865\u5145\u5305' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u8bd1\u6587\u53cd\u67e5' })).toBeVisible({ timeout: 30000 })
+  await page.locator('.announcement-steps .step-item').nth(3).click()
+  await expect(page.locator('.panel-title', { hasText: '\u672f\u8bed\u63d0\u53d6' })).toBeVisible()
+  const termsTable = page.locator('.announcement-terms-table')
+  await expect(termsTable.locator('tbody tr')).toHaveCount(2, { timeout: 30000 })
+  await expect(termsTable.locator('tbody tr').nth(0).locator('input').nth(1)).toHaveValue('\u79d8\u5883')
+  await expect(termsTable.locator('tbody tr').nth(1).locator('input').nth(1)).toHaveValue('\u661f\u754c\u88c2\u9699')
+  await expect(termsTable.locator('tbody tr').nth(1).locator('input').nth(2)).toHaveValue('Astral Rift')
+  await expect(page.getByRole('link', { name: '\u5bfc\u51fa\u672f\u8bed\u8868' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '\u4e0b\u8f7d AI \u8865\u5145\u5305' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '\u4e0b\u8f7d AI \u62a5\u544a' })).toBeVisible()
+  await page.locator('.announcement-steps .step-item').nth(4).click()
+  await expect(page.locator('.panel-title', { hasText: '\u8bd1\u6587\u53cd\u67e5' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: '\u53cd\u67e5\u672f\u8bed\u8bd1\u6587' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u7ffb\u8bd1\u51c6\u5907' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: '\u751f\u6210\u7ffb\u8bd1\u51c6\u5907\u5305' }).click()
+  await expect(page.locator('.panel-title', { hasText: 'AI \u7ffb\u8bd1 / \u5bfc\u5165' })).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('.panel-desc', { hasText: '\u4e0d\u4f1a\u4f7f\u7528\u8c37\u6b4c\u673a\u7ffb' })).toBeVisible()
   const processArtifacts = page.locator('.announcement-artifacts details.asset-list')
-  await processArtifacts.locator('summary', { hasText: '过程产物 / 审计产物' }).click()
-  await expect(processArtifacts.getByRole('link', { name: /公告 workpack \(EN\)/ })).toBeVisible()
-  await expect(processArtifacts.getByRole('link', { name: /公告翻译中转表/ })).toBeVisible()
+  await processArtifacts.locator('summary', { hasText: '\u8fc7\u7a0b\u4ea7\u7269 / \u5ba1\u8ba1\u4ea7\u7269' }).click()
+  await expect(processArtifacts.getByRole('link', { name: /\u516c\u544a workpack \(EN\)/ })).toBeVisible()
+  await expect(processArtifacts.getByRole('link', { name: /\u516c\u544a\u7ffb\u8bd1\u4e2d\u8f6c\u8868/ })).toBeVisible()
 
   const taskResponse = await request.get(`${baseURL}/api/projects/${project.id}/announcement-tasks`)
   const tasks = await taskResponse.json()
@@ -309,33 +373,33 @@ test('project announcement workflow extracts terms and prepares a retrieval work
   expect(task).toBeTruthy()
   const segments = task.metadata.segments as { id: string }[]
   expect(segments.length).toBeGreaterThan(0)
-  const responseFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-announcement-ai-')), 'ai_response_en.jsonl')
+  const responseFile = path.join(tempDir, 'ai_response_en.jsonl')
   fs.writeFileSync(
     responseFile,
     segments.map((segment) => JSON.stringify({
       para_id: segment.id,
-      translation: 'Trial Realm gameplay is now available, and the Emblem system is open.',
+      translation: 'Trial Realm and Astral Rift gameplay are now available, and the Emblem system is open.',
     })).join('\n') + '\n',
     'utf-8',
   )
 
-  await page.locator('label.upload-box', { hasText: '上传 ai_response_<lang>.jsonl' }).locator('input[type="file"]').setInputFiles(responseFile)
+  await page.locator('label.upload-box', { hasText: '\u4e0a\u4f20 ai_response_<lang>.jsonl' }).locator('input[type="file"]').setInputFiles(responseFile)
   await expect(page.locator('.inline-status')).toContainText(fileName(responseFile), { timeout: 15000 })
-  await page.getByRole('button', { name: '导入 AI response' }).click()
-  await expect(page.locator('.panel-title', { hasText: '校对回填' })).toBeVisible({ timeout: 20000 })
-  await page.getByRole('button', { name: 'QA 并回填同格式文件' }).click()
-  await expect(page.locator('.panel-title', { hasText: '交付' })).toBeVisible({ timeout: 30000 })
-  await expect(page.getByRole('link', { name: /公告成品 \(EN\)/ })).toBeVisible()
-  await page.getByRole('button', { name: '生成交付总包' }).click()
-  await expect(page.getByRole('link', { name: /公告交付总包/ })).toBeVisible({ timeout: 30000 })
-  await expect(page.locator('.announcement-subflow-card', { hasText: '英语 EN' })).toContainText('delivered')
+  await page.getByRole('button', { name: '\u5bfc\u5165 AI response' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u6821\u5bf9\u56de\u586b' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: 'QA \u5e76\u56de\u586b\u540c\u683c\u5f0f\u6587\u4ef6' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u4ea4\u4ed8' })).toBeVisible({ timeout: 30000 })
+  await expect(page.getByRole('link', { name: /\u516c\u544a\u6210\u54c1 \(EN\)/ })).toBeVisible()
+  await page.getByRole('button', { name: '\u751f\u6210\u4ea4\u4ed8\u603b\u5305' }).click()
+  await expect(page.getByRole('link', { name: /\u516c\u544a\u4ea4\u4ed8\u603b\u5305/ })).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('.announcement-subflow-card', { hasText: '\u82f1\u8bed EN' })).toContainText('delivered')
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await expect(page.locator('.announcement-project-panel .mini-lang')).toHaveCount(0)
   await expect(page.locator('.announcement-project-panel')).not.toContainText('terms_ready')
-  await page.locator('.announcement-task-row', { hasText: 'announcement_notice.txt' }).getByRole('button', { name: '继续' }).click()
+  await page.locator('.announcement-task-row', { hasText: 'announcement_notice.txt' }).getByRole('button', { name: '\u7ee7\u7eed' }).click()
 
-  const stepTitles = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI 翻译 / 导入', '校对回填', '交付']
+  const stepTitles = ['\u516c\u544a\u8d44\u6599', '\u7ea6\u675f\u6765\u6e90', '\u76ee\u6807\u8bed\u8a00', '\u672f\u8bed\u63d0\u53d6', '\u8bd1\u6587\u53cd\u67e5', '\u7ffb\u8bd1\u51c6\u5907', 'AI \u7ffb\u8bd1 / \u5bfc\u5165', '\u6821\u5bf9\u56de\u586b', '\u4ea4\u4ed8']
   for (const [index, title] of stepTitles.entries()) {
     await page.locator('.announcement-steps .step-item').nth(index).click()
     await expect(page.locator('.panel-title', { hasText: title })).toBeVisible()
