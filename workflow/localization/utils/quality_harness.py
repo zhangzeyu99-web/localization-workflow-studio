@@ -102,6 +102,40 @@ DEFAULT_HARD_ISSUES = {
     'numbered_term_inconsistency',
 }
 
+LANGUAGE_TARGET_HEADERS = {
+    'en': {'en', 'english', '英文', '英语', '译文', 'translation', 'target'},
+    'ko': {'ko', 'kr', 'korean', '韩语', '韓語', '한국어', '译文', 'translation', 'target'},
+    'ja': {'ja', 'jp', 'japanese', '日语', '日語', '日本語', '译文', 'translation', 'target'},
+}
+
+LANGUAGE_VARIANT_HEADERS = {
+    'en': {'en2', 'english2', '英语2', '英文2', 'variant', 'variants', 'alternate', 'alternates'},
+    'ko': {'ko2', 'kr2', 'korean2', '韩语2', '韓語2', '한국어2', 'variant', 'variants', 'alternate', 'alternates'},
+    'ja': {'ja2', 'jp2', 'japanese2', '日语2', '日語2', '日本語2', 'variant', 'variants', 'alternate', 'alternates'},
+}
+
+
+def _target_header_candidates(lang: str) -> set[str]:
+    return LANGUAGE_TARGET_HEADERS.get(lang, LANGUAGE_TARGET_HEADERS['en'])
+
+
+def _variant_header_candidates(lang: str) -> set[str]:
+    return LANGUAGE_VARIANT_HEADERS.get(lang, LANGUAGE_VARIANT_HEADERS['en'])
+
+
+def _all_target_header_candidates() -> set[str]:
+    values: set[str] = set()
+    for candidates in LANGUAGE_TARGET_HEADERS.values():
+        values.update(candidates)
+    return values
+
+
+def _all_variant_header_candidates() -> set[str]:
+    values: set[str] = set()
+    for candidates in LANGUAGE_VARIANT_HEADERS.values():
+        values.update(candidates)
+    return values
+
 
 @dataclass
 class HarnessResult:
@@ -134,9 +168,9 @@ def check_row(row_id, source: str, translation: str, lang: str = 'en') -> list[C
     translation = str(translation or '')
 
     results.extend(check_variables(row_id, source, translation))
-    results.extend(check_chinese_residue(row_id, translation))
+    results.extend(check_chinese_residue(row_id, translation, lang=lang))
     results.extend(check_readability(row_id, source, translation, lang=lang))
-    results.extend(_check_surface_regressions(row_id, source, translation))
+    results.extend(_check_surface_regressions(row_id, source, translation, lang=lang))
 
     if any(r.check_type == 'internal_token_leak' for r in results):
         results = [r for r in results if r.check_type != 'opaque_abbreviation']
@@ -195,14 +229,14 @@ def scan_workbook(
 
     try:
         term_sources = _resolve_term_base_paths(workbook_path, term_base, auto_discover_terms)
-        term_context = _collect_term_context(wb, term_sources)
+        term_context = _collect_term_context(wb, term_sources, lang=lang)
         strong_term_lookup = term_context['strong']
         soft_term_lookup = term_context['soft']
         person_name_terms = term_context['person_names']
         for ws in wb.worksheets:
             if _is_glossary_sheet(ws) or _is_support_sheet(ws):
                 continue
-            id_col, src_col, tgt_col = _detect_columns(ws)
+            id_col, src_col, tgt_col = _detect_columns(ws, lang=lang)
             if src_col is None or tgt_col is None:
                 continue
             max_col = max(c for c in (id_col, src_col, tgt_col) if c is not None) + 1
@@ -228,8 +262,8 @@ def scan_workbook(
                 })
                 row_issues = check_row(row_id, source, target, lang=lang)
                 row_issues.extend(_check_ui_length(row_id, source, target, lang=lang))
-                row_issues.extend(_check_terms(row_id, source, target, strong_term_lookup))
-                row_issues.extend(_check_terms(row_id, source, target, soft_term_lookup, soft=True))
+                row_issues.extend(_check_terms(row_id, source, target, strong_term_lookup, lang=lang))
+                row_issues.extend(_check_terms(row_id, source, target, soft_term_lookup, soft=True, lang=lang))
                 row_issues.extend(_check_person_name_terms(row_id, source, target, person_name_terms))
                 for issue in row_issues:
                     result.issue_counts[issue.check_type] += 1
@@ -274,6 +308,7 @@ def scan_workbook(
 def _collect_term_context(
     workbook,
     term_base: str | Path | Sequence[str | Path] | None,
+    lang: str = 'en',
 ) -> dict[str, object]:
     strong_terms: dict[str, dict] = {}
     soft_terms: dict[str, dict] = {}
@@ -305,18 +340,18 @@ def _collect_term_context(
         bucket = soft_terms if _is_soft_term_category(category) else strong_terms
         _add_term_lookup_entry(bucket, cn, target, variants, enforce_case)
 
-    _collect_terms_from_workbook(workbook, add)
+    _collect_terms_from_workbook(workbook, add, lang=lang)
 
     for path in _iter_term_base_paths(term_base):
         term_path = Path(path)
         if not term_path.exists():
             continue
         if term_path.suffix.lower() == '.json':
-            _collect_terms_from_json(term_path, add)
+            _collect_terms_from_json(term_path, add, lang=lang)
             continue
         term_wb = load_workbook(term_path, read_only=False, data_only=True)
         try:
-            _collect_terms_from_workbook(term_wb, add, all_sheets=True)
+            _collect_terms_from_workbook(term_wb, add, all_sheets=True, lang=lang)
         finally:
             term_wb.close()
 
@@ -333,13 +368,13 @@ def _collect_term_context(
     }
 
 
-def _collect_terms_from_workbook(workbook, add, all_sheets: bool = False) -> None:
+def _collect_terms_from_workbook(workbook, add, all_sheets: bool = False, lang: str = 'en') -> None:
     for ws in workbook.worksheets:
         is_glossary_sheet = _is_glossary_sheet(ws)
         header = [str(value or '').strip().lower() for value in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())]
         cn_idx = _find_header(header, {'cn', 'zh', '中文', '中文术语', '原文', 'source', 'original'})
-        target_idx = _find_header(header, {'en', 'english', '英文', '英语', '译文', 'translation', 'target'})
-        variant_idx = _find_header(header, {'en2', '英语2', '英文2', 'variant', 'variants', 'alternate', 'alternates'})
+        target_idx = _find_header(header, _target_header_candidates(lang))
+        variant_idx = _find_header(header, _variant_header_candidates(lang))
         category_idx = _find_header(header, {'分类', '类别', 'category', 'type', 'tag', 'tags'})
         enforce_idx = _find_header(header, {'enforce_case', '大小写', '大小写约束'})
 
@@ -368,7 +403,7 @@ def _collect_terms_from_workbook(workbook, add, all_sheets: bool = False) -> Non
             add(cn, target, category, _split_term_variants(raw_variants), _truthy_cell(enforce_raw))
 
 
-def _collect_terms_from_json(path: Path, add) -> None:
+def _collect_terms_from_json(path: Path, add, lang: str = 'en') -> None:
     data = json.loads(path.read_text(encoding='utf-8'))
     lookup = data.get('lookup', data) if isinstance(data, dict) else {}
     if not isinstance(lookup, dict):
@@ -382,7 +417,7 @@ def _collect_terms_from_json(path: Path, add) -> None:
             if values:
                 add(cn, values[0], variants=values[1:])
         elif isinstance(value, dict):
-            target = value.get('primary') or value.get('en') or value.get('target') or ''
+            target = value.get('primary') or value.get(lang) or value.get('target') or value.get('en') or ''
             raw_variants = value.get('variants', [])
             if isinstance(raw_variants, str):
                 variants = _split_term_variants(raw_variants)
@@ -446,11 +481,12 @@ def _check_terms(
     translation: str,
     term_lookup: dict[str, dict],
     soft: bool = False,
+    lang: str = 'en',
 ) -> list[CheckResult]:
     if not term_lookup:
         return []
     results: list[CheckResult] = []
-    for issue in check_term_hit(row_id, source, translation, term_lookup):
+    for issue in check_term_hit(row_id, source, translation, term_lookup, lang=lang):
         check_type = issue.check_type
         severity = issue.severity
         message = issue.message
@@ -761,7 +797,7 @@ def merge_results(results: list[HarnessResult]) -> HarnessResult:
     return merged
 
 
-def _check_surface_regressions(row_id, source: str, translation: str) -> list[CheckResult]:
+def _check_surface_regressions(row_id, source: str, translation: str, lang: str = 'en') -> list[CheckResult]:
     results: list[CheckResult] = []
 
     if HTML_ENTITY_PATTERN.search(translation):
@@ -826,6 +862,9 @@ def _check_surface_regressions(row_id, source: str, translation: str) -> list[Ch
             translation,
         ))
 
+    if lang != 'en':
+        return results
+
     if ORPHAN_LEADING_CLITIC_PATTERN.search(translation):
         results.append(_issue(
             row_id,
@@ -866,7 +905,7 @@ def _check_surface_regressions(row_id, source: str, translation: str) -> list[Ch
     return results
 
 
-def _detect_columns(ws) -> tuple[int | None, int | None, int | None]:
+def _detect_columns(ws, lang: str = 'en') -> tuple[int | None, int | None, int | None]:
     first = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
     headers = [str(v or '').strip().lower() for v in first]
 
@@ -878,7 +917,7 @@ def _detect_columns(ws) -> tuple[int | None, int | None, int | None]:
 
     id_col = pick({'id', 'key'}, 0)
     src_col = pick({'cn', 'zh', '中文', '原文', 'source', 'original'}, 1)
-    tgt_col = pick({'en', 'english', '译文', 'translation', 'target'}, 2)
+    tgt_col = pick(_target_header_candidates(lang), 2)
     return id_col, src_col, tgt_col
 
 
@@ -890,7 +929,15 @@ def _is_glossary_sheet(ws) -> bool:
 
     first = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
     headers = [str(v or '').strip().lower() for v in first[:4]]
-    return headers == ['cn', 'en', 'en2', '分类']
+    if headers == ['cn', 'en', 'en2', '分类']:
+        return True
+    return (
+        len(headers) >= 4
+        and headers[0] in {'cn', 'zh', 'source', 'original', '中文', '原文'}
+        and headers[1] in _all_target_header_candidates()
+        and headers[2] in _all_variant_header_candidates()
+        and headers[3] in {'分类', '类别', 'category', 'type', 'tag', 'tags'}
+    )
 
 
 def _is_support_sheet(ws) -> bool:

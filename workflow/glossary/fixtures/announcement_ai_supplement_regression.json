@@ -1,0 +1,48 @@
+{
+  "mode": "announcement_lookup",
+  "project_name": "\u52c7\u8005\u8054\u76df",
+  "announcement": "\u65b0\u589e\u79d8\u5883\u548c\u661f\u754c\u88c2\u9699\u73a9\u6cd5\u3002",
+  "language_tables": [
+    {
+      "language": "EN",
+      "sheet": "language_en",
+      "headers": ["ID", "CN", "EN"],
+      "rows": [
+        ["1001", "\u79d8\u5883", "Trial Realm"],
+        ["1002", "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218", "Unlock Astral Rift Challenge"],
+        ["1003", "\u5b8c\u5168\u65e0\u5173\u7cfb\u7edf", "Unrelated System"]
+      ]
+    }
+  ],
+  "ai_response": {
+    "supplement_terms": [
+      {
+        "cn": "\u661f\u754c\u88c2\u9699",
+        "translations": {
+          "EN": "Astral Rift"
+        },
+        "source_ids": ["1002"],
+        "confidence": "high",
+        "reason": "split from bilingual sentence",
+        "evidence_ids": ["1002"],
+        "action": "add_to_main"
+      }
+    ]
+  },
+  "expected_rows": [
+    {
+      "ID": "1001",
+      "CN": "\u79d8\u5883",
+      "EN": "Trial Realm"
+    },
+    {
+      "ID": "1002",
+      "CN": "\u661f\u754c\u88c2\u9699",
+      "EN": "Astral Rift"
+    }
+  ],
+  "expected_absent": [
+    "\u5b8c\u5168\u65e0\u5173\u7cfb\u7edf"
+  ],
+  "strict_terms": true
+}

@@ -1,0 +1,60 @@
+{
+  "mode": "announcement_lookup",
+  "announcement": "新增秘境和纹章系统，开放幻戏礼包。",
+  "language_tables": [
+    {
+      "language": "EN",
+      "sheet": "out_language_en",
+      "metadata_rows": [
+        ["0", "", ""],
+        ["语言总表", "", ""]
+      ],
+      "headers": ["索引ID", "内容", "中文，用于导出（不要在原表简转繁）"],
+      "rows": [
+        ["1001", "Trial Realm", "秘境"],
+        ["1002", "Emblem", "纹章"],
+        ["1003", "Player", "玩家"],
+        ["1004", "View", "查看"],
+        ["1005", "[\"Fantasy Pack\"]", "[\"幻戏礼包\"]"]
+      ]
+    },
+    {
+      "language": "FR",
+      "sheet": "out_language_fr",
+      "metadata_rows": [
+        ["0", "", ""],
+        ["语言总表", "", ""]
+      ],
+      "headers": ["索引ID", "内容", "中文，用于导出（不要在原表简转繁）"],
+      "rows": [
+        ["1001", "Royaume d'epreuve", "秘境"],
+        ["1002", "Embleme", "纹章"],
+        ["1003", "Joueur", "玩家"],
+        ["1004", "Voir", "查看"],
+        ["1005", "[\"Pack fantastique\"]", "[\"幻戏礼包\"]"]
+      ]
+    }
+  ],
+  "expected_rows": [
+    {
+      "ID": "1001",
+      "CN": "秘境",
+      "EN": "Trial Realm",
+      "FR": "Royaume d'epreuve"
+    },
+    {
+      "ID": "1002",
+      "CN": "纹章",
+      "EN": "Emblem",
+      "FR": "Embleme"
+    },
+    {
+      "ID": "1005",
+      "CN": "幻戏礼包",
+      "EN": "Fantasy Pack",
+      "FR": "Pack fantastique"
+    }
+  ],
+  "expected_absent": [],
+  "strict_terms": false
+}

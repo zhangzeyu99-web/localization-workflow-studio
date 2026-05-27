@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 
 os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
 
 import pytest
+from docx import Document
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
@@ -82,6 +85,58 @@ def _string_id_workbook(path: Path) -> None:
     wb.close()
 
 
+def _target_language_workbook(path: Path, target_header: str, targets: list[str] | None = None) -> None:
+    values = targets or ["", ""]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", target_header])
+    ws.append(["btn.claim", "领取奖励", values[0]])
+    ws.append(["msg.welcome", "欢迎回来，{playerName}", values[1]])
+    wb.save(path)
+    wb.close()
+
+
+def _announcement_language_table(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN", "KR", "JP"])
+    ws.append(["1001", "秘境", "Trial Realm", "시련의 영역", "試練の境界"])
+    ws.append(["1002", "纹章", "Emblem", "문장", "紋章"])
+    ws.append(["1003", "商城", "Shop", "상점", "ショップ"])
+    wb.save(path)
+    wb.close()
+
+
+def _announcement_docx(path: Path, text: str = "英雄觉醒 2026/5/20") -> None:
+    doc = Document()
+    doc.add_paragraph(text)
+    doc.save(path)
+
+
+def _announcement_ko_terms(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "KR"])
+    ws.append(["term_hero", "英雄", "영웅"])
+    ws.append(["term_awaken", "觉醒", "각성"])
+    wb.save(path)
+    wb.close()
+
+
+def _announcement_existing_terms_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH"])
+    ws.append(["alliance_txt_21", "公告", "Notice", "Annonce", "Ankündigung", "Объявление", "Annuncio", "Anuncio", "Anúncio", "Duyuru", "Pengumuman", "ประกาศ"])
+    ws.append(["time_zone_2", "服务器时间", "Server Time", "Heure du serveur", "Serverzeit", "Время сервера", "Orario server", "Hora del servidor", "Horário de servidor", "Sunucu Saati", "Waktu Server", "เวลาเซิร์ฟเวอร์"])
+    wb.save(path)
+    wb.close()
+
+
 def _project_harness_failed_workbook(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -100,6 +155,337 @@ def test_mock_provider_preserves_numeric_square_placeholders() -> None:
     )
     assert "[2016]" in result[0].translation
     assert "\\n" in result[0].translation
+
+
+def test_announcement_terms_endpoint_generates_multilingual_terms_with_alias_headers(tmp_path: Path) -> None:
+    table_path = tmp_path / "language.xlsx"
+    _announcement_language_table(table_path)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "公告术语", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/announcement-terms",
+            json={
+                "text": "新增秘境和纹章系统。",
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en", "ko", "ja"],
+                "announcement_min_hit": 1,
+                "generate_validation": True,
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        kinds = {artifact["kind"] for artifact in payload["artifacts"]}
+        assert {"announcement_terms_workbook", "announcement_terms_validation", "announcement_terms_manifest"}.issubset(kinds)
+        workbook_artifact = next(artifact for artifact in payload["artifacts"] if artifact["kind"] == "announcement_terms_workbook")
+        wb = load_workbook(workbook_artifact["path"], read_only=True, data_only=True)
+        rows = list(wb["Glossary"].iter_rows(values_only=True))
+        wb.close()
+        assert rows[0] == ("ID", "CN", "EN", "KR", "JP", "命中次数", "来源", "备注")
+        assert [row[:5] for row in rows[1:]] == [
+            ("1001", "秘境", "Trial Realm", "시련의 영역", "試練の境界"),
+            ("1002", "纹章", "Emblem", "문장", "紋章"),
+        ]
+        assert payload["manifest"]["languages"] == ["en", "ko", "ja"]
+        assert payload["summary"]["terms"] == 2
+
+
+def test_announcement_task_extract_terms_accepts_ai_supplement_response(tmp_path: Path) -> None:
+    table_path = tmp_path / "language.xlsx"
+    notice_path = tmp_path / "notice.txt"
+    response_path = tmp_path / "ai_supplement_response.json"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append(["T1", "\u79d8\u5883", "Trial Realm"])
+    ws.append(["S1", "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218", "Unlock Astral Rift Challenge"])
+    ws.append(["N1", "\u5b8c\u5168\u65e0\u5173\u7cfb\u7edf", "Unrelated System"])
+    wb.save(table_path)
+    wb.close()
+    notice_path.write_text("\u65b0\u589e\u79d8\u5883\u548c\u661f\u754c\u88c2\u9699\u73a9\u6cd5\u3002", encoding="utf-8")
+    response_path.write_text(
+        json.dumps(
+            {
+                "supplement_terms": [
+                    {
+                        "cn": "\u661f\u754c\u88c2\u9699",
+                        "translations": {"EN": "Astral Rift"},
+                        "source_ids": ["S1"],
+                        "confidence": "high",
+                        "reason": "split from language-table sentence",
+                        "evidence_ids": ["S1"],
+                        "action": "add_to_main",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement AI", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+        with response_path.open("rb") as fh:
+            response_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("ai_supplement_response.json", fh, "application/json")},
+            ).json()
+
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": notice_artifact["id"], "language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"]},
+        ).json()
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en"],
+                "ai_supplement": True,
+                "ai_supplement_response_artifact_id": response_artifact["id"],
+            },
+        )
+
+        assert extracted.status_code == 200, extracted.text
+        payload = extracted.json()
+        terms = payload["task"]["metadata"]["terms"]
+        assert [term["source"] for term in terms] == ["\u79d8\u5883", "\u661f\u754c\u88c2\u9699"]
+        assert terms[1]["translations"]["en"] == "Astral Rift"
+        assert payload["summary"]["ai_supplement"]["added_to_main"] == 1
+        artifact_kinds = {artifact["kind"] for artifact in payload["artifacts"]}
+        assert {"announcement_ai_supplement_packet", "announcement_ai_supplement_report"}.issubset(artifact_kinds)
+
+
+def test_announcement_task_can_import_edit_and_export_existing_terms(tmp_path: Path) -> None:
+    source_path = tmp_path / "notice.txt"
+    terms_path = tmp_path / "announcement_terms.xlsx"
+    source_path.write_text("公告：服务器时间维护。", encoding="utf-8")
+    _announcement_existing_terms_workbook(terms_path)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "公告术语编辑", "type": "RPG"}).json()
+        with source_path.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+        with terms_path.open("rb") as fh:
+            terms_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("announcement_terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": source_artifact["id"]},
+        ).json()
+        imported = client.post(
+            f"/api/announcement-tasks/{task['id']}/import-terms",
+            json={"terms_artifact_id": terms_artifact["id"]},
+        )
+        assert imported.status_code == 200, imported.text
+        imported_task = imported.json()["task"]
+        assert imported_task["metadata"]["terms_summary"]["terms"] == 2
+        assert imported_task["selected_languages"] == ["en", "fr", "de", "ru", "it", "es", "pt", "tr", "idn", "th"]
+
+        terms = imported_task["metadata"]["terms"]
+        terms[0]["translations"]["en"] = "Edited Notice"
+        terms[0]["source"] = "公告标题"
+        saved = client.post(
+            f"/api/announcement-tasks/{task['id']}/import-terms",
+            json={"languages": imported_task["selected_languages"], "terms": terms},
+        )
+        assert saved.status_code == 200, saved.text
+        workbook_id = saved.json()["task"]["metadata"]["terms_artifact_id"]
+        artifact = next(item for item in saved.json()["artifacts"] if item["id"] == workbook_id)
+        wb = load_workbook(Path(artifact["path"]), read_only=True, data_only=True)
+        try:
+            rows = list(wb["Glossary"].iter_rows(values_only=True))
+        finally:
+            wb.close()
+        assert rows[0] == ("ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TR", "IDN", "TH", "命中次数", "来源", "备注")
+        assert rows[1][1] == "公告标题"
+        assert rows[1][2] == "Edited Notice"
+
+
+def test_announcement_docx_harness_api_prepares_imports_applies_and_delivers(tmp_path: Path) -> None:
+    docx_path = tmp_path / "notice.docx"
+    terms_path = tmp_path / "notice_terms.xlsx"
+    _announcement_docx(docx_path)
+    _announcement_ko_terms(terms_path)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "公告 DOCX", "type": "RPG"}).json()
+        with docx_path.open("rb") as fh:
+            docx_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.docx", fh, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            ).json()
+        with terms_path.open("rb") as fh:
+            terms_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("notice_terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        prepare_response = client.post(
+            f"/api/projects/{project['id']}/announcement-docx/prepare",
+            json={"source_artifact_ids": [docx_artifact["id"]], "terms_artifact_id": terms_artifact["id"], "languages": ["ko"]},
+        )
+        assert prepare_response.status_code == 200, prepare_response.text
+        prepared = prepare_response.json()
+        prepare_run_id = prepared["run"]["id"]
+        prepare_kinds = {artifact["kind"] for artifact in prepared["artifacts"]}
+        assert {"announcement_docx_translation_workbook", "announcement_docx_manifest", "announcement_docx_workpack"}.issubset(prepare_kinds)
+        workpack = next(artifact for artifact in prepared["artifacts"] if artifact["kind"] == "announcement_docx_workpack")
+        rows = [json.loads(line) for line in Path(workpack["path"]).read_text(encoding="utf-8").splitlines()]
+        assert rows and rows[0]["term_hits"] == [{"source": "英雄", "target": "영웅"}, {"source": "觉醒", "target": "각성"}]
+
+        response_path = tmp_path / "ai_response_ko.jsonl"
+        response_path.write_text(
+            "\n".join(json.dumps({"para_id": row["para_id"], "translation": "영웅 각성 2026/5/20"}, ensure_ascii=False) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        with response_path.open("rb") as fh:
+            response_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("ai_response_ko.jsonl", fh, "application/jsonl")},
+            ).json()
+
+        import_response = client.post(
+            f"/api/projects/{project['id']}/announcement-docx/import-ai",
+            json={"prepare_run_id": prepare_run_id, "response_artifact_ids": [response_artifact["id"]], "languages": ["ko"]},
+        )
+        assert import_response.status_code == 200, import_response.text
+        assert import_response.json()["summary"]["languages"] == ["KR"]
+
+        translation_workbook = next(artifact for artifact in prepared["artifacts"] if artifact["kind"] == "announcement_docx_translation_workbook")
+        apply_response = client.post(
+            f"/api/projects/{project['id']}/announcement-docx/apply",
+            json={"prepare_run_id": prepare_run_id, "translation_workbook_artifact_id": translation_workbook["id"]},
+        )
+        assert apply_response.status_code == 200, apply_response.text
+        apply_kinds = {artifact["kind"] for artifact in apply_response.json()["artifacts"]}
+        assert {"announcement_docx_output_docx", "announcement_docx_qa_summary"}.issubset(apply_kinds)
+
+        deliver_response = client.post(
+            f"/api/projects/{project['id']}/announcement-docx/deliver",
+            json={"prepare_run_id": prepare_run_id, "date_stamp": "20260526"},
+        )
+        assert deliver_response.status_code == 200, deliver_response.text
+        delivery_artifact = next(artifact for artifact in deliver_response.json()["artifacts"] if artifact["kind"] == "announcement_docx_delivery_package")
+        assert Path(delivery_artifact["path"]).exists()
+
+
+def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_delivers(tmp_path: Path) -> None:
+    source_path = tmp_path / "notice.txt"
+    terms_path = tmp_path / "notice_terms.xlsx"
+    source_path.write_text("英雄觉醒 2026/5/20\n", encoding="utf-8")
+    _announcement_ko_terms(terms_path)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "公告任务 TXT", "type": "RPG"}).json()
+        client.post(
+            f"/api/projects/{project['id']}/translations",
+            json={
+                "entry_key": "hero",
+                "source": "英雄",
+                "target": "히어로",
+                "language": "ko",
+                "source_type": "qa_passed",
+            },
+        )
+        with source_path.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+        with terms_path.open("rb") as fh:
+            terms_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("notice_terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": source_artifact["id"], "language_table_artifact_ids": [terms_artifact["id"]], "languages": ["ko"]},
+        ).json()
+        task_id = task["id"]
+        assert task["source_format"] == "txt"
+
+        for endpoint in ("inspect-constraints", "extract-terms", "lookup-translations"):
+            response = client.post(
+                f"/api/announcement-tasks/{task_id}/{endpoint}",
+                json={"language_table_artifact_ids": [terms_artifact["id"]], "languages": ["ko"], "include_project_archive": True},
+            )
+            assert response.status_code == 200, response.text
+
+        prepare_response = client.post(f"/api/announcement-tasks/{task_id}/prepare", json={"languages": ["ko"]})
+        assert prepare_response.status_code == 200, prepare_response.text
+        prepared = prepare_response.json()
+        workpack = next(artifact for artifact in prepared["artifacts"] if artifact["kind"] == "announcement_workpack")
+        rows = [json.loads(line) for line in Path(workpack["path"]).read_text(encoding="utf-8").splitlines()]
+        assert rows[0]["term_hits"] == [{"source": "英雄", "target": "히어로"}, {"source": "觉醒", "target": "각성"}]
+
+        response_path = tmp_path / "ai_response_ko.jsonl"
+        response_path.write_text(
+            "\n".join(json.dumps({"para_id": row["para_id"], "translation": "히어로 각성 2026/5/20"}, ensure_ascii=False) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        with response_path.open("rb") as fh:
+            response_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("ai_response_ko.jsonl", fh, "application/jsonl")},
+            ).json()
+        imported = client.post(
+            f"/api/announcement-tasks/{task_id}/import-ai",
+            json={"languages": ["ko"], "response_artifact_ids": [response_artifact["id"]]},
+        )
+        assert imported.status_code == 200, imported.text
+        applied = client.post(f"/api/announcement-tasks/{task_id}/apply", json={"languages": ["ko"]})
+        assert applied.status_code == 200, applied.text
+        delivered = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526"})
+        assert delivered.status_code == 200, delivered.text
+        package = next(artifact for artifact in delivered.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
+        package_path = Path(package["path"])
+        assert package_path.exists()
+        assert re.fullmatch(r".+_notice_announcement_delivery_20260526\.zip", package_path.name)
+        assert ".txt_announcement" not in package_path.name
+        with zipfile.ZipFile(package_path) as archive:
+            names = sorted(archive.namelist())
+        assert names == ["KR/notice_KR.txt", "QA摘要.xlsx"]
+        assert not any(name.endswith(".json") or name.endswith(".jsonl") or "manifest" in name.lower() or "workpack" in name.lower() for name in names)
+
+        qa_artifact = next(artifact for artifact in applied.json()["artifacts"] if artifact["kind"] == "announcement_qa_summary")
+        qa_wb = load_workbook(qa_artifact["path"], read_only=True, data_only=True)
+        try:
+            assert qa_wb.sheetnames == ["Summary", "Issues", "Outputs"]
+            summary = {row[0]: row[1] for row in qa_wb["Summary"].iter_rows(min_row=2, values_only=True)}
+            assert summary["hard_blockers"] == 0
+            assert summary["outputs"] == 1
+            assert summary["languages"] == "KR"
+            outputs = list(qa_wb["Outputs"].iter_rows(min_row=2, values_only=True))
+            assert outputs[0][0] == "KR"
+            assert outputs[0][1] == "notice_KR.txt"
+        finally:
+            qa_wb.close()
 
 
 def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
@@ -430,6 +816,107 @@ def test_string_ids_run_through_translation_and_qa(tmp_path: Path) -> None:
         assert [entry["entry_key"] for entry in archived] == ["M-001", "M-002"]
 
 
+def test_glossary_and_translation_archive_are_language_scoped(tmp_path: Path) -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Multilingual Terms", "type": "QA"}).json()
+
+        en_response = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"source": "战机", "target": "Warplane", "language": "en"},
+        )
+        ko_response = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"source": "战机", "target": "전투기", "language": "ko"},
+        )
+        assert en_response.status_code == 200, en_response.text
+        assert ko_response.status_code == 200, ko_response.text
+        assert en_response.json()["id"] != ko_response.json()["id"]
+
+        en_terms = client.get(f"/api/projects/{project['id']}/glossary?language=en").json()
+        ko_terms = client.get(f"/api/projects/{project['id']}/glossary?language=ko").json()
+        assert [term["target"] for term in en_terms] == ["Warplane"]
+        assert [term["target"] for term in ko_terms] == ["전투기"]
+
+        assert client.post(
+            f"/api/projects/{project['id']}/translations",
+            json={"entry_key": "btn.claim", "source": "领取奖励", "target": "Claim Rewards", "language": "en"},
+        ).status_code == 200
+        assert client.post(
+            f"/api/projects/{project['id']}/translations",
+            json={"entry_key": "btn.claim", "source": "领取奖励", "target": "보상 받기", "language": "ko"},
+        ).status_code == 200
+
+        en_entries = client.get(f"/api/projects/{project['id']}/translations?language=en").json()
+        ko_entries = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
+        assert [entry["target"] for entry in en_entries] == ["Claim Rewards"]
+        assert [entry["target"] for entry in ko_entries] == ["보상 받기"]
+
+
+def test_korean_mock_translation_workflow_end_to_end(tmp_path: Path) -> None:
+    workbook = tmp_path / "ko-language.xlsx"
+    _target_language_workbook(workbook, "KO")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "E2E Korean", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("ko-language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        readiness_response = client.get(f"/api/artifacts/{source_artifact['id']}/translation-readiness?language=ko&batch_size=90")
+        assert readiness_response.status_code == 200, readiness_response.text
+        readiness = readiness_response.json()
+        assert readiness["target_language"] == "ko"
+        assert readiness["needs_translation"] is True
+        assert readiness["source_rows"] == 2
+
+        run_response = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "ko", "input_artifact_id": source_artifact["id"]},
+        )
+        assert run_response.status_code == 200, run_response.text
+        run = run_response.json()
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
+        assert translate_response.status_code == 200, translate_response.text
+        result = translate_response.json()
+
+        assert result["run"]["status"] == "passed"
+        assert result["run"]["language"] == "ko"
+        assert result["run"]["metadata"]["translation_archive"]["imported_count"] == 2
+        final_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "qa_final_workbook")
+        wb = load_workbook(final_artifact["path"], read_only=True, data_only=True)
+        try:
+            assert wb["Language"].cell(2, 3).value
+        finally:
+            wb.close()
+
+
+def test_translation_readiness_accepts_jp_and_kr_target_header_aliases(tmp_path: Path) -> None:
+    jp_workbook = tmp_path / "jp-language.xlsx"
+    kr_workbook = tmp_path / "kr-language.xlsx"
+    _target_language_workbook(jp_workbook, "JP")
+    _target_language_workbook(kr_workbook, "KR")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "JP KR Readiness", "type": "QA"}).json()
+
+        for language, workbook in (("ja", jp_workbook), ("ko", kr_workbook)):
+            with workbook.open("rb") as fh:
+                source_artifact = client.post(
+                    f"/api/projects/{project['id']}/files?kind=language_table",
+                    files={"file": (workbook.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                ).json()
+
+            readiness_response = client.get(f"/api/artifacts/{source_artifact['id']}/translation-readiness?language={language}&batch_size=90")
+            assert readiness_response.status_code == 200, readiness_response.text
+            readiness = readiness_response.json()
+            assert readiness["target_language"] == language
+            assert readiness["source_rows"] == 2
+            assert readiness["needs_translation"] is True
+            assert readiness["reason"] == "empty_target_rows"
+
+
 def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
     terms = tmp_path / "terms.xlsx"
     _sample_term_workbook(terms)
@@ -504,7 +991,7 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         try:
             ws = wb.active
             headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "EN2", "分类", "备注"]
+            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"]
         finally:
             wb.close()
 
@@ -836,6 +1323,60 @@ def test_glossary_extract_uses_project_materials_for_brief_and_prompt(tmp_path: 
         assert "\u79d1\u5e7b\u519b\u4e8b" in prompt
 
 
+def test_glossary_extract_can_lookup_announcement_terms_only(tmp_path: Path) -> None:
+    workbook = tmp_path / "language_table.xlsx"
+    notice = tmp_path / "notice.txt"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN", "FR"])
+    ws.append(["T1", "秘境", "Trial Realm", "Royaume d'épreuve"])
+    ws.append(["T2", "纹章", "Emblem", "Emblème"])
+    ws.append(["T3", "商城", "Shop", "Boutique"])
+    wb.save(workbook)
+    wb.close()
+    notice.write_text("本次更新新增秘境和纹章系统。", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement Lookup", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language_table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+
+        extract_response = client.post(
+            f"/api/projects/{project['id']}/glossary/extract",
+            json={
+                "input_artifact_id": source_artifact["id"],
+                "id_column": "ID",
+                "source_column": "CN",
+                "target_column": "EN",
+                "announcement_material_artifact_ids": [notice_artifact["id"]],
+                "announcement_only": True,
+            },
+        )
+
+        assert extract_response.status_code == 200, extract_response.text
+        payload = extract_response.json()
+        assert payload["output"]["ANNOUNCEMENT_TERMS"] == "2"
+        artifacts = {artifact["kind"]: artifact for artifact in payload["artifacts"]}
+        assert set(artifacts) == {"announcement_glossary"}
+        assert artifacts["announcement_glossary"]["role"] == "glossary_source"
+        output_wb = load_workbook(Path(artifacts["announcement_glossary"]["path"]), read_only=True, data_only=True)
+        try:
+            rows = list(output_wb["Glossary"].iter_rows(values_only=True))
+        finally:
+            output_wb.close()
+        assert rows[0] == ("ID", "CN", "EN", "FR")
+        assert [row[1] for row in rows[1:]] == ["秘境", "纹章"]
+
+
 def test_generic_project_prompt_does_not_inherit_warplane_style() -> None:
     with TestClient(app) as client:
         project = client.post(
@@ -1067,6 +1608,30 @@ def test_delivery_filename_sanitizes_invalid_project_name_without_double_spaces(
         assert "??" not in filename
         assert "  " not in filename
         assert filename.startswith("E2E Demo_EN_")
+
+
+def test_delivery_filename_uses_visible_language_code_for_korean(tmp_path: Path) -> None:
+    workbook = tmp_path / "translated-kr.xlsx"
+    _target_language_workbook(workbook, "KR", ["Claim Reward", "Welcome back, {playerName}"])
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "KR Delivery", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("translated-kr.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "ko", "input_artifact_id": translated_artifact["id"], "task_code": "QA"},
+        ).json()
+        response = client.post(f"/api/runs/{run['id']}/qa")
+        assert response.status_code == 200, response.text
+        package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}").json()
+        filenames = [item["filename"] for item in package["files"]]
+        assert re.fullmatch(r"KR Delivery_KR_\d{12}_QA-[0-9a-f]{6}_final\.xlsx", filenames[0])
+        assert re.fullmatch(r"KR Delivery_KR_\d{12}_QA-[0-9a-f]{6}_changes\.xlsx", filenames[1])
+        assert not any("_KO_" in filename for filename in filenames)
 
 
 def test_qa_continuation_inherits_translation_delivery_identity(tmp_path: Path) -> None:
@@ -1340,6 +1905,256 @@ def test_improvement_review_writes_suggestions_without_auto_merge(tmp_path: Path
         queue_response = client.get(f"/api/projects/{project['id']}/improvements")
         assert queue_response.status_code == 200
         assert all(item["status"] == "pending_review" for item in queue_response.json())
+
+
+def test_glossary_and_translation_wide_views_group_by_cn() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Wide Multilingual Assets", "type": "RPG"}).json()
+        client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"term_key": "T-1", "source": "战机", "target": "Warplane", "target_alt": "Fighter", "language": "en", "category": "unit", "note": "core"},
+        )
+        client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"term_key": "K-1", "source": "战机", "target": "전투기", "language": "ko", "category": "기체", "note": "korean"},
+        )
+        client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"term_key": "J-1", "source": "战机", "target": "戦闘機", "language": "ja", "category": "unit", "note": "core"},
+        )
+        client.post(
+            f"/api/projects/{project['id']}/translations",
+            json={"entry_key": "A-1", "source": "领取奖励", "target": "Claim Rewards", "target_alt": "Claim", "language": "en", "note": "button"},
+        )
+        client.post(
+            f"/api/projects/{project['id']}/translations",
+            json={"entry_key": "A-1", "source": "领取奖励", "target": "보상 받기", "language": "ko", "note": "button"},
+        )
+
+        glossary_response = client.get(f"/api/projects/{project['id']}/glossary/wide")
+        assert glossary_response.status_code == 200, glossary_response.text
+        glossary = glossary_response.json()
+        assert glossary["languages"] == ["en", "ko", "ja"]
+        assert glossary["coverage"] == {"en": 1, "ko": 1, "ja": 1}
+        assert glossary["row_count"] == 1
+        row = glossary["rows"][0]
+        assert row["source"] == "战机"
+        assert row["translations"]["en"]["target"] == "Warplane"
+        assert row["translations"]["en"]["target_alt"] == "Fighter"
+        assert row["translations"]["ko"]["target"] == "전투기"
+        assert row["translations"]["ko"].get("target_alt", "") == ""
+        assert {item["field"] for item in row["conflicts"]} >= {"term_key", "category", "note"}
+
+        translations_response = client.get(f"/api/projects/{project['id']}/translations/wide")
+        assert translations_response.status_code == 200, translations_response.text
+        translations = translations_response.json()
+        assert translations["languages"] == ["en", "ko"]
+        assert translations["coverage"] == {"en": 1, "ko": 1}
+        translated = translations["rows"][0]
+        assert translated["source"] == "领取奖励"
+        assert translated["translations"]["en"]["target_alt"] == "Claim"
+        assert translated["translations"]["ko"].get("target_alt", "") == ""
+
+        legacy_response = client.get(f"/api/projects/{project['id']}/glossary?language=ko")
+        assert legacy_response.status_code == 200
+        assert legacy_response.json()[0]["target"] == "전투기"
+
+
+def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path: Path) -> None:
+    glossary_path = tmp_path / "terms-multi.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "分类", "备注"])
+    ws.append(["T-1", "战机", "Warplane", "Fighter", "전투기", "戦闘機", "unit", "core term"])
+    ws.append(["T-2", "钻石", "Diamonds", "", "다이아몬드", "", "currency", ""])
+    wb.save(glossary_path)
+    wb.close()
+
+    archive_path = tmp_path / "archive-multi.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Translations"
+    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "备注"])
+    ws.append(["A-1", "领取奖励", "Claim Rewards", "Claim", "보상 받기", "報酬を受け取る", "button"])
+    wb.save(archive_path)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Auto Import Multilingual", "type": "RPG"}).json()
+        with glossary_path.open("rb") as fh:
+            glossary_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("terms-multi.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        glossary_import = client.post(f"/api/projects/{project['id']}/glossary/import", json={"artifact_id": glossary_artifact["id"]})
+        assert glossary_import.status_code == 200, glossary_import.text
+        assert glossary_import.json()["imported_count"] == 5
+
+        ko_terms = client.get(f"/api/projects/{project['id']}/glossary?language=ko").json()
+        assert {term["source"]: term["target"] for term in ko_terms} == {"战机": "전투기", "钻石": "다이아몬드"}
+        assert all(term["target_alt"] == "" for term in ko_terms)
+        glossary_wide = client.get(f"/api/projects/{project['id']}/glossary/wide").json()
+        assert glossary_wide["languages"] == ["en", "ko", "ja"]
+        row = next(item for item in glossary_wide["rows"] if item["source"] == "战机")
+        assert row["translations"]["en"]["target_alt"] == "Fighter"
+        assert row["translations"]["ko"]["target"] == "전투기"
+        assert row["translations"]["ja"]["target"] == "戦闘機"
+
+        with archive_path.open("rb") as fh:
+            archive_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("archive-multi.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        archive_import = client.post(f"/api/projects/{project['id']}/translations/import", json={"artifact_id": archive_artifact["id"]})
+        assert archive_import.status_code == 200, archive_import.text
+        assert archive_import.json()["imported_count"] == 3
+        archive_wide = client.get(f"/api/projects/{project['id']}/translations/wide").json()
+        assert archive_wide["languages"] == ["en", "ko", "ja"]
+        archive_row = archive_wide["rows"][0]
+        assert archive_row["translations"]["en"]["target_alt"] == "Claim"
+        assert archive_row["translations"]["ko"].get("target_alt", "") == ""
+        assert archive_row["translations"]["ja"]["target"] == "報酬を受け取る"
+        glossary_export = workflow.export_glossary(project["id"], "xlsx")
+        assert isinstance(glossary_export, Path)
+        assert re.fullmatch(r"Auto Import Multilingual_glossary_ALL_\d{8}\.xlsx", glossary_export.name)
+        wb = load_workbook(glossary_export, read_only=True, data_only=True)
+        try:
+            headers = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=1, max_row=1))]
+            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"]
+        finally:
+            wb.close()
+
+        ko_glossary_export = workflow.export_glossary(project["id"], "xlsx", language="ko")
+        assert isinstance(ko_glossary_export, Path)
+        assert re.fullmatch(r"Auto Import Multilingual_glossary_KR_\d{8}\.xlsx", ko_glossary_export.name)
+        wb = load_workbook(ko_glossary_export, read_only=True, data_only=True)
+        try:
+            headers = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=1, max_row=1))]
+            assert headers == ["ID", "CN", "KR", "分类", "备注"]
+        finally:
+            wb.close()
+
+        archive_export = workflow.export_translation_archive(project["id"], "xlsx")
+        assert isinstance(archive_export, Path)
+        assert re.fullmatch(r"Auto Import Multilingual_translations_ALL_\d{8}\.xlsx", archive_export.name)
+        wb = load_workbook(archive_export, read_only=True, data_only=True)
+        try:
+            headers = [cell.value for cell in next(wb["Translations"].iter_rows(min_row=1, max_row=1))]
+            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "备注"]
+        finally:
+            wb.close()
+
+
+def test_announcement_lookup_uses_glossary_and_qa_passed_archive(tmp_path: Path) -> None:
+    notice = tmp_path / "notice.txt"
+    notice.write_text("本次更新新增秘境玩法，并开放纹章系统。", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement Lookup", "type": "RPG"}).json()
+        term_response = client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"source": "秘境", "target": "Trial Realm", "language": "en", "category": "system"},
+        )
+        assert term_response.status_code == 200
+        archive_response = client.post(
+            f"/api/projects/{project['id']}/translations",
+            json={
+                "entry_key": "archive-1",
+                "source": "新增秘境玩法",
+                "target": "New Trial Realm gameplay",
+                "language": "en",
+                "sheet": "Archive",
+                "row_number": 12,
+                "source_type": "qa_passed",
+            },
+        )
+        assert archive_response.status_code == 200
+        client.post(
+            f"/api/projects/{project['id']}/translations",
+            json={"entry_key": "archive-2", "source": "商城", "target": "Shop", "language": "en"},
+        )
+        with notice.open("rb") as fh:
+            material = client.post(f"/api/projects/{project['id']}/files?kind=asset", files={"file": ("notice.txt", fh, "text/plain")}).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/announcement-lookup",
+            json={"material_artifact_ids": [material["id"]], "language": "en"},
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+
+        assert result["run"]["kind"] == "announcement_lookup"
+        assert result["run"]["status"] == "passed"
+        assert result["summary"]["matched_terms"] == 1
+        assert result["summary"]["matched_translations"] == 1
+        kinds = {artifact["kind"] for artifact in result["artifacts"]}
+        assert {"announcement_lookup_workbook", "announcement_lookup_manifest", "announcement_lookup_prompt_context"}.issubset(kinds)
+        assert result["manifest"]["language"] == "en"
+        assert result["manifest"]["matched_terms"][0]["target"] == "Trial Realm"
+        assert result["manifest"]["matched_translations"][0]["target"] == "New Trial Realm gameplay"
+
+        workbook_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "announcement_lookup_workbook")
+        wb = load_workbook(Path(workbook_artifact["path"]), read_only=True, data_only=True)
+        assert {"Overview", "MatchedTerms", "MatchedTranslations", "PromptContext"}.issubset(set(wb.sheetnames))
+        assert wb["MatchedTerms"]["A2"].value == "秘境"
+        assert wb["MatchedTerms"]["B2"].value == "Trial Realm"
+        assert wb["MatchedTranslations"]["B2"].value == "新增秘境玩法"
+        wb.close()
+
+        prompt_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "announcement_lookup_prompt_context")
+        prompt_text = Path(prompt_artifact["path"]).read_text(encoding="utf-8")
+        assert "Trial Realm" in prompt_text
+        assert "New Trial Realm gameplay" in prompt_text
+        assert "不含正文译文" in prompt_text
+
+
+def test_announcement_lookup_is_language_scoped_and_does_not_mutate_terms_or_archive() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement Language Scope", "type": "STG"}).json()
+        client.post(f"/api/projects/{project['id']}/glossary", json={"source": "战机", "target": "Warplane", "language": "en"})
+        client.post(f"/api/projects/{project['id']}/glossary", json={"source": "战机", "target": "전투기", "language": "ko"})
+        client.post(f"/api/projects/{project['id']}/translations", json={"source": "战机升级", "target": "Warplane Upgrade", "language": "en"})
+        client.post(f"/api/projects/{project['id']}/translations", json={"source": "战机升级", "target": "전투기 업그레이드", "language": "ko"})
+        before_terms = len(client.get(f"/api/projects/{project['id']}/glossary").json())
+        before_entries = len(client.get(f"/api/projects/{project['id']}/translations").json())
+
+        response = client.post(
+            f"/api/projects/{project['id']}/announcement-lookup",
+            json={"text": "战机升级活动开启。", "language": "ko"},
+        )
+        assert response.status_code == 200, response.text
+        manifest = response.json()["manifest"]
+        assert manifest["matched_terms"][0]["target"] == "전투기"
+        assert manifest["matched_translations"][0]["target"] == "전투기 업그레이드"
+        assert all(row["language"] == "ko" for row in manifest["matched_terms"])
+        assert all(row["language"] == "ko" for row in manifest["matched_translations"])
+        assert "Warplane" not in json.dumps(manifest, ensure_ascii=False)
+        assert len(client.get(f"/api/projects/{project['id']}/glossary").json()) == before_terms
+        assert len(client.get(f"/api/projects/{project['id']}/translations").json()) == before_entries
+
+
+def test_announcement_lookup_requires_text_or_material() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement Empty Input", "type": "QA"}).json()
+        response = client.post(f"/api/projects/{project['id']}/announcement-lookup", json={"language": "ja"})
+        assert response.status_code == 400
+        assert "requires" in response.json()["detail"]
+
+
+def test_announcement_lookup_generates_empty_pack_when_no_hits() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement No Hits", "type": "QA"}).json()
+        response = client.post(
+            f"/api/projects/{project['id']}/announcement-lookup",
+            json={"text": "这是完全没有项目术语命中的公告正文。", "language": "ja"},
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["summary"]["matched_terms"] == 0
+        assert result["summary"]["matched_translations"] == 0
+        assert result["summary"]["constraint_status"] == "missing"
+        assert any(artifact["kind"] == "announcement_lookup_prompt_context" for artifact in result["artifacts"])
 
 
 def _run_mock_translation(client: TestClient, project_id: str, workbook: Path) -> dict:

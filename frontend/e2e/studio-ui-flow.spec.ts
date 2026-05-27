@@ -37,7 +37,7 @@ test('user can complete the EN localization workflow from project tabs', async (
 
   await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 15000 })
   await expect(page.getByText('累计任务')).toBeVisible()
-  await expect(page.getByText('累计归档条数')).toBeVisible()
+  await expect(page.getByText('CN 归档源文')).toBeVisible()
   await expect(page.getByRole('button', { name: projectName })).toBeVisible()
 
   await page.getByText('编辑项目元信息 / 重新生成输入').click()
@@ -58,7 +58,7 @@ test('user can complete the EN localization workflow from project tabs', async (
   await page.locator('input[name="target_alt"]').fill('Fighter')
   await page.getByPlaceholder('分类').fill('unit')
   await page.getByPlaceholder('备注').fill('E2E manual glossary assertion')
-  await page.getByRole('button', { name: '+ 新增' }).click()
+  await page.getByRole('button', { name: '+ 新增 EN' }).click()
   await expect(inlineStatus(page, '词条已新增')).toBeVisible()
   const glossaryRow = page.locator('.glossary-table tbody tr').first()
   await expect(glossaryRow.getByText('战机')).toBeVisible()
@@ -160,6 +160,186 @@ wb.close()
     expect.objectContaining({ source: '战机', target: 'Warplane', target_alt: 'Fighter' }),
     expect.objectContaining({ source: '钻石', target: 'Diamonds', target_alt: 'Gems' }),
   ]))
+})
+
+test('project tabs show multilingual wide glossary and archive assets', async ({ page, request }) => {
+  const projectName = `E2E Wide Assets ${Date.now()}`
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'wide', description: 'Multilingual wide table smoke.' },
+  })
+  const project = await createResponse.json()
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'plane', source: '战机', target: 'Warplane', target_alt: 'Fighter', language: 'en', category: 'unit', note: 'wide' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'plane', source: '战机', target: '전투기', language: 'ko', category: 'unit', note: 'wide' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'plane', source: '战机', target: '戦闘機', language: 'ja', category: 'unit', note: 'wide' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { entry_key: 'claim', source: '领取奖励', target: 'Claim rewards', language: 'en', source_type: 'qa_passed' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { entry_key: 'claim', source: '领取奖励', target: '보상 수령', language: 'ko', source_type: 'qa_passed' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await expect(page.locator('.proj-head')).not.toContainText('当前目标语言')
+  await expect(page.locator('.proj-head .compact-lang-grid')).toHaveCount(0)
+  await expect(page.locator('.stat-grid')).toContainText('CN 术语概念')
+  await expect(page.locator('.stat-grid')).toContainText('EN 1 / KR 1 / JP 1')
+
+  await page.locator('.view-tabs .view-tab').nth(1).click()
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('EN')
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('EN2')
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('JP')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR2')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP2')
+  const glossaryRow = page.locator('.glossary-wide-table tbody tr', { hasText: '战机' }).first()
+  await expect(glossaryRow).toContainText('Warplane')
+  await expect(glossaryRow).toContainText('Fighter')
+  await expect(glossaryRow).toContainText('전투기')
+  await expect(glossaryRow).toContainText('戦闘機')
+
+  await page.locator('.view-tabs .view-tab').nth(4).click()
+  const archiveRow = page.locator('.translation-wide-table tbody tr', { hasText: '领取奖励' }).first()
+  await expect(page.locator('.translation-wide-table thead')).toContainText('EN')
+  await expect(page.locator('.translation-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.translation-wide-table thead')).not.toContainText('JP')
+  await expect(archiveRow).toContainText('Claim rewards')
+  await expect(archiveRow).toContainText('보상 수령')
+})
+
+test('project glossary import auto-detects EN KR JP into one wide row', async ({ page, request }) => {
+  const termWorkbook = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-wide-glossary-')), 'terms-wide.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Glossary"
+ws.append(["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"])
+ws.append(["W-1", "战机", "Warplane", "Fighter", "전투기", "戦闘機", "unit", "wide import"])
+ws.append(["W-2", "钻石", "Diamonds", "Gems", "다이아몬드", "", "currency", "wide import"])
+wb.save(sys.argv[1])
+wb.close()
+`, termWorkbook])
+
+  const projectName = `E2E Wide Import ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'wide-import', description: 'Wide import smoke.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.view-tabs .view-tab').nth(1).click()
+  await page.getByRole('button', { name: '导入 / 生成 / 导出' }).click()
+  await page.locator('label.upload-box', { hasText: '上传术语表 xlsx/csv/json' }).locator('input[type="file"]').setInputFiles(termWorkbook)
+  await expect(inlineStatus(page, `已上传：${fileName(termWorkbook)}`)).toBeVisible({ timeout: 15000 })
+  await page.getByRole('button', { name: '自动导入多语言术语' }).click()
+  await expect(inlineStatus(page, /术语表已导入：5 条/)).toBeVisible({ timeout: 20000 })
+
+  const wideRow = page.locator('.glossary-wide-table tbody tr', { hasText: '战机' }).first()
+  await expect(wideRow).toContainText('Warplane')
+  await expect(wideRow).toContainText('Fighter')
+  await expect(wideRow).toContainText('전투기')
+  await expect(wideRow).toContainText('戦闘機')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR2')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP2')
+})
+
+test('project announcement workflow extracts terms and prepares a retrieval workpack', async ({ page, request }) => {
+  const projectName = `E2E Announcement Lookup ${Date.now()}`
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'RPG', description: 'Announcement lookup e2e.' },
+  })
+  const project = await createResponse.json()
+  await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { source: '秘境', target: 'Trial Realm', language: 'en', source_type: 'qa_passed' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=asset`, {
+    multipart: {
+      file: {
+        name: 'announcement_notice.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('本次更新新增秘境玩法，并开放纹章系统。', 'utf-8'),
+      },
+    },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: /公告翻译/ }).click()
+  await expect(page.getByRole('heading', { name: /公告翻译/ })).toBeVisible()
+  await expect(page.locator('.panel-title', { hasText: '公告资料' })).toBeVisible()
+  await expect(page.locator('.announcement-side')).toHaveCount(0)
+  await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  await page.locator('.check-row', { hasText: 'announcement_notice.txt' }).locator('input').check()
+  await page.getByRole('button', { name: '创建公告任务' }).click()
+  await expect(page.locator('.panel-title', { hasText: '约束来源' })).toBeVisible({ timeout: 20000 })
+  await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  await page.getByRole('button', { name: '识别语言与约束' }).click()
+  await expect(page.locator('.panel-title', { hasText: '目标语言' })).toBeVisible({ timeout: 20000 })
+  await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  await expect(page.locator('.announcement-panel .announcement-lang-card')).toHaveCount(0)
+  await expect(page.locator('.announcement-panel .announcement-language-chip')).toHaveCount(13)
+  await expect(page.locator('.announcement-panel .announcement-language-chip').first().locator('input[type="checkbox"]')).toBeChecked()
+  await expect(page.locator('.announcement-panel')).not.toContainText('??')
+  await page.getByRole('button', { name: '确认目标语言' }).click()
+  await expect(page.locator('.panel-title', { hasText: '术语提取' })).toBeVisible({ timeout: 20000 })
+  await expect(page.locator('.announcement-subflow-strip')).toContainText('语言子流程')
+  await page.getByRole('button', { name: '提取公告术语' }).click()
+  await expect(page.locator('.panel-title', { hasText: '译文反查' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: '反查术语译文' }).click()
+  await expect(page.locator('.panel-title', { hasText: '翻译准备' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: '生成翻译准备包' }).click()
+  await expect(page.locator('.panel-title', { hasText: 'AI 翻译 / 导入' })).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('.panel-desc', { hasText: '不会使用谷歌机翻' })).toBeVisible()
+  const processArtifacts = page.locator('.announcement-artifacts details.asset-list')
+  await processArtifacts.locator('summary', { hasText: '过程产物 / 审计产物' }).click()
+  await expect(processArtifacts.getByRole('link', { name: /公告 workpack \(EN\)/ })).toBeVisible()
+  await expect(processArtifacts.getByRole('link', { name: /公告翻译中转表/ })).toBeVisible()
+
+  const taskResponse = await request.get(`${baseURL}/api/projects/${project.id}/announcement-tasks`)
+  const tasks = await taskResponse.json()
+  const task = tasks.find((item: { title: string }) => item.title === 'announcement_notice.txt')
+  expect(task).toBeTruthy()
+  const segments = task.metadata.segments as { id: string }[]
+  expect(segments.length).toBeGreaterThan(0)
+  const responseFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-announcement-ai-')), 'ai_response_en.jsonl')
+  fs.writeFileSync(
+    responseFile,
+    segments.map((segment) => JSON.stringify({
+      para_id: segment.id,
+      translation: 'Trial Realm gameplay is now available, and the Emblem system is open.',
+    })).join('\n') + '\n',
+    'utf-8',
+  )
+
+  await page.locator('label.upload-box', { hasText: '上传 ai_response_<lang>.jsonl' }).locator('input[type="file"]').setInputFiles(responseFile)
+  await expect(page.locator('.inline-status')).toContainText(fileName(responseFile), { timeout: 15000 })
+  await page.getByRole('button', { name: '导入 AI response' }).click()
+  await expect(page.locator('.panel-title', { hasText: '校对回填' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: 'QA 并回填同格式文件' }).click()
+  await expect(page.locator('.panel-title', { hasText: '交付' })).toBeVisible({ timeout: 30000 })
+  await expect(page.getByRole('link', { name: /公告成品 \(EN\)/ })).toBeVisible()
+  await page.getByRole('button', { name: '生成交付总包' }).click()
+  await expect(page.getByRole('link', { name: /公告交付总包/ })).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('.announcement-subflow-card', { hasText: '英语 EN' })).toContainText('delivered')
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await expect(page.locator('.announcement-project-panel .mini-lang')).toHaveCount(0)
+  await expect(page.locator('.announcement-project-panel')).not.toContainText('terms_ready')
+  await page.locator('.announcement-task-row', { hasText: 'announcement_notice.txt' }).getByRole('button', { name: '继续' }).click()
+
+  const stepTitles = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI 翻译 / 导入', '校对回填', '交付']
+  for (const [index, title] of stepTitles.entries()) {
+    await page.locator('.announcement-steps .step-item').nth(index).click()
+    await expect(page.locator('.panel-title', { hasText: title })).toBeVisible()
+  }
 })
 
 test('user can upload an existing translated workbook and run QA directly', async ({ page, request }) => {

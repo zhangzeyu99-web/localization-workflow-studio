@@ -12,10 +12,10 @@ from utils.translation_harness import apply_translation_response, prepare_transl
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Prepare or apply an English full-translation harness")
+    parser = argparse.ArgumentParser(description="Prepare or apply a full-translation harness")
     parser.add_argument("--input", required=True, help="Language workbook")
     parser.add_argument("--term-base", default=None, help="Term-base workbook or JSON")
-    parser.add_argument("--lang", default="en", help="Target language; v1 supports en only")
+    parser.add_argument("--lang", default="en", help="Target language; supported: en, ko, ja")
     parser.add_argument("--output-dir", default=None, help="Output directory for harness artifacts")
     parser.add_argument("--lang-index", type=int, default=0, help="Target language column index")
     parser.add_argument("--response", default=None, help="translation_response.jsonl to validate and apply")

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+﻿import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 
@@ -31,6 +31,7 @@ type Project = {
   runs?: Run[]
   glossary?: GlossaryTerm[]
   translations?: TranslationEntry[]
+  announcement_tasks?: AnnouncementTask[]
   harness?: ProjectHarness
   duplicate?: boolean
 }
@@ -84,6 +85,7 @@ type GlossaryTerm = {
   source: string
   target: string
   target_alt?: string
+  language?: string
   category: string
   note: string
   source_type: string
@@ -111,6 +113,39 @@ type GlossaryPreviewRow = {
   target_alt?: string
   category: string
   note: string
+  language?: string
+}
+
+type WideLanguageValue<T> = {
+  record: T
+  target: string
+  target_alt?: string
+}
+
+type WideConflict = {
+  field: string
+  values: string[]
+}
+
+type WideGlossaryRow = {
+  source_key: string
+  source: string
+  term_key: string
+  category: string
+  note: string
+  translations: Partial<Record<LanguageCode, WideLanguageValue<GlossaryTerm>>>
+  languages: LanguageCode[]
+  conflicts: WideConflict[]
+}
+
+type WideTranslationRow = {
+  source_key: string
+  source: string
+  entry_key: string
+  note: string
+  translations: Partial<Record<LanguageCode, WideLanguageValue<TranslationEntry>>>
+  languages: LanguageCode[]
+  conflicts: WideConflict[]
 }
 
 type GlossaryBatch = {
@@ -119,6 +154,7 @@ type GlossaryBatch = {
   run_id?: string
   source_artifact_id?: string
   label: string
+  language?: string
   status: string
   metadata?: Record<string, unknown>
   created_at: string
@@ -143,6 +179,7 @@ type GlossaryCandidate = {
   source: string
   target: string
   target_alt?: string
+  language?: string
   category: string
   note: string
   translation_status?: 'needs_translation' | 'suggested' | 'reviewed' | string
@@ -211,6 +248,72 @@ type DeliveryFile = {
   download_url?: string
 }
 
+type AnnouncementLookupSummary = {
+  language: string
+  text_chars: number
+  materials: number
+  matched_terms: number
+  matched_translations: number
+  constraint_status: string
+}
+
+type AnnouncementLookupResult = {
+  run: Run
+  summary: AnnouncementLookupSummary
+  artifacts: Artifact[]
+  manifest: Record<string, unknown>
+}
+
+type AnnouncementTaskLanguage = {
+  id: string
+  task_id: string
+  project_id: string
+  language: LanguageCode
+  status: string
+  current_step: number
+  metadata?: Record<string, unknown>
+}
+
+type AnnouncementTask = {
+  id: string
+  project_id: string
+  title: string
+  source_artifact_id: string
+  source_format: string
+  selected_languages: LanguageCode[]
+  status: string
+  current_step: number
+  metadata?: Record<string, unknown>
+  languages?: AnnouncementTaskLanguage[]
+  artifacts?: Artifact[]
+  created_at?: string
+  updated_at?: string
+}
+
+type AnnouncementTaskResult = {
+  task: AnnouncementTask
+  run?: Run
+  summary?: Record<string, unknown>
+  artifacts?: Artifact[]
+  manifest?: Record<string, unknown>
+  detected_languages?: LanguageCode[]
+  selected_languages?: LanguageCode[]
+  constraints?: Record<string, unknown>
+}
+
+type AnnouncementTermRow = {
+  id?: string
+  source?: string
+  translations?: Record<string, string>
+  hit_count?: number
+  first_position?: number
+}
+
+type AnnouncementLookupOptions = {
+  includeGlossary: boolean
+  includeTranslationArchive: boolean
+}
+
 type DeliverableTask = {
   run_id: string
   task_code: 'A' | 'T' | 'QA' | string
@@ -238,16 +341,219 @@ type DeliverableTask = {
 
 const API = import.meta.env.VITE_API_BASE_URL || ''
 const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
-const langOptions = ['🇺🇸 英语 EN', '🇫🇷 法语 FR', '🇩🇪 德语 DE', '🇧🇷 巴葡 PT-BR', '🇷🇺 俄语 RU', '🇯🇵 日语 JA', '🇰🇷 韩语 KO', '🇪🇸 西语 ES', '🇸🇦 阿语 AR']
+type LanguageCode = 'en' | 'ko' | 'ja' | 'fr' | 'de' | 'ru' | 'it' | 'es' | 'pt' | 'tr' | 'idn' | 'th' | 'ar'
+type LanguageOption = {
+  code: LanguageCode
+  label: string
+  short: string
+  targetHeader: string
+  altHeader: string
+}
+const supportedLanguages: LanguageOption[] = [
+  { code: 'en', label: 'US 英语 EN', short: 'EN', targetHeader: 'EN', altHeader: 'EN2' },
+  { code: 'ko', label: 'KR 韩语', short: 'KR', targetHeader: 'KR', altHeader: '' },
+  { code: 'ja', label: 'JP 日语', short: 'JP', targetHeader: 'JP', altHeader: '' }
+]
+const announcementLanguages: LanguageOption[] = [
+  ...supportedLanguages,
+  { code: 'fr', label: 'FR 法语 FR', short: 'FR', targetHeader: 'FR', altHeader: '' },
+  { code: 'de', label: 'DE 德语 DE', short: 'DE', targetHeader: 'DE', altHeader: '' },
+  { code: 'ru', label: 'RU 俄语 RU', short: 'RU', targetHeader: 'RU', altHeader: '' },
+  { code: 'it', label: 'IT 意大利语 IT', short: 'IT', targetHeader: 'IT', altHeader: '' },
+  { code: 'es', label: 'ES 西班牙语 ES', short: 'ES', targetHeader: 'ES', altHeader: '' },
+  { code: 'pt', label: 'PT 葡萄牙语 PT', short: 'PT', targetHeader: 'PT', altHeader: '' },
+  { code: 'tr', label: 'TR 土耳其语 TR', short: 'TR', targetHeader: 'TR', altHeader: '' },
+  { code: 'idn', label: 'ID 印尼语 ID', short: 'ID', targetHeader: 'IDN', altHeader: '' },
+  { code: 'th', label: 'TH 泰语 TH', short: 'TH', targetHeader: 'TH', altHeader: '' },
+  { code: 'ar', label: 'AR 阿拉伯语 AR', short: 'AR', targetHeader: 'AR', altHeader: '' }
+]
+const allLanguageOptions = announcementLanguages
+const unsupportedLanguages: string[] = []
+
 const batchPresets = [
   { key: 'safe', label: '稳妥', size: 40, desc: '失败成本低，适合长文本/术语多' },
   { key: 'balanced', label: '平衡', size: 90, desc: '推荐默认，速度和稳定性折中' },
   { key: 'fast', label: '高速', size: 160, desc: '批次数少，适合短 UI 文案' }
 ]
 type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'archive' | 'delivery'
+type AppView = 'overview' | 'wizard' | 'announcement'
 
 function getProjectHarness(project: Project): ProjectHarness {
   return project.harness || {}
+}
+
+function languageSpec(code: string): LanguageOption {
+  return allLanguageOptions.find((item) => item.code === code) || supportedLanguages[0]
+}
+
+function languageQuery(code: LanguageCode): string {
+  return `language=${encodeURIComponent(code)}`
+}
+
+
+function normalizeSourceKey(value: unknown): string {
+  return String(value || '').trim().replace(/\s+/g, '').toLowerCase()
+}
+
+function termHasTranslation(term: GlossaryTerm): boolean {
+  return Boolean(String(term.target || '').trim() || String(term.target_alt || '').trim())
+}
+
+function entryHasTranslation(entry: TranslationEntry): boolean {
+  return Boolean(String(entry.target || '').trim() || String(entry.target_alt || '').trim())
+}
+
+function languageFromValue(value: unknown): LanguageCode | null {
+  return normalizeLanguageCode(value || 'en')
+}
+
+function pickSharedValue<T extends Record<string, unknown>>(rows: T[], field: keyof T): string {
+  for (const row of rows) {
+    const value = String(row[field] || '').trim()
+    if (value && value !== '-') return value
+  }
+  return ''
+}
+
+function sharedConflicts<T extends Record<string, unknown>>(rows: T[], fields: (keyof T)[]): WideConflict[] {
+  return fields.flatMap((field) => {
+    const values: string[] = []
+    for (const row of rows) {
+      const value = String(row[field] || '').trim()
+      if (value && value !== '-' && !values.includes(value)) values.push(value)
+    }
+    return values.length > 1 ? [{ field: String(field), values }] : []
+  })
+}
+
+function newestByUpdatedAt<T>(rows: T[]): T {
+  return [...rows].sort((a, b) => String((b as { updated_at?: string }).updated_at || '').localeCompare(String((a as { updated_at?: string }).updated_at || '')))[0]
+}
+
+function glossaryWideRows(project: Project): WideGlossaryRow[] {
+  const grouped = new Map<string, GlossaryTerm[]>()
+  for (const term of project.glossary || []) {
+    const key = normalizeSourceKey(term.source)
+    if (!key) continue
+    grouped.set(key, [...(grouped.get(key) || []), term])
+  }
+  return [...grouped.entries()].map(([sourceKey, rows]) => {
+    const translations: WideGlossaryRow['translations'] = {}
+    for (const lang of supportedLanguages.map((item) => item.code)) {
+      const candidateRows = rows.filter((term) => languageFromValue(term.language) === lang && termHasTranslation(term))
+      if (!candidateRows.length) continue
+      const record = newestByUpdatedAt(candidateRows)
+      translations[lang] = { record, target: record.target || '', target_alt: record.target_alt || '' }
+    }
+    return {
+      source_key: sourceKey,
+      source: pickSharedValue(rows, 'source'),
+      term_key: pickSharedValue(rows, 'term_key'),
+      category: pickSharedValue(rows, 'category'),
+      note: normalizeGlossaryNote(pickSharedValue(rows, 'note')),
+      translations,
+      languages: supportedLanguages.map((item) => item.code).filter((lang) => Boolean(translations[lang])),
+      conflicts: sharedConflicts(rows, ['source', 'term_key', 'category', 'note'])
+    }
+  }).sort((a, b) => a.source.localeCompare(b.source) || a.term_key.localeCompare(b.term_key))
+}
+
+function translationWideRows(project: Project): WideTranslationRow[] {
+  const grouped = new Map<string, TranslationEntry[]>()
+  for (const entry of project.translations || []) {
+    const key = normalizeSourceKey(entry.source)
+    if (!key) continue
+    grouped.set(key, [...(grouped.get(key) || []), entry])
+  }
+  return [...grouped.entries()].map(([sourceKey, rows]) => {
+    const translations: WideTranslationRow['translations'] = {}
+    for (const lang of supportedLanguages.map((item) => item.code)) {
+      const candidateRows = rows.filter((entry) => languageFromValue(entry.language) === lang && entryHasTranslation(entry))
+      if (!candidateRows.length) continue
+      const record = newestByUpdatedAt(candidateRows)
+      translations[lang] = { record, target: record.target || '', target_alt: record.target_alt || '' }
+    }
+    return {
+      source_key: sourceKey,
+      source: pickSharedValue(rows, 'source'),
+      entry_key: pickSharedValue(rows, 'entry_key'),
+      note: pickSharedValue(rows, 'note'),
+      translations,
+      languages: supportedLanguages.map((item) => item.code).filter((lang) => Boolean(translations[lang])),
+      conflicts: sharedConflicts(rows, ['source', 'entry_key', 'note'])
+    }
+  }).sort((a, b) => a.source.localeCompare(b.source) || a.entry_key.localeCompare(b.entry_key))
+}
+
+function visibleLanguagesFromRows(rows: { languages: LanguageCode[] }[]): LanguageCode[] {
+  const found = new Set<LanguageCode>()
+  for (const row of rows) row.languages.forEach((lang) => found.add(lang))
+  return supportedLanguages.map((item) => item.code).filter((lang) => found.has(lang))
+}
+
+function glossaryCoverage(project: Project): Record<LanguageCode, number> {
+  const rows = glossaryWideRows(project)
+  return supportedLanguages.reduce((acc, lang) => {
+    acc[lang.code] = rows.filter((row) => Boolean(row.translations[lang.code])).length
+    return acc
+  }, {} as Record<LanguageCode, number>)
+}
+
+function archiveCoverage(project: Project): Record<LanguageCode, number> {
+  const rows = translationWideRows(project)
+  return supportedLanguages.reduce((acc, lang) => {
+    acc[lang.code] = rows.filter((row) => Boolean(row.translations[lang.code])).length
+    return acc
+  }, {} as Record<LanguageCode, number>)
+}
+
+function coverageLabel(coverage: Record<LanguageCode, number>): string {
+  return supportedLanguages.map((lang) => `${lang.short} ${coverage[lang.code] || 0}`).join(' / ')
+}
+
+function altColumnVisible(lang: LanguageCode): boolean {
+  return lang === 'en'
+}
+
+function scopeProjectToLanguage(project: Project, code: LanguageCode): Project {
+  const glossary = (project.glossary || []).filter((term) => (term.language || 'en') === code)
+  const translations = (project.translations || []).filter((entry) => (entry.language || 'en') === code)
+  return {
+    ...project,
+    glossary,
+    translations,
+    stats: {
+      ...project.stats,
+      glossary: glossary.length,
+      archived_rows: translations.length,
+      langs: project.stats.langs
+    }
+  }
+}
+
+function isLanguageCode(value: string): value is LanguageCode {
+  return allLanguageOptions.some((lang) => lang.code === value)
+}
+
+function availableLookupLanguages(project: Project): LanguageCode[] {
+  const found = new Set<LanguageCode>()
+  for (const term of project.glossary || []) {
+    const code = String(term.language || 'en').toLowerCase()
+    if (isLanguageCode(code) && (term.target?.trim() || term.target_alt?.trim())) found.add(code)
+  }
+  for (const entry of project.translations || []) {
+    const code = String(entry.language || 'en').toLowerCase()
+    if (isLanguageCode(code) && (entry.target?.trim() || entry.target_alt?.trim())) found.add(code)
+  }
+  return supportedLanguages.map((lang) => lang.code).filter((code) => found.has(code))
+}
+
+function projectPromptForLanguage(project: Project, code: LanguageCode): string {
+  const prompts = project.profile?.prompts_by_language
+  if (prompts && typeof prompts === 'object' && code in prompts) {
+    return String((prompts as Record<string, unknown>)[code] || '')
+  }
+  return project.prompt_text || ''
 }
 
 function listToLines(value: unknown): string {
@@ -318,6 +624,7 @@ function artifactRole(artifact: Artifact): string {
   const map: Record<string, string> = {
     language_table: 'language_source',
     term_base: 'glossary_source',
+    announcement_glossary: 'glossary_source',
     glossary_final: 'glossary_curated',
     final_workbook: 'translation_workbook',
     qa_final_workbook: 'translation_workbook',
@@ -327,6 +634,9 @@ function artifactRole(artifact: Artifact): string {
     quality_summary: 'qa_report',
     glossary_snapshot: 'run_snapshot',
     prompt_snapshot: 'run_snapshot',
+    announcement_lookup_workbook: 'reference_pack',
+    announcement_lookup_manifest: 'reference_pack',
+    announcement_lookup_prompt_context: 'reference_pack',
     translation_prompt: 'prompt',
     project_brief: 'profile',
     project_profile: 'profile',
@@ -402,7 +712,7 @@ function formatDuration(seconds: number | null | undefined): string {
 
 function normalizeGlossaryNote(value: string | undefined): string {
   const note = String(value || '')
-  if (/高频词扫描补全 EN\/EN2\?+/.test(note)) return '高频词候选，需人工确认'
+  if (/高频词扫描补全 (EN|JP|JA|KR|KO)\/(EN2|JP2|JA2|KR2|KO2)\?+/.test(note)) return '高频词候选，需人工确认'
   return note
 }
 
@@ -465,10 +775,18 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json()
 }
 
+function compactSummary(summary: Record<string, unknown>): string {
+  return Object.entries(summary)
+    .filter(([, value]) => value !== undefined && value !== null && typeof value !== 'object')
+    .slice(0, 4)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(' / ')
+}
+
 function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [currentId, setCurrentId] = useState<string>('')
-  const [view, setView] = useState<'overview' | 'wizard'>('overview')
+  const [view, setView] = useState<AppView>('overview')
   const [tab, setTab] = useState<ProjectTab>('meta')
   const [step, setStep] = useState(1)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
@@ -483,7 +801,7 @@ function App() {
   const [archiveArtifact, setArchiveArtifact] = useState<Artifact | null>(null)
   const [assetArtifacts, setAssetArtifacts] = useState<Artifact[]>([])
   const [latestRun, setLatestRun] = useState<Run | null>(null)
-  const [selectedLangs, setSelectedLangs] = useState<string[]>(['🇺🇸 英语 EN'])
+  const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>('en')
   const [glossaryPreview, setGlossaryPreview] = useState<GlossaryPreviewRow[]>([])
   const [glossaryBatches, setGlossaryBatches] = useState<GlossaryBatch[]>([])
   const [glossaryCandidates, setGlossaryCandidates] = useState<GlossaryCandidate[]>([])
@@ -492,6 +810,8 @@ function App() {
   const [deliverables, setDeliverables] = useState<DeliverableTask[]>([])
   const [translationReadiness, setTranslationReadiness] = useState<TranslationReadiness | null>(null)
   const [translationBatchSize, setTranslationBatchSize] = useState(90)
+  const [announcementText, setAnnouncementText] = useState('')
+  const [announcementLookupResult, setAnnouncementLookupResult] = useState<AnnouncementLookupResult | null>(null)
 
   useEffect(() => {
     refreshProjects()
@@ -499,6 +819,8 @@ function App() {
   }, [])
 
   const current = useMemo(() => projects.find((p) => p.id === currentId), [projects, currentId])
+  const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
+  const currentLang = languageSpec(selectedLanguage)
 
   useEffect(() => {
     if (currentId) refreshCurrent()
@@ -507,6 +829,8 @@ function App() {
   useEffect(() => {
     if (!current) return
     setIntro(current.description || '')
+    setAnnouncementText('')
+    setAnnouncementLookupResult(null)
   }, [currentId])
 
   useEffect(() => {
@@ -522,6 +846,8 @@ function App() {
       setGlossaryCandidates([])
       setQualityIssues([])
       setDeliverables([])
+      setAnnouncementText('')
+      setAnnouncementLookupResult(null)
       return
     }
     const artifacts = current.artifacts || []
@@ -538,13 +864,13 @@ function App() {
 
   useEffect(() => {
     if (current?.id) refreshGlossaryBatches(current.id)
-  }, [current?.id, latestRun?.id])
+  }, [current?.id, latestRun?.id, selectedLanguage])
 
   useEffect(() => {
     if (current?.id && tab === 'delivery') {
       refreshDeliverables()
     }
-  }, [current?.id, current?.runs?.length, tab])
+  }, [current?.id, current?.runs?.length, tab, selectedLanguage])
 
   useEffect(() => {
     if (!sourceArtifact?.id) {
@@ -552,7 +878,7 @@ function App() {
       return
     }
     refreshTranslationReadiness(sourceArtifact.id)
-  }, [sourceArtifact?.id, translationBatchSize])
+  }, [sourceArtifact?.id, translationBatchSize, selectedLanguage])
 
   useEffect(() => {
     if (!qaArtifact && sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && canSkipModelTranslation(translationReadiness)) {
@@ -582,7 +908,7 @@ function App() {
 
   async function refreshGlossaryBatches(projectId = currentId) {
     if (!projectId) return
-    const loaded = await api<{ batches: GlossaryBatch[]; active_batch: GlossaryBatch | null; candidates: GlossaryCandidate[] }>(`/api/projects/${projectId}/glossary/batches`)
+    const loaded = await api<{ batches: GlossaryBatch[]; active_batch: GlossaryBatch | null; candidates: GlossaryCandidate[] }>(`/api/projects/${projectId}/glossary/batches?${languageQuery(selectedLanguage)}`)
     setGlossaryBatches(loaded.batches || [])
     setGlossaryCandidates(loaded.candidates || [])
   }
@@ -665,11 +991,12 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           intro: intro.trim() || current.description || `${current.name} ${current.type}`,
-          asset_artifact_ids: assetArtifacts.map((artifact) => artifact.id)
+          asset_artifact_ids: assetArtifacts.map((artifact) => artifact.id),
+          target_language: selectedLanguage
         })
       })
       await refreshCurrent()
-      setStatus('项目提示词已生成')
+      setStatus(`${currentLang.short} 项目提示词已生成`)
     } catch (error) {
       setStatus(`项目分析失败：${errorText(error)}`)
     } finally {
@@ -704,7 +1031,8 @@ function App() {
           source_only: false,
           id_column: 'ID',
           source_column: 'cn',
-          target_column: 'en',
+          target_column: currentLang.targetHeader,
+          language: selectedLanguage,
           project_material_artifact_ids: assetArtifacts.map((artifact) => artifact.id),
           project_notes: [intro.trim() || current.description || `${current.name} ${current.type}`].filter(Boolean),
           include_empty_final_terms: true
@@ -729,13 +1057,14 @@ function App() {
     setBusy(true)
     setStatus('正在预览术语表...')
     try {
-      const result = await api<{ rows: GlossaryPreviewRow[] }>(`/api/projects/${current.id}/glossary/import-preview`, {
+      const result = await api<{ rows: GlossaryPreviewRow[]; languages?: LanguageCode[] }>(`/api/projects/${current.id}/glossary/import-preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ artifact_id: termArtifact.id })
+        body: JSON.stringify({ artifact_id: termArtifact.id, language: selectedLanguage })
       })
       setGlossaryPreview(result.rows)
-      setStatus(`术语表预览完成：${result.rows.length} 条`)
+      const languageText = result.languages?.length ? `（${result.languages.map((item) => item.toUpperCase()).join('/')}）` : ''
+      setStatus(`术语表预览完成：${result.rows.length} 条${languageText}`)
     } catch (error) {
       setStatus(`术语表预览失败：${errorText(error)}`)
     } finally {
@@ -748,13 +1077,14 @@ function App() {
     setBusy(true)
     setStatus('正在导入术语表...')
     try {
-      const result = await api<{ imported_count: number }>(`/api/projects/${current.id}/glossary/import`, {
+      const result = await api<{ imported_count: number; languages?: LanguageCode[] }>(`/api/projects/${current.id}/glossary/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ artifact_id: termArtifact.id })
+        body: JSON.stringify({ artifact_id: termArtifact.id, language: selectedLanguage })
       })
       await refreshCurrent()
-      setStatus(`术语表已导入：${result.imported_count} 条`)
+      const languageText = result.languages?.length ? `（${result.languages.map((item) => item.toUpperCase()).join('/')}）` : ''
+      setStatus(`术语表已导入：${result.imported_count} 条${languageText}`)
     } catch (error) {
       setStatus(`术语表导入失败：${errorText(error)}`)
     } finally {
@@ -765,7 +1095,7 @@ function App() {
   async function refreshTranslationReadiness(artifactId: string) {
     const batchSize = clampBatchSize(translationBatchSize)
     try {
-      const result = await api<TranslationReadiness>(`/api/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}`)
+      const result = await api<TranslationReadiness>(`/api/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(selectedLanguage)}`)
       setTranslationReadiness(result)
       return result
     } catch {
@@ -791,16 +1121,13 @@ function App() {
       setStatus(`无法开始翻译：${blockReason}`)
       return
     }
-    if (!selectedLangs.some((item) => item.includes('EN'))) {
-      setStatus('v1 只支持英语真闭环；其他语言保留为后续 provider 能力')
-      return
-    }
     setBusy(true)
-    setStatus(`翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
+    setStatus(`${currentLang.short} 翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
     try {
       const batchSize = selectedBatchSize
       const resumableRun = latestRun?.kind === 'translation'
         && latestRun.status === 'failed'
+        && latestRun.language === selectedLanguage
         && latestRun.metadata?.input_artifact_id === sourceArtifact.id
         ? latestRun
         : null
@@ -810,7 +1137,7 @@ function App() {
           body: JSON.stringify({
             project_id: current.id,
             kind: 'translation',
-            language: 'en',
+            language: selectedLanguage,
             input_artifact_id: sourceArtifact.id,
             term_artifact_id: termArtifact?.id || null,
             batch_size: batchSize,
@@ -843,7 +1170,7 @@ function App() {
         setStep(8)
         setStatus('已跳过模型翻译：输入表已有目标译文，请继续运行 QA。')
       } else {
-        setStatus(result.run.status === 'passed' ? 'EN 翻译和 QA 已通过，最终产物已归档。' : `翻译任务结束：${result.run.status}`)
+        setStatus(result.run.status === 'passed' ? `${currentLang.short} 翻译和 QA 已通过，最终产物已归档。` : `${currentLang.short} 翻译任务结束：${result.run.status}`)
       }
     } catch (error) {
       setStatus(`翻译失败：${errorText(error)}`)
@@ -875,7 +1202,7 @@ function App() {
         body: JSON.stringify({
           project_id: current.id,
           kind: 'qa',
-          language: 'en',
+          language: selectedLanguage,
           input_artifact_id: qaArtifact.id,
           term_artifact_id: termArtifact?.id || null,
           task_origin: sourceRunId ? 'translation_continuation' : 'direct_import',
@@ -963,6 +1290,99 @@ function App() {
       setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
       setStatus(artifact.duplicate ? `参考素材已存在，已复用：${artifact.label}` : `参考素材已归档：${artifact.label}`)
     }
+    return artifact
+  }
+
+  async function uploadAnnouncementResponse(file: File) {
+    const artifact = await upload(file, 'asset')
+    if (artifact) {
+      setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
+      setStatus(artifact.duplicate ? `AI response 已存在，已复用：${artifact.label}` : `AI response 已上传：${artifact.label}`)
+    }
+    return artifact
+  }
+
+  async function uploadAnnouncementConstraint(file: File) {
+    const artifact = await upload(file, 'language_table')
+    if (artifact) {
+      setStatus(artifact.duplicate ? `约束文件已存在，已复用：${artifact.label}` : `公告约束文件已归档：${artifact.label}`)
+    }
+    return artifact
+  }
+
+  async function createAnnouncementTask(payload: Record<string, unknown>) {
+    if (!current) return null
+    setBusy(true)
+    setStatus('正在创建公告任务...')
+    try {
+      const task = await api<AnnouncementTask>(`/api/projects/${current.id}/announcement-tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      await refreshCurrent()
+      setStatus(`公告任务已创建：${task.title || task.id}`)
+      return task
+    } catch (error) {
+      setStatus(`公告任务创建失败：${errorText(error)}`)
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runAnnouncementTaskAction(taskId: string, endpoint: string, payload: Record<string, unknown> = {}) {
+    if (!current) return null
+    setBusy(true)
+    setStatus(`正在执行公告任务：${endpoint}...`)
+    try {
+      const result = await api<AnnouncementTaskResult>(`/api/announcement-tasks/${taskId}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (result.run) setLatestRun({ ...result.run, artifacts: result.artifacts || [] })
+      await refreshCurrent()
+      const summary = result.summary ? ` · ${compactSummary(result.summary)}` : ''
+      setStatus(`公告任务完成：${endpoint}${summary}`)
+      return result
+    } catch (error) {
+      setStatus(`公告任务失败：${errorText(error)}`)
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runAnnouncementLookup(text: string, materialArtifactIds: string[], options: AnnouncementLookupOptions) {
+    if (!current) return
+    if (!text.trim() && !materialArtifactIds.length) {
+      setStatus('请先上传/选择公告素材，或直接输入公告长文本。')
+      return
+    }
+    setBusy(true)
+    setStatus(`正在生成 ${currentLang.short} 公告检索包...`)
+    try {
+      const result = await api<AnnouncementLookupResult>(`/api/projects/${current.id}/announcement-lookup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          material_artifact_ids: materialArtifactIds,
+          language: selectedLanguage,
+          include_glossary: options.includeGlossary,
+          include_translation_archive: options.includeTranslationArchive
+        })
+      })
+      setAnnouncementLookupResult(result)
+      setLatestRun({ ...result.run, artifacts: result.artifacts })
+      await refreshCurrent()
+      setStatus(`公告检索包完成：命中术语 ${result.summary.matched_terms} 条，译文参考 ${result.summary.matched_translations} 条。`)
+    } catch (error) {
+      setStatus(`公告检索包生成失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function addGlossaryTerm(form: FormData) {
@@ -975,6 +1395,7 @@ function App() {
         source: form.get('source'),
         target: form.get('target'),
         target_alt: form.get('target_alt') || '',
+        language: form.get('language') || selectedLanguage,
         category: form.get('category') || 'manual',
         note: form.get('note') || '',
         source_type: 'manual',
@@ -1010,7 +1431,7 @@ function App() {
   async function translateMissingGlossaryCandidates(batchId: string) {
     if (!current || !batchId) return
     setBusy(true)
-    setStatus('正在补齐缺失 EN 译文...')
+    setStatus(`正在补齐缺失 ${currentLang.short} 译文...`)
     try {
       const result = await api<{ translated_count: number; skipped_count: number }>(`/api/projects/${current.id}/glossary/batches/${batchId}/translate-missing`, {
         method: 'POST'
@@ -1061,6 +1482,7 @@ function App() {
         source: String(form.get('source') || ''),
         target: String(form.get('target') || ''),
         target_alt: String(form.get('target_alt') || ''),
+        language: form.get('language') || selectedLanguage,
         note: String(form.get('note') || ''),
         source_type: 'manual'
       })
@@ -1097,13 +1519,14 @@ function App() {
     setBusy(true)
     setStatus('正在导入译文归档...')
     try {
-      const result = await api<{ imported_count: number }>(`/api/projects/${current.id}/translations/import`, {
+      const result = await api<{ imported_count: number; languages?: LanguageCode[] }>(`/api/projects/${current.id}/translations/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ artifact_id: archiveArtifact.id, language: 'en' })
+        body: JSON.stringify({ artifact_id: archiveArtifact.id, language: selectedLanguage })
       })
       await refreshCurrent()
-      setStatus(`译文归档已导入：${result.imported_count} 条`)
+      const languageText = result.languages?.length ? `（${result.languages.map((item) => item.toUpperCase()).join('/')}）` : ''
+      setStatus(`译文归档已导入：${result.imported_count} 条${languageText}`)
     } catch (error) {
       setStatus(`译文归档导入失败：${errorText(error)}`)
     } finally {
@@ -1137,7 +1560,7 @@ function App() {
     }
     try {
       const result = await api<{ deliverables: DeliverableTask[] }>(`/api/projects/${current.id}/deliverables`)
-      setDeliverables(result.deliverables || [])
+      setDeliverables((result.deliverables || []).filter((task) => normalizeLanguageCode(task.language) === selectedLanguage))
     } catch {
       setDeliverables([])
     }
@@ -1239,10 +1662,33 @@ function App() {
                 onUploadTranslation={uploadTranslationWorkbook}
                 onCreateDelivery={createDeliveryPackage}
                 onStartTask={() => setView('wizard')}
+                onStartAnnouncement={() => setView('announcement')}
+                selectedLanguage={selectedLanguage}
+                setSelectedLanguage={setSelectedLanguage}
+              />
+            ) : view === 'announcement' ? (
+              <AnnouncementWizard
+                project={current}
+                busy={busy}
+                status={status}
+                selectedLanguage={selectedLanguage}
+                setSelectedLanguage={setSelectedLanguage}
+                assetArtifacts={assetArtifacts}
+                announcementText={announcementText}
+                setAnnouncementText={setAnnouncementText}
+                lookupResult={announcementLookupResult}
+                onUploadAsset={uploadAsset}
+                onUploadConstraint={uploadAnnouncementConstraint}
+                onCreateTask={createAnnouncementTask}
+                onTaskAction={runAnnouncementTaskAction}
+                onLookup={runAnnouncementLookup}
+                onBack={() => setView('overview')}
+                onUploadResponse={uploadAnnouncementResponse}
+                settings={settings}
               />
             ) : (
               <Wizard
-                project={current}
+                project={currentScoped || current}
                 step={step}
                 setStep={setStep}
                 intro={intro}
@@ -1258,8 +1704,8 @@ function App() {
                 glossaryBatches={glossaryBatches}
                 glossaryCandidates={glossaryCandidates}
                 qualityIssues={qualityIssues}
-                selectedLangs={selectedLangs}
-                setSelectedLangs={setSelectedLangs}
+                selectedLanguage={selectedLanguage}
+                setSelectedLanguage={setSelectedLanguage}
                 setSourceArtifact={setSourceArtifact}
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={setQaArtifact}
@@ -1346,7 +1792,10 @@ function ProjectOverview({
   onModelFixes,
   onUploadTranslation,
   onCreateDelivery,
-  onStartTask
+  onStartTask,
+  onStartAnnouncement,
+  selectedLanguage,
+  setSelectedLanguage
 }: {
   project: Project
   tab: ProjectTab
@@ -1392,22 +1841,34 @@ function ProjectOverview({
   onUploadTranslation: (file: File) => void
   onCreateDelivery: (runId: string) => void
   onStartTask: () => void
+  onStartAnnouncement: () => void
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
 }) {
+  const glossaryRows = glossaryWideRows(project)
+  const archiveRows = translationWideRows(project)
+  const termCoverage = glossaryCoverage(project)
+  const translationCoverage = archiveCoverage(project)
   return (
     <>
       <div className="proj-head">
         <div>
           <h2>{project.icon ? <span className="project-icon">{project.icon}</span> : null}{project.name}</h2>
           {project.description ? <div className="desc">{project.description}</div> : null}
+          <div className="muted-left">项目资产按中文聚合；语言在具体翻译、QA、导入或公告检索任务内选择。</div>
         </div>
-        <button className="btn btn-primary" onClick={onStartTask}>🚀 启动新翻译任务</button>
+        <div className="row-actions">
+          <button className="btn btn-primary" onClick={onStartTask}>🚀 启动新翻译任务</button>
+          <button className="btn btn-ghost" onClick={onStartAnnouncement}>📣 公告翻译</button>
+        </div>
       </div>
       <div className="stat-grid">
         <div className="stat-card"><div className="num">{project.stats.tasks}</div><div className="lbl">累计任务</div></div>
+        <div className="stat-card"><div className="num">{glossaryRows.length}</div><div className="lbl">CN 术语概念 · {coverageLabel(termCoverage)}</div></div>
+        <div className="stat-card"><div className="num">{archiveRows.length}</div><div className="lbl">CN 归档源文 · {coverageLabel(translationCoverage)}</div></div>
         <div className="stat-card"><div className="num">{project.stats.words}</div><div className="lbl">归档译文字数</div></div>
-        <div className="stat-card"><div className="num">{project.stats.archived_rows || 0}</div><div className="lbl">累计归档条数</div></div>
-        <div className="stat-card"><div className="num">{project.stats.glossary}</div><div className="lbl">术语表词条</div></div>
       </div>
+      <AnnouncementProjectPanel tasks={project.announcement_tasks || []} onStartAnnouncement={onStartAnnouncement} />
       <div className="view-tabs">
         <button className={`view-tab ${tab === 'meta' ? 'active' : ''}`} onClick={() => setTab('meta')}>📝 元信息</button>
         <button className={`view-tab ${tab === 'glossary' ? 'active' : ''}`} onClick={() => setTab('glossary')}>📚 术语表</button>
@@ -1416,7 +1877,7 @@ function ProjectOverview({
         <button className={`view-tab ${tab === 'archive' ? 'active' : ''}`} onClick={() => setTab('archive')}>🗄️ 译文归档</button>
         <button className={`view-tab ${tab === 'delivery' ? 'active' : ''}`} onClick={() => setTab('delivery')}>📥 交付</button>
       </div>
-      {tab === 'meta' ? <MetaTab project={project} intro={intro} setIntro={setIntro} busy={busy} onSaveMeta={onSaveMeta} onAnalyze={onAnalyze} onSaveHarness={onSaveHarness} /> : null}
+      {tab === 'meta' ? <MetaTab project={project} intro={intro} setIntro={setIntro} busy={busy} selectedLanguage={selectedLanguage} onSaveMeta={onSaveMeta} onAnalyze={onAnalyze} onSaveHarness={onSaveHarness} /> : null}
       {tab === 'glossary' ? (
         <GlossaryTab
           project={project}
@@ -1433,6 +1894,8 @@ function ProjectOverview({
           onAddTerm={onAddTerm}
           onUpdateTerm={onUpdateTerm}
           onDeleteTerm={onDeleteTerm}
+          selectedLanguage={selectedLanguage}
+          setSelectedLanguage={setSelectedLanguage}
         />
       ) : null}
       {tab === 'translation' ? (
@@ -1450,6 +1913,8 @@ function ProjectOverview({
           setTermArtifact={setTermArtifact}
           onUploadSource={onUploadSource}
           onTranslate={onTranslate}
+          selectedLanguage={selectedLanguage}
+          setSelectedLanguage={setSelectedLanguage}
         />
       ) : null}
       {tab === 'qa' ? (
@@ -1467,6 +1932,8 @@ function ProjectOverview({
           onUploadTranslation={onUploadTranslation}
           busy={busy}
           status={status}
+          selectedLanguage={selectedLanguage}
+          setSelectedLanguage={setSelectedLanguage}
         />
       ) : null}
       {tab === 'archive' ? (
@@ -1481,6 +1948,8 @@ function ProjectOverview({
           onAddTranslation={onAddTranslation}
           onUpdateTranslation={onUpdateTranslation}
           onDeleteTranslation={onDeleteTranslation}
+          selectedLanguage={selectedLanguage}
+          setSelectedLanguage={setSelectedLanguage}
         />
       ) : null}
       {tab === 'delivery' ? <DeliveryTab project={project} deliverables={deliverables} busy={busy} status={status} onCreateDelivery={onCreateDelivery} /> : null}
@@ -1493,6 +1962,7 @@ function MetaTab({
   intro,
   setIntro,
   busy,
+  selectedLanguage,
   onSaveMeta,
   onAnalyze,
   onSaveHarness
@@ -1501,23 +1971,26 @@ function MetaTab({
   intro: string
   setIntro: (value: string) => void
   busy: boolean
+  selectedLanguage: LanguageCode
   onSaveMeta: (updates: Partial<Project>) => Promise<void>
   onAnalyze: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
 }) {
+  const promptText = projectPromptForLanguage(project, selectedLanguage)
+  const lang = languageSpec(selectedLanguage)
   const [name, setName] = useState(project.name)
   const [type, setType] = useState(project.type || '')
   const [description, setDescription] = useState(project.description || '')
-  const [promptDraft, setPromptDraft] = useState(project.prompt_text || '')
+  const [promptDraft, setPromptDraft] = useState(promptText)
   const [editingPrompt, setEditingPrompt] = useState(false)
 
   useEffect(() => {
     setName(project.name)
     setType(project.type || '')
     setDescription(project.description || '')
-    setPromptDraft(project.prompt_text || '')
+    setPromptDraft(projectPromptForLanguage(project, selectedLanguage))
     setEditingPrompt(false)
-  }, [project.id, project.name, project.type, project.description, project.prompt_text])
+  }, [project.id, project.name, project.type, project.description, project.prompt_text, project.profile, selectedLanguage])
 
   async function submit() {
     await onSaveMeta({ name: name.trim() || project.name, type, description })
@@ -1525,21 +1998,25 @@ function MetaTab({
   }
 
   async function savePrompt() {
-    await onSaveMeta({ prompt_text: promptDraft })
+    const profile = { ...(project.profile || {}) }
+    const prompts = { ...((profile.prompts_by_language as Record<string, unknown> | undefined) || {}) }
+    prompts[selectedLanguage] = promptDraft
+    profile.prompts_by_language = prompts
+    await onSaveMeta(selectedLanguage === 'en' ? { prompt_text: promptDraft, profile } : { profile })
     setEditingPrompt(false)
   }
 
   async function copyPrompt() {
-    await navigator.clipboard.writeText(project.prompt_text || '')
+    await navigator.clipboard.writeText(promptText)
   }
 
   return (
     <>
       <div className="card reference-card">
         <div className="card-title">
-          <div className="left">🤖 AI 生成的专属翻译提示词</div>
+          <div className="left">🤖 AI 生成的专属翻译提示词（{lang.short}）</div>
           <div className="card-actions">
-            <button className="btn btn-ghost btn-sm" disabled={!project.prompt_text} onClick={copyPrompt}>📋 复制</button>
+            <button className="btn btn-ghost btn-sm" disabled={!promptText} onClick={copyPrompt}>📋 复制</button>
             <button className="btn btn-ghost btn-sm" onClick={() => setEditingPrompt((value) => !value)}>✏️ 编辑</button>
             <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onAnalyze}>🔄 重新生成</button>
           </div>
@@ -1548,12 +2025,12 @@ function MetaTab({
           <>
             <textarea className="prompt-editor" value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} placeholder="输入当前项目专属翻译提示词" />
             <div className="row-actions align-right">
-              <button className="btn btn-ghost btn-sm" onClick={() => { setPromptDraft(project.prompt_text || ''); setEditingPrompt(false) }}>取消</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setPromptDraft(promptText); setEditingPrompt(false) }}>取消</button>
               <button className="btn btn-primary btn-sm" onClick={savePrompt}>保存提示词</button>
             </div>
           </>
         ) : (
-          <pre>{project.prompt_text || '尚未生成。点击“重新生成”后会自动保存到当前项目。'}</pre>
+          <pre>{promptText || `尚未生成 ${lang.short} 提示词。点击“重新生成”后会自动保存到当前项目。`}</pre>
         )}
       </div>
       <ProjectMetaTable project={project} />
@@ -1568,7 +2045,7 @@ function MetaTab({
             <div className="meta-grid">
               <label><span>主项目名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
               <label><span>题材/分类</span><input value={type} onChange={(event) => setType(event.target.value)} placeholder="飞行射击 / 休闲战斗" /></label>
-              <label className="wide"><span>来源标注、目标语言、风格要求、素材来源</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="来源：战机英语5.18翻译需求.xlsx、战机术语表.xlsx、战机英语语言表校对.xlsx&#10;目标语言：英语 EN&#10;风格：短句准确，按钮和任务文案清晰，战机/装备/资源术语统一" /></label>
+              <label className="wide"><span>来源标注、目标语言、风格要求、素材来源</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={`来源：语言表、术语表、校对表\n目标语言：${lang.label}\n风格：短句准确，按钮和任务文案清晰，核心术语统一`} /></label>
               <label className="wide"><span>重新生成提示词输入</span><textarea className="compact-textarea" value={intro} onChange={(event) => setIntro(event.target.value)} placeholder="补充本次分析需要的上下文；留空时使用项目描述。" /></label>
             </div>
           </div>
@@ -1722,7 +2199,9 @@ function GlossaryTab({
   onGlossaryExtract,
   onAddTerm,
   onUpdateTerm,
-  onDeleteTerm
+  onDeleteTerm,
+  selectedLanguage,
+  setSelectedLanguage
 }: {
   project: Project
   sourceArtifact: Artifact | null
@@ -1738,13 +2217,19 @@ function GlossaryTab({
   onAddTerm: (form: FormData) => void
   onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => Promise<void>
   onDeleteTerm: (term: GlossaryTerm) => Promise<void>
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
 }) {
   const [toolsOpen, setToolsOpen] = useState(false)
+  const lang = languageSpec(selectedLanguage)
+  const rows = glossaryWideRows(project)
+  const visibleLanguages = visibleLanguagesFromRows(rows)
+  const colSpan = 5 + visibleLanguages.reduce((total, code) => total + (altColumnVisible(code) ? 2 : 1), 0)
   return (
     <>
       <div className="card">
         <div className="card-title">
-          <div className="left">项目术语表（{project.glossary?.length || 0} 条）</div>
+          <div className="left">项目术语表（{rows.length} 个 CN 概念）</div>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 生成 / 导出'}</button>
         </div>
         {toolsOpen ? (
@@ -1758,27 +2243,51 @@ function GlossaryTab({
             onGlossaryPreview={onGlossaryPreview}
             onGlossaryImport={onGlossaryImport}
             onGlossaryExtract={onGlossaryExtract}
+            selectedLanguage={selectedLanguage}
+            setSelectedLanguage={setSelectedLanguage}
           />
         ) : null}
         <ActionStatus status={status} busy={busy} />
-        {toolsOpen && glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} /> : null}
+        {toolsOpen && glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} selectedLanguage={selectedLanguage} /> : null}
         <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTerm(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
           <input name="term_key" placeholder="ID" />
           <input name="source" placeholder="CN" required />
-          <input name="target" placeholder="EN" />
-          <input name="target_alt" placeholder="EN2" />
+          <input name="target" placeholder={lang.targetHeader} />
+          {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
           <input name="category" placeholder="分类" />
           <input name="note" placeholder="备注" />
-          <button className="btn btn-primary btn-sm">+ 新增</button>
+          <input name="language" type="hidden" value={selectedLanguage} />
+          <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
         </form>
+        <div className="language-inline-select">
+          <span>新增 / 生成语言：</span>
+          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+        </div>
         <div className="table-scroll">
-          <table className="glossary-table">
-            <thead><tr><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
+          <table className="glossary-table glossary-wide-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>CN</th>
+                {visibleLanguages.map((code) => {
+                  const spec = languageSpec(code)
+                  return (
+                    <React.Fragment key={code}>
+                      <th>{spec.targetHeader}</th>
+                      {altColumnVisible(code) ? <th>{spec.altHeader}</th> : null}
+                    </React.Fragment>
+                  )
+                })}
+                <th>分类</th>
+                <th>备注</th>
+                <th>操作</th>
+              </tr>
+            </thead>
             <tbody>
-              {(project.glossary || []).map((row) => (
-                <GlossaryTermRow key={row.id} row={row} onUpdateTerm={onUpdateTerm} onDeleteTerm={onDeleteTerm} />
+              {rows.map((row) => (
+                <WideGlossaryTermRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdateTerm={onUpdateTerm} onDeleteTerm={onDeleteTerm} />
               ))}
-              {!project.glossary?.length ? <tr><td colSpan={7} className="muted">暂无术语。可上传已有术语表、从语言表生成，或手工新增。</td></tr> : null}
+              {!rows.length ? <tr><td colSpan={colSpan} className="muted">暂无术语。可上传已有术语表、从语言表生成，或手工新增。</td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -1796,7 +2305,9 @@ function GlossaryToolsPanel({
   onUploadTerm,
   onGlossaryPreview,
   onGlossaryImport,
-  onGlossaryExtract
+  onGlossaryExtract,
+  selectedLanguage,
+  setSelectedLanguage
 }: {
   project: Project
   sourceArtifact: Artifact | null
@@ -1807,32 +2318,42 @@ function GlossaryToolsPanel({
   onGlossaryPreview: () => void
   onGlossaryImport: () => void
   onGlossaryExtract: () => void
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
 }) {
+  const lang = languageSpec(selectedLanguage)
   return (
     <div className="glossary-tools-panel">
       <div className="action-card">
         <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} allowEmpty />
         <FileBox label="上传术语表 xlsx/csv/json" onFile={onUploadTerm} />
+        <div className="language-inline-select">
+          <span>从语言表生成 / 单语言兜底：</span>
+          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+        </div>
         <div className="row-actions">
-          <button type="button" className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览导入</button>
-          <button type="button" className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入到项目术语</button>
-          <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>从语言表生成</button>
-          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出 XLSX</a>
-          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=csv`}>导出 CSV</a>
-          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=json`}>导出 JSON</a>
+          <button type="button" className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>自动预览导入</button>
+          <button type="button" className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>自动导入多语言术语</button>
+          <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>生成 {lang.short} 术语候选</button>
+          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出全部 XLSX</a>
+          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=csv`}>导出全部 CSV</a>
+          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=json`}>导出全部 JSON</a>
         </div>
         {!sourceArtifact ? <div className="warn-line">需要从语言表生成术语时，先在“翻译”页上传待翻译表。</div> : null}
+        <div className="muted-left">自动导入会识别 EN/EN2、KR/KO、JP/JA；KR/JP 默认不使用第二译名列。</div>
       </div>
     </div>
   )
 }
 
-function GlossaryTermRow({
+function WideGlossaryTermRow({
   row,
+  visibleLanguages,
   onUpdateTerm,
   onDeleteTerm
 }: {
-  row: GlossaryTerm
+  row: WideGlossaryRow
+  visibleLanguages: LanguageCode[]
   onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => Promise<void>
   onDeleteTerm: (term: GlossaryTerm) => Promise<void>
 }) {
@@ -1840,46 +2361,78 @@ function GlossaryTermRow({
   const [draft, setDraft] = useState({
     term_key: row.term_key || '',
     source: row.source || '',
-    target: row.target || '',
-    target_alt: row.target_alt || '',
     category: row.category || '',
-    note: normalizeGlossaryNote(row.note)
+    note: normalizeGlossaryNote(row.note),
+    targets: supportedLanguages.reduce((acc, lang) => {
+      acc[lang.code] = row.translations[lang.code]?.target || ''
+      return acc
+    }, {} as Record<LanguageCode, string>),
+    enAlt: row.translations.en?.target_alt || ''
   })
 
   useEffect(() => {
     setDraft({
       term_key: row.term_key || '',
       source: row.source || '',
-      target: row.target || '',
-      target_alt: row.target_alt || '',
       category: row.category || '',
-      note: normalizeGlossaryNote(row.note)
+      note: normalizeGlossaryNote(row.note),
+      targets: supportedLanguages.reduce((acc, lang) => {
+        acc[lang.code] = row.translations[lang.code]?.target || ''
+        return acc
+      }, {} as Record<LanguageCode, string>),
+      enAlt: row.translations.en?.target_alt || ''
     })
     setEditing(false)
-  }, [row.id, row.term_key, row.source, row.target, row.target_alt, row.category, row.note])
+  }, [row.source_key, row.term_key, row.source, row.category, row.note, JSON.stringify(row.translations)])
 
   async function save() {
-    await onUpdateTerm(row, draft)
+    const records = visibleLanguages.map((code) => row.translations[code]?.record).filter(Boolean) as GlossaryTerm[]
+    for (const record of records) {
+      const code = languageFromValue(record.language) || 'en'
+      await onUpdateTerm(record, {
+        term_key: draft.term_key,
+        source: draft.source,
+        target: draft.targets[code] || '',
+        target_alt: code === 'en' ? draft.enAlt : '',
+        category: draft.category,
+        note: draft.note
+      })
+    }
     setEditing(false)
   }
 
   async function remove() {
-    await onDeleteTerm(row)
+    const records = visibleLanguages.map((code) => row.translations[code]?.record).filter(Boolean) as GlossaryTerm[]
+    for (const record of records) await onDeleteTerm(record)
   }
 
-  function cell(key: keyof typeof draft) {
+  function sharedCell(key: 'term_key' | 'source' | 'category' | 'note') {
     if (!editing) return <span className="readonly-cell">{draft[key] || '-'}</span>
     return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
   }
 
+  function targetCell(code: LanguageCode) {
+    if (!editing) return <span className="readonly-cell">{draft.targets[code] || '-'}</span>
+    return <input className="cell-input" value={draft.targets[code] || ''} onChange={(event) => setDraft((value) => ({ ...value, targets: { ...value.targets, [code]: event.target.value } }))} />
+  }
+
+  function enAltCell() {
+    if (!editing) return <span className="readonly-cell">{draft.enAlt || '-'}</span>
+    return <input className="cell-input" value={draft.enAlt} onChange={(event) => setDraft((value) => ({ ...value, enAlt: event.target.value }))} />
+  }
+
   return (
-    <tr>
-      <td>{cell('term_key')}</td>
-      <td>{cell('source')}</td>
-      <td>{cell('target')}</td>
-      <td>{cell('target_alt')}</td>
-      <td>{cell('category')}</td>
-      <td>{cell('note')}</td>
+    <tr className={row.conflicts.length ? 'has-conflict' : ''}>
+      <td>{sharedCell('term_key')}{row.conflicts.length ? <span className="conflict-badge" title={row.conflicts.map((item) => `${item.field}: ${item.values.join(' / ')}`).join('\n')}>字段冲突</span> : null}</td>
+      <td>{sharedCell('source')}</td>
+      {visibleLanguages.map((code) => (
+        <React.Fragment key={code}>
+          <td>{targetCell(code)}</td>
+          {altColumnVisible(code) ? <td>{enAltCell()}</td> : null}
+        </React.Fragment>
+      ))}
+      <td>{sharedCell('category')}</td>
+      <td>{sharedCell('note')}</td>
       <td>
         <div className="table-actions">
           {editing ? (
@@ -1906,7 +2459,9 @@ function TranslationArchiveTab({
   onImportArchive,
   onAddTranslation,
   onUpdateTranslation,
-  onDeleteTranslation
+  onDeleteTranslation,
+  selectedLanguage,
+  setSelectedLanguage
 }: {
   project: Project
   archiveArtifact: Artifact | null
@@ -1918,13 +2473,18 @@ function TranslationArchiveTab({
   onAddTranslation: (form: FormData) => void
   onUpdateTranslation: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
   onDeleteTranslation: (entry: TranslationEntry) => Promise<void>
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
 }) {
   const [toolsOpen, setToolsOpen] = useState(false)
-  const entries = project.translations || []
+  const rows = translationWideRows(project)
+  const visibleLanguages = visibleLanguagesFromRows(rows)
+  const lang = languageSpec(selectedLanguage)
+  const colSpan = 4 + visibleLanguages.reduce((total, code) => total + (altColumnVisible(code) ? 2 : 1), 0)
   return (
     <div className="card">
       <div className="card-title">
-        <div className="left">项目译文归档（{entries.length} 条）</div>
+        <div className="left">项目译文归档（{rows.length} 个 CN 源文）</div>
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 导出'}</button>
       </div>
       {toolsOpen ? (
@@ -1932,12 +2492,17 @@ function TranslationArchiveTab({
           <div className="action-card">
             <AssetSelect label="使用已有译文资产" project={project} role={['translation_workbook', 'language_source']} value={archiveArtifact} onChange={setArchiveArtifact} allowEmpty />
             <FileBox label="上传译文 workbook/csv/json" onFile={onUploadArchive} />
-            <div className="row-actions">
-              <button type="button" className="btn btn-primary" disabled={!archiveArtifact || busy} onClick={onImportArchive}>导入到项目译文归档</button>
-              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=xlsx`}>导出 XLSX</a>
-              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=csv`}>导出 CSV</a>
-              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=json`}>导出 JSON</a>
+            <div className="language-inline-select">
+              <span>单语言兜底：</span>
+              <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
             </div>
+            <div className="row-actions">
+              <button type="button" className="btn btn-primary" disabled={!archiveArtifact || busy} onClick={onImportArchive}>自动导入多语言归档</button>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=xlsx`}>导出全部 XLSX</a>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=csv`}>导出全部 CSV</a>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=json`}>导出全部 JSON</a>
+            </div>
+            <div className="muted-left">自动导入会识别 EN/EN2、KR/KO、JP/JA；KR/JP 默认不使用第二译名列。</div>
           </div>
         </div>
       ) : null}
@@ -1945,19 +2510,40 @@ function TranslationArchiveTab({
       <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTranslation(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
         <input name="entry_key" placeholder="ID" />
         <input name="source" placeholder="CN" required />
-        <input name="target" placeholder="EN" />
-        <input name="target_alt" placeholder="EN2" />
+        <input name="target" placeholder={lang.targetHeader} />
+        {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
         <input name="note" placeholder="备注" />
-        <button className="btn btn-primary btn-sm">+ 新增</button>
+        <input name="language" type="hidden" value={selectedLanguage} />
+        <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
       </form>
+      <div className="language-inline-select">
+        <span>新增语言：</span>
+        <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+      </div>
       <div className="table-scroll">
-        <table className="glossary-table translation-archive-table">
-          <thead><tr><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>备注</th><th>操作</th></tr></thead>
+        <table className="glossary-table translation-archive-table translation-wide-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>CN</th>
+              {visibleLanguages.map((code) => {
+                const spec = languageSpec(code)
+                return (
+                  <React.Fragment key={code}>
+                    <th>{spec.targetHeader}</th>
+                    {altColumnVisible(code) ? <th>{spec.altHeader}</th> : null}
+                  </React.Fragment>
+                )
+              })}
+              <th>备注</th>
+              <th>操作</th>
+            </tr>
+          </thead>
           <tbody>
-            {entries.map((entry) => (
-              <TranslationEntryRow key={entry.id} entry={entry} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
+            {rows.map((row) => (
+              <WideTranslationEntryRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
             ))}
-            {!entries.length ? <tr><td colSpan={6} className="muted">暂无译文归档。QA 通过后会自动写入，也可以从已有译文表导入。</td></tr> : null}
+            {!rows.length ? <tr><td colSpan={colSpan} className="muted">暂无译文归档。QA 通过后会自动写入，也可以从已有译文表导入。</td></tr> : null}
           </tbody>
         </table>
       </div>
@@ -1965,58 +2551,95 @@ function TranslationArchiveTab({
   )
 }
 
-function TranslationEntryRow({
-  entry,
+function WideTranslationEntryRow({
+  row,
+  visibleLanguages,
   onUpdate,
   onDelete
 }: {
-  entry: TranslationEntry
+  row: WideTranslationRow
+  visibleLanguages: LanguageCode[]
   onUpdate: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
   onDelete: (entry: TranslationEntry) => Promise<void>
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState({
-    entry_key: entry.entry_key || '',
-    source: entry.source || '',
-    target: entry.target || '',
-    target_alt: entry.target_alt || '',
-    note: entry.note || ''
+    entry_key: row.entry_key || '',
+    source: row.source || '',
+    note: row.note || '',
+    targets: supportedLanguages.reduce((acc, lang) => {
+      acc[lang.code] = row.translations[lang.code]?.target || ''
+      return acc
+    }, {} as Record<LanguageCode, string>),
+    enAlt: row.translations.en?.target_alt || ''
   })
 
   useEffect(() => {
     setDraft({
-      entry_key: entry.entry_key || '',
-      source: entry.source || '',
-      target: entry.target || '',
-      target_alt: entry.target_alt || '',
-      note: entry.note || ''
+      entry_key: row.entry_key || '',
+      source: row.source || '',
+      note: row.note || '',
+      targets: supportedLanguages.reduce((acc, lang) => {
+        acc[lang.code] = row.translations[lang.code]?.target || ''
+        return acc
+      }, {} as Record<LanguageCode, string>),
+      enAlt: row.translations.en?.target_alt || ''
     })
     setEditing(false)
-  }, [entry.id, entry.entry_key, entry.source, entry.target, entry.target_alt, entry.note])
+  }, [row.source_key, row.entry_key, row.source, row.note, JSON.stringify(row.translations)])
 
   async function save() {
-    await onUpdate(entry, draft)
+    const records = visibleLanguages.map((code) => row.translations[code]?.record).filter(Boolean) as TranslationEntry[]
+    for (const record of records) {
+      const code = languageFromValue(record.language) || 'en'
+      await onUpdate(record, {
+        entry_key: draft.entry_key,
+        source: draft.source,
+        target: draft.targets[code] || '',
+        target_alt: code === 'en' ? draft.enAlt : '',
+        note: draft.note
+      })
+    }
     setEditing(false)
   }
 
-  function cell(key: keyof typeof draft) {
+  async function remove() {
+    const records = visibleLanguages.map((code) => row.translations[code]?.record).filter(Boolean) as TranslationEntry[]
+    for (const record of records) await onDelete(record)
+  }
+
+  function sharedCell(key: 'entry_key' | 'source' | 'note') {
     if (!editing) return <span className="readonly-cell">{draft[key] || '-'}</span>
     return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
   }
 
+  function targetCell(code: LanguageCode) {
+    if (!editing) return <span className="readonly-cell">{draft.targets[code] || '-'}</span>
+    return <input className="cell-input" value={draft.targets[code] || ''} onChange={(event) => setDraft((value) => ({ ...value, targets: { ...value.targets, [code]: event.target.value } }))} />
+  }
+
+  function enAltCell() {
+    if (!editing) return <span className="readonly-cell">{draft.enAlt || '-'}</span>
+    return <input className="cell-input" value={draft.enAlt} onChange={(event) => setDraft((value) => ({ ...value, enAlt: event.target.value }))} />
+  }
+
   return (
-    <tr>
-      <td>{cell('entry_key')}</td>
-      <td>{cell('source')}</td>
-      <td>{cell('target')}</td>
-      <td>{cell('target_alt')}</td>
-      <td>{cell('note')}</td>
+    <tr className={row.conflicts.length ? 'has-conflict' : ''}>
+      <td>{sharedCell('entry_key')}{row.conflicts.length ? <span className="conflict-badge" title={row.conflicts.map((item) => `${item.field}: ${item.values.join(' / ')}`).join('\n')}>字段冲突</span> : null}</td>
+      <td>{sharedCell('source')}</td>
+      {visibleLanguages.map((code) => (
+        <React.Fragment key={code}>
+          <td>{targetCell(code)}</td>
+          {altColumnVisible(code) ? <td>{enAltCell()}</td> : null}
+        </React.Fragment>
+      ))}
+      <td>{sharedCell('note')}</td>
       <td>
         <div className="table-actions">
           {editing ? (
             <>
               <button type="button" className="btn btn-primary btn-sm" onClick={save}>保存</button>
-              <button type="button" className="btn btn-sm btn-danger" onClick={() => onDelete(entry)}>删除</button>
+              <button type="button" className="btn btn-sm btn-danger" onClick={remove}>删除</button>
             </>
           ) : (
             <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>编辑</button>
@@ -2040,7 +2663,9 @@ function TranslationTab({
   setSourceArtifact,
   setTermArtifact,
   onUploadSource,
-  onTranslate
+  onTranslate,
+  selectedLanguage,
+  setSelectedLanguage
 }: {
   project: Project
   settings: AppSettings | null
@@ -2055,15 +2680,23 @@ function TranslationTab({
   setTermArtifact: (artifact: Artifact | null) => void
   onUploadSource: (file: File) => void
   onTranslate: () => void
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
 }) {
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id ? translationReadiness : null
   const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project, readiness)
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
+  const lang = languageSpec(selectedLanguage)
+  const promptReady = Boolean(projectPromptForLanguage(project, selectedLanguage))
   return (
     <>
       <div className="card">
-        <div className="card-title"><div className="left">翻译任务</div></div>
+        <div className="card-title"><div className="left">{lang.short} 翻译任务</div></div>
         <div className="action-card">
+          <div className="language-inline-select">
+            <span>翻译目标语言：</span>
+            <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+          </div>
           <AssetSelect label="待翻译语言表" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} allowEmpty />
           <FileBox label="上传待翻译 workbook" onFile={onUploadSource} />
           <button className="btn btn-primary" data-testid="formal-translate" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>开始正式翻译</button>
@@ -2072,7 +2705,7 @@ function TranslationTab({
         </div>
         <SelectedInput label="语言表" artifact={sourceArtifact} />
         <div className="workflow-note-grid">
-          <div><strong>提示词</strong><span>{project.prompt_text ? '已在元信息页生成' : '未生成'}</span></div>
+          <div><strong>{lang.short} 提示词</strong><span>{promptReady ? '已在元信息页生成' : '未生成'}</span></div>
           <div><strong>项目术语库</strong><span>{glossaryCount} 条，run 开始时生成快照</span></div>
           <div><strong>质量门槛</strong><span>必须修复问题为 0 才能交付</span></div>
         </div>
@@ -2126,8 +2759,8 @@ function DeliveryTab({
               </div>
               <div className="row-actions">
                 <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成/刷新最终交付文件</button>
-                {finalFile?.download_url ? <a className="btn btn-ghost btn-sm" href={finalFile.download_url}>下载最终表</a> : <span className="muted-inline">最终表未生成</span>}
-                {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>下载修改表</a> : <span className="muted-inline">修改表未生成</span>}
+                {finalFile?.download_url ? <a className="btn btn-ghost btn-sm" href={finalFile.download_url}>最终译文 Excel</a> : <span className="muted-inline">最终译文 Excel 未生成</span>}
+                {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>修改记录 Excel</a> : <span className="muted-inline">修改记录 Excel 未生成</span>}
               </div>
               <div className="delivery-files">
                 <span>{finalFile?.filename || '-'}</span>
@@ -2137,7 +2770,7 @@ function DeliveryTab({
           )
         })}
       </div>
-      <div className="muted-left">翻译和校对的基础交付一致：最终 workbook + QA 修改表。术语表在“术语表”页单独导出；元信息和提示词只在“元信息”页查看。</div>
+      <div className="muted-left">语言包最终交付固定为最终译文 Excel + 修改记录 Excel；术语、提示词、workpack 等过程产物不放入最终交付。</div>
     </div>
   )
 }
@@ -2171,6 +2804,631 @@ function translationReadinessBlockReason(readiness?: TranslationReadiness | null
   return ''
 }
 
+
+const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译/导入', '校对回填', '交付']
+
+function AnnouncementProjectPanel({ tasks, onStartAnnouncement }: { tasks: AnnouncementTask[]; onStartAnnouncement: () => void }) {
+  const latest = tasks[0]
+  return (
+    <div className="card tight announcement-project-panel">
+      <div className="card-title">
+        <div className="left">📣 公告任务 / 外文本</div>
+        <button className="btn btn-ghost btn-sm" onClick={onStartAnnouncement}>进入公告工作流</button>
+      </div>
+      {!tasks.length ? (
+        <div className="panel-desc">暂无公告任务。公告翻译归属于当前项目，用项目术语、QA归档和项目提示词约束游戏外文本。</div>
+      ) : (
+        <div className="announcement-task-list">
+          {tasks.slice(0, 4).map((task) => (
+            <div key={task.id} className="announcement-task-row">
+              <div>
+                <strong>{task.title || task.id}</strong>
+                <span>{task.source_format?.toUpperCase() || '-'} · STEP {task.current_step || 1}/9 · {announcementStatusLabel(task.status)}</span>
+                <span>{announcementLanguageSummary(task)}</span>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={onStartAnnouncement}>继续</button>
+            </div>
+          ))}
+          {latest ? <div className="panel-desc">最近任务：{latest.title || latest.id}</div> : null}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function announcementStatusLabel(status?: string): string {
+  const labels: Record<string, string> = {
+    created: '已创建',
+    constraints_ready: '约束已识别',
+    languages_ready: '目标语言已确认',
+    terms_ready: '术语已提取',
+    lookup_ready: '译文已反查',
+    prepared: '翻译准备完成',
+    translated: '译文已导入',
+    applied: '已回填',
+    delivered: '已交付',
+    failed: '失败',
+  }
+  return labels[status || ''] || status || '未开始'
+}
+
+function announcementLanguageSummary(task: AnnouncementTask): string {
+  const languages = normalizeLanguageArray(task.selected_languages || [])
+  return languages.length ? `目标语言：${languages.map((lang) => languageSpec(lang).short).join(' / ')}` : '目标语言：待识别'
+}
+
+function AnnouncementWizard({
+  project,
+  busy,
+  status,
+  settings,
+  assetArtifacts,
+  onUploadAsset,
+  onUploadConstraint,
+  onUploadResponse,
+  onCreateTask,
+  onTaskAction,
+  onBack
+}: {
+  project: Project
+  busy: boolean
+  status: string
+  settings: AppSettings | null
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
+  assetArtifacts: Artifact[]
+  announcementText: string
+  setAnnouncementText: (value: string) => void
+  lookupResult: AnnouncementLookupResult | null
+  onUploadAsset: (file: File) => Promise<Artifact | null>
+  onUploadConstraint: (file: File) => Promise<Artifact | null>
+  onUploadResponse: (file: File) => Promise<Artifact | null>
+  onCreateTask: (payload: Record<string, unknown>) => Promise<AnnouncementTask | null>
+  onTaskAction: (taskId: string, endpoint: string, payload?: Record<string, unknown>) => Promise<AnnouncementTaskResult | null>
+  onLookup: (text: string, materialArtifactIds: string[], options: AnnouncementLookupOptions) => void
+  onBack: () => void
+}) {
+  const tasks = project.announcement_tasks || []
+  const [step, setStep] = useState(1)
+  const [taskId, setTaskId] = useState(tasks[0]?.id || '')
+  const activeTask = tasks.find((task) => task.id === taskId) || null
+  const [sourceArtifactId, setSourceArtifactId] = useState(activeTask?.source_artifact_id || '')
+  const [constraintArtifactIds, setConstraintArtifactIds] = useState<string[]>(announcementTaskConstraintIds(activeTask))
+  const [selectedLanguages, setSelectedLanguages] = useState<LanguageCode[]>(activeTask?.selected_languages?.length ? activeTask.selected_languages : [])
+  const [responseArtifactIds, setResponseArtifactIds] = useState<string[]>([])
+  const [aiSupplement, setAiSupplement] = useState(Boolean((activeTask?.metadata || {}).ai_supplement))
+  const [aiSupplementResponseArtifactId, setAiSupplementResponseArtifactId] = useState('')
+  const artifacts = project.artifacts || []
+  const sourceCandidates = uniqueArtifactsByContent([...assetArtifacts, ...artifacts.filter((artifact) => artifact.kind === 'asset')])
+  const constraintCandidates = artifacts.filter((artifact) => artifact.kind === 'language_table')
+  const activeMeta = (activeTask?.metadata || {}) as Record<string, unknown>
+  const detectedLanguages = normalizeLanguageArray(activeMeta.detected_languages)
+  const effectiveLanguages = selectedLanguages.length ? selectedLanguages : (activeTask?.selected_languages || detectedLanguages)
+  const providerReady = settings?.provider && settings.provider !== 'mock' && settings.api_key === 'configured'
+  const showLanguageSubflows = Boolean(activeTask && step >= 4)
+
+  useEffect(() => {
+    if (!taskId && tasks[0]) setTaskId(tasks[0].id)
+  }, [tasks.length, taskId])
+
+  useEffect(() => {
+    if (!activeTask) return
+    setStep(activeTask.current_step || 1)
+    setSourceArtifactId(activeTask.source_artifact_id || '')
+    setConstraintArtifactIds(announcementTaskConstraintIds(activeTask))
+    setSelectedLanguages(activeTask.selected_languages?.length ? activeTask.selected_languages : normalizeLanguageArray((activeTask.metadata || {}).detected_languages))
+    const aiMeta = (activeTask.metadata || {}).ai_supplement as Record<string, unknown> | undefined
+    setAiSupplement(Boolean(aiMeta?.enabled))
+    setAiSupplementResponseArtifactId(String(aiMeta?.response_artifact_id || ''))
+  }, [activeTask?.id, activeTask?.updated_at])
+
+  function toggleConstraint(id: string) {
+    setConstraintArtifactIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id])
+  }
+
+  function toggleLanguage(code: LanguageCode) {
+    setSelectedLanguages((prev) => prev.includes(code) ? prev.filter((item) => item !== code) : [...prev, code])
+  }
+
+  async function createTaskFromCurrent() {
+    const task = await onCreateTask({
+      source_artifact_id: sourceArtifactId,
+      language_table_artifact_ids: constraintArtifactIds,
+      constraint_artifact_ids: constraintArtifactIds,
+      languages: selectedLanguages,
+      include_project_archive: true,
+      output_policy: 'same_format'
+    })
+    if (task) {
+      setTaskId(task.id)
+      setStep(2)
+    }
+  }
+
+  async function run(endpoint: string, nextStep?: number, extra: Record<string, unknown> = {}) {
+    if (!activeTask) return
+    const result = await onTaskAction(activeTask.id, endpoint, {
+      language_table_artifact_ids: constraintArtifactIds,
+      constraint_artifact_ids: constraintArtifactIds,
+      languages: effectiveLanguages,
+      include_project_archive: true,
+      response_artifact_ids: responseArtifactIds,
+      ai_supplement: aiSupplement,
+      ai_supplement_response_artifact_id: aiSupplementResponseArtifactId || undefined,
+      ...extra
+    })
+    if (result?.task) setTaskId(result.task.id)
+    if (result && nextStep) setStep(nextStep)
+  }
+
+  async function importExtractedTermsFile(file: File) {
+    if (!activeTask) return
+    const artifact = await onUploadConstraint(file)
+    if (!artifact) return
+    setConstraintArtifactIds((prev) => [...new Set([artifact.id, ...prev])])
+    await run('import-terms', 4, { terms_artifact_id: artifact.id })
+  }
+
+  async function saveEditedTerms(terms: AnnouncementTermRow[], languages: LanguageCode[]) {
+    await run('import-terms', 4, { terms, languages })
+  }
+
+  return (
+    <div className="wizard announcement-wizard">
+      <div className="proj-head">
+        <div>
+          <h2>📣 公告翻译 · 当前项目：{project.icon} {project.name}</h2>
+          <div className="desc">单文档多语言外文本工作流：先提取公告术语，再按 QA 归档优先反查译文，最后走 AI 翻译、QA 回填和交付。不会使用谷歌机翻。</div>
+        </div>
+        <button className="btn btn-ghost" onClick={onBack}>← 返回项目概览</button>
+      </div>
+
+      <div className="steps-nav announcement-steps">
+        {announcementSteps.map((title, index) => (
+          <button key={title} className={`step-item ${index + 1 === step ? 'active' : activeTask && (activeTask.current_step || 1) > index + 1 ? 'done' : ''}`} onClick={() => setStep(index + 1)}>
+            <span className="num">{index + 1}</span>{title}
+          </button>
+        ))}
+      </div>
+      <ActionStatus status={status} busy={busy} />
+
+      <div className="announcement-shell">
+        <section className="wizard-panel announcement-panel">
+          {showLanguageSubflows ? (
+            <AnnouncementLanguageSubflows
+              task={activeTask}
+              effectiveLanguages={effectiveLanguages}
+              detectedLanguages={detectedLanguages}
+              onToggleLanguage={toggleLanguage}
+            />
+          ) : null}
+          {step === 1 ? (
+            <>
+              <div className="panel-title"><span className="badge">STEP 1</span>公告资料</div>
+              <div className="panel-desc">上传一个待翻译公告文档。v1 支持 DOCX / TXT / XLSX；默认交付同格式，同时保留 Excel 中转表和 QA 摘要。</div>
+              <div className="upload-row">
+                <FileBox label="上传公告源文档（DOCX / TXT / XLSX）" onFile={async (file) => { const artifact = await onUploadAsset(file); if (artifact) setSourceArtifactId(artifact.id) }} />
+                <div className="asset-list">
+                  <div className="ai-header">选择公告源文档</div>
+                  {!sourceCandidates.length ? <div className="warn-line">暂无源文档，请先上传。</div> : null}
+                  {sourceCandidates.map((artifact) => (
+                    <label key={artifact.id} className="check-row">
+                      <input type="radio" name="announcement-source" checked={sourceArtifactId === artifact.id} onChange={() => setSourceArtifactId(artifact.id)} />
+                      <span>{artifact.label}<em>{artifact.kind} · {artifact.path}</em></span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="row-actions">
+                <button className="btn btn-primary" disabled={busy || !sourceArtifactId} onClick={createTaskFromCurrent}>{activeTask ? '用当前选择新建任务' : '创建公告任务'}</button>
+                {activeTask ? <button className="btn btn-ghost" onClick={() => setStep(2)}>继续当前任务</button> : null}
+              </div>
+            </>
+          ) : step === 2 ? (
+            <>
+              <div className="panel-title"><span className="badge">STEP 2</span>约束来源</div>
+              <div className="panel-desc">选择完整语言表 / 术语交付表，并默认叠加项目 QA 归档。冲突时 QA 归档优先，语言表补缺。</div>
+              <div className="upload-row">
+                <FileBox label="上传语言表 / 术语交付表（XLSX）" onFile={async (file) => { const artifact = await onUploadConstraint(file); if (artifact) setConstraintArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
+                <div className="asset-list">
+                  <div className="ai-header">约束文件</div>
+                  {!constraintCandidates.length ? <div className="warn-line">没有约束文件；仍可只用项目 QA 归档或生成缺约束提示。</div> : null}
+                  {constraintCandidates.map((artifact) => (
+                    <label key={artifact.id} className="check-row">
+                      <input type="checkbox" checked={constraintArtifactIds.includes(artifact.id)} onChange={() => toggleConstraint(artifact.id)} />
+                      <span>{artifact.label}<em>{artifact.kind}</em></span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="workflow-note-grid">
+                <div><strong>项目 QA 归档</strong><span>默认参与，且优先级高于语言表</span></div>
+                <div><strong>已选约束文件</strong><span>{constraintArtifactIds.length} 个</span></div>
+                <div><strong>当前任务</strong><span>{activeTask ? activeTask.id : '请先创建任务'}</span></div>
+              </div>
+              <div className="row-actions"><button className="btn btn-primary" disabled={!activeTask || busy} onClick={() => run('inspect-constraints', 3)}>识别语言与约束</button></div>
+            </>
+          ) : step === 3 ? (
+            <>
+              <div className="panel-title"><span className="badge">STEP 3</span>目标语言</div>
+              <div className="panel-desc">系统从约束文件和项目归档识别目标语言；识别到的语言默认勾选，也可以手动勾选或取消。</div>
+              <div className="announcement-language-chip-grid">
+                {announcementLanguages.map((lang) => {
+                  const selected = effectiveLanguages.includes(lang.code)
+                  const detected = detectedLanguages.includes(lang.code)
+                  return (
+                    <label key={lang.code} className={`announcement-language-chip ${selected ? 'selected' : ''} ${detected ? 'detected' : 'manual'}`}>
+                      <input type="checkbox" checked={selected} onChange={() => toggleLanguage(lang.code)} />
+                      <span><strong>{lang.label}</strong><em>{detected ? '已识别' : '可手动选择'} / {selected ? '已勾选' : '未勾选'}</em></span>
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="row-actions"><button className="btn btn-primary" disabled={!activeTask || busy || !effectiveLanguages.length} onClick={() => run('inspect-constraints', 4, { confirm_languages: true })}>确认目标语言</button></div>
+            </>
+          ) : step === 4 ? (
+            <AnnouncementTermsStep
+              activeTask={activeTask}
+              busy={busy}
+              effectiveLanguages={effectiveLanguages}
+              onExtract={() => run('extract-terms', 4)}
+              onImportFile={importExtractedTermsFile}
+              onUploadAiSupplementResponse={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setAiSupplementResponseArtifactId(artifact.id) }}
+              onSaveTerms={saveEditedTerms}
+              aiSupplement={aiSupplement}
+              setAiSupplement={setAiSupplement}
+              aiSupplementResponseArtifactId={aiSupplementResponseArtifactId}
+            />
+          ) : step === 5 ? (
+            <AnnouncementActionStep title="译文反查" step={5} desc="按目标语言从项目 QA 归档和语言表反查译文，QA 归档优先；缺失术语会标记但不阻断翻译准备。" activeTask={activeTask} busy={busy} actionLabel="反查术语译文" onAction={() => run('lookup-translations', 6)} />
+          ) : step === 6 ? (
+            <AnnouncementActionStep title="翻译准备" step={6} desc="按语言生成中转表、manifest、prompt snapshot 和 workpack。后续可直接调用 AI provider 或下载 workpack 外部翻译。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备包" onAction={() => run('prepare', 7)} />
+          ) : step === 7 ? (
+            <>
+              <div className="panel-title"><span className="badge">STEP 7</span>AI 翻译 / 导入</div>
+              <div className="panel-desc">有正式 OpenAI/Claude 配置时可直接翻译；否则下载 workpack 后上传外部 AI response。不会使用谷歌机翻或在线机翻聚合器。</div>
+              <div className="workflow-note-grid">
+                <div><strong>AI provider</strong><span>{providerReady ? `${settings?.provider} 已配置` : '未配置或为 mock，建议上传 AI response'}</span></div>
+                <div><strong>目标语言</strong><span>{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
+                <div><strong>上传 response</strong><span>{responseArtifactIds.length} 个</span></div>
+              </div>
+              <div className="upload-row">
+                <FileBox label="上传 ai_response_<lang>.jsonl" onFile={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setResponseArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
+                <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
+              </div>
+              <div className="row-actions">
+                <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={() => run('translate', 8)}>调用已配置 AI 翻译</button>
+                <button className="btn btn-primary" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入 AI response</button>
+              </div>
+            </>
+          ) : step === 8 ? (
+            <AnnouncementActionStep title="校对回填" step={8} desc="按语言校验 ID、顺序、变量、标签、术语、中文残留和格式指纹；hard blocker 未清零不生成最终交付包。" activeTask={activeTask} busy={busy} actionLabel="QA 并回填同格式文件" onAction={() => run('apply', 9)} />
+          ) : (
+            <AnnouncementActionStep title="交付" step={9} desc="生成公告交付总包：只包含按语言分目录的成品和 QA 摘要；中转表、manifest、workpack 留在过程产物区。" activeTask={activeTask} busy={busy} actionLabel="生成交付总包" onAction={() => run('deliver', 9, { date_stamp: new Date().toISOString().slice(0, 10).replace(/-/g, '') })} />
+          )}
+
+          {activeTask ? <AnnouncementTaskArtifacts task={activeTask} /> : null}
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function AnnouncementTermsStep({
+  activeTask,
+  busy,
+  effectiveLanguages,
+  onExtract,
+  onImportFile,
+  onUploadAiSupplementResponse,
+  onSaveTerms,
+  aiSupplement,
+  setAiSupplement,
+  aiSupplementResponseArtifactId
+}: {
+  activeTask: AnnouncementTask | null
+  busy: boolean
+  effectiveLanguages: LanguageCode[]
+  onExtract: () => void
+  onImportFile: (file: File) => void
+  onUploadAiSupplementResponse: (file: File) => void
+  onSaveTerms: (terms: AnnouncementTermRow[], languages: LanguageCode[]) => void
+  aiSupplement: boolean
+  setAiSupplement: (value: boolean) => void
+  aiSupplementResponseArtifactId: string
+}) {
+  const [draftTerms, setDraftTerms] = useState<AnnouncementTermRow[]>([])
+  const languages = announcementTermLanguages(activeTask, effectiveLanguages)
+  const meta = activeTask?.metadata || {}
+  const exportArtifact = activeTask?.artifacts?.find((artifact) => artifact.id === meta.terms_artifact_id)
+    || activeTask?.artifacts?.find((artifact) => artifact.kind === 'announcement_terms_workbook')
+  const aiPacketArtifact = activeTask?.artifacts?.find((artifact) => artifact.kind === 'announcement_ai_supplement_packet')
+  const aiReportArtifact = activeTask?.artifacts?.find((artifact) => artifact.kind === 'announcement_ai_supplement_report')
+
+  useEffect(() => {
+    setDraftTerms(announcementTermsFromTask(activeTask))
+  }, [activeTask?.id, activeTask?.updated_at])
+
+  function updateTerm(index: number, patch: Partial<AnnouncementTermRow>) {
+    setDraftTerms((prev) => prev.map((term, termIndex) => termIndex === index ? { ...term, ...patch } : term))
+  }
+
+  function updateTranslation(index: number, language: LanguageCode, value: string) {
+    setDraftTerms((prev) => prev.map((term, termIndex) => {
+      if (termIndex !== index) return term
+      return { ...term, translations: { ...(term.translations || {}), [language]: value } }
+    }))
+  }
+
+  function addTerm() {
+    setDraftTerms((prev) => [...prev, { id: '', source: '', translations: {} }])
+  }
+
+  function removeTerm(index: number) {
+    setDraftTerms((prev) => prev.filter((_, termIndex) => termIndex !== index))
+  }
+
+  return (
+    <>
+      <div className="panel-title"><span className="badge">STEP 4</span>术语提取</div>
+      <div className="panel-desc">从公告原文中提取本次需要的术语，生成任务内临时术语表；可导出、上传已有提取结果模拟、编辑后保存，不自动写回项目术语库。</div>
+      {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
+      <AnnouncementTaskSnapshot task={activeTask} />
+      <div className="asset-list gap-top">
+        <label className="check-row">
+          <input type="checkbox" checked={aiSupplement} onChange={(event) => setAiSupplement(event.target.checked)} />
+          <span>启用 AI 漏词补充包<em>先做本地精确提取；开启后额外生成精简 evidence packet，可上传结构化 JSON response 合并有证据的漏词。</em></span>
+        </label>
+        {aiSupplement ? (
+          <div className="upload-row compact-upload-row">
+            <FileBox label="上传 AI 补充响应 JSON（可选）" onFile={onUploadAiSupplementResponse} />
+            <div className="workflow-note-grid compact-grid">
+              <div><strong>响应文件</strong><span>{aiSupplementResponseArtifactId || '未上传：仅生成 packet/report'}</span></div>
+              <div><strong>AI 补充包</strong><span>{aiPacketArtifact ? aiPacketArtifact.label : '待生成'}</span></div>
+              <div><strong>AI 报告</strong><span>{aiReportArtifact ? aiReportArtifact.label : '待生成'}</span></div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="announcement-terms-toolbar">
+        <button className="btn btn-primary" disabled={!activeTask || busy} onClick={onExtract}>{aiSupplement ? '提取公告术语 + 生成 AI 补充包' : '提取公告术语'}</button>
+        <button className="btn btn-ghost" disabled={!activeTask || busy || !draftTerms.length} onClick={() => onSaveTerms(draftTerms, languages)}>保存编辑并生成导出表</button>
+        <button className="btn btn-ghost" disabled={busy} onClick={addTerm}>+ 新增术语</button>
+        {exportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${exportArtifact.id}/download`}>导出术语表</a> : null}
+        {aiPacketArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${aiPacketArtifact.id}/download`}>下载 AI 补充包</a> : null}
+        {aiReportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${aiReportArtifact.id}/download`}>下载 AI 报告</a> : null}
+      </div>
+      <div className="upload-row gap-top">
+        <FileBox label="上传已提取公告术语表（XLSX）" onFile={onImportFile} />
+        <div className="asset-list">
+          <div className="ai-header">当前术语状态</div>
+          <div className="workflow-note-grid compact-grid">
+            <div><strong>术语行</strong><span>{draftTerms.length} 条</span></div>
+            <div><strong>语言列</strong><span>{languages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
+            <div><strong>导出文件</strong><span>{exportArtifact ? exportArtifact.label : '尚未生成'}</span></div>
+          </div>
+        </div>
+      </div>
+      {!draftTerms.length ? (
+        <div className="warn-line gap-top">暂无已提取术语。可以点击“提取公告术语”，或上传已有 announcement_terms.xlsx 模拟已提取场景。</div>
+      ) : (
+        <div className="announcement-terms-table-wrap gap-top">
+          <table className="announcement-terms-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>CN</th>
+                {languages.map((language) => <th key={language}>{languageSpec(language).targetHeader}</th>)}
+                <th>命中</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {draftTerms.map((term, index) => (
+                <tr key={`${index}-${term.id || ''}`}>
+                  <td><input value={term.id || ''} onChange={(event) => updateTerm(index, { id: event.target.value })} /></td>
+                  <td><input value={term.source || ''} onChange={(event) => updateTerm(index, { source: event.target.value })} /></td>
+                  {languages.map((language) => (
+                    <td key={language}><input value={(term.translations || {})[language] || ''} onChange={(event) => updateTranslation(index, language, event.target.value)} /></td>
+                  ))}
+                  <td>{term.hit_count ?? '-'}</td>
+                  <td><button className="btn btn-ghost btn-sm" onClick={() => removeTerm(index)}>删除</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  )
+}
+
+function announcementTermsFromTask(task: AnnouncementTask | null): AnnouncementTermRow[] {
+  const terms = task?.metadata?.terms
+  if (!Array.isArray(terms)) return []
+  return terms.map((item, index) => {
+    const row = item as Record<string, unknown>
+    const translations = (row.translations && typeof row.translations === 'object' ? row.translations : {}) as Record<string, unknown>
+    const normalizedTranslations: Record<string, string> = {}
+    for (const [key, value] of Object.entries(translations)) {
+      const language = normalizeLanguageCode(key)
+      if (language) normalizedTranslations[language] = String(value || '')
+    }
+    return {
+      id: String(row.id || row.term_key || index + 1),
+      source: String(row.source || row.cn || ''),
+      translations: normalizedTranslations,
+      hit_count: typeof row.hit_count === 'number' ? row.hit_count : undefined,
+      first_position: typeof row.first_position === 'number' ? row.first_position : undefined
+    }
+  })
+}
+
+function announcementTermLanguages(task: AnnouncementTask | null, effectiveLanguages: LanguageCode[]): LanguageCode[] {
+  const found = new Set<LanguageCode>()
+  effectiveLanguages.forEach((language) => found.add(language))
+  normalizeLanguageArray(task?.selected_languages || []).forEach((language) => found.add(language))
+  normalizeLanguageArray((task?.metadata || {}).languages).forEach((language) => found.add(language))
+  for (const term of announcementTermsFromTask(task)) {
+    Object.keys(term.translations || {}).forEach((language) => {
+      const code = normalizeLanguageCode(language)
+      if (code) found.add(code)
+    })
+  }
+  return allLanguageOptions.map((language) => language.code).filter((code) => found.has(code))
+}
+
+
+function AnnouncementActionStep({ title, step, desc, activeTask, busy, actionLabel, onAction }: { title: string; step: number; desc: string; activeTask: AnnouncementTask | null; busy: boolean; actionLabel: string; onAction: () => void }) {
+  return (
+    <>
+      <div className="panel-title"><span className="badge">STEP {step}</span>{title}</div>
+      <div className="panel-desc">{desc}</div>
+      {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
+      <AnnouncementTaskSnapshot task={activeTask} />
+      <div className="row-actions"><button className="btn btn-primary" disabled={!activeTask || busy} onClick={onAction}>{actionLabel}</button></div>
+    </>
+  )
+}
+
+function AnnouncementLanguageSubflows({
+  task,
+  effectiveLanguages,
+  detectedLanguages,
+  onToggleLanguage
+}: {
+  task: AnnouncementTask | null
+  effectiveLanguages: LanguageCode[]
+  detectedLanguages: LanguageCode[]
+  onToggleLanguage: (code: LanguageCode) => void
+}) {
+  if (!task) return null
+  return (
+    <div className="announcement-subflow-strip">
+      <div className="ai-header">语言子流程</div>
+      <div className="announcement-subflow-row">
+        {announcementLanguages.map((lang) => {
+          const child = task.languages?.find((item) => item.language === lang.code)
+          const selected = effectiveLanguages.includes(lang.code)
+          if (!selected && !child && !detectedLanguages.includes(lang.code)) return null
+          return (
+            <button key={lang.code} className={`announcement-subflow-card ${selected ? 'selected' : ''} ${child ? child.status : 'is-empty'}`} onClick={() => onToggleLanguage(lang.code)}>
+              <strong>{lang.label}</strong>
+              <span>{child ? `STEP ${child.current_step}/9` : selected ? '已选择' : '未选择'}</span>
+              <em>{child?.status || (detectedLanguages.includes(lang.code) ? '检测到约束' : '待选择')}</em>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function AnnouncementTaskSnapshot({ task }: { task: AnnouncementTask | null }) {
+  if (!task) return null
+  const meta = task.metadata || {}
+  return (
+    <div className="workflow-note-grid">
+      <div><strong>任务状态</strong><span>{task.status} · STEP {task.current_step}/9</span></div>
+      <div><strong>源格式</strong><span>{task.source_format?.toUpperCase() || '-'}</span></div>
+      <div><strong>目标语言</strong><span>{(task.selected_languages || []).map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
+      <div><strong>术语数</strong><span>{String((meta.terms_summary as Record<string, unknown> | undefined)?.terms ?? '-')}</span></div>
+      <div><strong>缺失术语</strong><span>{String((meta.lookup_summary as Record<string, unknown> | undefined)?.missing_terms ?? '-')}</span></div>
+      <div><strong>Hard blocker</strong><span>{String(meta.hard_blockers ?? '-')}</span></div>
+    </div>
+  )
+}
+
+function AnnouncementTaskArtifacts({ task }: { task: AnnouncementTask }) {
+  const artifacts = task.artifacts || []
+  if (!artifacts.length) return null
+  const finalKinds = new Set(['announcement_delivery_package', 'announcement_docx_delivery_package'])
+  const qaKinds = new Set(['announcement_output_file', 'announcement_docx_output_docx', 'announcement_qa_summary', 'announcement_docx_qa_summary'])
+  const finalArtifacts = artifacts.filter((artifact) => finalKinds.has(artifact.kind))
+  const qaArtifacts = artifacts.filter((artifact) => qaKinds.has(artifact.kind))
+  const processArtifacts = artifacts.filter((artifact) => !finalKinds.has(artifact.kind) && !qaKinds.has(artifact.kind))
+  return (
+    <div className="card tight announcement-artifacts">
+      <div className="card-title"><div className="left">任务产物</div></div>
+      {finalArtifacts.length ? (
+        <div className="asset-list">
+          <div className="ai-header">最终交付</div>
+          <div className="row-actions wrap">
+            {finalArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-primary btn-sm" href={`/api/artifacts/${artifact.id}/download`}>公告交付 ZIP · {artifact.label}</a>)}
+          </div>
+        </div>
+      ) : null}
+      {qaArtifacts.length ? (
+        <div className="asset-list">
+          <div className="ai-header">成品与 QA</div>
+          <div className="row-actions wrap">
+            {qaArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{announcementArtifactTypeLabel(artifact)} · {artifact.label}</a>)}
+          </div>
+        </div>
+      ) : null}
+      {processArtifacts.length ? (
+        <details className="asset-list">
+          <summary className="ai-header">过程产物 / 审计产物（{processArtifacts.length}）</summary>
+          <div className="row-actions wrap">
+            {processArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{announcementArtifactTypeLabel(artifact)} · {artifact.label}</a>)}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  )
+}
+
+function announcementArtifactTypeLabel(artifact: Artifact): string {
+  if (artifact.kind.includes('delivery_package')) return '公告交付 ZIP'
+  if (artifact.kind.includes('qa_summary')) return 'QA 摘要'
+  if (artifact.kind.includes('output')) return '公告成品'
+  if (artifact.kind.includes('workpack')) return '过程产物 / 审计产物'
+  if (artifact.kind.includes('manifest')) return '过程产物 / 审计产物'
+  if (artifact.kind.includes('prompt')) return '过程产物 / 审计产物'
+  if (artifact.kind.includes('ai_supplement_packet')) return 'AI 补充包'
+  if (artifact.kind.includes('ai_supplement_report')) return 'AI 补充报告'
+  if (artifact.kind.includes('translation_workbook')) return '中转表'
+  if (artifact.kind.includes('terms')) return '公告术语表'
+  return '过程产物 / 审计产物'
+}
+
+function ArtifactLinks({ artifacts, kinds }: { artifacts: Artifact[]; kinds: string[] }) {
+  const filtered = artifacts.filter((artifact) => kinds.includes(artifact.kind))
+  return (
+    <div className="asset-list">
+      <div className="ai-header">可下载准备产物</div>
+      {!filtered.length ? <div className="warn-line">准备产物尚未生成，请先完成 STEP 6。</div> : null}
+      {filtered.map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
+    </div>
+  )
+}
+
+function announcementTaskConstraintIds(task: AnnouncementTask | null): string[] {
+  const meta = task?.metadata || {}
+  const values = [...((meta.language_table_artifact_ids as string[] | undefined) || []), ...((meta.constraint_artifact_ids as string[] | undefined) || [])]
+  return [...new Set(values.filter(Boolean))]
+}
+
+function normalizeLanguageCode(value: unknown): LanguageCode | null {
+  const raw = String(value || '').trim().toLowerCase().replace('_', '-')
+  const compact = raw.replace(/[\s-]/g, '')
+  const aliases: Record<string, LanguageCode> = {
+    kr: 'ko', jp: 'ja', fre: 'fr', ger: 'de', rus: 'ru', ita: 'it', spa: 'es', por: 'pt', ptbr: 'pt', 'pt-br': 'pt', tk: 'tr', tur: 'tr', id: 'idn', ind: 'idn', tha: 'th', ara: 'ar'
+  }
+  const code = aliases[raw] || aliases[compact] || raw
+  return isLanguageCode(code) ? code : null
+}
+
+function normalizeLanguageArray(value: unknown): LanguageCode[] {
+  if (!Array.isArray(value)) return []
+  const normalized: LanguageCode[] = []
+  for (const item of value) {
+    const code = normalizeLanguageCode(item)
+    if (code && !normalized.includes(code)) normalized.push(code)
+  }
+  return allLanguageOptions.map((lang) => lang.code).filter((code) => normalized.includes(code))
+}
+
 function Wizard(props: {
   project: Project
   step: number
@@ -2190,8 +3448,8 @@ function Wizard(props: {
   qualityIssues: QualityIssue[]
   settings: AppSettings | null
   status: string
-  selectedLangs: string[]
-  setSelectedLangs: (langs: string[]) => void
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
   setQaArtifact: (artifact: Artifact | null) => void
@@ -2292,19 +3550,22 @@ function StepAnalyze({
   onAnalyze,
   project,
   busy,
-  assetArtifacts
+  assetArtifacts,
+  selectedLanguage
 }: {
   onAnalyze: () => void
   project: Project
   busy: boolean
   assetArtifacts: Artifact[]
+  selectedLanguage: LanguageCode
 }) {
+  const lang = languageSpec(selectedLanguage)
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 2</span>AI 分析与专属提示词生成</div>
       <div className="panel-desc">基于文字资料、已归档素材和项目资产生成提示词、项目规则与元信息。生成后会自动保存到当前项目。当前素材：{assetArtifacts.length} 个。</div>
       <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>🤖 启动 AI 分析</button>
-      <div className="ai-card"><div className="ai-header">当前提示词</div><pre>{project.prompt_text || '尚未生成'}</pre></div>
+      <div className="ai-card"><div className="ai-header">当前 {lang.short} 提示词</div><pre>{projectPromptForLanguage(project, selectedLanguage) || '尚未生成'}</pre></div>
       <ProjectMetaTable project={project} />
     </>
   )
@@ -2318,7 +3579,8 @@ function StepTerm({
   glossaryPreview,
   onGlossaryPreview,
   onGlossaryImport,
-  busy
+  busy,
+  selectedLanguage
 }: {
   project: Project
   onUploadTerm: (file: File) => void
@@ -2328,7 +3590,9 @@ function StepTerm({
   onGlossaryPreview: () => void
   onGlossaryImport: () => void
   busy: boolean
+  selectedLanguage: LanguageCode
 }) {
+  const lang = languageSpec(selectedLanguage)
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 3</span>导入游戏术语表</div>
@@ -2339,11 +3603,11 @@ function StepTerm({
         <div className="row-actions">
           <button className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语</button>
           <button className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入到项目术语</button>
-          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出术语</a>
+          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx&${languageQuery(selectedLanguage)}`}>导出 {lang.short} 术语</a>
         </div>
       </div>
       {termArtifact ? <ArtifactNote artifact={termArtifact} /> : null}
-      {glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} /> : null}
+      {glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} selectedLanguage={selectedLanguage} /> : null}
     </>
   )
 }
@@ -2352,17 +3616,20 @@ function StepSource({
   project,
   onUploadSource,
   sourceArtifact,
-  setSourceArtifact
+  setSourceArtifact,
+  selectedLanguage
 }: {
   project: Project
   onUploadSource: (file: File) => void
   sourceArtifact: Artifact | null
   setSourceArtifact: (artifact: Artifact | null) => void
+  selectedLanguage: LanguageCode
 }) {
+  const lang = languageSpec(selectedLanguage)
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 4</span>导入待翻译内容</div>
-      <div className="panel-desc">可选择已有语言表，也可上传新的 Excel 语言表；默认字段：ID | cn | en。</div>
+      <div className="panel-desc">可选择已有语言表，也可上传新的 Excel 语言表；默认字段：ID | cn | {lang.targetHeader}。</div>
       <div className="action-card">
         <AssetSelect label="使用已有语言表" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
         <FileBox label="上传 language.xlsx" onFile={onUploadSource} />
@@ -2383,7 +3650,8 @@ function StepFreqV2({
   busy,
   onUpdateCandidate,
   onResolveCandidates,
-  onTranslateMissingCandidates
+  onTranslateMissingCandidates,
+  selectedLanguage
 }: {
   project: Project
   onGlossaryExtract: () => void
@@ -2397,7 +3665,9 @@ function StepFreqV2({
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
   onTranslateMissingCandidates: (batchId: string) => void
+  selectedLanguage: LanguageCode
 }) {
+  const lang = languageSpec(selectedLanguage)
   const [expanded, setExpanded] = useState(false)
   const backfill = latestRun?.kind === 'glossary' ? latestRun.metadata?.glossary_backfill as Record<string, unknown> | undefined : undefined
   const activeBatch = glossaryBatches[0] || null
@@ -2413,7 +3683,7 @@ function StepFreqV2({
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 5</span>高频词扫描 & 术语候选审核</div>
-      <div className="panel-desc">先扫描语言表中的高频中文词；缺少 EN 的候选需要显式补译或人工填写，审核加入后才进入项目术语库。</div>
+      <div className="panel-desc">先扫描语言表中的高频中文词；缺少 {lang.short} 的候选需要显式补译或人工填写，审核加入后才进入项目术语库。</div>
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
         <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
@@ -2437,7 +3707,7 @@ function StepFreqV2({
             <div className="confirm-head">
               <div>
                 <strong>候选批次审核</strong>
-                <span>{activeBatch ? `批次：${activeBatch.label}` : '暂无扫描批次'}。空 EN 不能加入；可先补译或手工编辑，再加入项目术语库。</span>
+                <span>{activeBatch ? `批次：${activeBatch.label}` : '暂无扫描批次'}。空 {lang.targetHeader} 不能加入；可先补译或手工编辑，再加入项目术语库。</span>
               </div>
               <div className="confirm-actions">
                 <button className="btn btn-ghost btn-sm" disabled={!activeBatch || !pendingCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, pendingCandidates, 'reject')}>全部跳过</button>
@@ -2447,7 +3717,7 @@ function StepFreqV2({
             {reviewPreview.length ? (
               <div className="table-scroll">
                 <table className="pending-term-table">
-                  <thead><tr><th>状态</th><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
+                  <thead><tr><th>状态</th><th>ID</th><th>CN</th><th>{lang.targetHeader}</th><th>{lang.altHeader}</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
                   <tbody>
                     {reviewPreview.map((term) => (
                       <PendingTermReviewRowV2
@@ -2597,7 +3867,7 @@ function StepFreq({
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 5</span>高频词扫描 & 术语候选审核</div>
-      <div className="panel-desc">先从语言表筛选高频中文词，再和项目术语库按中文去重；已存在词条直接跳过，不自动补 EN/EN2。新增候选需人工确认译文后才会加入项目术语库。</div>
+      <div className="panel-desc">先从语言表筛选高频中文词，再和项目术语库按中文去重；已存在词条直接跳过，不跨语言自动补译。新增候选需人工确认译文后才会加入项目术语库。</div>
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
         <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
@@ -2620,7 +3890,7 @@ function StepFreq({
             <div className="confirm-head">
               <div>
                 <strong>待复核词条</strong>
-                <span>{activeBatch ? `批次：${activeBatch.label}` : '暂无扫描批次'}。这些词条尚未进入项目术语库；可先编辑 EN / EN2 / 分类 / 备注，再单条加入或跳过。</span>
+                <span>{activeBatch ? `批次：${activeBatch.label}` : '暂无扫描批次'}。这些词条尚未进入项目术语库；可先编辑目标译文 / 备选译文 / 分类 / 备注，再单条加入或跳过。</span>
               </div>
               <div className="confirm-actions">
                 <button className="btn btn-ghost btn-sm" disabled={!activeBatch || !pendingCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, pendingCandidates, 'reject')}>全部跳过</button>
@@ -2630,7 +3900,7 @@ function StepFreq({
             {reviewPreview.length ? (
               <div className="table-scroll">
                 <table className="pending-term-table">
-                  <thead><tr><th>类型</th><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
+                  <thead><tr><th>类型</th><th>ID</th><th>CN</th><th>目标译文</th><th>备选译文</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
                   <tbody>
                     {reviewPreview.map((term) => (
                       <PendingTermReviewRow
@@ -2738,16 +4008,40 @@ function PendingTermReviewRow({
   )
 }
 
-function StepLang({ selectedLangs, setSelectedLangs }: { selectedLangs: string[]; setSelectedLangs: (langs: string[]) => void }) {
+function LanguageSelector({ selectedLanguage, setSelectedLanguage }: { selectedLanguage: LanguageCode; setSelectedLanguage: (language: LanguageCode) => void }) {
+  return (
+    <div className="lang-grid compact-lang-grid">
+      {supportedLanguages.map((lang) => (
+        <button
+          key={lang.code}
+          type="button"
+          className={`lang-chip ${selectedLanguage === lang.code ? 'selected' : ''}`}
+          onClick={() => setSelectedLanguage(lang.code)}
+        >
+          {lang.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function StepLang({ selectedLanguage, setSelectedLanguage }: { selectedLanguage: LanguageCode; setSelectedLanguage: (language: LanguageCode) => void }) {
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 6</span>选择目标语言</div>
-      <div className="panel-desc">v1 只有英语进入真实翻译闭环；其他语言保留配置入口。</div>
+      <div className="panel-desc">当前版本正式支持 EN / KR / JP 单语言任务；其他语言未开放，不提供假入口。</div>
       <div className="lang-grid">
-        {langOptions.map((lang) => (
-          <button key={lang} className={`lang-chip ${selectedLangs.includes(lang) ? 'selected' : ''} ${lang.includes('EN') ? '' : 'disabled'}`} onClick={() => {
-            if (lang.includes('EN')) setSelectedLangs(selectedLangs.includes(lang) ? [] : [lang])
-          }}>{lang}</button>
+        {supportedLanguages.map((lang) => (
+          <button
+            key={lang.code}
+            className={`lang-chip ${selectedLanguage === lang.code ? 'selected' : ''}`}
+            onClick={() => setSelectedLanguage(lang.code)}
+          >
+            {lang.label}
+          </button>
+        ))}
+        {unsupportedLanguages.map((lang) => (
+          <button key={lang} className="lang-chip disabled" disabled title="暂未支持">{lang} · 未支持</button>
         ))}
       </div>
     </>
@@ -2770,7 +4064,8 @@ function StepTranslate({
   setSourceArtifact,
   setTermArtifact,
   setQaArtifact,
-  setStep
+  setStep,
+  selectedLanguage
 }: {
   project: Project
   settings: AppSettings | null
@@ -2788,7 +4083,9 @@ function StepTranslate({
   setTermArtifact: (artifact: Artifact | null) => void
   setQaArtifact: (artifact: Artifact | null) => void
   setStep: (step: number) => void
+  selectedLanguage: LanguageCode
 }) {
+  const lang = languageSpec(selectedLanguage)
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   const batchSize = clampBatchSize(translationBatchSize)
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === batchSize ? translationReadiness : null
@@ -2796,7 +4093,7 @@ function StepTranslate({
   const alreadyTranslated = canSkipModelTranslation(readiness)
   const estimatedBatches = estimateBatches(readiness?.source_rows, batchSize)
   const progress = getTranslationProgress(latestRun)
-  const resumable = Boolean(latestRun?.kind === 'translation' && latestRun.status === 'failed' && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
+  const resumable = Boolean(latestRun?.kind === 'translation' && latestRun.status === 'failed' && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
   const selectedBatchPreset = batchPresets.find((preset) => preset.size === batchSize)
   const invalidIdText = readiness?.invalid_id_rows ? ` / 空 ID ${readiness.invalid_id_rows}` : ''
   const readinessText = readiness
@@ -2816,7 +4113,7 @@ function StepTranslate({
     || /翻译|provider|API|mock|workpack|批|QA/i.test(status)
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 7</span>模型翻译</div>
+      <div className="panel-title"><span className="badge">STEP 7</span>{lang.short} 模型翻译</div>
       <div className="panel-desc">先检查语言表是否已有目标译文；已有译文则跳过模型翻译并进入校对，空译文或中文残留才生成 workpack 分批调用 GPT / Claude。</div>
       <div className="action-card">
         <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
@@ -2869,7 +4166,7 @@ function StepTranslate({
               <button className="btn btn-primary" disabled={busy} onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>跳到校对</button>
             </>
           ) : (
-            <button className="btn btn-primary" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>⚡ 开始正式翻译</button>
+            <button className="btn btn-primary" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>⚡ 开始 {lang.short} 正式翻译</button>
           )}
           {blockReason && !alreadyTranslated ? <div className="warn-line inline-warning">{blockReason}</div> : null}
         </div>
@@ -2878,7 +4175,7 @@ function StepTranslate({
       </div>
       <div className="translation-guard-strip">
         <span>项目术语库 <strong>{glossaryCount} 条</strong></span>
-        <span>提示词 <strong>{project.prompt_text ? '已生成' : '未生成'}</strong></span>
+        <span>{lang.short} 提示词 <strong>{projectPromptForLanguage(project, selectedLanguage) ? '已生成' : '未生成'}</strong></span>
         <span>校对门槛 <strong>QA 通过后交付</strong></span>
       </div>
       {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} issues={qualityIssues} /> : null}
@@ -2916,7 +4213,9 @@ function StepQA({
   onModelFixes,
   onUploadTranslation,
   busy,
-  status
+  status,
+  selectedLanguage,
+  setSelectedLanguage
 }: {
   project: Project
   latestRun: Run | null
@@ -2931,6 +4230,8 @@ function StepQA({
   onUploadTranslation: (file: File) => void
   busy: boolean
   status: string
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
 }) {
   const latestQaRun = latestRun?.kind === 'qa' ? latestRun : latestRunOfKind(project, 'qa')
   const projectQuality = latestQaRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
@@ -2960,6 +4261,10 @@ function StepQA({
       <div className="panel-title"><span className="badge">STEP 8</span>校对任务</div>
       <div className="panel-desc">这里是校对入口：可以接上一步翻译结果，也可以选择之前导入且已有译文的语言表，或上传一份新的译文 workbook。</div>
       <div className="action-card">
+        <div className="language-inline-select">
+          <span>校对目标语言：</span>
+          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+        </div>
         <div className="qa-entry-row">
           <button className="btn btn-ghost" disabled={!previousTranslationArtifact || busy} onClick={() => setQaArtifact(previousTranslationArtifact)}>使用上一翻译结果</button>
           <button className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={() => sourceArtifact && setQaArtifact(sourceArtifact)}>使用当前语言表</button>
@@ -3159,7 +4464,7 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
         <div><strong>任务类型</strong><span>{task.taskType}</span></div>
         <div><strong>任务ID</strong><span>{task.taskLabel}</span></div>
         <div><strong>状态</strong><span>{run.status}</span></div>
-        <div><strong>语言</strong><span>{run.language?.toUpperCase() || '-'}</span></div>
+        <div><strong>语言</strong><span>{run.language ? languageSpec(normalizeLanguageCode(run.language) || 'en').short : '-'}</span></div>
         <div><strong>创建时间</strong><span>{new Date(run.created_at).toLocaleString()}</span></div>
         <div><strong>更新时间</strong><span>{new Date(run.updated_at).toLocaleString()}</span></div>
         <div><strong>来源文件</strong><span>{inputArtifactName(project, run) || '-'}</span></div>
@@ -3442,19 +4747,23 @@ function AssetSelect({
   )
 }
 
-function GlossaryPreview({ rows }: { rows: GlossaryPreviewRow[] }) {
+function GlossaryPreview({ rows, selectedLanguage = 'en' }: { rows: GlossaryPreviewRow[]; selectedLanguage?: LanguageCode }) {
+  const lang = languageSpec(selectedLanguage)
+  const showLanguage = rows.some((row) => row.language && row.language !== selectedLanguage)
+  const showAlt = altColumnVisible(selectedLanguage)
   return (
     <div className="card tight">
       <div className="card-title"><div className="left">术语预览（{rows.length} 条）</div></div>
       <table>
-        <thead><tr><th>ID</th><th>CN</th><th>EN</th><th>EN2</th><th>分类</th><th>备注</th></tr></thead>
+        <thead><tr><th>ID</th><th>CN</th>{showLanguage ? <th>语言</th> : null}<th>{lang.targetHeader}</th>{showAlt ? <th>{lang.altHeader}</th> : null}<th>分类</th><th>备注</th></tr></thead>
         <tbody>
           {rows.slice(0, 20).map((row, index) => (
             <tr key={`${row.source}-${index}`}>
               <td>{row.term_key}</td>
               <td>{row.source}</td>
+              {showLanguage ? <td>{String(row.language || selectedLanguage).toUpperCase()}</td> : null}
               <td>{row.target}</td>
-              <td>{row.target_alt}</td>
+              {showAlt ? <td>{row.target_alt}</td> : null}
               <td>{row.category}</td>
               <td>{row.note}</td>
             </tr>
@@ -3579,8 +4888,8 @@ function FrequencyModal({ onClose }: { onClose: () => void }) {
         <p>系统会从完整语言表中提取高频、易混淆和需要统一维护的中文术语，生成候选批次、project brief 和 prompt。</p>
         <ul className="strategy-list">
           <li>筛选：先按中文提取候选，再按项目术语库中文去重。</li>
-          <li>跳过：项目术语表已存在的中文不会进入候选，也不会自动补 EN/EN2。</li>
-          <li>审核：新增候选必须在表格里确认 EN / EN2 / 分类 / 备注后，点加入才会进入项目术语库。</li>
+          <li>跳过：项目术语表已存在的中文不会进入候选，也不会跨语言自动补译。</li>
+          <li>审核：新增候选必须在表格里确认当前语言译文 / 备选译文 / 分类 / 备注后，点加入才会进入项目术语库。</li>
           <li>审计：每次扫描会在 run 日志里记录候选数、去重数、新增数和跳过数。</li>
         </ul>
         <div className="modal-foot"><button className="btn btn-primary" onClick={onClose}>知道了</button></div>

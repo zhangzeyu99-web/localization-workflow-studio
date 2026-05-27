@@ -45,6 +45,7 @@ class ArtifactUpdate(BaseModel):
 class ProjectAnalysisRequest(BaseModel):
     intro: str = ""
     asset_artifact_ids: list[str] = Field(default_factory=list)
+    target_language: str = "en"
 
 
 class GlossaryTermPayload(BaseModel):
@@ -52,6 +53,7 @@ class GlossaryTermPayload(BaseModel):
     source: str
     target: str = ""
     target_alt: str = ""
+    language: str = "en"
     category: str = ""
     note: str = ""
     source_type: str = "manual"
@@ -63,6 +65,7 @@ class GlossaryTermUpdate(BaseModel):
     source: str | None = None
     target: str | None = None
     target_alt: str | None = None
+    language: str | None = None
     category: str | None = None
     note: str | None = None
     source_type: str | None = None
@@ -74,6 +77,7 @@ class GlossaryCandidateUpdate(BaseModel):
     source: str | None = None
     target: str | None = None
     target_alt: str | None = None
+    language: str | None = None
     category: str | None = None
     note: str | None = None
     translation_status: str | None = None
@@ -92,6 +96,8 @@ class GlossaryImportRequest(BaseModel):
     source_column: str | None = None
     target_column: str | None = None
     target_alt_column: str | None = None
+    auto_languages: bool = True
+    language: str = "en"
     category_column: str | None = None
     note_column: str | None = None
     limit: int = 100
@@ -131,7 +137,109 @@ class TranslationArchiveImportRequest(BaseModel):
     target_column: str | None = None
     target_alt_column: str | None = None
     note_column: str | None = None
+    auto_languages: bool = True
     language: str = "en"
+
+
+class AnnouncementLookupRequest(BaseModel):
+    material_artifact_ids: list[str] = Field(default_factory=list)
+    text: str = ""
+    language: str = "en"
+    min_term_length: int = 2
+    min_translation_length: int = 4
+    max_terms: int = 300
+    max_translation_rows: int = 300
+    include_glossary: bool = True
+    include_translation_archive: bool = True
+
+
+class AnnouncementTaskCreateRequest(BaseModel):
+    source_artifact_id: str | None = None
+    text: str = ""
+    title: str = ""
+    languages: list[str] = Field(default_factory=list)
+    language_table_artifact_ids: list[str] = Field(default_factory=list)
+    constraint_artifact_ids: list[str] = Field(default_factory=list)
+    include_project_archive: bool = True
+    output_policy: str = "same_format"
+
+
+class AnnouncementTaskActionRequest(BaseModel):
+    languages: list[str] = Field(default_factory=list)
+    language_table_artifact_ids: list[str] = Field(default_factory=list)
+    constraint_artifact_ids: list[str] = Field(default_factory=list)
+    include_project_archive: bool = True
+    announcement_min_hit: int = 1
+    generate_validation: bool = True
+    confirm_languages: bool = False
+    ai_supplement: bool = False
+    ai_supplement_response_artifact_id: str | None = None
+
+
+
+
+class AnnouncementTaskTermsRequest(BaseModel):
+    languages: list[str] = Field(default_factory=list)
+    terms_artifact_id: str | None = None
+    terms: list[dict[str, Any]] = Field(default_factory=list)
+    generate_validation: bool = True
+
+
+class AnnouncementTaskTranslateRequest(BaseModel):
+    languages: list[str] = Field(default_factory=list)
+    provider: str | None = None
+    protocol: str | None = None
+    batch_size: int | None = None
+    allow_mock: bool = False
+
+
+class AnnouncementTaskImportAiRequest(BaseModel):
+    languages: list[str] = Field(default_factory=list)
+    response_artifact_ids: list[str] = Field(default_factory=list)
+    response_artifacts_by_language: dict[str, str] = Field(default_factory=dict)
+
+
+class AnnouncementTaskApplyRequest(BaseModel):
+    languages: list[str] = Field(default_factory=list)
+    translation_workbook_artifact_id: str | None = None
+
+
+class AnnouncementTaskDeliverRequest(BaseModel):
+    languages: list[str] = Field(default_factory=list)
+    date_stamp: str | None = None
+
+
+class AnnouncementTermsRequest(BaseModel):
+    text: str = ""
+    material_artifact_ids: list[str] = Field(default_factory=list)
+    language_table_artifact_ids: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+    announcement_min_hit: int = 1
+    generate_validation: bool = True
+    ai_supplement: bool = False
+    ai_supplement_response_artifact_id: str | None = None
+
+
+class AnnouncementDocxPrepareRequest(BaseModel):
+    source_artifact_ids: list[str] = Field(default_factory=list)
+    terms_artifact_id: str
+    languages: list[str] = Field(default_factory=list)
+
+
+class AnnouncementDocxImportAiRequest(BaseModel):
+    prepare_run_id: str
+    response_artifact_ids: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+
+
+class AnnouncementDocxApplyRequest(BaseModel):
+    prepare_run_id: str
+    translation_workbook_artifact_id: str | None = None
+
+
+class AnnouncementDocxDeliverRequest(BaseModel):
+    prepare_run_id: str
+    date_stamp: str | None = None
 
 
 class RunCreate(BaseModel):
@@ -171,10 +279,16 @@ class GlossaryExtractRequest(BaseModel):
     include_empty_final_terms: bool = False
     project_material_artifact_ids: list[str] = Field(default_factory=list)
     project_notes: list[str] = Field(default_factory=list)
+    announcement_material_artifact_ids: list[str] = Field(default_factory=list)
+    announcement_only: bool = False
+    announcement_min_hit: int = 1
+    ai_supplement: bool = False
+    ai_supplement_response_artifact_id: str | None = None
     sheet: str | None = None
     id_column: str = "ID"
     source_column: str = "cn"
     target_column: str = "en"
+    language: str = "en"
 
 
 class TranslateRequest(BaseModel):

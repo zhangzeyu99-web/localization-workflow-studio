@@ -19,7 +19,21 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from app import db
     from app.config import DATA_ROOT, load_settings, public_settings, save_settings
+    from app.languages import require_supported_language
     from app.schemas import (
+        AnnouncementLookupRequest,
+        AnnouncementDocxApplyRequest,
+        AnnouncementDocxDeliverRequest,
+        AnnouncementDocxImportAiRequest,
+        AnnouncementDocxPrepareRequest,
+        AnnouncementTaskActionRequest,
+        AnnouncementTaskApplyRequest,
+        AnnouncementTaskCreateRequest,
+        AnnouncementTaskDeliverRequest,
+        AnnouncementTaskImportAiRequest,
+        AnnouncementTaskTermsRequest,
+        AnnouncementTaskTranslateRequest,
+        AnnouncementTermsRequest,
         ArtifactUpdate,
         GlossaryExtractRequest,
         GlossaryBatchResolveRequest,
@@ -54,12 +68,32 @@ if __package__ is None or __package__ == "":
         import_glossary,
         import_translation_archive,
         inspect_translation_readiness,
+        list_glossary_wide,
         list_project_deliverables,
         list_improvements,
         list_quality_issues,
+        list_translation_archive_wide,
         preview_glossary_import,
         project_dir,
         read_project_harness,
+        apply_announcement_task,
+        create_announcement_task,
+        deliver_announcement_task,
+        extract_announcement_terms,
+        generate_announcement_terms_package,
+        get_announcement_task,
+        import_announcement_ai_response,
+        import_announcement_terms,
+        inspect_announcement_constraints,
+        legacy_apply_announcement_docx,
+        legacy_deliver_announcement_docx,
+        legacy_import_announcement_docx_ai,
+        legacy_prepare_announcement_docx,
+        list_announcement_tasks,
+        lookup_announcement_translations,
+        prepare_announcement_translation,
+        run_announcement_lookup,
+        translate_announcement_task,
         run_qa_sync,
         run_translate_sync,
         translate_missing_glossary_candidates_sync,
@@ -69,7 +103,21 @@ if __package__ is None or __package__ == "":
 else:
     from . import db
     from .config import DATA_ROOT, load_settings, public_settings, save_settings
+    from .languages import require_supported_language
     from .schemas import (
+        AnnouncementLookupRequest,
+        AnnouncementDocxApplyRequest,
+        AnnouncementDocxDeliverRequest,
+        AnnouncementDocxImportAiRequest,
+        AnnouncementDocxPrepareRequest,
+        AnnouncementTaskActionRequest,
+        AnnouncementTaskApplyRequest,
+        AnnouncementTaskCreateRequest,
+        AnnouncementTaskDeliverRequest,
+        AnnouncementTaskImportAiRequest,
+        AnnouncementTaskTermsRequest,
+        AnnouncementTaskTranslateRequest,
+        AnnouncementTermsRequest,
         ArtifactUpdate,
         GlossaryExtractRequest,
         GlossaryBatchResolveRequest,
@@ -104,12 +152,32 @@ else:
         import_glossary,
         import_translation_archive,
         inspect_translation_readiness,
+        list_glossary_wide,
         list_project_deliverables,
         list_improvements,
         list_quality_issues,
+        list_translation_archive_wide,
         preview_glossary_import,
         project_dir,
         read_project_harness,
+        apply_announcement_task,
+        create_announcement_task,
+        deliver_announcement_task,
+        extract_announcement_terms,
+        generate_announcement_terms_package,
+        get_announcement_task,
+        import_announcement_ai_response,
+        import_announcement_terms,
+        inspect_announcement_constraints,
+        legacy_apply_announcement_docx,
+        legacy_deliver_announcement_docx,
+        legacy_import_announcement_docx_ai,
+        legacy_prepare_announcement_docx,
+        list_announcement_tasks,
+        lookup_announcement_translations,
+        prepare_announcement_translation,
+        run_announcement_lookup,
+        translate_announcement_task,
         run_qa_sync,
         run_translate_sync,
         translate_missing_glossary_candidates_sync,
@@ -141,6 +209,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _query_language(language: str | None) -> str | None:
+    if not language:
+        return None
+    try:
+        return require_supported_language(language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/health")
@@ -219,8 +296,12 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
         project = db.get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
+    try:
+        target_language = require_supported_language(payload.target_language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     notes = analyze_assets(payload.asset_artifact_ids, load_settings())
-    profile_path, prompt_path, brief_path, prompt = write_project_prompt(project, payload.intro, notes)
+    profile_path, prompt_path, brief_path, prompt = write_project_prompt(project, payload.intro, notes, target_language=target_language)
     artifacts = [
         db.add_artifact(project_id, "Project profile", profile_path, "project_profile", mime="application/json"),
         db.add_artifact(project_id, "Translation prompt", prompt_path, "translation_prompt", mime="text/plain"),
@@ -270,27 +351,38 @@ def list_project_assets(project_id: str, role: str | None = None, origin: str | 
 
 
 @app.get("/api/artifacts/{artifact_id}/translation-readiness")
-def artifact_translation_readiness(artifact_id: str, batch_size: int | None = None) -> dict[str, Any]:
+def artifact_translation_readiness(artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
     try:
-        return inspect_translation_readiness(artifact_id, batch_size=batch_size)
+        return inspect_translation_readiness(artifact_id, batch_size=batch_size, language=require_supported_language(language))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/glossary")
-def list_project_glossary(project_id: str) -> list[dict[str, Any]]:
-    return db.list_glossary_terms(project_id)
+def list_project_glossary(project_id: str, language: str | None = None) -> list[dict[str, Any]]:
+    return db.list_glossary_terms(project_id, language=_query_language(language))
+
+
+@app.get("/api/projects/{project_id}/glossary/wide")
+def list_project_glossary_wide(project_id: str) -> dict[str, Any]:
+    try:
+        return list_glossary_wide(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
 
 
 @app.get("/api/projects/{project_id}/glossary/batches")
-def list_project_glossary_batches(project_id: str) -> dict[str, Any]:
+def list_project_glossary_batches(project_id: str, language: str | None = None) -> dict[str, Any]:
     try:
         db.get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
-    batches = db.list_glossary_batches(project_id)
+    language_code = _query_language(language)
+    batches = db.list_glossary_batches(project_id, language=language_code)
     latest = batches[0] if batches else None
-    candidates = db.list_glossary_candidates(project_id, batch_id=latest["id"]) if latest else []
+    candidates = db.list_glossary_candidates(project_id, batch_id=latest["id"], language=language_code) if latest else []
     return {"batches": batches, "active_batch": latest, "candidates": candidates}
 
 
@@ -298,7 +390,10 @@ def list_project_glossary_batches(project_id: str) -> dict[str, Any]:
 def update_project_glossary_candidate(project_id: str, candidate_id: str, payload: GlossaryCandidateUpdate) -> dict[str, Any]:
     candidate = _require_project_candidate(project_id, candidate_id)
     _ = candidate
-    return db.update_glossary_candidate(candidate_id, payload.model_dump(exclude_unset=True))
+    data = payload.model_dump(exclude_unset=True)
+    if "language" in data:
+        data["language"] = _query_language(data.get("language")) or "en"
+    return db.update_glossary_candidate(candidate_id, data)
 
 
 @app.post("/api/projects/{project_id}/glossary/batches/{batch_id}/accept")
@@ -328,14 +423,19 @@ def create_glossary_term(project_id: str, payload: GlossaryTermPayload) -> dict[
         db.get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
-    return db.upsert_glossary_term(project_id, payload.model_dump())
+    data = payload.model_dump()
+    data["language"] = _query_language(data.get("language")) or "en"
+    return db.upsert_glossary_term(project_id, data)
 
 
 @app.patch("/api/projects/{project_id}/glossary/{term_id}")
 def update_glossary_term(project_id: str, term_id: str, payload: GlossaryTermUpdate) -> dict[str, Any]:
     _require_project_term(project_id, term_id)
-    updated = db.update_glossary_term(term_id, payload.model_dump(exclude_unset=True))
-    db.dedupe_project_glossary_terms(project_id, preferred_term_id=term_id, merge_duplicates=False)
+    data = payload.model_dump(exclude_unset=True)
+    if "language" in data:
+        data["language"] = _query_language(data.get("language")) or "en"
+    updated = db.update_glossary_term(term_id, data)
+    db.dedupe_project_glossary_terms(project_id, preferred_term_id=term_id, merge_duplicates=False, language=updated.get("language"))
     return db.get_glossary_term(updated["id"])
 
 
@@ -352,22 +452,29 @@ def preview_project_glossary_import(project_id: str, payload: GlossaryImportRequ
         return preview_glossary_import(project_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, artifact, or column not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/glossary/import")
 def import_project_glossary(project_id: str, payload: GlossaryImportRequest) -> dict[str, Any]:
     try:
+        payload.language = _query_language(payload.language) or "en"
         return import_glossary(project_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, artifact, or column not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/glossary/export")
-def export_project_glossary(project_id: str, format: str = "xlsx") -> Any:
+def export_project_glossary(project_id: str, format: str = "xlsx", language: str | None = None) -> Any:
     try:
-        exported = export_glossary(project_id, format)
+        exported = export_glossary(project_id, format, language=_query_language(language))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if isinstance(exported, dict):
         return exported
     media_type = "text/csv" if exported.suffix.lower() == ".csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -375,12 +482,20 @@ def export_project_glossary(project_id: str, format: str = "xlsx") -> Any:
 
 
 @app.get("/api/projects/{project_id}/translations")
-def list_project_translations(project_id: str) -> list[dict[str, Any]]:
+def list_project_translations(project_id: str, language: str | None = None) -> list[dict[str, Any]]:
     try:
         db.get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
-    return db.list_translation_entries(project_id)
+    return db.list_translation_entries(project_id, language=_query_language(language))
+
+
+@app.get("/api/projects/{project_id}/translations/wide")
+def list_project_translations_wide(project_id: str) -> dict[str, Any]:
+    try:
+        return list_translation_archive_wide(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
 
 
 @app.post("/api/projects/{project_id}/translations")
@@ -389,13 +504,18 @@ def create_translation_entry(project_id: str, payload: TranslationEntryPayload) 
         db.get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
-    return db.upsert_translation_entry(project_id, payload.model_dump())
+    data = payload.model_dump()
+    data["language"] = _query_language(data.get("language")) or "en"
+    return db.upsert_translation_entry(project_id, data)
 
 
 @app.patch("/api/projects/{project_id}/translations/{entry_id}")
 def update_translation_entry(project_id: str, entry_id: str, payload: TranslationEntryUpdate) -> dict[str, Any]:
     _require_project_translation(project_id, entry_id)
-    return db.update_translation_entry(entry_id, payload.model_dump(exclude_unset=True))
+    data = payload.model_dump(exclude_unset=True)
+    if "language" in data:
+        data["language"] = _query_language(data.get("language")) or "en"
+    return db.update_translation_entry(entry_id, data)
 
 
 @app.delete("/api/projects/{project_id}/translations/{entry_id}")
@@ -416,11 +536,13 @@ def import_project_translations(project_id: str, payload: TranslationArchiveImpo
 
 
 @app.get("/api/projects/{project_id}/translations/export")
-def export_project_translations(project_id: str, format: str = "xlsx") -> Any:
+def export_project_translations(project_id: str, format: str = "xlsx", language: str | None = None) -> Any:
     try:
-        exported = export_translation_archive(project_id, format)
+        exported = export_translation_archive(project_id, format, language=_query_language(language))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if isinstance(exported, dict):
         return exported
     media_type = "text/csv" if exported.suffix.lower() == ".csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -470,12 +592,222 @@ def download_project_delivery(project_id: str, filename: str) -> FileResponse:
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
+@app.post("/api/projects/{project_id}/announcement-lookup")
+def create_announcement_lookup(project_id: str, payload: AnnouncementLookupRequest) -> dict[str, Any]:
+    try:
+        payload.language = _query_language(payload.language) or "en"
+        return run_announcement_lookup(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/announcement-terms")
+def create_announcement_terms(project_id: str, payload: AnnouncementTermsRequest) -> dict[str, Any]:
+    try:
+        return generate_announcement_terms_package(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/announcement-docx/prepare")
+def prepare_announcement_docx(project_id: str, payload: AnnouncementDocxPrepareRequest) -> dict[str, Any]:
+    try:
+        return legacy_prepare_announcement_docx(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project, run, or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/announcement-docx/import-ai")
+def import_announcement_docx_ai(project_id: str, payload: AnnouncementDocxImportAiRequest) -> dict[str, Any]:
+    try:
+        return legacy_import_announcement_docx_ai(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project, run, or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/announcement-docx/apply")
+def apply_announcement_docx(project_id: str, payload: AnnouncementDocxApplyRequest) -> dict[str, Any]:
+    try:
+        return legacy_apply_announcement_docx(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project, run, or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/announcement-docx/deliver")
+def deliver_announcement_docx(project_id: str, payload: AnnouncementDocxDeliverRequest) -> dict[str, Any]:
+    try:
+        return legacy_deliver_announcement_docx(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project, run, or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/announcement-tasks")
+def list_project_announcement_tasks(project_id: str) -> list[dict[str, Any]]:
+    try:
+        return list_announcement_tasks(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@app.post("/api/projects/{project_id}/announcement-tasks")
+def create_project_announcement_task(project_id: str, payload: AnnouncementTaskCreateRequest) -> dict[str, Any]:
+    try:
+        return create_announcement_task(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/announcement-tasks/{task_id}")
+def get_project_announcement_task(task_id: str) -> dict[str, Any]:
+    try:
+        return get_announcement_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task not found") from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/inspect-constraints")
+def inspect_project_announcement_constraints(task_id: str, payload: AnnouncementTaskActionRequest) -> dict[str, Any]:
+    try:
+        return inspect_announcement_constraints(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/extract-terms")
+def extract_project_announcement_terms(task_id: str, payload: AnnouncementTaskActionRequest) -> dict[str, Any]:
+    try:
+        return extract_announcement_terms(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/import-terms")
+def import_project_announcement_terms(task_id: str, payload: AnnouncementTaskTermsRequest) -> dict[str, Any]:
+    try:
+        return import_announcement_terms(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/lookup-translations")
+def lookup_project_announcement_translations(task_id: str, payload: AnnouncementTaskActionRequest) -> dict[str, Any]:
+    try:
+        return lookup_announcement_translations(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/prepare")
+def prepare_project_announcement_translation(task_id: str, payload: AnnouncementTaskActionRequest) -> dict[str, Any]:
+    try:
+        return prepare_announcement_translation(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/translate")
+def translate_project_announcement(task_id: str, payload: AnnouncementTaskTranslateRequest) -> dict[str, Any]:
+    try:
+        return translate_announcement_task(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/import-ai")
+def import_project_announcement_ai(task_id: str, payload: AnnouncementTaskImportAiRequest) -> dict[str, Any]:
+    try:
+        return import_announcement_ai_response(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/apply")
+def apply_project_announcement(task_id: str, payload: AnnouncementTaskApplyRequest) -> dict[str, Any]:
+    try:
+        return apply_announcement_task(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/deliver")
+def deliver_project_announcement(task_id: str, payload: AnnouncementTaskDeliverRequest) -> dict[str, Any]:
+    try:
+        return deliver_announcement_task(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.post("/api/projects/{project_id}/glossary/extract")
 def extract_project_glossary(project_id: str, payload: GlossaryExtractRequest) -> dict[str, Any]:
     try:
+        payload.language = _query_language(payload.language) or "en"
         return extract_glossary(project_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -486,6 +818,10 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
         db.get_project(payload.project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
+    try:
+        language = require_supported_language(payload.language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     active = [
         run
         for run in db.list_runs(payload.project_id)
@@ -501,7 +837,7 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
         "source_run_id": payload.source_run_id,
         "task_code": _resolve_task_code(payload),
     }
-    return db.insert_run(payload.project_id, payload.kind, payload.language, metadata)
+    return db.insert_run(payload.project_id, payload.kind, language, metadata)
 
 
 @app.get("/api/runs")
@@ -747,11 +1083,13 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     runs = db.list_runs(project["id"])
     terms = db.list_glossary_terms(project["id"])
     translation_entries = db.list_translation_entries(project["id"])
+    announcement_tasks = list_announcement_tasks(project["id"])
     archive_metrics = _translation_archive_metrics(translation_entries)
     translation_runs = len([run for run in runs if run["kind"] == "translation"])
     qa_runs = len([run for run in runs if run["kind"] == "qa"])
     project["stats"] = {
         "tasks": len(runs),
+        "announcement_tasks": len(announcement_tasks),
         "translation_runs": translation_runs,
         "qa_runs": qa_runs,
         "words": str(archive_metrics["source_chars"]),
@@ -764,6 +1102,7 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
         project["runs"] = runs
         project["glossary"] = terms
         project["translations"] = translation_entries
+        project["announcement_tasks"] = announcement_tasks
         project["harness"] = read_project_harness(project["id"])
     return project
 

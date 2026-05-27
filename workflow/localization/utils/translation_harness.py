@@ -74,6 +74,7 @@ _RULE_HINTS = (
 )
 
 RowId = int | str
+SUPPORTED_HARNESS_LANGS = {"en", "ko", "ja"}
 
 
 @dataclass(frozen=True)
@@ -111,8 +112,7 @@ def prepare_translation_harness(
     style_hint: str = "",
 ) -> PreparedTranslationHarness:
     """Prepare a translation workpack and strict manifest."""
-    if lang != "en":
-        raise ValueError("translation harness v1 only supports lang='en'")
+    lang = _require_supported_lang(lang)
 
     input_path = Path(input_path)
     output_dir = Path(output_dir) if output_dir else input_path.parent / "translation_harness"
@@ -124,17 +124,17 @@ def prepare_translation_harness(
     term_lookup = _load_term_base(str(term_base_path) if term_base_path else None, lang=lang)
     cache = _load_translation_cache(input_path.parent, lang, style_hint=style_hint)
 
-    target_status = analyze_target_column(pairs)
+    target_status = analyze_target_column(pairs, lang=lang)
     rows = []
     for _, pair in pairs.iterrows():
         row_id = _coerce_row_id(pair["id"])
         if row_id is None:
             continue
         source = str(pair["original"])
-        current_target = _seed_target(source, str(pair["translation"]), target_status)
+        current_target = _seed_target(source, str(pair["translation"]), target_status, lang=lang)
         cached_translation = cache.get(source, "")
         text_type = classify_text(source, current_target)
-        ui_meta = _build_ui_length_meta(row_id, source, current_target)
+        ui_meta = _build_ui_length_meta(row_id, source, current_target, lang=lang)
         rows.append(
             {
                 "id": row_id,
@@ -192,9 +192,6 @@ def apply_translation_response(
     lang: str = "en",
 ) -> AppliedTranslationHarness:
     """Validate a translation response and write a final workbook by ID."""
-    if lang != "en":
-        raise ValueError("translation harness v1 only supports lang='en'")
-
     input_path = Path(input_path)
     manifest_path = Path(manifest_path)
     response_path = Path(response_path)
@@ -202,6 +199,12 @@ def apply_translation_response(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_lang = str(manifest.get("language") or "").strip().lower()
+    if lang == "en" and manifest_lang and manifest_lang != "en":
+        lang = manifest_lang
+    lang = _require_supported_lang(lang)
+    if manifest_lang and manifest_lang != lang:
+        raise ValueError(f"manifest language {manifest_lang!r} does not match requested language {lang!r}")
     if _sha256_file(input_path) != manifest.get("input_sha256"):
         raise ValueError("input drift detected before applying translation response")
 
@@ -241,7 +244,7 @@ def apply_translation_response(
     )
 
 
-def analyze_target_column(pairs) -> TargetColumnStatus:
+def analyze_target_column(pairs, lang: str = "en") -> TargetColumnStatus:
     total = 0
     empty = 0
     chinese = 0
@@ -253,7 +256,7 @@ def analyze_target_column(pairs) -> TargetColumnStatus:
         total += 1
         if not target or target.lower() == "nan":
             empty += 1
-        elif _CJK_RE.search(target):
+        elif _looks_like_source_seed(target, lang):
             chinese += 1
 
     combined = empty + chinese
@@ -319,18 +322,27 @@ def parse_translation_response(response_path: str | Path) -> dict[RowId, str]:
     return responses
 
 
-def _seed_target(source: str, target: str, status: TargetColumnStatus) -> str:
+def _seed_target(source: str, target: str, status: TargetColumnStatus, lang: str = "en") -> str:
     target = str(target or "").strip()
     if not status.requires_full_translation:
         return target
-    if not target or target.lower() == "nan" or _CJK_RE.search(target):
+    if not target or target.lower() == "nan" or _looks_like_source_seed(target, lang):
         return source
     return target
 
 
-def _build_ui_length_meta(row_id: RowId, source: str, target: str) -> dict[str, Any] | None:
+def _looks_like_source_seed(target: str, lang: str) -> bool:
+    text = str(target or "")
+    if not _CJK_RE.search(text):
+        return False
+    if lang == "ja" and re.search(r"[\u3040-\u30ff]", text):
+        return False
+    return lang != "ja"
+
+
+def _build_ui_length_meta(row_id: RowId, source: str, target: str, lang: str = "en") -> dict[str, Any] | None:
     is_ui, _, _ = is_ui_text(source, target)
-    assessment = assess_ui_length(row_id, source, target, is_ui=is_ui, lang="en")
+    assessment = assess_ui_length(row_id, source, target, is_ui=is_ui, lang=lang)
     if not assessment:
         return None
     return {
@@ -497,6 +509,13 @@ def _update_translation_cache(
 def _normalize_style_hint(style_hint: Any) -> str:
     text = str(style_hint or "").strip()
     return re.sub(r"\s+", " ", text)
+
+
+def _require_supported_lang(lang: Any) -> str:
+    code = str(lang or "en").strip().lower()
+    if code not in SUPPORTED_HARNESS_LANGS:
+        raise ValueError(f"translation harness supports only {sorted(SUPPORTED_HARNESS_LANGS)}, got {code!r}")
+    return code
 
 
 def _coerce_row_id(value: Any) -> RowId | None:
