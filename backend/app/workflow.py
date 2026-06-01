@@ -242,6 +242,45 @@ def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: lis
         "target_language_name": spec.prompt_name,
         "tone": tone,
         "generated_date": db.now_iso()[:10],
+        "analysis_source": "template",
+    }
+
+
+def _project_analysis_provider_prompt(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any]) -> str:
+    return (
+        "You are analyzing source material for a game localization project.\n"
+        "Return strict JSON only. No markdown fences or prose.\n"
+        "Use the project intro and reference material semantically; do not invent lore not supported by the input.\n"
+        "Required JSON fields: game_type, target_audience, content_scope, translation_style, tone.\n\n"
+        f"Project name: {project.get('name', '')}\n"
+        f"Project type: {project.get('type', '')}\n"
+        f"Project description: {project.get('description', '')}\n"
+        f"Target language: {profile.get('target_language_name', profile.get('target_language', 'en'))}\n"
+        f"User intro:\n{intro}\n\n"
+        f"Reference material notes:\n{json.dumps(asset_notes, ensure_ascii=False, indent=2)}\n\n"
+        f"Template baseline:\n{json.dumps({key: profile.get(key, '') for key in ('game_type', 'target_audience', 'content_scope', 'translation_style', 'tone')}, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _apply_project_analysis_provider(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any]) -> dict[str, Any]:
+    settings = load_settings()
+    provider = str(settings.get("provider") or "mock")
+    if provider not in {"openai", "anthropic"} or not settings.get("api_key"):
+        return profile
+    payload = _parse_semantic_qa_payload(_call_semantic_provider(settings, _project_analysis_provider_prompt(project, intro, asset_notes, profile)))
+    if not isinstance(payload, dict):
+        raise ValueError("project analysis provider must return a JSON object")
+    updates: dict[str, str] = {}
+    for key in ("game_type", "target_audience", "content_scope", "translation_style", "tone"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            updates[key] = value
+    return {
+        **profile,
+        **updates,
+        "analysis_source": "provider",
+        "analysis_provider": provider,
+        "analysis_model": str(settings.get("model") or ""),
     }
 
 
@@ -314,6 +353,7 @@ def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[
     target_language = require_supported_language(target_language)
     root = project_dir(project["id"]) / "profile"
     profile = _build_project_profile(project, intro, asset_notes, target_language=target_language)
+    profile = _apply_project_analysis_provider(project, intro, asset_notes, profile)
     prompt = _project_prompt_from_profile(profile)
     _save_generated_project_harness(project, profile)
     profile_path = root / f"project_profile_{target_language}.json"
@@ -828,6 +868,30 @@ def get_announcement_task(task_id: str) -> dict[str, Any]:
     return _hydrate_announcement_task(db.get_announcement_task(task_id))
 
 
+def cancel_announcement_task(task_id: str) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    metadata["canceled_at"] = db.now_iso()
+    task = db.update_announcement_task(
+        task_id,
+        status="canceled",
+        current_step=task.get("current_step") or 1,
+        metadata=metadata,
+    )
+    for item in task.get("languages") or []:
+        lang_meta = dict(item.get("metadata") or {})
+        lang_meta["canceled_at"] = metadata["canceled_at"]
+        db.upsert_announcement_task_language(
+            task_id,
+            task["project_id"],
+            item["language"],
+            status="canceled",
+            current_step=item.get("current_step") or task.get("current_step") or 1,
+            metadata=lang_meta,
+        )
+    return {"task": _hydrate_announcement_task(db.get_announcement_task(task_id))}
+
+
 def create_announcement_task(project_id: str, request: Any) -> dict[str, Any]:
     project = db.get_project(project_id)
     source_artifact_id = str(getattr(request, "source_artifact_id", "") or "").strip()
@@ -926,7 +990,10 @@ def extract_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
     _write_announcement_terms_workbook(workbook_path, rows, languages)
     summary = {"terms": len(rows), "languages": languages, "source_chars": len(source_text)}
     if ai_summary:
-        summary["ai_supplement"] = {key: ai_summary[key] for key in ("enabled", "response_artifact_id", "term_count", "added_to_main", "project_name_translation_missing")}
+        summary["ai_supplement"] = {
+            key: ai_summary[key]
+            for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "project_name_translation_missing")
+        }
     manifest = {"kind": "announcement_terms", "task_id": task_id, "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     validation_path.write_text(_announcement_terms_validation(summary, rows, languages), encoding="utf-8")
@@ -937,9 +1004,14 @@ def extract_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
     ]
     if ai_summary:
         packet_artifact = db.add_artifact(project_id, "公告 AI 补充包", Path(ai_summary["packet_path"]), "announcement_ai_supplement_packet", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages})
+        response_artifact = None
+        if ai_summary.get("response_path"):
+            response_artifact = db.add_artifact(project_id, "公告 AI 补充响应", Path(ai_summary["response_path"]), "announcement_ai_supplement_response", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages, "provider": ai_summary.get("provider", "")})
         report_artifact = db.add_artifact(project_id, "公告 AI 补充报告", Path(ai_summary["report_path"]), "announcement_ai_supplement_report", run_id=run["id"], mime="text/markdown", metadata={"task_id": task_id, "languages": languages})
-        artifacts.extend([packet_artifact, report_artifact])
+        artifacts.extend([artifact for artifact in (packet_artifact, response_artifact, report_artifact) if artifact])
         summary["ai_supplement"]["packet_artifact_id"] = packet_artifact["id"]
+        if response_artifact:
+            summary["ai_supplement"]["response_artifact_id"] = response_artifact["id"]
         summary["ai_supplement"]["report_artifact_id"] = report_artifact["id"]
     metadata.update({"languages": languages, "terms": rows, "terms_artifact_id": artifacts[0]["id"], "terms_manifest_artifact_id": artifacts[1]["id"], "terms_validation_artifact_id": artifacts[2]["id"], "terms_summary": summary})
     if ai_summary:
@@ -1267,7 +1339,10 @@ def generate_announcement_terms_package(project_id: str, request: Any) -> dict[s
     _write_announcement_terms_workbook(workbook_path, rows, languages)
     summary = {"terms": len(rows), "languages": languages, "source_chars": len(text)}
     if ai_summary:
-        summary["ai_supplement"] = {key: ai_summary[key] for key in ("enabled", "response_artifact_id", "term_count", "added_to_main", "project_name_translation_missing")}
+        summary["ai_supplement"] = {
+            key: ai_summary[key]
+            for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "project_name_translation_missing")
+        }
     manifest = {"kind": "announcement_terms", "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     validation_path.write_text(_announcement_terms_validation(summary, rows, languages), encoding="utf-8")
@@ -1278,9 +1353,14 @@ def generate_announcement_terms_package(project_id: str, request: Any) -> dict[s
     ]
     if ai_summary:
         packet_artifact = db.add_artifact(project_id, "公告 AI 补充包", Path(ai_summary["packet_path"]), "announcement_ai_supplement_packet", run_id=run["id"], mime="application/json", metadata={"languages": languages})
+        response_artifact = None
+        if ai_summary.get("response_path"):
+            response_artifact = db.add_artifact(project_id, "公告 AI 补充响应", Path(ai_summary["response_path"]), "announcement_ai_supplement_response", run_id=run["id"], mime="application/json", metadata={"languages": languages, "provider": ai_summary.get("provider", "")})
         report_artifact = db.add_artifact(project_id, "公告 AI 补充报告", Path(ai_summary["report_path"]), "announcement_ai_supplement_report", run_id=run["id"], mime="text/markdown", metadata={"languages": languages})
-        artifacts.extend([packet_artifact, report_artifact])
+        artifacts.extend([artifact for artifact in (packet_artifact, response_artifact, report_artifact) if artifact])
         summary["ai_supplement"]["packet_artifact_id"] = packet_artifact["id"]
+        if response_artifact:
+            summary["ai_supplement"]["response_artifact_id"] = response_artifact["id"]
         summary["ai_supplement"]["report_artifact_id"] = report_artifact["id"]
     db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary})
     return {"run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
@@ -1501,6 +1581,8 @@ def _detect_announcement_constraint_languages(project_id: str, metadata: dict[st
             continue
         if artifact["project_id"] != project_id:
             continue
+        if _is_generated_announcement_terms_artifact(artifact):
+            continue
         found.update(_detect_language_columns(Path(artifact["path"])))
     if metadata.get("include_project_archive", True):
         for language in ANNOUNCEMENT_LANGUAGE_ORDER:
@@ -1613,6 +1695,8 @@ def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str]
         artifact = db.get_artifact(artifact_id)
         if artifact["project_id"] != project_id:
             raise KeyError(artifact_id)
+        if _is_generated_announcement_terms_artifact(artifact):
+            continue
         for row in _read_language_table_rows(Path(artifact["path"]), languages):
             key = _wide_source_key(row.get("source"))
             if not key:
@@ -1625,6 +1709,42 @@ def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str]
                     existing["translations"][language] = target
             existing["sources"].append({"type": "language_table", "artifact_id": artifact_id})
     return list(by_source.values())
+
+
+def _is_generated_announcement_terms_artifact(artifact: dict[str, Any]) -> bool:
+    if artifact.get("kind") == "announcement_terms_workbook":
+        return True
+    text = " ".join(
+        str(part or "")
+        for part in (
+            artifact.get("label"),
+            artifact.get("path"),
+            (artifact.get("metadata") or {}).get("original_filename"),
+        )
+    ).lower()
+    if "announcement_terms" not in text and "公告术语" not in text:
+        return False
+    return _workbook_looks_like_announcement_terms(Path(str(artifact.get("path") or "")))
+
+
+def _workbook_looks_like_announcement_terms(path: Path) -> bool:
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"} or not path.exists():
+        return True
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        for ws in wb.worksheets:
+            try:
+                headers = [str(value or "").strip().lower() for value in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+            except StopIteration:
+                continue
+            has_source = any(header in {"cn", "zh", "source", "chinese", "中文", "原文", "术语", "term"} for header in headers)
+            has_hit_count = any(header in {"hit count", "hit_count", "hits", "命中次数"} or "命中" in header for header in headers)
+            has_origin = any(header in {"来源", "origin", "source"} for header in headers)
+            if has_source and has_hit_count and has_origin:
+                return True
+    finally:
+        wb.close()
+    return False
 
 
 def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str, Any]]:
@@ -1783,6 +1903,24 @@ def _read_ai_supplement_response_artifact(project_id: str, artifact_id: str | No
     return payload
 
 
+def _ai_supplement_provider_prompt(packet: dict[str, Any]) -> str:
+    return (
+        "You are auditing a game announcement glossary extraction result.\n"
+        "Use only the supplied packet. Do not invent translations without evidence_rows.\n"
+        "Return strict JSON only, no markdown fences, matching packet.response_schema.\n"
+        "Only add terms that appear verbatim in announcement_text and are backed by evidence_ids.\n\n"
+        f"Packet JSON:\n{json.dumps(packet, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _call_ai_supplement_provider(settings: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
+    text = _call_semantic_provider(settings, _ai_supplement_provider_prompt(packet))
+    payload = _parse_semantic_qa_payload(text)
+    if not isinstance(payload, dict):
+        raise ValueError("AI supplement provider must return a JSON object")
+    return payload
+
+
 def _apply_announcement_ai_supplement(
     *,
     project_id: str,
@@ -1803,8 +1941,6 @@ def _apply_announcement_ai_supplement(
     report_path = output_dir / f"{base_name}_ai_supplement_report_{_today_stamp()}.md"
     matched_rows = [_announcement_term_to_ai_row(row, languages) for row in rows]
     candidate_rows = [_announcement_term_to_ai_row(row, languages) for row in candidates]
-    response = _read_ai_supplement_response_artifact(project_id, getattr(request, "ai_supplement_response_artifact_id", None)) or {"supplement_terms": []}
-    response = _normalize_ai_supplement_response(response, languages)
     packet = extractor.build_ai_supplement_packet(
         announcement_text=source_text,
         matched_rows=matched_rows,
@@ -1813,6 +1949,35 @@ def _apply_announcement_ai_supplement(
         project_name=project_name,
     )
     packet_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2), encoding="utf-8")
+    response_artifact_id = str(getattr(request, "ai_supplement_response_artifact_id", "") or "")
+    response_path: Path | None = None
+    provider = ""
+    provider_status = "not_configured"
+    provider_error = ""
+    response = _read_ai_supplement_response_artifact(project_id, response_artifact_id)
+    if response is not None:
+        provider = "uploaded"
+        provider_status = "uploaded_response"
+    elif not packet.get("evidence_rows"):
+        provider_status = "no_evidence"
+        response = {"supplement_terms": []}
+    else:
+        settings = load_settings()
+        configured_provider = str(settings.get("provider") or "mock")
+        if configured_provider in {"openai", "anthropic"} and settings.get("api_key"):
+            provider = configured_provider
+            try:
+                response = _call_ai_supplement_provider(settings, packet)
+                provider_status = "provider_response"
+                response_path = output_dir / f"{base_name}_ai_supplement_response_{_today_stamp()}.json"
+                response_path.write_text(json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception as exc:
+                provider_status = "provider_error"
+                provider_error = str(exc)
+                response = {"supplement_terms": []}
+        else:
+            response = {"supplement_terms": []}
+    response = _normalize_ai_supplement_response(response, languages)
     merged_ai_rows, report = extractor.apply_ai_supplement_response(
         announcement_rows=matched_rows,
         headers=headers,
@@ -1824,7 +1989,7 @@ def _apply_announcement_ai_supplement(
     report_markdown = extractor.build_ai_supplement_report_markdown(
         report=report,
         packet_path=packet_path,
-        response_path=Path(db.get_artifact(getattr(request, "ai_supplement_response_artifact_id"))["path"]) if getattr(request, "ai_supplement_response_artifact_id", None) else None,
+        response_path=Path(db.get_artifact(response_artifact_id)["path"]) if response_artifact_id else response_path,
         output_path=report_path,
     )
     report_path.write_text(report_markdown, encoding="utf-8")
@@ -1834,7 +1999,11 @@ def _apply_announcement_ai_supplement(
         "enabled": True,
         "packet_path": str(packet_path),
         "report_path": str(report_path),
-        "response_artifact_id": str(getattr(request, "ai_supplement_response_artifact_id", "") or ""),
+        "response_path": str(response_path or ""),
+        "response_artifact_id": response_artifact_id,
+        "provider": provider,
+        "provider_status": provider_status,
+        "provider_error": provider_error,
         "term_count": len(report_terms),
         "added_to_main": sum(1 for term in report_terms if isinstance(term, dict) and term.get("status") == "added_to_main"),
         "project_name_translation_missing": bool(report.get("project_name_translation_missing")),

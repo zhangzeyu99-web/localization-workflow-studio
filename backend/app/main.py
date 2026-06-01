@@ -3,6 +3,7 @@ from __future__ import annotations
 import mimetypes
 import json
 import os
+import shutil
 import sys
 import hashlib
 from contextlib import asynccontextmanager
@@ -77,6 +78,7 @@ if __package__ is None or __package__ == "":
         project_dir,
         read_project_harness,
         apply_announcement_task,
+        cancel_announcement_task,
         create_announcement_task,
         deliver_announcement_task,
         extract_announcement_terms,
@@ -161,6 +163,7 @@ else:
         project_dir,
         read_project_harness,
         apply_announcement_task,
+        cancel_announcement_task,
         create_announcement_task,
         deliver_announcement_task,
         extract_announcement_terms,
@@ -271,6 +274,19 @@ def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
         return _with_project_stats(db.update_project(project_id, updates), include_details=True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str) -> dict[str, bool]:
+    try:
+        run_ids = [run["id"] for run in db.list_runs(project_id)]
+        db.delete_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    shutil.rmtree(DATA_ROOT / "projects" / project_id, ignore_errors=True)
+    for run_id in run_ids:
+        shutil.rmtree(DATA_ROOT / "runs" / run_id, ignore_errors=True)
+    return {"deleted": True}
 
 
 @app.get("/api/projects/{project_id}/harness")
@@ -689,6 +705,14 @@ def create_project_announcement_task(project_id: str, payload: AnnouncementTaskC
 def get_project_announcement_task(task_id: str) -> dict[str, Any]:
     try:
         return get_announcement_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task not found") from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/cancel")
+def cancel_project_announcement_task(task_id: str) -> dict[str, Any]:
+    try:
+        return cancel_announcement_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc
 

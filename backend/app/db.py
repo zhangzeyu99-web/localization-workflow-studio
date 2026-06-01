@@ -33,6 +33,7 @@ ARTIFACT_ROLE_BY_KIND = {
     "announcement_terms_validation": "reference_pack",
     "announcement_terms_manifest": "reference_pack",
     "announcement_ai_supplement_packet": "reference_pack",
+    "announcement_ai_supplement_response": "translation_response",
     "announcement_ai_supplement_report": "reference_pack",
     "announcement_translation_workbook": "translation_workbook",
     "announcement_workpack": "translation_workpack",
@@ -346,6 +347,22 @@ def update_project(project_id: str, updates: dict[str, Any]) -> dict[str, Any]:
     with connect() as conn:
         conn.execute(f"UPDATE projects SET {', '.join(fields)} WHERE id = ?", values)
         return get_project(project_id, conn=conn)
+
+
+def delete_project(project_id: str) -> None:
+    with connect() as conn:
+        if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+            raise KeyError(project_id)
+        conn.execute("DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE project_id = ?)", (project_id,))
+        conn.execute("DELETE FROM artifacts WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM announcement_task_languages WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM announcement_tasks WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM glossary_candidates WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM glossary_batches WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM glossary_terms WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM translation_entries WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM runs WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
 def insert_run(project_id: str, kind: str, language: str = "en", metadata: dict[str, Any] | None = None) -> dict[str, Any]:

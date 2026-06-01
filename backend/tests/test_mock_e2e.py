@@ -137,6 +137,16 @@ def _announcement_existing_terms_workbook(path: Path) -> None:
     wb.close()
 
 
+def _generated_announcement_terms_like_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "命中次数", "来源", "备注"])
+    ws.append(["old_notice", "公告旧术语", "Old Notice Term", 9, "announcement", "already extracted"])
+    wb.save(path)
+    wb.close()
+
+
 def _project_harness_failed_workbook(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -155,6 +165,58 @@ def test_mock_provider_preserves_numeric_square_placeholders() -> None:
     )
     assert "[2016]" in result[0].translation
     assert "\\n" in result[0].translation
+
+
+def test_delete_project_removes_project_records_and_files(tmp_path: Path) -> None:
+    upload_path = tmp_path / "language.xlsx"
+    _target_language_workbook(upload_path, "EN", ["Claim", "Welcome"])
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Delete Me", "type": "QA"}).json()
+        with upload_path.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        client.post(f"/api/projects/{project['id']}/glossary", json={"source": "按钮", "target": "Button", "language": "en"})
+        client.post(f"/api/projects/{project['id']}/translations", json={"source": "领取奖励", "target": "Claim Reward", "language": "en"})
+        project_path = workflow.project_dir(project["id"])
+        assert project_path.exists()
+        assert Path(artifact["path"]).exists()
+
+        deleted = client.delete(f"/api/projects/{project['id']}")
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json() == {"deleted": True}
+
+        assert client.get(f"/api/projects/{project['id']}").status_code == 404
+        assert all(item["id"] != project["id"] for item in client.get("/api/projects").json())
+        assert db.list_artifacts(project_id=project["id"]) == []
+        assert db.list_runs(project["id"]) == []
+        assert db.list_glossary_terms(project["id"]) == []
+        assert db.list_translation_entries(project["id"]) == []
+        assert not project_path.exists()
+
+
+def test_announcement_task_can_be_canceled_without_deleting_audit() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Cancel Announcement", "type": "QA"}).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"title": "Stuck Notice", "text": "新公告内容", "languages": ["en", "ko"]},
+        ).json()
+
+        response = client.post(f"/api/announcement-tasks/{task['id']}/cancel")
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        canceled = payload["task"]
+        assert canceled["status"] == "canceled"
+        assert canceled["metadata"]["canceled_at"]
+        assert {item["status"] for item in canceled["languages"]} == {"canceled"}
+
+        fetched = client.get(f"/api/announcement-tasks/{task['id']}").json()
+        assert fetched["status"] == "canceled"
+        assert fetched["source_artifact_id"] == task["source_artifact_id"]
 
 
 def test_announcement_terms_endpoint_generates_multilingual_terms_with_alias_headers(tmp_path: Path) -> None:
@@ -195,6 +257,64 @@ def test_announcement_terms_endpoint_generates_multilingual_terms_with_alias_hea
         ]
         assert payload["manifest"]["languages"] == ["en", "ko", "ja"]
         assert payload["summary"]["terms"] == 2
+
+
+def test_announcement_task_extract_terms_ignores_generated_terms_workbook_as_constraint(tmp_path: Path) -> None:
+    table_path = tmp_path / "full_language_table.xlsx"
+    generated_terms_path = tmp_path / "notice_announcement_terms_20260601.xlsx"
+    notice_path = tmp_path / "notice.txt"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append(["T1", "\u79d8\u5883", "Trial Realm"])
+    wb.save(table_path)
+    wb.close()
+    _generated_announcement_terms_like_workbook(generated_terms_path)
+    notice_path.write_text("\u516c\u544a\u65e7\u672f\u8bed\u548c\u79d8\u5883\u4e0a\u7ebf\u3002", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement Constraint Source", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("full_language_table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with generated_terms_path.open("rb") as fh:
+            generated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("notice_announcement_terms_20260601.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={
+                "source_artifact_id": notice_artifact["id"],
+                "language_table_artifact_ids": [table_artifact["id"], generated_artifact["id"]],
+                "languages": ["en"],
+                "include_project_archive": False,
+            },
+        ).json()
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={
+                "language_table_artifact_ids": [table_artifact["id"], generated_artifact["id"]],
+                "languages": ["en"],
+                "include_project_archive": False,
+                "ai_supplement": False,
+            },
+        )
+
+        assert extracted.status_code == 200, extracted.text
+        terms = extracted.json()["task"]["metadata"]["terms"]
+        assert [term["source"] for term in terms] == ["\u79d8\u5883"]
+        assert terms[0]["translations"]["en"] == "Trial Realm"
 
 
 def test_announcement_task_extract_terms_accepts_ai_supplement_response(tmp_path: Path) -> None:
@@ -274,6 +394,87 @@ def test_announcement_task_extract_terms_accepts_ai_supplement_response(tmp_path
         assert {"announcement_ai_supplement_packet", "announcement_ai_supplement_report"}.issubset(artifact_kinds)
         task_artifact_kinds = {artifact["kind"] for artifact in payload["task"]["artifacts"]}
         assert {"announcement_ai_supplement_packet", "announcement_ai_supplement_report"}.issubset(task_artifact_kinds)
+
+
+def test_announcement_task_extract_terms_calls_provider_for_ai_supplement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    table_path = tmp_path / "language.xlsx"
+    notice_path = tmp_path / "notice.txt"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append(["T1", "秘境", "Trial Realm"])
+    ws.append(["S1", "开启星界裂隙挑战", "Unlock Astral Rift Challenge"])
+    wb.save(table_path)
+    wb.close()
+    notice_path.write_text("新增秘境和星界裂隙玩法。", encoding="utf-8")
+
+    calls: list[str] = []
+
+    def fake_provider(settings: dict, prompt: str) -> str:
+        calls.append(prompt)
+        assert settings["provider"] == "openai"
+        assert "announcement_ai_supplement" in prompt
+        return json.dumps(
+            {
+                "supplement_terms": [
+                    {
+                        "cn": "星界裂隙",
+                        "translations": {"EN": "Astral Rift"},
+                        "source_ids": ["S1"],
+                        "confidence": "high",
+                        "reason": "split from language-table sentence",
+                        "evidence_ids": ["S1"],
+                        "action": "add_to_main",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(workflow, "_call_semantic_provider", fake_provider)
+
+    with TestClient(app) as client:
+        client.patch("/api/settings", json={"provider": "openai", "api_key": "test-key", "model": "gpt-test"})
+        project = client.post("/api/projects", json={"name": "Announcement AI Provider", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": notice_artifact["id"], "language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"]},
+        ).json()
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en"],
+                "ai_supplement": True,
+            },
+        )
+
+        assert extracted.status_code == 200, extracted.text
+        assert len(calls) == 1
+        payload = extracted.json()
+        terms = payload["task"]["metadata"]["terms"]
+        assert [term["source"] for term in terms] == ["秘境", "星界裂隙"]
+        assert payload["summary"]["ai_supplement"]["provider"] == "openai"
+        assert payload["summary"]["ai_supplement"]["added_to_main"] == 1
+        artifact_kinds = {artifact["kind"] for artifact in payload["artifacts"]}
+        assert {
+            "announcement_ai_supplement_packet",
+            "announcement_ai_supplement_response",
+            "announcement_ai_supplement_report",
+        }.issubset(artifact_kinds)
 
 
 def test_announcement_task_can_import_edit_and_export_existing_terms(tmp_path: Path) -> None:
@@ -744,6 +945,54 @@ def test_markdown_reference_material_uploads_and_feeds_analysis(tmp_path: Path) 
         profile = analysis_response.json()["project"]["profile"]
         assert profile["asset_notes"]
         assert "Sci-fi SLG" in profile["asset_notes"][0]
+
+
+def test_project_analysis_uses_configured_provider_for_semantic_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    material = tmp_path / "project_brief.md"
+    material.write_text(
+        "# 明日2\n\n科幻 SLG，基地建设、联盟战争，语气需要硬核军事感。",
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fake_provider(settings: dict, prompt: str) -> str:
+        calls.append(prompt)
+        assert settings["provider"] == "openai"
+        assert "科幻 SLG" in prompt
+        return json.dumps(
+            {
+                "game_type": "AI识别：科幻 SLG / 战争策略",
+                "target_audience": "AI识别：中重度移动策略玩家",
+                "content_scope": "AI识别：基地建设、联盟战争、活动公告",
+                "translation_style": "AI识别：硬核军事感，短句清晰，避免可爱化",
+                "tone": "AI识别：冷静、硬核、军事化",
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(workflow, "_call_semantic_provider", fake_provider)
+
+    with TestClient(app) as client:
+        client.patch("/api/settings", json={"provider": "openai", "api_key": "test-key", "model": "gpt-test"})
+        project = client.post("/api/projects", json={"name": "明日2", "type": "科幻 SLG"}).json()
+        with material.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("project_brief.md", fh, "text/markdown")},
+            ).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "面向公告和游戏内语言包。", "asset_artifact_ids": [artifact["id"]], "target_language": "en"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert len(calls) == 1
+        payload = response.json()
+        profile = payload["project"]["profile"]
+        assert profile["analysis_source"] == "provider"
+        assert profile["game_type"] == "AI识别：科幻 SLG / 战争策略"
+        assert "硬核军事感" in payload["prompt"]
 
 
 def test_duplicate_reference_material_upload_reuses_existing_artifact(tmp_path: Path) -> None:

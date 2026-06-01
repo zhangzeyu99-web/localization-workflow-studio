@@ -71,12 +71,41 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   transition: all 0.2s;
   border: 1px solid transparent;
   background: transparent;
+  position: relative;
+  overflow: hidden;
 }
 .project-item:hover { background: rgba(255,255,255,0.05); }
 .project-item:disabled { opacity: .45; cursor: not-allowed; }
 .project-item.active {
   background: linear-gradient(135deg, rgba(99,102,241,0.25), rgba(139,92,246,0.25));
   border-color: rgba(139,92,246,0.5);
+}
+.project-item.delete-hold {
+  border-color: rgba(248,113,113,.7);
+  background: rgba(239,68,68,.12);
+}
+.project-item.delete-hold::after {
+  content: "继续按住删除";
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  font-size: 10px;
+  color: #fecaca;
+}
+.project-item.delete-hold::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(90deg, #ef4444, #f97316);
+  transform-origin: left;
+  animation: deleteHoldProgress .85s linear forwards;
+}
+@keyframes deleteHoldProgress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
 }
 .pname {
   font-size: 14px;
@@ -940,6 +969,14 @@ input, textarea, select {
   color: #f4f4f5;
   outline: none;
 }
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  min-width: 14px;
+  height: 14px;
+  padding: 0;
+  accent-color: #8b5cf6;
+}
 textarea { min-height: 180px; resize: vertical; line-height: 1.6; }
 input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
 .empty {
@@ -1185,7 +1222,7 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
 .announcement-lang-card.is-empty { opacity: .72; }
 .announcement-language-chip-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
   gap: 8px;
   margin-top: 12px;
 }
@@ -1210,6 +1247,75 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
 .announcement-language-chip strong { color: #fff; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .announcement-language-chip em { color: #a1a1aa; font-size: 11px; font-style: normal; }
 .announcement-language-chip.detected em { color: #ddd6fe; }
+.optional-panel {
+  min-height: auto;
+  padding: 10px 12px;
+}
+.optional-panel summary {
+  color: #ddd6fe;
+  cursor: pointer;
+  font-weight: 600;
+}
+.optional-row { margin-top: 10px; }
+.announcement-terms-guide {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(139,92,246,.28);
+  border-radius: 12px;
+  background: rgba(139,92,246,.12);
+}
+.announcement-terms-guide div,
+.announcement-terms-editor-head > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+.announcement-terms-guide strong,
+.announcement-terms-editor-head strong { color: #fff; }
+.announcement-terms-guide span,
+.announcement-terms-editor-head span {
+  color: #a1a1aa;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.announcement-terms-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.announcement-terms-summary div {
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  background: rgba(255,255,255,.035);
+}
+.announcement-terms-summary strong,
+.announcement-terms-summary span { display: block; }
+.announcement-terms-summary strong { color: #fff; font-size: 12px; }
+.announcement-terms-summary span { color: #a1a1aa; font-size: 12px; margin-top: 4px; }
+.announcement-terms-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+.announcement-more-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+.compact-asset-list { min-height: auto; }
+.announcement-more-grid .upload-box {
+  min-width: 0;
+  width: 100%;
+  min-height: 108px;
+}
 .announcement-terms-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1257,11 +1363,59 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   border: 1px solid rgba(255,255,255,.08);
   border-radius: 10px;
   background: rgba(255,255,255,.035);
+  position: relative;
+  overflow: hidden;
+  user-select: none;
 }
 .announcement-task-row strong,
 .task-select strong { display: block; color: #fff; }
 .announcement-task-row span,
 .task-select span { display: block; color: #a1a1aa; font-size: 12px; margin-top: 3px; }
+.announcement-task-row.cancel-hold,
+.announcement-current-task.cancel-hold {
+  border-color: rgba(248,113,113,.7);
+  background: rgba(239,68,68,.12);
+}
+.announcement-task-row.cancel-hold::after,
+.announcement-current-task.cancel-hold::after {
+  content: "继续按住取消";
+  position: absolute;
+  right: 10px;
+  bottom: 7px;
+  color: #fecaca;
+  font-size: 10px;
+}
+.announcement-task-row.cancel-hold::before,
+.announcement-current-task.cancel-hold::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(90deg, #ef4444, #f97316);
+  transform-origin: left;
+  animation: deleteHoldProgress .85s linear forwards;
+}
+.announcement-current-task {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 10px;
+  background: rgba(255,255,255,.035);
+  color: #e5e7eb;
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+}
+.announcement-current-task em {
+  color: #a1a1aa;
+  font-size: 12px;
+  font-style: normal;
+}
 .announcement-shell {
   display: block;
 }
@@ -1431,6 +1585,21 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
 }
 .modal h3 { margin-bottom: 8px; }
 .modal p { color: #a1a1aa; font-size: 13px; line-height: 1.6; margin-bottom: 14px; }
+.delete-project-modal p strong { color: #fff; }
+.delete-warning {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(248,113,113,.35);
+  border-radius: 12px;
+  background: rgba(239,68,68,.12);
+  color: #fecaca;
+}
+.delete-warning span {
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.5;
+}
 .settings-modal {
   width: min(520px, calc(100vw - 36px));
   padding: 20px;
@@ -1519,6 +1688,8 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   .batch-custom-button { flex: 1 1 180px; }
   .task-summary { align-items: stretch; flex-direction: column; }
   .harness-editor { grid-template-columns: 1fr; }
-  .upload-row { grid-template-columns: 1fr; }
+  .upload-row, .announcement-more-grid { grid-template-columns: 1fr; }
+  .announcement-terms-guide, .announcement-terms-editor-head { flex-direction: column; align-items: stretch; }
+  .announcement-terms-summary { grid-template-columns: 1fr 1fr; }
   .proj-head, .header { flex-direction: column; align-items: stretch; }
 }

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react'
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 
@@ -386,6 +386,13 @@ function languageSpec(code: string): LanguageOption {
   return allLanguageOptions.find((item) => item.code === code) || supportedLanguages[0]
 }
 
+function languageChipTitle(lang: LanguageOption): string {
+  const parts = lang.label.trim().split(/\s+/)
+  if (parts.length >= 3) return `${lang.short} ${parts.slice(1, -1).join(' ')}`
+  if (parts.length === 2) return `${lang.short} ${parts[1]}`
+  return `${lang.short} ${lang.label}`
+}
+
 function languageQuery(code: LanguageCode): string {
   return `language=${encodeURIComponent(code)}`
 }
@@ -614,6 +621,13 @@ function uniqueArtifactsByContent(artifacts: Artifact[]): Artifact[] {
   })
 }
 
+function isGeneratedAnnouncementTermsArtifact(artifact: Artifact): boolean {
+  if (artifact.kind === 'announcement_terms_workbook') return true
+  const original = artifact.metadata?.original_filename
+  const text = [artifact.label, artifact.path, typeof original === 'string' ? original : ''].join(' ').toLowerCase()
+  return artifact.kind === 'language_table' && (text.includes('announcement_terms') || text.includes('公告术语'))
+}
+
 function runArtifacts(project: Project, runId: string | undefined): Artifact[] {
   if (!runId) return []
   return (project.artifacts || []).filter((artifact) => artifact.run_id === runId)
@@ -790,6 +804,15 @@ function App() {
   const [tab, setTab] = useState<ProjectTab>('meta')
   const [step, setStep] = useState(1)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
+  const [deleteProjectTarget, setDeleteProjectTarget] = useState<Project | null>(null)
+  const [deleteHoldProjectId, setDeleteHoldProjectId] = useState('')
+  const deleteHoldTimer = useRef<number | null>(null)
+  const longPressTriggeredProjectId = useRef('')
+  const [announcementCancelTarget, setAnnouncementCancelTarget] = useState<AnnouncementTask | null>(null)
+  const [announcementCancelHoldTaskId, setAnnouncementCancelHoldTaskId] = useState('')
+  const announcementCancelHoldTimer = useRef<number | null>(null)
+  const longPressTriggeredAnnouncementTaskId = useRef('')
+  const [announcementFocusTaskId, setAnnouncementFocusTaskId] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [freqOpen, setFreqOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -821,6 +844,13 @@ function App() {
   const current = useMemo(() => projects.find((p) => p.id === currentId), [projects, currentId])
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
   const currentLang = languageSpec(selectedLanguage)
+
+  useEffect(() => {
+    return () => {
+      if (deleteHoldTimer.current !== null) window.clearTimeout(deleteHoldTimer.current)
+      if (announcementCancelHoldTimer.current !== null) window.clearTimeout(announcementCancelHoldTimer.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (currentId) refreshCurrent()
@@ -893,6 +923,105 @@ function App() {
     }
     loadQualityIssues(latestRun.id)
   }, [latestRun?.id, latestRun?.status])
+
+  function cancelProjectDeleteHold() {
+    if (deleteHoldTimer.current !== null) {
+      window.clearTimeout(deleteHoldTimer.current)
+      deleteHoldTimer.current = null
+    }
+    setDeleteHoldProjectId('')
+  }
+
+  function beginProjectDeleteHold(project: Project) {
+    if (busy) return
+    cancelProjectDeleteHold()
+    setDeleteHoldProjectId(project.id)
+    deleteHoldTimer.current = window.setTimeout(() => {
+      longPressTriggeredProjectId.current = project.id
+      deleteHoldTimer.current = null
+      setDeleteHoldProjectId('')
+      setDeleteProjectTarget(project)
+    }, 850)
+  }
+
+  function selectProject(project: Project, event: React.MouseEvent<HTMLButtonElement>) {
+    if (longPressTriggeredProjectId.current === project.id) {
+      event.preventDefault()
+      longPressTriggeredProjectId.current = ''
+      return
+    }
+    setCurrentId(project.id)
+    setView('overview')
+  }
+
+  async function deleteProject(project: Project) {
+    setBusy(true)
+    setStatus(`正在删除项目“${project.name}”...`)
+    try {
+      await api(`/api/projects/${project.id}`, { method: 'DELETE' })
+      const loaded = await api<Project[]>('/api/projects')
+      const nextId = loaded.some((item) => item.id === currentId) ? currentId : loaded[0]?.id || ''
+      setProjects(loaded)
+      setCurrentId(nextId)
+      if (project.id === currentId) {
+        setView('overview')
+        setTab('meta')
+      }
+      longPressTriggeredProjectId.current = ''
+      setDeleteProjectTarget(null)
+      setStatus(`项目“${project.name}”已删除`)
+    } catch (error) {
+      setStatus(`删除项目失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function cancelAnnouncementCancelHold() {
+    if (announcementCancelHoldTimer.current !== null) {
+      window.clearTimeout(announcementCancelHoldTimer.current)
+      announcementCancelHoldTimer.current = null
+    }
+    setAnnouncementCancelHoldTaskId('')
+  }
+
+  function beginAnnouncementCancelHold(task: AnnouncementTask) {
+    if (busy) return
+    cancelAnnouncementCancelHold()
+    setAnnouncementCancelHoldTaskId(task.id)
+    announcementCancelHoldTimer.current = window.setTimeout(() => {
+      longPressTriggeredAnnouncementTaskId.current = task.id
+      announcementCancelHoldTimer.current = null
+      setAnnouncementCancelHoldTaskId('')
+      setAnnouncementCancelTarget(task)
+    }, 850)
+  }
+
+  function openAnnouncementTask(task?: AnnouncementTask) {
+    if (task && longPressTriggeredAnnouncementTaskId.current === task.id) {
+      longPressTriggeredAnnouncementTaskId.current = ''
+      return
+    }
+    setAnnouncementFocusTaskId(task?.id || '')
+    setView('announcement')
+  }
+
+  async function cancelAnnouncementTask(task: AnnouncementTask) {
+    setBusy(true)
+    setStatus(`正在取消公告任务“${task.title || task.id}”...`)
+    try {
+      await api(`/api/announcement-tasks/${task.id}/cancel`, { method: 'POST' })
+      await refreshCurrent()
+      if (announcementFocusTaskId === task.id) setAnnouncementFocusTaskId('')
+      longPressTriggeredAnnouncementTaskId.current = ''
+      setAnnouncementCancelTarget(null)
+      setStatus(`公告任务“${task.title || task.id}”已取消`)
+    } catch (error) {
+      setStatus(`取消公告任务失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function refreshProjects(selectId?: string) {
     const loaded = await api<Project[]>('/api/projects')
@@ -1310,6 +1439,14 @@ function App() {
     return artifact
   }
 
+  async function uploadAnnouncementTermsFile(file: File) {
+    const artifact = await upload(file, 'announcement_terms_workbook')
+    if (artifact) {
+      setStatus(artifact.duplicate ? `公告术语表已存在，已复用：${artifact.label}` : `公告术语表已上传：${artifact.label}`)
+    }
+    return artifact
+  }
+
   async function createAnnouncementTask(payload: Record<string, unknown>) {
     if (!current) return null
     setBusy(true)
@@ -1600,7 +1737,17 @@ function App() {
             <div className="sidebar-title">📁 我的项目</div>
             <div className="project-list">
               {projects.map((project) => (
-                <button key={project.id} className={`project-item ${project.id === currentId ? 'active' : ''}`} onClick={() => { setCurrentId(project.id); setView('overview') }}>
+                <button
+                  key={project.id}
+                  className={`project-item ${project.id === currentId ? 'active' : ''} ${deleteHoldProjectId === project.id ? 'delete-hold' : ''}`}
+                  title="点击切换项目；长按删除项目"
+                  onPointerDown={(event) => { if (event.button === 0) beginProjectDeleteHold(project) }}
+                  onPointerUp={cancelProjectDeleteHold}
+                  onPointerLeave={cancelProjectDeleteHold}
+                  onPointerCancel={cancelProjectDeleteHold}
+                  onContextMenu={(event) => event.preventDefault()}
+                  onClick={(event) => selectProject(project, event)}
+                >
                   <span className="pname">{project.icon ? `${project.icon} ` : ''}{project.name}</span>
                   <span className="pmeta">{project.stats.tasks} 个任务 · {project.stats.archived_rows || 0} 条归档</span>
                   {project.type ? <span className="ptag">{project.type}</span> : null}
@@ -1662,7 +1809,11 @@ function App() {
                 onUploadTranslation={uploadTranslationWorkbook}
                 onCreateDelivery={createDeliveryPackage}
                 onStartTask={() => setView('wizard')}
-                onStartAnnouncement={() => setView('announcement')}
+                onStartAnnouncement={() => openAnnouncementTask()}
+                onStartAnnouncementTask={openAnnouncementTask}
+                onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
+                onCancelAnnouncementHold={cancelAnnouncementCancelHold}
+                announcementCancelHoldTaskId={announcementCancelHoldTaskId}
                 selectedLanguage={selectedLanguage}
                 setSelectedLanguage={setSelectedLanguage}
               />
@@ -1679,11 +1830,16 @@ function App() {
                 lookupResult={announcementLookupResult}
                 onUploadAsset={uploadAsset}
                 onUploadConstraint={uploadAnnouncementConstraint}
+                onUploadTermsFile={uploadAnnouncementTermsFile}
                 onCreateTask={createAnnouncementTask}
                 onTaskAction={runAnnouncementTaskAction}
                 onLookup={runAnnouncementLookup}
                 onBack={() => setView('overview')}
                 onUploadResponse={uploadAnnouncementResponse}
+                onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
+                onCancelAnnouncementHold={cancelAnnouncementCancelHold}
+                announcementCancelHoldTaskId={announcementCancelHoldTaskId}
+                initialTaskId={announcementFocusTaskId}
                 settings={settings}
               />
             ) : (
@@ -1738,6 +1894,8 @@ function App() {
       </div>
 
       {newProjectOpen ? <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreate={createProject} /> : null}
+      {deleteProjectTarget ? <DeleteProjectModal project={deleteProjectTarget} busy={busy} onClose={() => { longPressTriggeredProjectId.current = ''; setDeleteProjectTarget(null) }} onDelete={deleteProject} /> : null}
+      {announcementCancelTarget ? <CancelAnnouncementTaskModal task={announcementCancelTarget} busy={busy} onClose={() => { longPressTriggeredAnnouncementTaskId.current = ''; setAnnouncementCancelTarget(null) }} onCancelTask={cancelAnnouncementTask} /> : null}
       {settingsOpen ? <SettingsModal onClose={() => { setSettingsOpen(false); refreshSettings() }} /> : null}
       {freqOpen ? <FrequencyModal onClose={() => setFreqOpen(false)} /> : null}
     </div>
@@ -1794,6 +1952,10 @@ function ProjectOverview({
   onCreateDelivery,
   onStartTask,
   onStartAnnouncement,
+  onStartAnnouncementTask,
+  onBeginAnnouncementCancelHold,
+  onCancelAnnouncementHold,
+  announcementCancelHoldTaskId,
   selectedLanguage,
   setSelectedLanguage
 }: {
@@ -1842,6 +2004,10 @@ function ProjectOverview({
   onCreateDelivery: (runId: string) => void
   onStartTask: () => void
   onStartAnnouncement: () => void
+  onStartAnnouncementTask: (task: AnnouncementTask) => void
+  onBeginAnnouncementCancelHold: (task: AnnouncementTask) => void
+  onCancelAnnouncementHold: () => void
+  announcementCancelHoldTaskId: string
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
 }) {
@@ -1868,7 +2034,14 @@ function ProjectOverview({
         <div className="stat-card"><div className="num">{archiveRows.length}</div><div className="lbl">CN 归档源文 · {coverageLabel(translationCoverage)}</div></div>
         <div className="stat-card"><div className="num">{project.stats.words}</div><div className="lbl">归档译文字数</div></div>
       </div>
-      <AnnouncementProjectPanel tasks={project.announcement_tasks || []} onStartAnnouncement={onStartAnnouncement} />
+      <AnnouncementProjectPanel
+        tasks={project.announcement_tasks || []}
+        holdTaskId={announcementCancelHoldTaskId}
+        onStartAnnouncement={onStartAnnouncement}
+        onStartTask={onStartAnnouncementTask}
+        onBeginCancelHold={onBeginAnnouncementCancelHold}
+        onCancelHold={onCancelAnnouncementHold}
+      />
       <div className="view-tabs">
         <button className={`view-tab ${tab === 'meta' ? 'active' : ''}`} onClick={() => setTab('meta')}>📝 元信息</button>
         <button className={`view-tab ${tab === 'glossary' ? 'active' : ''}`} onClick={() => setTab('glossary')}>📚 术语表</button>
@@ -2807,26 +2980,52 @@ function translationReadinessBlockReason(readiness?: TranslationReadiness | null
 
 const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译/导入', '校对回填', '交付']
 
-function AnnouncementProjectPanel({ tasks, onStartAnnouncement }: { tasks: AnnouncementTask[]; onStartAnnouncement: () => void }) {
-  const latest = tasks[0]
+function activeAnnouncementTasks(tasks: AnnouncementTask[]): AnnouncementTask[] {
+  return tasks.filter((task) => task.status !== 'canceled')
+}
+
+function AnnouncementProjectPanel({
+  tasks,
+  holdTaskId,
+  onStartAnnouncement,
+  onStartTask,
+  onBeginCancelHold,
+  onCancelHold
+}: {
+  tasks: AnnouncementTask[]
+  holdTaskId: string
+  onStartAnnouncement: () => void
+  onStartTask: (task: AnnouncementTask) => void
+  onBeginCancelHold: (task: AnnouncementTask) => void
+  onCancelHold: () => void
+}) {
+  const activeTasks = activeAnnouncementTasks(tasks)
+  const latest = activeTasks[0]
   return (
     <div className="card tight announcement-project-panel">
       <div className="card-title">
         <div className="left">📣 公告任务 / 外文本</div>
         <button className="btn btn-ghost btn-sm" onClick={onStartAnnouncement}>进入公告工作流</button>
       </div>
-      {!tasks.length ? (
+      {!activeTasks.length ? (
         <div className="panel-desc">暂无公告任务。公告翻译归属于当前项目，用项目术语、QA归档和项目提示词约束游戏外文本。</div>
       ) : (
         <div className="announcement-task-list">
-          {tasks.slice(0, 4).map((task) => (
-            <div key={task.id} className="announcement-task-row">
+          {activeTasks.slice(0, 4).map((task) => (
+            <div
+              key={task.id}
+              className={`announcement-task-row ${holdTaskId === task.id ? 'cancel-hold' : ''}`}
+              onPointerDown={(event) => { if (event.button === 0) onBeginCancelHold(task) }}
+              onPointerUp={onCancelHold}
+              onPointerLeave={onCancelHold}
+              onPointerCancel={onCancelHold}
+            >
               <div>
                 <strong>{task.title || task.id}</strong>
                 <span>{task.source_format?.toUpperCase() || '-'} · STEP {task.current_step || 1}/9 · {announcementStatusLabel(task.status)}</span>
                 <span>{announcementLanguageSummary(task)}</span>
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={onStartAnnouncement}>继续</button>
+              <button className="btn btn-ghost btn-sm" onPointerDown={(event) => event.stopPropagation()} onClick={() => onStartTask(task)}>继续</button>
             </div>
           ))}
           {latest ? <div className="panel-desc">最近任务：{latest.title || latest.id}</div> : null}
@@ -2847,6 +3046,7 @@ function announcementStatusLabel(status?: string): string {
     translated: '译文已导入',
     applied: '已回填',
     delivered: '已交付',
+    canceled: '已取消',
     failed: '失败',
   }
   return labels[status || ''] || status || '未开始'
@@ -2865,9 +3065,14 @@ function AnnouncementWizard({
   assetArtifacts,
   onUploadAsset,
   onUploadConstraint,
+  onUploadTermsFile,
   onUploadResponse,
   onCreateTask,
   onTaskAction,
+  onBeginAnnouncementCancelHold,
+  onCancelAnnouncementHold,
+  announcementCancelHoldTaskId,
+  initialTaskId,
   onBack
 }: {
   project: Project
@@ -2882,34 +3087,53 @@ function AnnouncementWizard({
   lookupResult: AnnouncementLookupResult | null
   onUploadAsset: (file: File) => Promise<Artifact | null>
   onUploadConstraint: (file: File) => Promise<Artifact | null>
+  onUploadTermsFile: (file: File) => Promise<Artifact | null>
   onUploadResponse: (file: File) => Promise<Artifact | null>
   onCreateTask: (payload: Record<string, unknown>) => Promise<AnnouncementTask | null>
   onTaskAction: (taskId: string, endpoint: string, payload?: Record<string, unknown>) => Promise<AnnouncementTaskResult | null>
   onLookup: (text: string, materialArtifactIds: string[], options: AnnouncementLookupOptions) => void
+  onBeginAnnouncementCancelHold: (task: AnnouncementTask) => void
+  onCancelAnnouncementHold: () => void
+  announcementCancelHoldTaskId: string
+  initialTaskId: string
   onBack: () => void
 }) {
-  const tasks = project.announcement_tasks || []
+  const tasks = activeAnnouncementTasks(project.announcement_tasks || [])
   const [step, setStep] = useState(1)
-  const [taskId, setTaskId] = useState(tasks[0]?.id || '')
+  const [taskId, setTaskId] = useState(initialTaskId || tasks[0]?.id || '')
   const activeTask = tasks.find((task) => task.id === taskId) || null
   const [sourceArtifactId, setSourceArtifactId] = useState(activeTask?.source_artifact_id || '')
   const [constraintArtifactIds, setConstraintArtifactIds] = useState<string[]>(announcementTaskConstraintIds(activeTask))
   const [selectedLanguages, setSelectedLanguages] = useState<LanguageCode[]>(activeTask?.selected_languages?.length ? activeTask.selected_languages : [])
   const [responseArtifactIds, setResponseArtifactIds] = useState<string[]>([])
-  const [aiSupplement, setAiSupplement] = useState(Boolean((activeTask?.metadata || {}).ai_supplement))
+  const [aiSupplement, setAiSupplement] = useState(() => {
+    const aiMeta = (activeTask?.metadata || {}).ai_supplement as Record<string, unknown> | undefined
+    return aiMeta?.enabled !== false
+  })
   const [aiSupplementResponseArtifactId, setAiSupplementResponseArtifactId] = useState('')
   const artifacts = project.artifacts || []
   const sourceCandidates = uniqueArtifactsByContent([...assetArtifacts, ...artifacts.filter((artifact) => artifact.kind === 'asset')])
-  const constraintCandidates = artifacts.filter((artifact) => artifact.kind === 'language_table')
+  const hiddenAnnouncementTermsArtifacts = artifacts.filter(isGeneratedAnnouncementTermsArtifact)
+  const constraintCandidates = artifacts.filter((artifact) => artifact.kind === 'language_table' && !isGeneratedAnnouncementTermsArtifact(artifact))
+  const selectableConstraintIds = new Set(constraintCandidates.map((artifact) => artifact.id))
+  const activeConstraintArtifactIds = constraintArtifactIds.filter((id) => selectableConstraintIds.has(id))
   const activeMeta = (activeTask?.metadata || {}) as Record<string, unknown>
   const detectedLanguages = normalizeLanguageArray(activeMeta.detected_languages)
   const effectiveLanguages = selectedLanguages.length ? selectedLanguages : (activeTask?.selected_languages || detectedLanguages)
   const providerReady = settings?.provider && settings.provider !== 'mock' && settings.api_key === 'configured'
-  const showLanguageSubflows = Boolean(activeTask && step >= 4)
+  const showLanguageSubflows = Boolean(activeTask && step >= 6)
 
   useEffect(() => {
+    if (initialTaskId && tasks.some((task) => task.id === initialTaskId)) {
+      setTaskId(initialTaskId)
+      return
+    }
+    if (taskId && !tasks.some((task) => task.id === taskId)) {
+      setTaskId(tasks[0]?.id || '')
+      return
+    }
     if (!taskId && tasks[0]) setTaskId(tasks[0].id)
-  }, [tasks.length, taskId])
+  }, [initialTaskId, tasks.length, taskId])
 
   useEffect(() => {
     if (!activeTask) return
@@ -2918,7 +3142,7 @@ function AnnouncementWizard({
     setConstraintArtifactIds(announcementTaskConstraintIds(activeTask))
     setSelectedLanguages(activeTask.selected_languages?.length ? activeTask.selected_languages : normalizeLanguageArray((activeTask.metadata || {}).detected_languages))
     const aiMeta = (activeTask.metadata || {}).ai_supplement as Record<string, unknown> | undefined
-    setAiSupplement(Boolean(aiMeta?.enabled))
+    setAiSupplement(aiMeta?.enabled !== false)
     setAiSupplementResponseArtifactId(String(aiMeta?.response_artifact_id || ''))
   }, [activeTask?.id, activeTask?.updated_at])
 
@@ -2933,8 +3157,8 @@ function AnnouncementWizard({
   async function createTaskFromCurrent() {
     const task = await onCreateTask({
       source_artifact_id: sourceArtifactId,
-      language_table_artifact_ids: constraintArtifactIds,
-      constraint_artifact_ids: constraintArtifactIds,
+      language_table_artifact_ids: activeConstraintArtifactIds,
+      constraint_artifact_ids: activeConstraintArtifactIds,
       languages: selectedLanguages,
       include_project_archive: true,
       output_policy: 'same_format'
@@ -2948,8 +3172,8 @@ function AnnouncementWizard({
   async function run(endpoint: string, nextStep?: number, extra: Record<string, unknown> = {}) {
     if (!activeTask) return
     const result = await onTaskAction(activeTask.id, endpoint, {
-      language_table_artifact_ids: constraintArtifactIds,
-      constraint_artifact_ids: constraintArtifactIds,
+      language_table_artifact_ids: activeConstraintArtifactIds,
+      constraint_artifact_ids: activeConstraintArtifactIds,
       languages: effectiveLanguages,
       include_project_archive: true,
       response_artifact_ids: responseArtifactIds,
@@ -2963,9 +3187,8 @@ function AnnouncementWizard({
 
   async function importExtractedTermsFile(file: File) {
     if (!activeTask) return
-    const artifact = await onUploadConstraint(file)
+    const artifact = await onUploadTermsFile(file)
     if (!artifact) return
-    setConstraintArtifactIds((prev) => [...new Set([artifact.id, ...prev])])
     await run('import-terms', 4, { terms_artifact_id: artifact.id })
   }
 
@@ -2991,6 +3214,18 @@ function AnnouncementWizard({
         ))}
       </div>
       <ActionStatus status={status} busy={busy} />
+      {activeTask ? (
+        <div
+          className={`announcement-current-task ${announcementCancelHoldTaskId === activeTask.id ? 'cancel-hold' : ''}`}
+          onPointerDown={(event) => { if (event.button === 0) onBeginAnnouncementCancelHold(activeTask) }}
+          onPointerUp={onCancelAnnouncementHold}
+          onPointerLeave={onCancelAnnouncementHold}
+          onPointerCancel={onCancelAnnouncementHold}
+        >
+          <span>当前公告任务：{activeTask.title || activeTask.id}</span>
+          <em>STEP {activeTask.current_step || 1}/9 · {announcementStatusLabel(activeTask.status)} · 长按取消</em>
+        </div>
+      ) : null}
 
       <div className="announcement-shell">
         <section className="wizard-panel announcement-panel">
@@ -3027,12 +3262,13 @@ function AnnouncementWizard({
           ) : step === 2 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 2</span>约束来源</div>
-              <div className="panel-desc">选择完整语言表 / 术语交付表，并默认叠加项目 QA 归档。冲突时 QA 归档优先，语言表补缺。</div>
+              <div className="panel-desc">选择完整语言表 / 完整术语交付表，用它从公告原文里反查并生成本任务公告术语表；已生成的公告术语表请在 STEP 4 导入，不放在这里。</div>
               <div className="upload-row">
                 <FileBox label="上传语言表 / 术语交付表（XLSX）" onFile={async (file) => { const artifact = await onUploadConstraint(file); if (artifact) setConstraintArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
                 <div className="asset-list">
                   <div className="ai-header">约束文件</div>
                   {!constraintCandidates.length ? <div className="warn-line">没有约束文件；仍可只用项目 QA 归档或生成缺约束提示。</div> : null}
+                  {hiddenAnnouncementTermsArtifacts.length ? <div className="warn-line">已隐藏 {hiddenAnnouncementTermsArtifacts.length} 个已生成公告术语表；如需复用，请到 STEP 4 导入。</div> : null}
                   {constraintCandidates.map((artifact) => (
                     <label key={artifact.id} className="check-row">
                       <input type="checkbox" checked={constraintArtifactIds.includes(artifact.id)} onChange={() => toggleConstraint(artifact.id)} />
@@ -3043,7 +3279,7 @@ function AnnouncementWizard({
               </div>
               <div className="workflow-note-grid">
                 <div><strong>项目 QA 归档</strong><span>默认参与，且优先级高于语言表</span></div>
-                <div><strong>已选约束文件</strong><span>{constraintArtifactIds.length} 个</span></div>
+                <div><strong>已选约束文件</strong><span>{activeConstraintArtifactIds.length} 个</span></div>
                 <div><strong>当前任务</strong><span>{activeTask ? activeTask.id : '请先创建任务'}</span></div>
               </div>
               <div className="row-actions"><button className="btn btn-primary" disabled={!activeTask || busy} onClick={() => run('inspect-constraints', 3)}>识别语言与约束</button></div>
@@ -3059,7 +3295,7 @@ function AnnouncementWizard({
                   return (
                     <label key={lang.code} className={`announcement-language-chip ${selected ? 'selected' : ''} ${detected ? 'detected' : 'manual'}`}>
                       <input type="checkbox" checked={selected} onChange={() => toggleLanguage(lang.code)} />
-                      <span><strong>{lang.label}</strong><em>{detected ? '已识别' : '可手动选择'} / {selected ? '已勾选' : '未勾选'}</em></span>
+                      <span><strong>{languageChipTitle(lang)}</strong><em>{detected ? '已识别' : '手动'} · {selected ? '已选' : '未选'}</em></span>
                     </label>
                   )
                 })}
@@ -3144,6 +3380,17 @@ function AnnouncementTermsStep({
     || activeTask?.artifacts?.find((artifact) => artifact.kind === 'announcement_terms_workbook')
   const aiPacketArtifact = activeTask?.artifacts?.find((artifact) => artifact.kind === 'announcement_ai_supplement_packet')
   const aiReportArtifact = activeTask?.artifacts?.find((artifact) => artifact.kind === 'announcement_ai_supplement_report')
+  const aiMeta = (meta.ai_supplement && typeof meta.ai_supplement === 'object' ? meta.ai_supplement : {}) as Record<string, unknown>
+  const languageText = languages.map((lang) => languageSpec(lang).short).join(' / ') || '-'
+  const aiStatus = aiSupplement
+    ? aiMeta.provider_status === 'provider_response'
+      ? 'API 已复查'
+      : aiMeta.provider_status === 'provider_error'
+        ? 'API 失败，已保留本地结果'
+        : aiPacketArtifact
+          ? '已生成检查包'
+          : '默认开启'
+    : '已关闭'
 
   useEffect(() => {
     setDraftTerms(announcementTermsFromTask(activeTask))
@@ -3168,49 +3415,65 @@ function AnnouncementTermsStep({
     setDraftTerms((prev) => prev.filter((_, termIndex) => termIndex !== index))
   }
 
+  if (!activeTask) {
+    return (
+      <>
+        <div className="panel-title"><span className="badge">STEP 4</span>术语提取</div>
+        <div className="panel-desc">从公告原文中提取本次需要的术语，生成任务内临时术语表；可导出、上传已有提取结果模拟、编辑后保存，不自动写回项目术语库。</div>
+        <div className="warn-line">请先在 STEP 1 创建公告任务。</div>
+      </>
+    )
+  }
+
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 4</span>术语提取</div>
-      <div className="panel-desc">从公告原文中提取本次需要的术语，生成任务内临时术语表；可导出、上传已有提取结果模拟、编辑后保存，不自动写回项目术语库。</div>
-      {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
-      <AnnouncementTaskSnapshot task={activeTask} />
-      <div className="asset-list gap-top">
-        <label className="check-row">
-          <input type="checkbox" checked={aiSupplement} onChange={(event) => setAiSupplement(event.target.checked)} />
-          <span>启用 AI 漏词补充包<em>先做本地精确提取；开启后额外生成精简 evidence packet，可上传结构化 JSON response 合并有证据的漏词。</em></span>
-        </label>
-        {aiSupplement ? (
-          <div className="upload-row compact-upload-row">
-            <FileBox label="上传 AI 补充响应 JSON（可选）" onFile={onUploadAiSupplementResponse} />
-            <div className="workflow-note-grid compact-grid">
-              <div><strong>响应文件</strong><span>{aiSupplementResponseArtifactId || '未上传：仅生成 packet/report'}</span></div>
-              <div><strong>AI 补充包</strong><span>{aiPacketArtifact ? aiPacketArtifact.label : '待生成'}</span></div>
-              <div><strong>AI 报告</strong><span>{aiReportArtifact ? aiReportArtifact.label : '待生成'}</span></div>
-            </div>
-          </div>
-        ) : null}
+      <div className="panel-desc">本步只做一件事：从公告原文生成任务内临时术语表。检查表格后保存，下一步再反查译文；不会写回项目术语库。</div>
+      <div className="announcement-terms-guide">
+        <div>
+          <strong>操作顺序</strong>
+          <span>1. 提取术语 → 2. 检查/删改下方表格 → 3. 保存或导出 → 进入 STEP 5 译文反查。</span>
+        </div>
+        <button className="btn btn-primary" disabled={busy} onClick={() => onExtract(aiSupplement, aiSupplementResponseArtifactId)}>{aiSupplement ? '提取术语并 AI 复查' : '仅本地提取术语'}</button>
       </div>
-      <div className="announcement-terms-toolbar">
-        <button className="btn btn-primary" disabled={!activeTask || busy} onClick={() => onExtract(aiSupplement, aiSupplementResponseArtifactId)}>{aiSupplement ? '提取公告术语 + 生成 AI 补充包' : '提取公告术语'}</button>
-        <button className="btn btn-ghost" disabled={!activeTask || busy || !draftTerms.length} onClick={() => onSaveTerms(draftTerms, languages)}>保存编辑并生成导出表</button>
-        <button className="btn btn-ghost" disabled={busy} onClick={addTerm}>+ 新增术语</button>
-        {exportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${exportArtifact.id}/download`}>导出术语表</a> : null}
-        {aiPacketArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${aiPacketArtifact.id}/download`}>下载 AI 补充包</a> : null}
-        {aiReportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${aiReportArtifact.id}/download`}>下载 AI 报告</a> : null}
+      <div className="announcement-terms-summary">
+        <div><strong>源格式</strong><span>{activeTask.source_format?.toUpperCase() || '-'}</span></div>
+        <div><strong>目标语言</strong><span>{languageText}</span></div>
+        <div><strong>术语</strong><span>{draftTerms.length ? `${draftTerms.length} 条` : '未提取'}</span></div>
+        <div><strong>AI 复查</strong><span>{aiStatus}</span></div>
       </div>
-      <div className="upload-row gap-top">
-        <FileBox label="上传已提取公告术语表（XLSX）" onFile={onImportFile} />
-        <div className="asset-list">
-          <div className="ai-header">当前术语状态</div>
-          <div className="workflow-note-grid compact-grid">
-            <div><strong>术语行</strong><span>{draftTerms.length} 条</span></div>
-            <div><strong>语言列</strong><span>{languages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
-            <div><strong>导出文件</strong><span>{exportArtifact ? exportArtifact.label : '尚未生成'}</span></div>
-          </div>
+      <div className="announcement-terms-editor-head">
+        <div>
+          <strong>临时术语表</strong>
+          <span>可直接改表格。保存后会重新生成导出表，不会污染项目术语库。</span>
+        </div>
+        <div className="row-actions wrap">
+          <button className="btn btn-ghost" disabled={busy || !draftTerms.length} onClick={() => onSaveTerms(draftTerms, languages)}>保存编辑</button>
+          <button className="btn btn-ghost" disabled={busy} onClick={addTerm}>+ 新增术语</button>
+          {exportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${exportArtifact.id}/download`}>导出 XLSX</a> : null}
         </div>
       </div>
+      <details className="asset-list gap-top optional-panel" open={!draftTerms.length}>
+        <summary>更多操作：导入已有术语 / AI 复查设置 / 审计产物</summary>
+        <div className="announcement-more-grid">
+          <FileBox label="上传已提取术语表（XLSX）" onFile={onImportFile} />
+          <div className="asset-list compact-asset-list">
+            <label className="check-row">
+              <input type="checkbox" checked={aiSupplement} onChange={(event) => setAiSupplement(event.target.checked)} />
+              <span>默认启用 AI 漏词复查<em>API 已配置时自动复查；没配置时只生成检查包，不阻断本地提取。</em></span>
+            </label>
+            <div className="row-actions wrap gap-top">
+              {aiPacketArtifact ? <a className="btn btn-ghost btn-sm" href={`/api/artifacts/${aiPacketArtifact.id}/download`}>下载检查包</a> : null}
+              {aiReportArtifact ? <a className="btn btn-ghost btn-sm" href={`/api/artifacts/${aiReportArtifact.id}/download`}>下载 AI 报告</a> : null}
+            </div>
+            <div className="gap-top">
+              <FileBox label="上传外部 AI 结果 JSON（可选）" onFile={onUploadAiSupplementResponse} />
+            </div>
+          </div>
+        </div>
+      </details>
       {!draftTerms.length ? (
-        <div className="warn-line gap-top">暂无已提取术语。可以点击“提取公告术语”，或上传已有 announcement_terms.xlsx 模拟已提取场景。</div>
+        <div className="warn-line gap-top">暂无术语。点击上方主按钮提取；如果已有 announcement_terms.xlsx，可在“更多操作”里上传。</div>
       ) : (
         <div className="announcement-terms-table-wrap gap-top">
           <table className="announcement-terms-table">
@@ -3386,6 +3649,7 @@ function announcementArtifactTypeLabel(artifact: Artifact): string {
   if (artifact.kind.includes('manifest')) return '过程产物 / 审计产物'
   if (artifact.kind.includes('prompt')) return '过程产物 / 审计产物'
   if (artifact.kind.includes('ai_supplement_packet')) return 'AI 补充包'
+  if (artifact.kind.includes('ai_supplement_response')) return 'AI 补充响应'
   if (artifact.kind.includes('ai_supplement_report')) return 'AI 补充报告'
   if (artifact.kind.includes('translation_workbook')) return '中转表'
   if (artifact.kind.includes('terms')) return '公告术语表'
@@ -4786,6 +5050,44 @@ function FileBox({ label, onFile }: { label: string; onFile: (file: File) => voi
 
 function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compact?: boolean }) {
   return <div className={`ai-card ${compact ? 'compact-note' : ''}`}><div className="ai-header">已上传：{artifact.label}</div><pre>{artifact.path}</pre></div>
+}
+
+function DeleteProjectModal({ project, busy, onClose, onDelete }: { project: Project; busy: boolean; onClose: () => void; onDelete: (project: Project) => void }) {
+  return (
+    <div className="modal-mask show">
+      <div className="modal delete-project-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title">
+        <h3 id="delete-project-title">⚠️ 删除项目</h3>
+        <p>你正在删除 <strong>{project.icon ? `${project.icon} ` : ''}{project.name}</strong>。</p>
+        <div className="delete-warning">
+          <strong>此操作不可撤销</strong>
+          <span>会删除该项目的任务、术语、译文归档、公告任务、产物记录和本地项目文件。</span>
+        </div>
+        <div className="modal-foot">
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+          <button type="button" className="btn btn-danger" disabled={busy} onClick={() => onDelete(project)}>确认删除</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CancelAnnouncementTaskModal({ task, busy, onClose, onCancelTask }: { task: AnnouncementTask; busy: boolean; onClose: () => void; onCancelTask: (task: AnnouncementTask) => void }) {
+  return (
+    <div className="modal-mask show">
+      <div className="modal delete-project-modal" role="alertdialog" aria-modal="true" aria-labelledby="cancel-announcement-title">
+        <h3 id="cancel-announcement-title">⚠️ 取消公告任务</h3>
+        <p>你正在取消 <strong>{task.title || task.id}</strong>。</p>
+        <div className="delete-warning">
+          <strong>取消后不再显示在活跃公告任务里</strong>
+          <span>已生成的过程产物和审计记录会保留；如果要重新处理，请新建公告任务。</span>
+        </div>
+        <div className="modal-foot">
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>返回</button>
+          <button type="button" className="btn btn-danger" disabled={busy} onClick={() => onCancelTask(task)}>确认取消</button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate: (form: FormData) => void }) {
