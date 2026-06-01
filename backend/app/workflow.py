@@ -12,6 +12,7 @@ import subprocess
 import sys
 import math
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1152,11 +1153,11 @@ def prepare_announcement_translation(task_id: str, request: Any) -> dict[str, An
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"segments": len(segments), "languages": languages}, "artifacts": artifacts, "manifest": manifest}
 
 
-def translate_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
-    return asyncio.run(_translate_announcement_task(task_id, request))
+def translate_announcement_task(task_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+    return asyncio.run(_translate_announcement_task(task_id, request, cancel_event=cancel_event))
 
 
-async def _translate_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
+async def _translate_announcement_task(task_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
     metadata = _announcement_task_metadata(task)
     languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
@@ -1164,6 +1165,10 @@ async def _translate_announcement_task(task_id: str, request: Any) -> dict[str, 
         raise ValueError("prepare announcement translation before AI translation")
     settings = load_settings()
     provider = str(getattr(request, "provider", None) or settings.get("provider") or "mock")
+    if getattr(request, "provider", None):
+        settings["provider"] = request.provider
+    if getattr(request, "protocol", None):
+        settings["protocol"] = request.protocol
     if provider == "mock" and not bool(getattr(request, "allow_mock", False)):
         for language in languages:
             db.upsert_announcement_task_language(task_id, task["project_id"], language, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"])
@@ -1180,17 +1185,27 @@ async def _translate_announcement_task(task_id: str, request: Any) -> dict[str, 
     source_stem = _announcement_task_source_stem(task)
     for language in languages:
         lang_code = _visible_language_code(language)
+        db.upsert_announcement_task_language(task_id, task["project_id"], language, status="running", current_step=ANNOUNCEMENT_STEP["translate"])
         workpack_artifact = db.get_artifact(metadata["workpack_artifact_ids"][language])
         rows = read_jsonl(Path(workpack_artifact["path"]))
         provider_rows = [{"id": row["id"], "source": row["source"], "term_hits": row.get("term_hits") or []} for row in rows]
         prompt = Path(db.get_artifact(metadata.get("prompt_artifact_ids", {}).get(language, ""))["path"]).read_text(encoding="utf-8") if metadata.get("prompt_artifact_ids", {}).get(language) else ""
-        items = await translate_batch(provider_rows, settings, prompt, provider_override=getattr(request, "provider", None), protocol_override=getattr(request, "protocol", None))
-        expected = [str(row["id"]) for row in rows]
-        actual = [str(item.id) for item in items]
-        if expected != actual:
-            raise ValueError(f"announcement AI response IDs mismatch for {language}")
+        translated = await _translate_rows_with_orchestration(
+            run_id=run["id"],
+            rows=provider_rows,
+            settings=settings,
+            project_prompt=prompt,
+            work_dir=output / language,
+            batch_size=int(getattr(request, "batch_size", None) or settings.get("batch_size") or 90),
+            language=language,
+            cancel_event=cancel_event,
+            confirm_api_budget=bool(getattr(request, "confirm_api_budget", False)),
+        )
+        if not translated and db.get_run(run["id"]).get("status") == "needs_input":
+            task = db.update_announcement_task(task_id, status="needs_input", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)
+            return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"status": "needs_input", "reason": "api_budget_confirmation_required"}, "artifacts": artifacts}
         response_path = output / f"{source_stem}_ai_response_{lang_code}.jsonl"
-        write_jsonl(response_path, [{"para_id": item.id, "translation": item.translation} for item in items])
+        write_jsonl(response_path, [{"para_id": item["id"], "translation": item["translation"]} for item in translated])
         artifact = db.add_artifact(task["project_id"], f"公告 AI response ({lang_code})", response_path, "announcement_ai_response", run_id=run["id"], mime="application/jsonl", metadata={"task_id": task_id, "language": language, "provider": provider})
         response_artifacts[language] = artifact["id"]
         artifacts.append(artifact)
@@ -5099,7 +5114,7 @@ def _completed_batch_rows(path: Path, batch: list[dict[str, Any]]) -> list[dict[
     actual_ids = [_normalize_translation_id(row.get("id")) for row in rows if "id" in row]
     if actual_ids != expected_ids:
         return None
-    if any("translation" not in row for row in rows):
+    if any("translation" not in row or not str(row.get("translation") or "").strip() for row in rows):
         return None
     return rows
 
@@ -5157,7 +5172,397 @@ def _update_translation_progress(run_id: str, progress: dict[str, Any], status: 
     db.update_run(run_id, status=status, metadata={**current.get("metadata", {}), "translation_progress": progress})
 
 
-async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
+def _estimate_text_tokens(text: str) -> int:
+    value = str(text or "")
+    if not value:
+        return 1
+    ascii_chars = sum(1 for char in value if ord(char) < 128)
+    non_ascii = len(value) - ascii_chars
+    return max(1, math.ceil(ascii_chars / 4 + non_ascii / 1.6))
+
+
+def _estimate_row_tokens(row: dict[str, Any]) -> int:
+    return _estimate_text_tokens(json.dumps(row, ensure_ascii=False)) + 12
+
+
+def _translation_cancel_path(work_dir: Path) -> Path:
+    return work_dir / "cancel.requested"
+
+
+def _cancel_requested(run_id: str, work_dir: Path, cancel_event: Any | None = None) -> bool:
+    if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+        return True
+    if _translation_cancel_path(work_dir).exists():
+        return True
+    try:
+        return db.get_run(run_id).get("status") == "canceled"
+    except KeyError:
+        return True
+
+
+def _structural_tokens(text: str) -> list[str]:
+    patterns = [
+        r"\{[^{}]+\}",
+        r"%[sdif]",
+        r"##\d+",
+        r"\[(?!/?color\b)(?:[A-Za-z]+\d+|\d+)\]",
+        r"\[[a-zA-Z]+[^\]]*\]",
+        r"\[/[a-zA-Z]+\]",
+        r"<[^>]+>",
+        r"&[A-Za-z][A-Za-z0-9]+;",
+    ]
+    hits: list[str] = []
+    for pattern in patterns:
+        hits.extend(re.findall(pattern, str(text or "")))
+    return hits
+
+
+def _validate_translated_batch(batch: list[dict[str, Any]], rows: list[dict[str, Any]], language: str) -> list[dict[str, Any]]:
+    expected_ids = [_normalize_translation_id(row.get("id")) for row in batch]
+    actual_ids = [_normalize_translation_id(row.get("id")) for row in rows if "id" in row]
+    if actual_ids != expected_ids:
+        raise ValueError(f"response IDs mismatch: expected={expected_ids[:8]}, actual={actual_ids[:8]}")
+    if len(set(map(str, actual_ids))) != len(actual_ids):
+        raise ValueError("response contains duplicate IDs")
+    validated: list[dict[str, Any]] = []
+    for source_row, row in zip(batch, rows):
+        translation = str(row.get("translation") or "")
+        if not translation.strip():
+            raise ValueError(f"row {source_row.get('id')} returned empty translation")
+        source = str(source_row.get("source") or "")
+        missing_tokens = [token for token in _structural_tokens(source) if token not in translation]
+        if missing_tokens:
+            raise ValueError(f"row {source_row.get('id')} lost structural token(s): {missing_tokens[:5]}")
+        if source.count("\n") != translation.count("\n"):
+            raise ValueError(f"row {source_row.get('id')} changed actual newline count")
+        if source.count("\\n") != translation.count("\\n"):
+            raise ValueError(f"row {source_row.get('id')} changed escaped newline count")
+        if language in {"en", "ko"} and _looks_like_untranslated_seed(translation, language):
+            raise ValueError(f"row {source_row.get('id')} still contains obvious Chinese text")
+        validated.append({"id": _normalize_translation_id(row.get("id")), "translation": translation})
+    return validated
+
+
+def _build_batch_manifest(rows: list[dict[str, Any]], project_prompt: str, settings: dict[str, Any], batch_size: int, language: str) -> dict[str, Any]:
+    max_rows = max(1, min(int(batch_size or settings.get("batch_size") or 90), 200))
+    max_tokens = max(1000, int(settings.get("max_batch_input_tokens") or 12000))
+    prompt_tokens = _estimate_text_tokens(project_prompt) + 120
+    batches: list[dict[str, Any]] = []
+    current_rows: list[dict[str, Any]] = []
+    current_tokens = prompt_tokens
+    current_start = 0
+
+    def flush() -> None:
+        nonlocal current_rows, current_tokens, current_start
+        if not current_rows:
+            return
+        index = len(batches) + 1
+        row_ids = [_normalize_translation_id(row.get("id")) for row in current_rows]
+        batches.append(
+            {
+                "batch_index": index,
+                "start": current_start,
+                "row_count": len(current_rows),
+                "row_ids": row_ids,
+                "estimated_input_tokens": current_tokens,
+                "status": "pending",
+                "attempts": 0,
+                "response_path": "",
+                "error_path": "",
+                "updated_at": db.now_iso(),
+            }
+        )
+        current_start += len(current_rows)
+        current_rows = []
+        current_tokens = prompt_tokens
+
+    for row in rows:
+        row_tokens = _estimate_row_tokens(row)
+        if current_rows and (len(current_rows) >= max_rows or current_tokens + row_tokens > max_tokens):
+            flush()
+        current_rows.append(row)
+        current_tokens += row_tokens
+    flush()
+    return {
+        "schema_version": 1,
+        "kind": "translation_batch_manifest",
+        "language": language,
+        "batch_size": max_rows,
+        "max_batch_input_tokens": max_tokens,
+        "total_rows": len(rows),
+        "estimated_total_input_tokens": sum(int(batch["estimated_input_tokens"]) for batch in batches),
+        "batches": batches,
+        "created_at": db.now_iso(),
+        "updated_at": db.now_iso(),
+    }
+
+
+def _manifest_matches_rows(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> bool:
+    manifest_ids: list[RowId] = []
+    for batch in manifest.get("batches") or []:
+        manifest_ids.extend([_normalize_translation_id(value) for value in batch.get("row_ids") or []])
+    row_ids = [_normalize_translation_id(row.get("id")) for row in rows]
+    return manifest_ids == row_ids
+
+
+def _load_or_create_batch_manifest(manifest_path: Path, rows: list[dict[str, Any]], project_prompt: str, settings: dict[str, Any], batch_size: int, language: str) -> dict[str, Any]:
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if _manifest_matches_rows(manifest, rows):
+                return manifest
+        except Exception:
+            pass
+    manifest = _build_batch_manifest(rows, project_prompt, settings, batch_size, language)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
+
+
+def _manifest_progress(
+    manifest: dict[str, Any],
+    *,
+    batch_size: int,
+    started_at: float,
+    current_batch: int | None = None,
+    failed_batch: int | None = None,
+    rate_limit_wait_seconds: float | None = None,
+) -> dict[str, Any]:
+    batches = manifest.get("batches") or []
+    completed_batches = [batch for batch in batches if batch.get("status") == "passed"]
+    completed_rows = sum(int(batch.get("row_count") or 0) for batch in completed_batches)
+    progress = _translation_progress(
+        total_rows=int(manifest.get("total_rows") or 0),
+        total_batches=len(batches),
+        completed_batches=len(completed_batches),
+        completed_rows=completed_rows,
+        batch_size=batch_size,
+        started_at=started_at,
+        current_batch=current_batch,
+        failed_batch=failed_batch,
+    )
+    progress.update(
+        {
+            "max_concurrent_batches": int(manifest.get("max_concurrent_batches") or 1),
+            "estimated_total_input_tokens": int(manifest.get("estimated_total_input_tokens") or 0),
+            "rate_limit_wait_seconds": round(rate_limit_wait_seconds, 2) if rate_limit_wait_seconds else 0,
+        }
+    )
+    return progress
+
+
+class _AsyncTokenRateLimiter:
+    def __init__(self, requests_per_minute: int, tokens_per_minute: int) -> None:
+        self.requests_per_minute = max(1, int(requests_per_minute or 12))
+        self.tokens_per_minute = max(1000, int(tokens_per_minute or 120000))
+        self._requests: deque[float] = deque()
+        self._tokens: deque[tuple[float, int]] = deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: int) -> float:
+        waited = 0.0
+        requested_tokens = min(max(1, int(tokens or 1)), self.tokens_per_minute)
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                while self._requests and now - self._requests[0] >= 60:
+                    self._requests.popleft()
+                while self._tokens and now - self._tokens[0][0] >= 60:
+                    self._tokens.popleft()
+                token_sum = sum(item[1] for item in self._tokens)
+                if len(self._requests) < self.requests_per_minute and token_sum + requested_tokens <= self.tokens_per_minute:
+                    self._requests.append(now)
+                    self._tokens.append((now, requested_tokens))
+                    return waited
+                waits = []
+                if self._requests:
+                    waits.append(60 - (now - self._requests[0]))
+                if self._tokens:
+                    waits.append(60 - (now - self._tokens[0][0]))
+                sleep_for = max(0.25, min([value for value in waits if value > 0] or [1.0]))
+            await asyncio.sleep(min(sleep_for, 5.0))
+            waited += min(sleep_for, 5.0)
+
+
+def _provider_retry_delay_seconds(exc: Exception, attempt: int) -> float:
+    text = str(exc).lower()
+    base = 2 ** max(0, attempt - 1)
+    if any(marker in text for marker in ("429", "rate limit", "too many requests", "timeout", "temporarily unavailable", " 500", " 502", " 503", " 504")):
+        return float(min(30, max(3, base * 2)))
+    return float(min(10, base))
+
+
+async def _translate_rows_with_orchestration(
+    *,
+    run_id: str,
+    rows: list[dict[str, Any]],
+    settings: dict[str, Any],
+    project_prompt: str,
+    work_dir: Path,
+    batch_size: int,
+    language: str,
+    cancel_event: Any | None = None,
+    confirm_api_budget: bool = False,
+) -> list[dict[str, Any]]:
+    batch_size = max(1, min(int(batch_size or settings.get("batch_size") or 90), 200))
+    cancel_path = _translation_cancel_path(work_dir)
+    if not (cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)()) and cancel_path.exists():
+        cancel_path.unlink()
+    manifest_path = work_dir / "batch_manifest.json"
+    batches_dir = work_dir / f"batches_{batch_size}"
+    batches_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _load_or_create_batch_manifest(manifest_path, rows, project_prompt, settings, batch_size, language)
+    manifest["max_concurrent_batches"] = max(1, min(int(settings.get("max_concurrent_batches") or 2), 4))
+    manifest["updated_at"] = db.now_iso()
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    budget_warning_tokens = int(settings.get("api_budget_warning_tokens") or 1000000)
+    estimated_total = int(manifest.get("estimated_total_input_tokens") or 0)
+    if estimated_total > budget_warning_tokens and not confirm_api_budget:
+        current = db.get_run(run_id)
+        db.update_run(
+            run_id,
+            status="needs_input",
+            metadata={
+                **current.get("metadata", {}),
+                "reason": "api_budget_confirmation_required",
+                "api_budget_estimate": {
+                    "estimated_input_tokens": estimated_total,
+                    "warning_tokens": budget_warning_tokens,
+                    "estimated_batches": len(manifest.get("batches") or []),
+                },
+                "translation_progress": _manifest_progress(manifest, batch_size=batch_size, started_at=time.monotonic()),
+            },
+        )
+        db.add_event(run_id, f"translation paused for API budget confirmation: estimated_input_tokens={estimated_total}, warning={budget_warning_tokens}", level="warning")
+        return []
+
+    started_at = time.monotonic()
+    limiter = _AsyncTokenRateLimiter(
+        int(settings.get("max_requests_per_minute") or 12),
+        int(settings.get("max_estimated_tokens_per_minute") or 120000),
+    )
+    max_attempts = max(1, min(int(settings.get("max_batch_attempts") or 3), 5))
+    concurrency = max(1, min(int(settings.get("max_concurrent_batches") or 2), 4))
+    manifest_lock = asyncio.Lock()
+    failure: Exception | None = None
+
+    def batch_rows(batch_meta: dict[str, Any]) -> list[dict[str, Any]]:
+        start = int(batch_meta.get("start") or 0)
+        count = int(batch_meta.get("row_count") or 0)
+        return rows[start : start + count]
+
+    async def persist_manifest(current_batch: int | None = None, failed_batch: int | None = None, status: str = "running", rate_wait: float | None = None) -> None:
+        async with manifest_lock:
+            manifest["updated_at"] = db.now_iso()
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            _update_translation_progress(
+                run_id,
+                _manifest_progress(manifest, batch_size=batch_size, started_at=started_at, current_batch=current_batch, failed_batch=failed_batch, rate_limit_wait_seconds=rate_wait),
+                status=status,
+            )
+
+    async def process_batch(batch_meta: dict[str, Any]) -> None:
+        nonlocal failure
+        if failure is not None:
+            return
+        batch_index = int(batch_meta["batch_index"])
+        batch = batch_rows(batch_meta)
+        batch_path = batches_dir / f"batch_{batch_index:05d}.jsonl"
+        error_path = batches_dir / f"batch_{batch_index:05d}.error.json"
+        completed = _completed_batch_rows(batch_path, batch)
+        if completed is not None:
+            batch_meta.update({"status": "passed", "response_path": str(batch_path), "error_path": "", "updated_at": db.now_iso()})
+            db.add_event(run_id, f"resume: batch {batch_index}/{len(manifest.get('batches') or [])} already completed; rows={len(completed)}")
+            await persist_manifest(current_batch=batch_index)
+            return
+        for attempt in range(int(batch_meta.get("attempts") or 0) + 1, max_attempts + 1):
+            if _cancel_requested(run_id, work_dir, cancel_event):
+                batch_meta.update({"status": "canceled", "attempts": attempt - 1, "updated_at": db.now_iso()})
+                await persist_manifest(current_batch=batch_index, status="canceled")
+                raise RuntimeError("translation canceled")
+            batch_meta.update({"status": "running", "attempts": attempt, "updated_at": db.now_iso()})
+            await persist_manifest(current_batch=batch_index)
+            wait_seconds = await limiter.acquire(int(batch_meta.get("estimated_input_tokens") or 1))
+            if wait_seconds:
+                db.add_event(run_id, f"rate limit wait before batch {batch_index}: {round(wait_seconds, 2)}s")
+                await persist_manifest(current_batch=batch_index, rate_wait=wait_seconds)
+            db.add_event(run_id, f"translating batch {batch_index}/{len(manifest.get('batches') or [])}: rows={len(batch)}, attempt={attempt}/{max_attempts}")
+            try:
+                prompt = project_prompt
+                if attempt > 1:
+                    prompt = f"{project_prompt}\n\nRepair request: previous output for this batch failed local validation. Return the full corrected batch only, preserving IDs, order, placeholders, tags, entities, and newlines."
+                items = await translate_batch(batch, settings, prompt)
+                batch_output = [{"id": item.id, "translation": item.translation} for item in items]
+                validated = _validate_translated_batch(batch, batch_output, language)
+                write_jsonl(batch_path, validated)
+                if error_path.exists():
+                    error_path.unlink()
+                batch_meta.update({"status": "passed", "response_path": str(batch_path), "error_path": "", "updated_at": db.now_iso()})
+                db.add_event(run_id, f"batch {batch_index}/{len(manifest.get('batches') or [])} completed and persisted: rows={len(validated)}")
+                await persist_manifest(current_batch=batch_index)
+                return
+            except Exception as exc:
+                _write_batch_error(error_path, batch_index, attempt, exc)
+                batch_meta.update({"status": "failed", "error_path": str(error_path), "updated_at": db.now_iso()})
+                db.add_event(run_id, f"batch {batch_index}/{len(manifest.get('batches') or [])} failed attempt {attempt}/{max_attempts}: {exc}", level="warning")
+                await persist_manifest(current_batch=batch_index, failed_batch=batch_index, status="running" if attempt < max_attempts else "failed")
+                if attempt >= max_attempts:
+                    failure = exc
+                    raise
+                delay = _provider_retry_delay_seconds(exc, attempt)
+                db.add_event(run_id, f"batch {batch_index}/{len(manifest.get('batches') or [])} retry backoff: {round(delay, 2)}s")
+                await asyncio.sleep(delay)
+
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    for item in manifest.get("batches") or []:
+        completed = _completed_batch_rows(Path(item.get("response_path") or ""), batch_rows(item)) if item.get("status") == "passed" else None
+        if completed is not None:
+            db.add_event(run_id, f"resume: batch {int(item.get('batch_index') or 0)}/{len(manifest.get('batches') or [])} already completed; rows={len(completed)}")
+            continue
+        item["status"] = "pending"
+        await queue.put(item)
+
+    if queue.empty():
+        await persist_manifest(status="running")
+    else:
+        await persist_manifest()
+
+    async def worker() -> None:
+        nonlocal failure
+        while failure is None:
+            if _cancel_requested(run_id, work_dir, cancel_event):
+                failure = RuntimeError("translation canceled")
+                return
+            try:
+                item = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                await process_batch(item)
+            finally:
+                queue.task_done()
+
+    workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
+    try:
+        await asyncio.gather(*workers)
+    finally:
+        for worker_task in workers:
+            if not worker_task.done():
+                worker_task.cancel()
+    if failure is not None:
+        if str(failure) == "translation canceled":
+            db.add_event(run_id, "translation canceled")
+            _update_translation_progress(run_id, _manifest_progress(manifest, batch_size=batch_size, started_at=started_at), status="canceled")
+        raise failure
+
+    translated_rows: list[dict[str, Any]] = []
+    for item in sorted(manifest.get("batches") or [], key=lambda value: int(value.get("batch_index") or 0)):
+        translated_rows.extend(read_jsonl(Path(item["response_path"])))
+    await persist_manifest(status="running")
+    return translated_rows
+
+
+async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
     run = db.get_run(run_id)
     language = require_supported_language(run.get("language") or "en")
     project = db.get_project(run["project_id"])
@@ -5252,88 +5657,21 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         run_subprocess(prepare_args, LOCALIZATION_ROOT, run_id)
         workpack_path = work_dir / "translation_workpack.jsonl"
         rows = read_jsonl(workpack_path)
-        total_batches = math.ceil(len(rows) / batch_size) if rows else 0
-        db.add_event(run_id, f"workpack prepared: rows={len(rows)}, batch_size={batch_size}, batches={total_batches}")
-        started_at = time.monotonic()
-        batches_dir = work_dir / f"batches_{batch_size}"
-        batches_dir.mkdir(parents=True, exist_ok=True)
-        translated_rows: list[dict[str, Any]] = []
-        completed_batches = 0
-        completed_rows = 0
-        max_attempts = 3
-        for start in range(0, len(rows), batch_size):
-            batch_index = start // batch_size + 1
-            batch = rows[start : start + batch_size]
-            batch_path = batches_dir / f"batch_{batch_index:05d}.jsonl"
-            error_path = batches_dir / f"batch_{batch_index:05d}.error.json"
-            completed = _completed_batch_rows(batch_path, batch)
-            if completed is not None:
-                translated_rows.extend(completed)
-                completed_batches += 1
-                completed_rows += len(completed)
-                db.add_event(run_id, f"resume: batch {batch_index}/{total_batches} already completed; rows={len(completed)}")
-                _update_translation_progress(
-                    run_id,
-                    _translation_progress(
-                        total_rows=len(rows),
-                        total_batches=total_batches,
-                        completed_batches=completed_batches,
-                        completed_rows=completed_rows,
-                        batch_size=batch_size,
-                        started_at=started_at,
-                        current_batch=batch_index,
-                    ),
-                )
-                continue
-
-            batch_rows: list[dict[str, Any]] | None = None
-            for attempt in range(1, max_attempts + 1):
-                db.add_event(run_id, f"translating batch {batch_index}/{total_batches}: rows={len(batch)}, attempt={attempt}/{max_attempts}")
-                try:
-                    items = await translate_batch(batch, settings, prompt, provider_override=request.provider, protocol_override=request.protocol)
-                    batch_rows = [{"id": item.id, "translation": item.translation} for item in items]
-                    expected_ids = [_normalize_translation_id(row.get("id")) for row in batch]
-                    actual_ids = [_normalize_translation_id(row.get("id")) for row in batch_rows]
-                    if actual_ids != expected_ids:
-                        raise ValueError(f"batch {batch_index} response IDs mismatch: expected={expected_ids[:5]}..., actual={actual_ids[:5]}...")
-                    write_jsonl(batch_path, batch_rows)
-                    if error_path.exists():
-                        error_path.unlink()
-                    db.add_event(run_id, f"batch {batch_index}/{total_batches} completed and persisted: rows={len(batch_rows)}")
-                    break
-                except Exception as exc:
-                    _write_batch_error(error_path, batch_index, attempt, exc)
-                    db.add_event(run_id, f"batch {batch_index}/{total_batches} failed attempt {attempt}/{max_attempts}: {exc}", level="warning")
-                    if attempt >= max_attempts:
-                        progress = _translation_progress(
-                            total_rows=len(rows),
-                            total_batches=total_batches,
-                            completed_batches=completed_batches,
-                            completed_rows=completed_rows,
-                            batch_size=batch_size,
-                            started_at=started_at,
-                            current_batch=batch_index,
-                            failed_batch=batch_index,
-                        )
-                        _update_translation_progress(run_id, progress, status="failed")
-                        raise
-            if batch_rows is None:
-                raise RuntimeError(f"batch {batch_index} produced no rows")
-            translated_rows.extend(batch_rows)
-            completed_batches += 1
-            completed_rows += len(batch_rows)
-            _update_translation_progress(
-                run_id,
-                _translation_progress(
-                    total_rows=len(rows),
-                    total_batches=total_batches,
-                    completed_batches=completed_batches,
-                    completed_rows=completed_rows,
-                    batch_size=batch_size,
-                    started_at=started_at,
-                    current_batch=batch_index,
-                ),
-            )
+        manifest_preview = _load_or_create_batch_manifest(work_dir / "batch_manifest.json", rows, prompt, settings, batch_size, language)
+        db.add_event(run_id, f"workpack prepared: rows={len(rows)}, dynamic_batches={len(manifest_preview.get('batches') or [])}, concurrency={settings.get('max_concurrent_batches')}")
+        translated_rows = await _translate_rows_with_orchestration(
+            run_id=run_id,
+            rows=rows,
+            settings=settings,
+            project_prompt=prompt,
+            work_dir=work_dir,
+            batch_size=batch_size,
+            language=language,
+            cancel_event=cancel_event,
+            confirm_api_budget=bool(getattr(request, "confirm_api_budget", False)),
+        )
+        if not translated_rows and db.get_run(run_id).get("status") == "needs_input":
+            return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
         response_path = work_dir / "translation_response.jsonl"
         write_jsonl(response_path, translated_rows)
         db.add_artifact(project["id"], "Translation response JSONL", response_path, "translation_response", run_id=run_id, mime="application/jsonl")
@@ -5443,9 +5781,32 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
     except Exception as exc:
         db.add_event(run_id, str(exc), level="error")
         failed_metadata = db.get_run(run_id).get("metadata", {})
-        db.update_run(run_id, status="failed", metadata={**failed_metadata, "error": str(exc)})
+        status = "canceled" if str(exc) == "translation canceled" else "failed"
+        db.update_run(run_id, status=status, metadata={**failed_metadata, "error": str(exc)})
         raise
 
 
-def run_translate_sync(run_id: str, request: Any) -> dict[str, Any]:
-    return asyncio.run(translate_run(run_id, request))
+def run_translate_sync(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+    return asyncio.run(translate_run(run_id, request, cancel_event=cancel_event))
+
+
+def cancel_translation_run(run_id: str) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    work_dir = run_dir(run_id) / "translation"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    _translation_cancel_path(work_dir).write_text(db.now_iso(), encoding="utf-8")
+    metadata = run.get("metadata", {})
+    db.update_run(run_id, status="canceled", metadata={**metadata, "cancel_requested_at": db.now_iso()})
+    db.add_event(run_id, "translation cancel requested")
+    return db.get_run(run_id)
+
+
+def translation_run_progress(run_id: str) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    metadata = run.get("metadata", {})
+    return {
+        "run": run,
+        "progress": metadata.get("translation_progress"),
+        "api_budget_estimate": metadata.get("api_budget_estimate"),
+        "reason": metadata.get("reason"),
+    }

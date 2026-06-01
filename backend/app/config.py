@@ -24,6 +24,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "model": "gpt-5.5",
     "reasoning_effort": "medium",
     "batch_size": 90,
+    "max_concurrent_batches": 2,
+    "max_requests_per_minute": 12,
+    "max_estimated_tokens_per_minute": 120000,
+    "max_batch_input_tokens": 12000,
+    "api_budget_warning_tokens": 1000000,
+    "max_batch_attempts": 3,
     "multimodal": {
         "images": True,
         "pdf": True,
@@ -131,6 +137,7 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         payload["model"] = payload.get("model") or "mock-localization"
         payload["reasoning_effort"] = "none"
         payload["protocol"] = "mock"
+        _normalize_long_text_settings(payload)
         return payload
 
     preset = str(payload.get("preset") or DEFAULT_SETTINGS["preset"])
@@ -143,4 +150,23 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     payload["base_url"] = selected["base_url"]
     payload["max_output_tokens"] = selected["max_output_tokens"]
     payload["protocol"] = "responses" if provider == "openai" else "messages"
+    _normalize_long_text_settings(payload)
     return payload
+
+
+def _bounded_int(payload: dict[str, Any], key: str, default: int, low: int, high: int) -> None:
+    try:
+        value = int(payload.get(key) or default)
+    except (TypeError, ValueError):
+        value = default
+    payload[key] = max(low, min(value, high))
+
+
+def _normalize_long_text_settings(payload: dict[str, Any]) -> None:
+    _bounded_int(payload, "batch_size", int(DEFAULT_SETTINGS["batch_size"]), 1, 200)
+    _bounded_int(payload, "max_concurrent_batches", int(DEFAULT_SETTINGS["max_concurrent_batches"]), 1, 4)
+    _bounded_int(payload, "max_requests_per_minute", int(DEFAULT_SETTINGS["max_requests_per_minute"]), 1, 120)
+    _bounded_int(payload, "max_estimated_tokens_per_minute", int(DEFAULT_SETTINGS["max_estimated_tokens_per_minute"]), 1000, 2_000_000)
+    _bounded_int(payload, "max_batch_input_tokens", int(DEFAULT_SETTINGS["max_batch_input_tokens"]), 1000, 100_000)
+    _bounded_int(payload, "api_budget_warning_tokens", int(DEFAULT_SETTINGS["api_budget_warning_tokens"]), 10_000, 20_000_000)
+    _bounded_int(payload, "max_batch_attempts", int(DEFAULT_SETTINGS["max_batch_attempts"]), 1, 5)

@@ -207,6 +207,12 @@ type AppSettings = {
   model?: string
   reasoning_effort?: string
   batch_size?: number
+  max_concurrent_batches?: number
+  max_requests_per_minute?: number
+  max_estimated_tokens_per_minute?: number
+  max_batch_input_tokens?: number
+  api_budget_warning_tokens?: number
+  max_batch_attempts?: number
 }
 
 type TranslationReadiness = {
@@ -235,6 +241,9 @@ type TranslationProgress = {
   current_batch?: number | null
   failed_batch?: number | null
   batch_size: number
+  max_concurrent_batches?: number
+  estimated_total_input_tokens?: number
+  rate_limit_wait_seconds?: number
   percent: number
   elapsed_seconds?: number | null
   average_batch_seconds?: number | null
@@ -388,8 +397,8 @@ function languageSpec(code: string): LanguageOption {
 
 function languageChipTitle(lang: LanguageOption): string {
   const parts = lang.label.trim().split(/\s+/)
-  if (parts.length >= 3) return `${lang.short} ${parts.slice(1, -1).join(' ')}`
-  if (parts.length === 2) return `${lang.short} ${parts[1]}`
+  if (parts.length >= 3) return `${lang.short} ${parts.slice(1, -1).join(' ')} ${lang.short}`
+  if (parts.length === 2) return `${lang.short} ${parts[1]} ${lang.short}`
   return `${lang.short} ${lang.label}`
 }
 
@@ -924,6 +933,37 @@ function App() {
     loadQualityIssues(latestRun.id)
   }, [latestRun?.id, latestRun?.status])
 
+  useEffect(() => {
+    if (!latestRun || !['queued', 'running'].includes(latestRun.status)) return
+    const poller = window.setInterval(async () => {
+      try {
+        const updated = await api<Run>(`/api/runs/${latestRun.id}`)
+        setLatestRun(updated)
+        const latestEvent = updated.events?.[updated.events.length - 1]
+        if (updated.kind === 'translation' && updated.status === 'passed') {
+          setStatus(`${languageSpec(normalizeLanguageCode(updated.language) || selectedLanguage).short} 翻译和 QA 已通过，最终产物已归档。`)
+        } else if (latestEvent?.message) {
+          setStatus(`后台任务${updated.status}：${latestEvent.message}`)
+        }
+        if (!['queued', 'running'].includes(updated.status)) {
+          await refreshCurrent()
+          if (tab === 'delivery') await refreshDeliverables()
+        }
+      } catch (error) {
+        setStatus(`后台任务进度刷新失败：${errorText(error)}`)
+      }
+    }, 2000)
+    return () => window.clearInterval(poller)
+  }, [latestRun?.id, latestRun?.status, tab])
+
+  useEffect(() => {
+    if (!current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status))) return
+    const poller = window.setInterval(() => {
+      refreshCurrent()
+    }, 2500)
+    return () => window.clearInterval(poller)
+  }, [current?.id, current?.announcement_tasks?.map((task) => `${task.id}:${task.status}`).join('|')])
+
   function cancelProjectDeleteHold() {
     if (deleteHoldTimer.current !== null) {
       window.clearTimeout(deleteHoldTimer.current)
@@ -1255,7 +1295,7 @@ function App() {
     try {
       const batchSize = selectedBatchSize
       const resumableRun = latestRun?.kind === 'translation'
-        && latestRun.status === 'failed'
+        && ['failed', 'needs_input', 'canceled'].includes(latestRun.status)
         && latestRun.language === selectedLanguage
         && latestRun.metadata?.input_artifact_id === sourceArtifact.id
         ? latestRun
@@ -1274,35 +1314,39 @@ function App() {
           })
         })
       setLatestRun(run)
-      if (resumableRun) setStatus(`继续失败翻译任务：复用已落盘批次，按 ${batchSize} 行/批续跑。`)
-      const translatePromise = api<{ run: Run; artifacts: Artifact[]; quality?: Record<string, unknown>; translation_readiness?: TranslationReadiness }>(`/api/runs/${run.id}/translate`, {
+      const needsBudgetConfirm = run.metadata?.reason === 'api_budget_confirmation_required'
+      const confirmedBudget = needsBudgetConfirm
+        ? window.confirm('该任务预计 API token 用量超过设置的提醒阈值。确认后会从已完成批次继续，不会重跑已落盘批次。是否继续？')
+        : false
+      if (needsBudgetConfirm && !confirmedBudget) {
+        setStatus('已暂停：等待确认 API 用量预算后继续。')
+        return
+      }
+      const endpoint = resumableRun ? 'resume' : 'start'
+      const started = await api<Run>(`/api/runs/${run.id}/translate/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget })
       })
-      const poller = window.setInterval(async () => {
-        try {
-          const updated = await api<Run>(`/api/runs/${run.id}`)
-          setLatestRun(updated)
-          const latestEvent = updated.events?.[updated.events.length - 1]
-          if (latestEvent?.message) setStatus(`翻译任务${updated.status === 'running' ? '运行中' : updated.status}：${latestEvent.message}`)
-        } catch {
-          // Keep the in-flight translation request as the source of truth.
-        }
-      }, 2000)
-      const result = await translatePromise.finally(() => window.clearInterval(poller))
-      setLatestRun({ ...result.run, artifacts: result.artifacts })
-      await refreshCurrent()
-      if (tab === 'delivery') await refreshDeliverables()
-      if (result.run.metadata?.reason === 'input already contains target translations; run QA instead') {
-        setQaArtifact(sourceArtifact)
-        setStep(8)
-        setStatus('已跳过模型翻译：输入表已有目标译文，请继续运行 QA。')
-      } else {
-        setStatus(result.run.status === 'passed' ? `${currentLang.short} 翻译和 QA 已通过，最终产物已归档。` : `${currentLang.short} 翻译任务结束：${result.run.status}`)
-      }
+      setLatestRun(started)
+      setStatus(`${currentLang.short} 翻译已进入后台队列：动态拆批、并发 ${settings?.max_concurrent_batches || 2}、完成批次会即时落盘。`)
     } catch (error) {
       setStatus(`翻译失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function cancelTranslateRun() {
+    if (!latestRun || latestRun.kind !== 'translation') return
+    setBusy(true)
+    setStatus('正在取消后台翻译任务...')
+    try {
+      const canceled = await api<Run>(`/api/runs/${latestRun.id}/translate/cancel`, { method: 'POST' })
+      setLatestRun(canceled)
+      setStatus('已请求取消：当前已完成批次会保留，后续可继续。')
+    } catch (error) {
+      setStatus(`取消翻译失败：${errorText(error)}`)
     } finally {
       setBusy(false)
     }
@@ -1877,6 +1921,7 @@ function App() {
                 onGlossaryPreview={previewGlossaryImport}
                 onGlossaryImport={importGlossaryArtifact}
                 onTranslate={() => runTranslate('A')}
+                onCancelTranslate={cancelTranslateRun}
                 onDirectQA={() => runDirectQA('QA')}
                 onManualFixes={applyManualFixes}
                 onModelFixes={applyModelFixes}
@@ -3119,7 +3164,7 @@ function AnnouncementWizard({
   const activeConstraintArtifactIds = constraintArtifactIds.filter((id) => selectableConstraintIds.has(id))
   const activeMeta = (activeTask?.metadata || {}) as Record<string, unknown>
   const detectedLanguages = normalizeLanguageArray(activeMeta.detected_languages)
-  const effectiveLanguages = selectedLanguages.length ? selectedLanguages : (activeTask?.selected_languages || detectedLanguages)
+  const effectiveLanguages = selectedLanguages
   const providerReady = settings?.provider && settings.provider !== 'mock' && settings.api_key === 'configured'
   const showLanguageSubflows = Boolean(activeTask && step >= 6)
 
@@ -3333,7 +3378,8 @@ function AnnouncementWizard({
                 <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
               </div>
               <div className="row-actions">
-                <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={() => run('translate', 8)}>调用已配置 AI 翻译</button>
+                <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={() => run('translate/start')}>调用已配置 AI 翻译</button>
+                <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={() => run('translate/cancel', 7)}>暂停/取消后台翻译</button>
                 <button className="btn btn-primary" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入 AI response</button>
               </div>
             </>
@@ -3453,7 +3499,7 @@ function AnnouncementTermsStep({
           {exportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${exportArtifact.id}/download`}>导出 XLSX</a> : null}
         </div>
       </div>
-      <details className="asset-list gap-top optional-panel" open={!draftTerms.length}>
+      <details className="asset-list gap-top optional-panel" open={!draftTerms.length || Boolean(aiPacketArtifact || aiReportArtifact)}>
         <summary>更多操作：导入已有术语 / AI 复查设置 / 审计产物</summary>
         <div className="announcement-more-grid">
           <FileBox label="上传已提取术语表（XLSX）" onFile={onImportFile} />
@@ -3727,6 +3773,7 @@ function Wizard(props: {
   onGlossaryPreview: () => void
   onGlossaryImport: () => void
   onTranslate: () => void
+  onCancelTranslate: () => void
   onDirectQA: () => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
@@ -4317,6 +4364,7 @@ function StepTranslate({
   settings,
   status,
   onTranslate,
+  onCancelTranslate,
   busy,
   latestRun,
   qualityIssues,
@@ -4335,6 +4383,7 @@ function StepTranslate({
   settings: AppSettings | null
   status: string
   onTranslate: () => void
+  onCancelTranslate: () => void
   busy: boolean
   latestRun: Run | null
   qualityIssues: QualityIssue[]
@@ -4357,7 +4406,8 @@ function StepTranslate({
   const alreadyTranslated = canSkipModelTranslation(readiness)
   const estimatedBatches = estimateBatches(readiness?.source_rows, batchSize)
   const progress = getTranslationProgress(latestRun)
-  const resumable = Boolean(latestRun?.kind === 'translation' && latestRun.status === 'failed' && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
+  const activeTranslation = Boolean(latestRun?.kind === 'translation' && ['queued', 'running'].includes(latestRun.status) && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
+  const resumable = Boolean(latestRun?.kind === 'translation' && ['failed', 'needs_input', 'canceled'].includes(latestRun.status) && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
   const selectedBatchPreset = batchPresets.find((preset) => preset.size === batchSize)
   const invalidIdText = readiness?.invalid_id_rows ? ` / 空 ID ${readiness.invalid_id_rows}` : ''
   const readinessText = readiness
@@ -4430,7 +4480,10 @@ function StepTranslate({
               <button className="btn btn-primary" disabled={busy} onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>跳到校对</button>
             </>
           ) : (
-            <button className="btn btn-primary" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>⚡ 开始 {lang.short} 正式翻译</button>
+            <>
+              <button className="btn btn-primary" disabled={busy || activeTranslation || Boolean(blockReason)} onClick={onTranslate}>{resumable ? '↻ 继续后台翻译' : `⚡ 开始 ${lang.short} 正式翻译`}</button>
+              {activeTranslation ? <button className="btn btn-ghost" disabled={busy} onClick={onCancelTranslate}>暂停/取消后台任务</button> : null}
+            </>
           )}
           {blockReason && !alreadyTranslated ? <div className="warn-line inline-warning">{blockReason}</div> : null}
         </div>
@@ -4459,6 +4512,9 @@ function TranslationProgressBar({ progress }: { progress: TranslationProgress })
       <div className="progress-foot">
         <span>{percent.toFixed(1)}%</span>
         <span>{progress.failed_batch ? `失败批次：${progress.failed_batch}` : `当前批次：${progress.current_batch || '-'}`}</span>
+        <span>并发 {progress.max_concurrent_batches || 1}</span>
+        <span>估算 token {progress.estimated_total_input_tokens ? progress.estimated_total_input_tokens.toLocaleString() : '-'}</span>
+        {progress.rate_limit_wait_seconds ? <span>限流等待 {formatDuration(progress.rate_limit_wait_seconds)}</span> : null}
       </div>
     </div>
   )
@@ -5141,7 +5197,13 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
         provider: form.get('provider'),
         preset: form.get('preset'),
         api_key: form.get('api_key'),
-        batch_size: Number(form.get('batch_size') || 90)
+        batch_size: Number(form.get('batch_size') || 90),
+        max_concurrent_batches: Number(form.get('max_concurrent_batches') || 2),
+        max_requests_per_minute: Number(form.get('max_requests_per_minute') || 12),
+        max_estimated_tokens_per_minute: Number(form.get('max_estimated_tokens_per_minute') || 120000),
+        max_batch_input_tokens: Number(form.get('max_batch_input_tokens') || 12000),
+        api_budget_warning_tokens: Number(form.get('api_budget_warning_tokens') || 1000000),
+        max_batch_attempts: Number(form.get('max_batch_attempts') || 3)
       })
     })
     setSettings(saved)
@@ -5173,6 +5235,30 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
           <label className="settings-wide">
             <span>API key</span>
             <input name="api_key" type="password" placeholder="完整版写入私有 settings.local.json" />
+          </label>
+          <label>
+            <span>批内并发</span>
+            <input name="max_concurrent_batches" type="number" min={1} max={4} defaultValue={Number(settings?.max_concurrent_batches || 2)} />
+          </label>
+          <label>
+            <span>每分钟请求</span>
+            <input name="max_requests_per_minute" type="number" min={1} max={120} defaultValue={Number(settings?.max_requests_per_minute || 12)} />
+          </label>
+          <label>
+            <span>每分钟估算 token</span>
+            <input name="max_estimated_tokens_per_minute" type="number" min={1000} max={2000000} defaultValue={Number(settings?.max_estimated_tokens_per_minute || 120000)} />
+          </label>
+          <label>
+            <span>单批输入 token</span>
+            <input name="max_batch_input_tokens" type="number" min={1000} max={100000} defaultValue={Number(settings?.max_batch_input_tokens || 12000)} />
+          </label>
+          <label>
+            <span>预算提醒 token</span>
+            <input name="api_budget_warning_tokens" type="number" min={10000} max={20000000} defaultValue={Number(settings?.api_budget_warning_tokens || 1000000)} />
+          </label>
+          <label>
+            <span>批次重试</span>
+            <input name="max_batch_attempts" type="number" min={1} max={5} defaultValue={Number(settings?.max_batch_attempts || 3)} />
           </label>
         </div>
         <input name="batch_size" type="hidden" value={Number(settings?.batch_size || 90)} />

@@ -20,6 +20,7 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from app import db
     from app.config import DATA_ROOT, load_settings, public_settings, save_settings
+    from app.jobs import active_job_id, cancel_singleton_job, start_singleton_job
     from app.languages import require_supported_language
     from app.schemas import (
         AnnouncementLookupRequest,
@@ -95,6 +96,8 @@ if __package__ is None or __package__ == "":
         lookup_announcement_translations,
         prepare_announcement_translation,
         run_announcement_lookup,
+        cancel_translation_run,
+        translation_run_progress,
         translate_announcement_task,
         run_qa_sync,
         run_translate_sync,
@@ -105,6 +108,7 @@ if __package__ is None or __package__ == "":
 else:
     from . import db
     from .config import DATA_ROOT, load_settings, public_settings, save_settings
+    from .jobs import active_job_id, cancel_singleton_job, start_singleton_job
     from .languages import require_supported_language
     from .schemas import (
         AnnouncementLookupRequest,
@@ -180,6 +184,8 @@ else:
         lookup_announcement_translations,
         prepare_announcement_translation,
         run_announcement_lookup,
+        cancel_translation_run,
+        translation_run_progress,
         translate_announcement_task,
         run_qa_sync,
         run_translate_sync,
@@ -787,6 +793,53 @@ def translate_project_announcement(task_id: str, payload: AnnouncementTaskTransl
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _start_announcement_translation_background(task_id: str, payload: AnnouncementTaskTranslateRequest) -> dict[str, Any]:
+    try:
+        task = get_announcement_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task not found") from exc
+    active = active_job_id()
+    job_id = f"announcement:{task_id}"
+    if active and active != job_id:
+        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active}")
+    db.update_announcement_task(task_id, status="queued", current_step=7, metadata={**(task.get("metadata") or {}), "queued_at": db.now_iso()})
+
+    def worker(cancel_event: Any) -> None:
+        try:
+            translate_announcement_task(task_id, payload, cancel_event=cancel_event)
+        except Exception as exc:
+            try:
+                current = db.get_announcement_task(task_id)
+                if current.get("status") not in {"translated", "canceled", "needs_input", "awaiting_ai_response"}:
+                    db.update_announcement_task(task_id, status="failed", current_step=7, metadata={**(current.get("metadata") or {}), "error": str(exc)})
+            except Exception:
+                pass
+
+    started, active_conflict = start_singleton_job(job_id, worker)
+    if not started and active_conflict:
+        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active_conflict}")
+    return {"task": get_announcement_task(task_id), "summary": {"status": "queued"}}
+
+
+@app.post("/api/announcement-tasks/{task_id}/translate/start")
+def translate_project_announcement_start(task_id: str, payload: AnnouncementTaskTranslateRequest) -> dict[str, Any]:
+    return _start_announcement_translation_background(task_id, payload)
+
+
+@app.post("/api/announcement-tasks/{task_id}/translate/resume")
+def translate_project_announcement_resume(task_id: str, payload: AnnouncementTaskTranslateRequest) -> dict[str, Any]:
+    return _start_announcement_translation_background(task_id, payload)
+
+
+@app.post("/api/announcement-tasks/{task_id}/translate/cancel")
+def translate_project_announcement_cancel(task_id: str) -> dict[str, Any]:
+    try:
+        cancel_singleton_job(f"announcement:{task_id}")
+        return {"task": cancel_announcement_task(task_id)["task"], "summary": {"status": "canceled"}}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task not found") from exc
+
+
 @app.post("/api/announcement-tasks/{task_id}/import-ai")
 def import_project_announcement_ai(task_id: str, payload: AnnouncementTaskImportAiRequest) -> dict[str, Any]:
     try:
@@ -888,6 +941,70 @@ def translate(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="run or artifact not found") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def _start_translation_background(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
+    try:
+        run = db.get_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    if run["kind"] != "translation":
+        raise HTTPException(status_code=400, detail="run is not a translation run")
+    active = active_job_id()
+    job_id = f"run:{run_id}"
+    if active and active != job_id:
+        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active}")
+    if run["status"] == "running" and active == job_id:
+        return get_run(run_id)
+    metadata = run.get("metadata", {})
+    db.update_run(run_id, status="queued", metadata={**metadata, "queued_at": db.now_iso()})
+
+    def worker(cancel_event: Any) -> None:
+        try:
+            run_translate_sync(run_id, payload, cancel_event=cancel_event)
+        except Exception as exc:
+            try:
+                current = db.get_run(run_id)
+                if current.get("status") not in {"failed", "canceled", "needs_input", "passed"}:
+                    db.update_run(run_id, status="failed", metadata={**current.get("metadata", {}), "error": str(exc)})
+            except Exception:
+                pass
+
+    started, active_conflict = start_singleton_job(job_id, worker)
+    if not started and active_conflict:
+        run = db.get_run(run_id)
+        db.update_run(run_id, status=run.get("status") or "created", metadata={**run.get("metadata", {}), "queue_error": f"active job: {active_conflict}"})
+        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active_conflict}")
+    db.add_event(run_id, "translation background job started")
+    return get_run(run_id)
+
+
+@app.post("/api/runs/{run_id}/translate/start")
+def translate_start(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
+    return _start_translation_background(run_id, payload)
+
+
+@app.post("/api/runs/{run_id}/translate/resume")
+def translate_resume(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
+    return _start_translation_background(run_id, payload)
+
+
+@app.post("/api/runs/{run_id}/translate/cancel")
+def translate_cancel(run_id: str) -> dict[str, Any]:
+    try:
+        cancel_singleton_job(f"run:{run_id}")
+        cancel_translation_run(run_id)
+        return get_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+
+
+@app.get("/api/runs/{run_id}/translate/progress")
+def translate_progress(run_id: str) -> dict[str, Any]:
+    try:
+        return translation_run_progress(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
 
 
 @app.post("/api/runs/{run_id}/qa")

@@ -191,6 +191,7 @@ class AnnouncementTaskTranslateRequest(BaseModel):
     protocol: str | None = None
     batch_size: int | None = None
     allow_mock: bool = False
+    confirm_api_budget: bool = False
 
 
 class AnnouncementTaskImportAiRequest(BaseModel):
@@ -297,6 +298,7 @@ class TranslateRequest(BaseModel):
     preset: str | None = None
     batch_size: int | None = None
     allow_mock: bool = False
+    confirm_api_budget: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -308,4 +310,10 @@ class SettingsUpdate(BaseModel):
     model: str | None = None
     reasoning_effort: str | None = None
     batch_size: int | None = None
+    max_concurrent_batches: int | None = None
+    max_requests_per_minute: int | None = None
+    max_estimated_tokens_per_minute: int | None = None
+    max_batch_input_tokens: int | None = None
+    api_budget_warning_tokens: int | None = None
+    max_batch_attempts: int | None = None
     multimodal: dict[str, bool] | None = None
