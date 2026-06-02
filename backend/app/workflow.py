@@ -2495,8 +2495,35 @@ def _safe_source_stem(value: Any) -> str:
 
 def _artifact_source_stem(artifact: dict[str, Any]) -> str:
     metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), dict) else {}
-    name = metadata.get("original_filename") or artifact.get("label") or Path(str(artifact.get("path") or "")).name
+    name = metadata.get("original_filename") or Path(str(artifact.get("path") or "")).name or artifact.get("label")
     return _safe_source_stem(name)
+
+
+def _artifact_kind_label(artifact: dict[str, Any]) -> str:
+    kind = str(artifact.get("kind") or "")
+    origin = str(artifact.get("origin") or "")
+    labels = {
+        "language_table": "上传语言表" if origin == "uploaded" else "语言表",
+        "term_base": "上传术语表",
+        "glossary_final": "生成术语表",
+        "glossary_detail": "术语提取明细",
+        "qa_final_workbook": "已译语言表",
+        "final_workbook": "已译语言表",
+        "qa_changes": "修改记录",
+        "translation_workbook": "翻译中转表",
+        "announcement_terms_workbook": "公告术语表",
+        "announcement_translation_workbook": "公告翻译中转表",
+    }
+    return labels.get(kind, "上传文件" if origin == "uploaded" else str(artifact.get("label") or "产物"))
+
+
+def _artifact_display_label(artifact: dict[str, Any]) -> str:
+    parts = [_artifact_kind_label(artifact), _artifact_source_stem(artifact)]
+    deduped: list[str] = []
+    for part in parts:
+        if part and part not in deduped:
+            deduped.append(part)
+    return "｜".join(deduped) or str(artifact.get("label") or artifact.get("id") or "-")
 
 
 def _announcement_task_source_stem(task: dict[str, Any]) -> str:
@@ -3956,7 +3983,7 @@ def _input_artifact_label(metadata: dict[str, Any], project_id: str) -> str:
         try:
             artifact = db.get_artifact(str(artifact_id))
             if artifact["project_id"] == project_id:
-                return artifact["label"]
+                return _artifact_display_label(artifact)
         except KeyError:
             continue
     return "-"

@@ -630,6 +630,121 @@ function uniqueArtifactsByContent(artifacts: Artifact[]): Artifact[] {
   })
 }
 
+function artifactFileName(artifact: Artifact): string {
+  const original = artifact.metadata?.original_filename
+  if (typeof original === 'string' && original.trim()) return original.trim()
+  const parts = String(artifact.path || artifact.label || '').split(/[\\/]/)
+  return parts[parts.length - 1] || artifact.label
+}
+
+function stripExtension(name: string): string {
+  return name.replace(/\.[^.]+$/, '')
+}
+
+function artifactSourceStem(artifact: Artifact): string {
+  let stem = stripExtension(artifactFileName(artifact))
+  stem = stem
+    .replace(/_ID_CN_[A-Z0-9_]+$/i, '')
+    .replace(/_glossary_details$/i, '')
+    .replace(/_announcement_terms_\d{8}$/i, '')
+    .replace(/_announcement_translation_workbook$/i, '')
+    .replace(/_workpack_[A-Z]+$/i, '')
+    .replace(/_ai_response_[A-Z]+$/i, '')
+    .replace(/_prompt_[A-Z]+$/i, '')
+  return stem || artifact.label
+}
+
+function artifactDateLabel(artifact: Artifact): string {
+  const date = new Date(artifact.created_at)
+  if (Number.isNaN(date.getTime())) return ''
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function artifactKindLabel(artifact: Artifact): string {
+  if (artifact.kind === 'asset') return '参考文件'
+  if (artifact.kind === 'glossary_final') return '生成术语表'
+  if (artifact.kind === 'term_base') return '上传术语表'
+  if (artifact.kind === 'glossary_detail') return '术语提取明细'
+  if (artifact.kind === 'language_table') return artifact.origin === 'uploaded' ? '上传语言表' : '语言表'
+  if (artifact.kind === 'final_workbook' || artifact.kind === 'qa_final_workbook') return '已译语言表'
+  if (artifact.kind === 'qa_changes') return '修改记录'
+  if (artifact.kind === 'qa_result') return 'QA 回填表'
+  if (artifact.kind === 'qa_report') return 'QA 报告'
+  if (artifact.kind === 'quality_summary') return 'QA 摘要'
+  if (artifact.kind === 'translation_workbook') return '翻译中转表'
+  if (artifact.kind === 'announcement_terms_workbook') return '公告术语表'
+  if (artifact.kind === 'announcement_translation_workbook') return '公告翻译中转表'
+  if (artifact.kind === 'announcement_delivery_package' || artifact.kind === 'announcement_docx_delivery_package') return '公告交付 ZIP'
+  if (artifact.kind === 'announcement_output_file' || artifact.kind === 'announcement_docx_output_docx') return '公告成品'
+  if (artifact.kind === 'announcement_qa_summary' || artifact.kind === 'announcement_docx_qa_summary') return '公告 QA 摘要'
+  if (artifact.kind === 'announcement_workpack') return '公告 Workpack'
+  if (artifact.kind === 'announcement_docx_manifest' || artifact.kind === 'announcement_lookup_manifest' || artifact.kind === 'announcement_terms_manifest') return '公告 Manifest'
+  if (artifact.kind === 'announcement_lookup_prompt_context') return '公告 Prompt Context'
+  if (artifact.kind === 'announcement_ai_supplement_packet') return 'AI 补充包'
+  if (artifact.kind === 'announcement_ai_supplement_report') return 'AI 补充报告'
+  if (artifact.kind === 'announcement_terms_validation') return '公告术语校验'
+  if (artifact.kind === 'prompt_snapshot') return '提示词快照'
+  if (artifact.kind === 'project_harness_snapshot') return '项目规则快照'
+  if (artifact.kind === 'glossary_snapshot') return '术语快照'
+  if (artifact.kind === 'translation_prompt') return '项目翻译提示词'
+  if (artifact.kind === 'project_brief') return '项目资料'
+  if (artifact.kind === 'project_profile') return '项目分析结果'
+  return artifact.origin === 'uploaded' ? '上传文件' : artifact.label
+}
+
+function artifactLanguageLabel(artifact: Artifact): string {
+  const single = normalizeLanguageCode(artifact.metadata?.language)
+  if (single) return languageSpec(single).short
+  const multiple = normalizeLanguageArray(artifact.metadata?.languages)
+  return multiple.map((lang) => languageSpec(lang).short).join('/')
+}
+
+function artifactPickerLabel(artifact: Artifact): string {
+  const parts = [artifactKindLabel(artifact), artifactLanguageLabel(artifact), artifactSourceStem(artifact), artifactDateLabel(artifact)]
+    .map((item) => item.trim())
+    .filter(Boolean)
+  return [...new Set(parts)].join('｜')
+}
+
+function artifactPickerKey(artifact: Artifact): string {
+  const sha256 = artifact.metadata?.sha256
+  if (artifact.origin === 'uploaded') {
+    return typeof sha256 === 'string' && sha256
+      ? `uploaded:${artifact.kind}:${sha256}`
+      : `uploaded:${artifact.kind}:${artifactSourceStem(artifact).toLowerCase()}:${artifact.size}`
+  }
+  const language = artifact.metadata?.language || artifact.metadata?.languages || ''
+  if (['glossary_final', 'glossary_detail', 'announcement_terms_workbook', 'announcement_translation_workbook'].includes(artifact.kind)) {
+    return `generated:${artifact.kind}:${artifactSourceStem(artifact).toLowerCase()}:${JSON.stringify(language)}`
+  }
+  return artifactContentKey(artifact)
+}
+
+function isPickerProcessArtifact(artifact: Artifact): boolean {
+  return artifact.kind === 'glossary_detail'
+}
+
+function pickerArtifacts(artifacts: Artifact[]): Artifact[] {
+  const seen = new Set<string>()
+  return [...artifacts]
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .filter((artifact) => !isPickerProcessArtifact(artifact))
+    .filter((artifact) => {
+      const key = artifactPickerKey(artifact)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+function isAnnouncementSourceDocument(artifact: Artifact): boolean {
+  const name = artifactFileName(artifact).toLowerCase()
+  return /\.(docx|txt|xlsx)$/.test(name)
+}
+
 function isGeneratedAnnouncementTermsArtifact(artifact: Artifact): boolean {
   if (artifact.kind === 'announcement_terms_workbook') return true
   const original = artifact.metadata?.original_filename
@@ -1137,9 +1252,9 @@ function App() {
       })
       await refreshCurrent()
       if (artifact.duplicate) {
-        setStatus(`已存在，已复用：${artifact.label}`)
+        setStatus(`已存在，已复用：${artifactPickerLabel(artifact)}`)
       } else {
-        setStatus(`已上传：${artifact.label}`)
+        setStatus(`已上传：${artifactPickerLabel(artifact)}`)
       }
       return artifact
     } catch (error) {
@@ -1461,7 +1576,7 @@ function App() {
     const artifact = await upload(file, 'asset')
     if (artifact) {
       setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
-      setStatus(artifact.duplicate ? `参考素材已存在，已复用：${artifact.label}` : `参考素材已归档：${artifact.label}`)
+      setStatus(artifact.duplicate ? `参考素材已存在，已复用：${artifactPickerLabel(artifact)}` : `参考素材已归档：${artifactPickerLabel(artifact)}`)
     }
     return artifact
   }
@@ -1470,7 +1585,7 @@ function App() {
     const artifact = await upload(file, 'asset')
     if (artifact) {
       setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
-      setStatus(artifact.duplicate ? `AI response 已存在，已复用：${artifact.label}` : `AI response 已上传：${artifact.label}`)
+      setStatus(artifact.duplicate ? `AI response 已存在，已复用：${artifactPickerLabel(artifact)}` : `AI response 已上传：${artifactPickerLabel(artifact)}`)
     }
     return artifact
   }
@@ -1478,7 +1593,7 @@ function App() {
   async function uploadAnnouncementConstraint(file: File) {
     const artifact = await upload(file, 'language_table')
     if (artifact) {
-      setStatus(artifact.duplicate ? `约束文件已存在，已复用：${artifact.label}` : `公告约束文件已归档：${artifact.label}`)
+      setStatus(artifact.duplicate ? `约束文件已存在，已复用：${artifactPickerLabel(artifact)}` : `公告约束文件已归档：${artifactPickerLabel(artifact)}`)
     }
     return artifact
   }
@@ -1486,7 +1601,7 @@ function App() {
   async function uploadAnnouncementTermsFile(file: File) {
     const artifact = await upload(file, 'announcement_terms_workbook')
     if (artifact) {
-      setStatus(artifact.duplicate ? `公告术语表已存在，已复用：${artifact.label}` : `公告术语表已上传：${artifact.label}`)
+      setStatus(artifact.duplicate ? `公告术语表已存在，已复用：${artifactPickerLabel(artifact)}` : `公告术语表已上传：${artifactPickerLabel(artifact)}`)
     }
     return artifact
   }
@@ -1730,7 +1845,7 @@ function App() {
     const artifact = await upload(file, 'final_workbook')
     if (artifact) {
       setQaArtifact(artifact)
-      setStatus(`已有译文已登记：${artifact.label}`)
+      setStatus(`已有译文已登记：${artifactPickerLabel(artifact)}`)
     }
   }
 
@@ -2065,8 +2180,6 @@ function ProjectOverview({
       <div className="proj-head">
         <div>
           <h2>{project.icon ? <span className="project-icon">{project.icon}</span> : null}{project.name}</h2>
-          {project.description ? <div className="desc">{project.description}</div> : null}
-          <div className="muted-left">项目资产按中文聚合；语言在具体翻译、QA、导入或公告检索任务内选择。</div>
         </div>
         <div className="row-actions">
           <button className="btn btn-primary" onClick={onStartTask}>🚀 启动新翻译任务</button>
@@ -3165,9 +3278,9 @@ function AnnouncementWizard({
   })
   const [aiSupplementResponseArtifactId, setAiSupplementResponseArtifactId] = useState('')
   const artifacts = project.artifacts || []
-  const sourceCandidates = uniqueArtifactsByContent([...assetArtifacts, ...artifacts.filter((artifact) => artifact.kind === 'asset')])
+  const sourceCandidates = pickerArtifacts([...assetArtifacts, ...artifacts.filter((artifact) => artifact.kind === 'asset')].filter(isAnnouncementSourceDocument))
   const hiddenAnnouncementTermsArtifacts = artifacts.filter(isGeneratedAnnouncementTermsArtifact)
-  const constraintCandidates = artifacts.filter((artifact) => artifact.kind === 'language_table' && !isGeneratedAnnouncementTermsArtifact(artifact))
+  const constraintCandidates = pickerArtifacts(artifacts.filter((artifact) => artifact.kind === 'language_table' && !isGeneratedAnnouncementTermsArtifact(artifact)))
   const selectableConstraintIds = new Set(constraintCandidates.map((artifact) => artifact.id))
   const activeConstraintArtifactIds = constraintArtifactIds.filter((id) => selectableConstraintIds.has(id))
   const activeMeta = (activeTask?.metadata || {}) as Record<string, unknown>
@@ -3302,7 +3415,7 @@ function AnnouncementWizard({
                   {sourceCandidates.map((artifact) => (
                     <label key={artifact.id} className="check-row">
                       <input type="radio" name="announcement-source" checked={sourceArtifactId === artifact.id} onChange={() => setSourceArtifactId(artifact.id)} />
-                      <span>{artifact.label}<em>{artifact.kind} · {artifact.path}</em></span>
+                      <span>{artifactPickerLabel(artifact)}<em>{artifactFileName(artifact)}</em></span>
                     </label>
                   ))}
                 </div>
@@ -3325,7 +3438,7 @@ function AnnouncementWizard({
                   {constraintCandidates.map((artifact) => (
                     <label key={artifact.id} className="check-row">
                       <input type="checkbox" checked={constraintArtifactIds.includes(artifact.id)} onChange={() => toggleConstraint(artifact.id)} />
-                      <span>{artifact.label}<em>{artifact.kind}</em></span>
+                      <span>{artifactPickerLabel(artifact)}<em>{artifactFileName(artifact)}</em></span>
                     </label>
                   ))}
                 </div>
@@ -3675,9 +3788,9 @@ function AnnouncementTaskArtifacts({ task }: { task: AnnouncementTask }) {
   if (!artifacts.length) return null
   const finalKinds = new Set(['announcement_delivery_package', 'announcement_docx_delivery_package'])
   const qaKinds = new Set(['announcement_output_file', 'announcement_docx_output_docx', 'announcement_qa_summary', 'announcement_docx_qa_summary'])
-  const finalArtifacts = artifacts.filter((artifact) => finalKinds.has(artifact.kind))
-  const qaArtifacts = artifacts.filter((artifact) => qaKinds.has(artifact.kind))
-  const processArtifacts = artifacts.filter((artifact) => !finalKinds.has(artifact.kind) && !qaKinds.has(artifact.kind))
+  const finalArtifacts = pickerArtifacts(artifacts.filter((artifact) => finalKinds.has(artifact.kind)))
+  const qaArtifacts = pickerArtifacts(artifacts.filter((artifact) => qaKinds.has(artifact.kind)))
+  const processArtifacts = pickerArtifacts(artifacts.filter((artifact) => !finalKinds.has(artifact.kind) && !qaKinds.has(artifact.kind)))
   return (
     <div className="card tight announcement-artifacts">
       <div className="card-title"><div className="left">任务产物</div></div>
@@ -3685,7 +3798,7 @@ function AnnouncementTaskArtifacts({ task }: { task: AnnouncementTask }) {
         <div className="asset-list">
           <div className="ai-header">最终交付</div>
           <div className="row-actions wrap">
-            {finalArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-primary btn-sm" href={`/api/artifacts/${artifact.id}/download`}>公告交付 ZIP · {artifact.label}</a>)}
+            {finalArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-primary btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>)}
           </div>
         </div>
       ) : null}
@@ -3693,7 +3806,7 @@ function AnnouncementTaskArtifacts({ task }: { task: AnnouncementTask }) {
         <div className="asset-list">
           <div className="ai-header">成品与 QA</div>
           <div className="row-actions wrap">
-            {qaArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{announcementArtifactTypeLabel(artifact)} · {artifact.label}</a>)}
+            {qaArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>)}
           </div>
         </div>
       ) : null}
@@ -3701,7 +3814,7 @@ function AnnouncementTaskArtifacts({ task }: { task: AnnouncementTask }) {
         <details className="asset-list">
           <summary className="ai-header">过程产物 / 审计产物（{processArtifacts.length}）</summary>
           <div className="row-actions wrap">
-            {processArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{announcementArtifactTypeLabel(artifact)} · {artifact.label}</a>)}
+            {processArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>)}
           </div>
         </details>
       ) : null}
@@ -4734,14 +4847,14 @@ function FailedRowEditor({
 }
 
 function StepDone({ project, latestRun }: { project: Project; latestRun: Run | null }) {
-  const artifacts = (latestRun?.artifacts?.length ? latestRun.artifacts : runArtifacts(project, latestRun?.id))
+  const artifacts = pickerArtifacts(latestRun?.artifacts?.length ? latestRun.artifacts : runArtifacts(project, latestRun?.id))
     .filter((artifact) => artifact.kind === 'qa_final_workbook' || artifact.kind === 'qa_changes')
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 9</span>最终交付</div>
       {latestRun ? <TaskRunSummary run={latestRun} /> : <div className="muted-left">暂无可交付任务。先完成翻译或校对。</div>}
       <div className="artifact-grid">
-        {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={`/api/artifacts/${artifact.id}/download`}>{artifact.label}<span>{artifact.kind}</span></a>)}
+        {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
       </div>
       <div className="muted-left">正式交付请回到“交付”页生成最终 workbook 和 QA 修改表。</div>
     </>
@@ -4801,7 +4914,7 @@ function downloadableArtifact(artifacts: Artifact[], kind: HistoryKind): Artifac
 
 function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: HistoryKind }) {
   const artifacts = runArtifacts(project, run.id)
-  const visibleArtifacts = artifacts.filter((artifact) => downloadableArtifact([artifact], kind))
+  const visibleArtifacts = pickerArtifacts(artifacts.filter((artifact) => downloadableArtifact([artifact], kind)))
   const inputs = (run.metadata?.input_artifacts || {}) as Record<string, string>
   const artifactById = new Map((project.artifacts || []).map((artifact) => [artifact.id, artifact]))
   const task = runTaskSummary(project, run)
@@ -4836,7 +4949,7 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
       </div>
       <div className="artifact-links">
         {visibleArtifacts.map((artifact) => (
-          <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifact.label}</a>
+          <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>
         ))}
         {!visibleArtifacts.length ? <span className="muted-left">暂无可下载交付产物。</span> : null}
       </div>
@@ -4844,7 +4957,7 @@ function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: H
         <div className="run-inputs">
           {inputItems.map(([label, id]) => {
             const artifact = artifactById.get(String(id))
-            return <span key={`${label}-${id}`}>{label}: {artifact ? artifact.label : id}</span>
+            return <span key={`${label}-${id}`}>{label}: {artifact ? artifactPickerLabel(artifact) : id}</span>
           })}
         </div>
       ) : null}
@@ -4875,7 +4988,8 @@ function inputArtifactName(project: Project, run: Run): string {
   const inputs = (run.metadata?.input_artifacts || {}) as Record<string, string>
   const artifactId = inputs.source_workbook || inputs.translation_workbook || String(run.metadata?.input_artifact_id || '')
   if (!artifactId) return ''
-  return (project.artifacts || []).find((artifact) => artifact.id === artifactId)?.label || artifactId
+  const artifact = (project.artifacts || []).find((item) => item.id === artifactId)
+  return artifact ? artifactPickerLabel(artifact) : artifactId
 }
 
 function runArchiveCount(run: Run): number {
@@ -4940,7 +5054,7 @@ function SelectedInput({ label, artifact }: { label: string; artifact: Artifact 
   return (
     <div className="selected-input">
       <strong>{label}</strong>
-      <span>{artifact ? artifact.label : '未选择'}</span>
+      <span>{artifact ? artifactPickerLabel(artifact) : '未选择'}</span>
     </div>
   )
 }
@@ -5091,7 +5205,7 @@ function AssetSelect({
   onChange: (artifact: Artifact | null) => void
   allowEmpty?: boolean
 }) {
-  const assets = artifactsByRoles(project, role)
+  const assets = pickerArtifacts(artifactsByRoles(project, role))
   return (
     <label className="asset-select">
       <span>{label}</span>
@@ -5099,7 +5213,7 @@ function AssetSelect({
         {allowEmpty ? <option value="">不使用</option> : null}
         {!allowEmpty && !assets.length ? <option value="">暂无可用资产</option> : null}
         {assets.map((artifact) => (
-          <option key={artifact.id} value={artifact.id}>{artifact.label} · {artifact.origin || 'generated'}</option>
+          <option key={artifact.id} value={artifact.id}>{artifactPickerLabel(artifact)}</option>
         ))}
       </select>
     </label>
@@ -5144,7 +5258,12 @@ function FileBox({ label, onFile }: { label: string; onFile: (file: File) => voi
 }
 
 function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compact?: boolean }) {
-  return <div className={`ai-card ${compact ? 'compact-note' : ''}`}><div className="ai-header">已上传：{artifact.label}</div><pre>{artifact.path}</pre></div>
+  return (
+    <div className={`ai-card ${compact ? 'compact-note' : ''}`}>
+      <div className="ai-header">{artifactPickerLabel(artifact)}</div>
+      {!compact ? <div className="muted-left">{artifactFileName(artifact)}</div> : null}
+    </div>
+  )
 }
 
 function DeleteProjectModal({ project, busy, onClose, onDelete }: { project: Project; busy: boolean; onClose: () => void; onDelete: (project: Project) => void }) {
