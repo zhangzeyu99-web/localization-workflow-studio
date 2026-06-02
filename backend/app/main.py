@@ -80,6 +80,7 @@ if __package__ is None or __package__ == "":
         read_project_harness,
         apply_announcement_task,
         cancel_announcement_task,
+        cancel_announcement_translation_task,
         create_announcement_task,
         deliver_announcement_task,
         extract_announcement_terms,
@@ -97,6 +98,8 @@ if __package__ is None or __package__ == "":
         prepare_announcement_translation,
         run_announcement_lookup,
         cancel_translation_run,
+        reconcile_interrupted_background_jobs,
+        translation_batch_file,
         translation_run_progress,
         translate_announcement_task,
         run_qa_sync,
@@ -168,6 +171,7 @@ else:
         read_project_harness,
         apply_announcement_task,
         cancel_announcement_task,
+        cancel_announcement_translation_task,
         create_announcement_task,
         deliver_announcement_task,
         extract_announcement_terms,
@@ -185,6 +189,8 @@ else:
         prepare_announcement_translation,
         run_announcement_lookup,
         cancel_translation_run,
+        reconcile_interrupted_background_jobs,
+        translation_batch_file,
         translation_run_progress,
         translate_announcement_task,
         run_qa_sync,
@@ -199,6 +205,7 @@ else:
 async def lifespan(app: FastAPI):
     _ = app
     db.init_db()
+    reconcile_interrupted_background_jobs()
     yield
 
 
@@ -810,7 +817,7 @@ def _start_announcement_translation_background(task_id: str, payload: Announceme
         except Exception as exc:
             try:
                 current = db.get_announcement_task(task_id)
-                if current.get("status") not in {"translated", "canceled", "needs_input", "awaiting_ai_response"}:
+                if current.get("status") not in {"translated", "canceled", "needs_input", "awaiting_ai_response", "prepared"}:
                     db.update_announcement_task(task_id, status="failed", current_step=7, metadata={**(current.get("metadata") or {}), "error": str(exc)})
             except Exception:
                 pass
@@ -835,7 +842,7 @@ def translate_project_announcement_resume(task_id: str, payload: AnnouncementTas
 def translate_project_announcement_cancel(task_id: str) -> dict[str, Any]:
     try:
         cancel_singleton_job(f"announcement:{task_id}")
-        return {"task": cancel_announcement_task(task_id)["task"], "summary": {"status": "canceled"}}
+        return {"task": cancel_announcement_translation_task(task_id)["task"], "summary": {"status": "prepared", "reason": "announcement_translation_canceled"}}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc
 
@@ -1005,6 +1012,17 @@ def translate_progress(run_id: str) -> dict[str, Any]:
         return translation_run_progress(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
+
+
+@app.get("/api/runs/{run_id}/translate/batches/{batch_index}/{kind}")
+def translate_batch_download(run_id: str, batch_index: int, kind: str) -> FileResponse:
+    try:
+        path = translation_batch_file(run_id, batch_index, kind)
+        return FileResponse(path, filename=path.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="batch file not found") from exc
 
 
 @app.post("/api/runs/{run_id}/qa")

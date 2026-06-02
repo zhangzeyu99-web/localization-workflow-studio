@@ -893,6 +893,32 @@ def cancel_announcement_task(task_id: str) -> dict[str, Any]:
     return {"task": _hydrate_announcement_task(db.get_announcement_task(task_id))}
 
 
+def cancel_announcement_translation_task(task_id: str) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    metadata["translation_cancel_requested_at"] = db.now_iso()
+    metadata["reason"] = "announcement_translation_canceled"
+    task = db.update_announcement_task(
+        task_id,
+        status="prepared",
+        current_step=ANNOUNCEMENT_STEP["translate"],
+        metadata=metadata,
+    )
+    for item in task.get("languages") or []:
+        if item.get("status") in {"queued", "running"}:
+            lang_meta = dict(item.get("metadata") or {})
+            lang_meta["translation_cancel_requested_at"] = metadata["translation_cancel_requested_at"]
+            db.upsert_announcement_task_language(
+                task_id,
+                task["project_id"],
+                str(item["language"]),
+                status="prepared",
+                current_step=ANNOUNCEMENT_STEP["translate"],
+                metadata=lang_meta,
+            )
+    return {"task": _hydrate_announcement_task(db.get_announcement_task(task_id))}
+
+
 def create_announcement_task(project_id: str, request: Any) -> dict[str, Any]:
     project = db.get_project(project_id)
     source_artifact_id = str(getattr(request, "source_artifact_id", "") or "").strip()
@@ -1178,6 +1204,8 @@ async def _translate_announcement_task(task_id: str, request: Any, cancel_event:
             db.upsert_announcement_task_language(task_id, task["project_id"], language, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"])
         return {"task": _hydrate_announcement_task(db.update_announcement_task(task_id, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)), "summary": {"status": "awaiting_ai_response", "reason": f"{provider} api_key is required; upload AI response instead"}, "artifacts": []}
     run = db.insert_run(task["project_id"], kind="announcement_translate", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages, "provider": provider})
+    metadata = {**metadata, "translate_run_id": run["id"]}
+    db.update_announcement_task(task_id, status="running", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)
     output = run_dir(run["id"]) / "announcement_translate"
     output.mkdir(parents=True, exist_ok=True)
     artifacts: list[dict[str, Any]] = []
@@ -1454,6 +1482,19 @@ class _SimpleRequest:
 
 def _hydrate_announcement_task(task: dict[str, Any]) -> dict[str, Any]:
     metadata = task.get("metadata") or {}
+    translate_run_id = str(metadata.get("translate_run_id") or "")
+    if translate_run_id:
+        try:
+            translate_run = db.get_run(translate_run_id)
+            metadata = {
+                **metadata,
+                "translate_run_status": translate_run.get("status"),
+                "translation_progress": (translate_run.get("metadata") or {}).get("translation_progress"),
+                "api_budget_estimate": (translate_run.get("metadata") or {}).get("api_budget_estimate"),
+            }
+            task["metadata"] = metadata
+        except KeyError:
+            pass
     artifact_ids: set[str] = set()
     for key in (
         "terms_artifact_id",
@@ -5267,7 +5308,9 @@ def _build_batch_manifest(rows: list[dict[str, Any]], project_prompt: str, setti
                 "estimated_input_tokens": current_tokens,
                 "status": "pending",
                 "attempts": 0,
+                "request_path": "",
                 "response_path": "",
+                "raw_response_path": "",
                 "error_path": "",
                 "updated_at": db.now_iso(),
             }
@@ -5468,7 +5511,12 @@ async def _translate_rows_with_orchestration(
         batch_index = int(batch_meta["batch_index"])
         batch = batch_rows(batch_meta)
         batch_path = batches_dir / f"batch_{batch_index:05d}.jsonl"
+        request_path = batches_dir / f"batch_{batch_index:05d}.request.jsonl"
+        raw_response_path = batches_dir / f"batch_{batch_index:05d}.raw_response.jsonl"
         error_path = batches_dir / f"batch_{batch_index:05d}.error.json"
+        if not request_path.exists():
+            write_jsonl(request_path, batch)
+        batch_meta["request_path"] = str(request_path)
         completed = _completed_batch_rows(batch_path, batch)
         if completed is not None:
             batch_meta.update({"status": "passed", "response_path": str(batch_path), "error_path": "", "updated_at": db.now_iso()})
@@ -5493,6 +5541,8 @@ async def _translate_rows_with_orchestration(
                     prompt = f"{project_prompt}\n\nRepair request: previous output for this batch failed local validation. Return the full corrected batch only, preserving IDs, order, placeholders, tags, entities, and newlines."
                 items = await translate_batch(batch, settings, prompt)
                 batch_output = [{"id": item.id, "translation": item.translation} for item in items]
+                write_jsonl(raw_response_path, batch_output)
+                batch_meta["raw_response_path"] = str(raw_response_path)
                 validated = _validate_translated_batch(batch, batch_output, language)
                 write_jsonl(batch_path, validated)
                 if error_path.exists():
@@ -5810,3 +5860,53 @@ def translation_run_progress(run_id: str) -> dict[str, Any]:
         "api_budget_estimate": metadata.get("api_budget_estimate"),
         "reason": metadata.get("reason"),
     }
+
+
+def translation_batch_file(run_id: str, batch_index: int, kind: str) -> Path:
+    if batch_index < 1:
+        raise ValueError("batch_index must be positive")
+    if kind not in {"request", "response", "raw-response", "error"}:
+        raise ValueError("batch file kind must be request, response, raw-response, or error")
+    run = db.get_run(run_id)
+    metadata = run.get("metadata") or {}
+    progress = metadata.get("translation_progress") or {}
+    batch_size = int(progress.get("batch_size") or metadata.get("batch_size") or 90)
+    suffix = {"request": ".request.jsonl", "response": ".jsonl", "raw-response": ".raw_response.jsonl", "error": ".error.json"}[kind]
+    path = run_dir(run_id) / "translation" / f"batches_{batch_size}" / f"batch_{batch_index:05d}{suffix}"
+    if not path.exists():
+        raise KeyError(str(path))
+    return path
+
+
+def reconcile_interrupted_background_jobs() -> dict[str, int]:
+    translation_runs = 0
+    announcement_tasks = 0
+    for run in db.list_runs():
+        if run.get("kind") == "translation" and run.get("status") in {"queued", "running"}:
+            metadata = dict(run.get("metadata") or {})
+            metadata["reason"] = "background_job_interrupted"
+            metadata["interrupted_at"] = db.now_iso()
+            db.update_run(run["id"], status="needs_input", metadata=metadata)
+            db.add_event(run["id"], "background translation job was interrupted; resume from saved batches")
+            translation_runs += 1
+    for project in db.list_projects():
+        for task in db.list_announcement_tasks(project["id"]):
+            if task.get("status") in {"queued", "running"}:
+                metadata = dict(task.get("metadata") or {})
+                metadata["reason"] = "background_job_interrupted"
+                metadata["interrupted_at"] = db.now_iso()
+                db.update_announcement_task(task["id"], status="needs_input", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)
+                for item in task.get("languages") or []:
+                    if item.get("status") in {"queued", "running"}:
+                        lang_meta = dict(item.get("metadata") or {})
+                        lang_meta["reason"] = "background_job_interrupted"
+                        db.upsert_announcement_task_language(
+                            task["id"],
+                            task["project_id"],
+                            str(item["language"]),
+                            status="prepared",
+                            current_step=ANNOUNCEMENT_STEP["translate"],
+                            metadata=lang_meta,
+                        )
+                announcement_tasks += 1
+    return {"translation_runs": translation_runs, "announcement_tasks": announcement_tasks}

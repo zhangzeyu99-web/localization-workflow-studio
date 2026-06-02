@@ -190,3 +190,88 @@ def test_translate_start_returns_immediately_and_background_job_finishes(tmp_pat
         assert terminal is not None
         assert terminal["status"] == "passed"
         assert terminal["metadata"]["translation_progress"]["completed_batches"] == 3
+        request_download = client.get(f"/api/runs/{run['id']}/translate/batches/1/request")
+        assert request_download.status_code == 200
+        response_download = client.get(f"/api/runs/{run['id']}/translate/batches/1/response")
+        assert response_download.status_code == 200
+
+
+def test_failed_batch_keeps_request_raw_response_and_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = db.insert_project("E2E Failed Batch", "QA", "", "🎮")
+    run = db.insert_run(project["id"], "translation", "en", metadata={})
+    rows = [{"id": 1, "source": "领取 {count}"}]
+    settings = {**DEFAULT_SETTINGS, "provider": "mock", "max_batch_attempts": 1, "api_budget_warning_tokens": 20_000_000}
+
+    async def bad_translate_batch(batch, provider_settings, project_prompt):
+        _ = batch, provider_settings, project_prompt
+        return [TranslationItem(id=1, translation="Claim")]
+
+    monkeypatch.setattr(workflow, "translate_batch", bad_translate_batch)
+    with pytest.raises(ValueError, match="lost structural token"):
+        asyncio.run(
+            workflow._translate_rows_with_orchestration(
+                run_id=run["id"],
+                rows=rows,
+                settings=settings,
+                project_prompt="Translate.",
+                work_dir=tmp_path,
+                batch_size=1,
+                language="en",
+                confirm_api_budget=True,
+            )
+        )
+    batch_dir = tmp_path / "batches_1"
+    assert (batch_dir / "batch_00001.request.jsonl").exists()
+    assert (batch_dir / "batch_00001.raw_response.jsonl").exists()
+    assert (batch_dir / "batch_00001.error.json").exists()
+
+
+def test_reconcile_interrupted_background_jobs_marks_resume_state() -> None:
+    project = db.insert_project("E2E Reconcile", "QA", "", "🎮")
+    run = db.insert_run(project["id"], "translation", "en", metadata={})
+    db.update_run(run["id"], status="running", metadata={"input_artifact_id": "art_missing"})
+    task = db.insert_announcement_task(
+        project["id"],
+        {
+            "title": "公告",
+            "source_artifact_id": "art_missing",
+            "source_format": "txt",
+            "selected_languages": ["en"],
+            "status": "running",
+            "current_step": 7,
+            "metadata": {},
+        },
+    )
+    db.upsert_announcement_task_language(task["id"], project["id"], "en", status="running", current_step=7)
+
+    summary = workflow.reconcile_interrupted_background_jobs()
+
+    assert summary == {"translation_runs": 1, "announcement_tasks": 1}
+    assert db.get_run(run["id"])["status"] == "needs_input"
+    updated_task = db.get_announcement_task(task["id"])
+    assert updated_task["status"] == "needs_input"
+    assert updated_task["languages"][0]["status"] == "prepared"
+
+
+def test_cancel_announcement_translation_keeps_task_resumable() -> None:
+    project = db.insert_project("E2E Announcement Cancel", "QA", "", "🎮")
+    task = db.insert_announcement_task(
+        project["id"],
+        {
+            "title": "公告",
+            "source_artifact_id": "art_missing",
+            "source_format": "txt",
+            "selected_languages": ["en"],
+            "status": "running",
+            "current_step": 7,
+            "metadata": {},
+        },
+    )
+    db.upsert_announcement_task_language(task["id"], project["id"], "en", status="running", current_step=7)
+
+    result = workflow.cancel_announcement_translation_task(task["id"])["task"]
+
+    assert result["status"] == "prepared"
+    assert result["current_step"] == 7
+    assert result["languages"][0]["status"] == "prepared"
+    assert result["metadata"]["reason"] == "announcement_translation_canceled"

@@ -3088,6 +3088,9 @@ function announcementStatusLabel(status?: string): string {
     terms_ready: '术语已提取',
     lookup_ready: '译文已反查',
     prepared: '翻译准备完成',
+    queued: '后台排队',
+    running: '后台翻译中',
+    needs_input: '需要确认/继续',
     translated: '译文已导入',
     applied: '已回填',
     delivered: '已交付',
@@ -3100,6 +3103,11 @@ function announcementStatusLabel(status?: string): string {
 function announcementLanguageSummary(task: AnnouncementTask): string {
   const languages = normalizeLanguageArray(task.selected_languages || [])
   return languages.length ? `目标语言：${languages.map((lang) => languageSpec(lang).short).join(' / ')}` : '目标语言：待识别'
+}
+
+function getAnnouncementTranslationProgress(task: AnnouncementTask | null): TranslationProgress | null {
+  const progress = task?.metadata?.translation_progress as TranslationProgress | undefined
+  return progress?.total_rows ? progress : null
 }
 
 function AnnouncementWizard({
@@ -3368,6 +3376,9 @@ function AnnouncementWizard({
             <>
               <div className="panel-title"><span className="badge">STEP 7</span>AI 翻译 / 导入</div>
               <div className="panel-desc">有正式 OpenAI/Claude 配置时可直接翻译；否则下载 workpack 后上传外部 AI response。不会使用谷歌机翻或在线机翻聚合器。</div>
+              {getAnnouncementTranslationProgress(activeTask) ? <TranslationProgressBar progress={getAnnouncementTranslationProgress(activeTask)!} /> : null}
+              {activeTask?.metadata?.reason === 'background_job_interrupted' ? <div className="warn-line">后台翻译曾中断；可点击“调用已配置 AI 翻译”继续，已完成批次不会重跑。</div> : null}
+              {activeTask?.metadata?.reason === 'api_budget_confirmation_required' ? <div className="warn-line">预计 API token 超过提醒阈值；请确认预算后再继续后台翻译。</div> : null}
               <div className="workflow-note-grid">
                 <div><strong>AI provider</strong><span>{providerReady ? `${settings?.provider} 已配置` : '未配置或为 mock，建议上传 AI response'}</span></div>
                 <div><strong>目标语言</strong><span>{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
@@ -3378,8 +3389,19 @@ function AnnouncementWizard({
                 <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
               </div>
               <div className="row-actions">
-                <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={() => run('translate/start')}>调用已配置 AI 翻译</button>
-                <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={() => run('translate/cancel', 7)}>暂停/取消后台翻译</button>
+                <button
+                  className="btn btn-ghost"
+                  disabled={!activeTask || busy}
+                  onClick={() => {
+                    const needsBudgetConfirm = activeTask?.metadata?.reason === 'api_budget_confirmation_required'
+                    const confirmed = needsBudgetConfirm ? window.confirm('该公告翻译预计 API token 用量超过提醒阈值。确认后会从已完成批次继续。是否继续？') : false
+                    if (needsBudgetConfirm && !confirmed) return
+                    run('translate/start', undefined, { confirm_api_budget: confirmed })
+                  }}
+                >
+                  {activeTask?.status === 'needs_input' ? '确认后继续 AI 翻译' : '调用已配置 AI 翻译'}
+                </button>
+                <button className="btn btn-ghost" disabled={!activeTask || busy || !['queued', 'running'].includes(activeTask?.status || '')} onClick={() => run('translate/cancel', 7)}>暂停后台翻译</button>
                 <button className="btn btn-primary" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入 AI response</button>
               </div>
             </>
@@ -4489,6 +4511,13 @@ function StepTranslate({
         </div>
         {showTranslateStatus ? <ActionStatus status={status} busy={busy} /> : null}
         {progress ? <TranslationProgressBar progress={progress} /> : null}
+        {latestRun?.metadata?.reason === 'api_budget_confirmation_required' ? (
+          <div className="warn-line">预计 API token 超过提醒阈值；点击“继续后台翻译”会二次确认预算，并从已完成批次继续。</div>
+        ) : null}
+        {latestRun?.metadata?.reason === 'background_job_interrupted' ? (
+          <div className="warn-line">上次后台任务被中断；点击“继续后台翻译”可从已落盘批次恢复。</div>
+        ) : null}
+        {progress?.failed_batch && latestRun ? <BatchDebugLinks runId={latestRun.id} batchIndex={progress.failed_batch} /> : null}
       </div>
       <div className="translation-guard-strip">
         <span>项目术语库 <strong>{glossaryCount} 条</strong></span>
@@ -4497,6 +4526,16 @@ function StepTranslate({
       </div>
       {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} issues={qualityIssues} /> : null}
     </>
+  )
+}
+
+function BatchDebugLinks({ runId, batchIndex }: { runId: string; batchIndex: number }) {
+  return (
+    <div className="row-actions wrap">
+      <a className="btn btn-ghost btn-sm" href={`/api/runs/${runId}/translate/batches/${batchIndex}/request`}>下载失败批次输入</a>
+      <a className="btn btn-ghost btn-sm" href={`/api/runs/${runId}/translate/batches/${batchIndex}/error`}>下载错误报告</a>
+      <a className="btn btn-ghost btn-sm" href={`/api/runs/${runId}/translate/batches/${batchIndex}/raw-response`}>下载原始响应</a>
+    </div>
   )
 }
 
