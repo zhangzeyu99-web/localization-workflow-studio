@@ -1628,6 +1628,12 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   font-size: 13px;
 }
 .settings-grid .settings-wide { grid-column: 1 / -1; }
+.settings-note {
+  margin: 2px 0 0;
+  color: #9ca3af;
+  font-size: 12px;
+  line-height: 1.5;
+}
 .settings-grid select,
 .settings-grid input {
   height: 38px;

@@ -100,7 +100,6 @@ GPT 平衡档：
   "api_key": "sk-...",
   "model": "gpt-5.5",
   "reasoning_effort": "medium",
-  "batch_size": 90,
   "multimodal": {
     "images": true,
     "pdf": true,
@@ -121,7 +120,6 @@ Claude 深度思考档：
   "api_key": "sk-ant-...",
   "model": "claude-opus-4-7",
   "reasoning_effort": "adaptive",
-  "batch_size": 60,
   "multimodal": {
     "images": true,
     "pdf": true,
@@ -138,15 +136,13 @@ Claude 深度思考档：
 - 提交空 key 或 `configured` 不会清空现有 key。
 - 如需清空 key，手动编辑或删除 `settings.local.json`，然后重启后端。
 
-## Batch size
+## 长文本编排
 
-`batch_size` 控制一次提交给 provider 的行数：
+长文本拆批、并发、RPM、TPM、单批 token、预算提醒和批次重试不再暴露给用户手调。后端会按 provider 预设自动选择保守参数：
 
-- 默认：`90`
-- 后端限制：`1-200`
-- 推荐真实项目：`60-100`
-- 首次 provider smoke test：`5-20`
-- 内容很长、标签复杂或 QA 风险高时，降低到 `24-60`
+- `fast`：更快响应，批次较小，并发保持 2。
+- `balanced`：默认档，稳定优先，并发 2。
+- `deep`：复杂内容和高质量审计，并发降为 1，单批上下文更大。
 
 失败重跑时只应重跑失败批次或失败行，不应默认重跑整个项目。
 
@@ -225,7 +221,7 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/settings"
 Invoke-RestMethod -Method Patch `
   -Uri "http://127.0.0.1:8000/api/settings" `
   -ContentType "application/json" `
-  -Body '{"provider":"openai","preset":"balanced","api_key":"sk-...","batch_size":90}'
+  -Body '{"provider":"openai","preset":"balanced","api_key":"sk-..."}'
 ```
 
 切换到 Claude 深度思考档：
@@ -234,7 +230,7 @@ Invoke-RestMethod -Method Patch `
 Invoke-RestMethod -Method Patch `
   -Uri "http://127.0.0.1:8000/api/settings" `
   -ContentType "application/json" `
-  -Body '{"provider":"anthropic","preset":"deep","api_key":"sk-ant-...","batch_size":60}'
+  -Body '{"provider":"anthropic","preset":"deep","api_key":"sk-ant-..."}'
 ```
 
 ## 正式翻译验收条件

@@ -38,6 +38,36 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
 }
 
+LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
+    "fast": {
+        "batch_size": 100,
+        "max_concurrent_batches": 2,
+        "max_requests_per_minute": 16,
+        "max_estimated_tokens_per_minute": 160000,
+        "max_batch_input_tokens": 10000,
+        "api_budget_warning_tokens": 800000,
+        "max_batch_attempts": 2,
+    },
+    "balanced": {
+        "batch_size": 90,
+        "max_concurrent_batches": 2,
+        "max_requests_per_minute": 12,
+        "max_estimated_tokens_per_minute": 120000,
+        "max_batch_input_tokens": 12000,
+        "api_budget_warning_tokens": 1000000,
+        "max_batch_attempts": 3,
+    },
+    "deep": {
+        "batch_size": 60,
+        "max_concurrent_batches": 1,
+        "max_requests_per_minute": 8,
+        "max_estimated_tokens_per_minute": 90000,
+        "max_batch_input_tokens": 16000,
+        "api_budget_warning_tokens": 1500000,
+        "max_batch_attempts": 3,
+    },
+}
+
 PROVIDER_PRESETS: dict[str, dict[str, dict[str, str | int | None]]] = {
     "openai": {
         "fast": {
@@ -154,19 +184,8 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _bounded_int(payload: dict[str, Any], key: str, default: int, low: int, high: int) -> None:
-    try:
-        value = int(payload.get(key) or default)
-    except (TypeError, ValueError):
-        value = default
-    payload[key] = max(low, min(value, high))
-
-
 def _normalize_long_text_settings(payload: dict[str, Any]) -> None:
-    _bounded_int(payload, "batch_size", int(DEFAULT_SETTINGS["batch_size"]), 1, 200)
-    _bounded_int(payload, "max_concurrent_batches", int(DEFAULT_SETTINGS["max_concurrent_batches"]), 1, 4)
-    _bounded_int(payload, "max_requests_per_minute", int(DEFAULT_SETTINGS["max_requests_per_minute"]), 1, 120)
-    _bounded_int(payload, "max_estimated_tokens_per_minute", int(DEFAULT_SETTINGS["max_estimated_tokens_per_minute"]), 1000, 2_000_000)
-    _bounded_int(payload, "max_batch_input_tokens", int(DEFAULT_SETTINGS["max_batch_input_tokens"]), 1000, 100_000)
-    _bounded_int(payload, "api_budget_warning_tokens", int(DEFAULT_SETTINGS["api_budget_warning_tokens"]), 10_000, 20_000_000)
-    _bounded_int(payload, "max_batch_attempts", int(DEFAULT_SETTINGS["max_batch_attempts"]), 1, 5)
+    preset = str(payload.get("preset") or DEFAULT_SETTINGS["preset"])
+    profile = LONG_TEXT_PRESET_DEFAULTS.get(preset, LONG_TEXT_PRESET_DEFAULTS["balanced"])
+    for key, value in profile.items():
+        payload[key] = value

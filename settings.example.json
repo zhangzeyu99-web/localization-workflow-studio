@@ -6,7 +6,6 @@
   "api_key": "",
   "model": "gpt-5.5",
   "reasoning_effort": "medium",
-  "batch_size": 90,
   "multimodal": {
     "images": true,
     "pdf": true,

@@ -377,11 +377,6 @@ const announcementLanguages = supportedLanguages
 const allLanguageOptions = supportedLanguages
 const unsupportedLanguages: string[] = []
 
-const batchPresets = [
-  { key: 'safe', label: '稳妥', size: 40, desc: '失败成本低，适合长文本/术语多' },
-  { key: 'balanced', label: '平衡', size: 90, desc: '推荐默认，速度和稳定性折中' },
-  { key: 'fast', label: '高速', size: 160, desc: '批次数少，适合短 UI 文案' }
-]
 type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'archive' | 'delivery'
 type AppView = 'overview' | 'wizard' | 'announcement'
 
@@ -817,6 +812,10 @@ function clampBatchSize(value: number): number {
   return Math.max(1, Math.min(200, Math.round(value)))
 }
 
+function effectiveBatchSize(settings: AppSettings | null | undefined, fallback = 90): number {
+  return clampBatchSize(Number(settings?.batch_size || fallback))
+}
+
 function estimateBatches(rows: number | undefined, batchSize: number): number {
   const total = Number(rows || 0)
   return total > 0 ? Math.ceil(total / Math.max(1, batchSize)) : 0
@@ -959,7 +958,7 @@ function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [deliverables, setDeliverables] = useState<DeliverableTask[]>([])
   const [translationReadiness, setTranslationReadiness] = useState<TranslationReadiness | null>(null)
-  const [translationBatchSize, setTranslationBatchSize] = useState(90)
+  const translationBatchSize = 90
   const [announcementText, setAnnouncementText] = useState('')
   const [announcementLookupResult, setAnnouncementLookupResult] = useState<AnnouncementLookupResult | null>(null)
 
@@ -1035,7 +1034,7 @@ function App() {
       return
     }
     refreshTranslationReadiness(sourceArtifact.id)
-  }, [sourceArtifact?.id, translationBatchSize, selectedLanguage])
+  }, [sourceArtifact?.id, settings?.batch_size, selectedLanguage])
 
   useEffect(() => {
     if (!qaArtifact && sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && canSkipModelTranslation(translationReadiness)) {
@@ -1380,7 +1379,7 @@ function App() {
   }
 
   async function refreshTranslationReadiness(artifactId: string) {
-    const batchSize = clampBatchSize(translationBatchSize)
+    const batchSize = effectiveBatchSize(settings, translationBatchSize)
     try {
       const result = await api<TranslationReadiness>(`/api/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(selectedLanguage)}`)
       setTranslationReadiness(result)
@@ -1393,7 +1392,7 @@ function App() {
 
   async function runTranslate(taskCode: 'A' | 'T' = 'T') {
     if (!current || !sourceArtifact) return
-    const selectedBatchSize = clampBatchSize(translationBatchSize)
+    const selectedBatchSize = effectiveBatchSize(settings, translationBatchSize)
     const readiness = translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === selectedBatchSize
       ? translationReadiness
       : await refreshTranslationReadiness(sourceArtifact.id)
@@ -1447,7 +1446,7 @@ function App() {
         body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget })
       })
       setLatestRun(started)
-      setStatus(`${currentLang.short} 翻译已进入后台队列：动态拆批、并发 ${settings?.max_concurrent_batches || 2}、完成批次会即时落盘。`)
+      setStatus(`${currentLang.short} 翻译已进入后台队列：系统会自动拆批、限流、落盘和续跑。`)
     } catch (error) {
       setStatus(`翻译失败：${errorText(error)}`)
     } finally {
@@ -2017,8 +2016,6 @@ function App() {
                 assetArtifacts={assetArtifacts}
                 latestRun={latestRun}
                 translationReadiness={translationReadiness}
-                translationBatchSize={translationBatchSize}
-                setTranslationBatchSize={setTranslationBatchSize}
                 glossaryBatches={glossaryBatches}
                 glossaryCandidates={glossaryCandidates}
                 qualityIssues={qualityIssues}
@@ -3889,8 +3886,6 @@ function Wizard(props: {
   assetArtifacts: Artifact[]
   latestRun: Run | null
   translationReadiness: TranslationReadiness | null
-  translationBatchSize: number
-  setTranslationBatchSize: (value: number) => void
   glossaryBatches: GlossaryBatch[]
   glossaryCandidates: GlossaryCandidate[]
   qualityIssues: QualityIssue[]
@@ -4507,8 +4502,6 @@ function StepTranslate({
   latestRun,
   qualityIssues,
   translationReadiness,
-  translationBatchSize,
-  setTranslationBatchSize,
   sourceArtifact,
   termArtifact,
   setSourceArtifact,
@@ -4526,8 +4519,6 @@ function StepTranslate({
   latestRun: Run | null
   qualityIssues: QualityIssue[]
   translationReadiness: TranslationReadiness | null
-  translationBatchSize: number
-  setTranslationBatchSize: (value: number) => void
   sourceArtifact: Artifact | null
   termArtifact: Artifact | null
   setSourceArtifact: (artifact: Artifact | null) => void
@@ -4538,7 +4529,7 @@ function StepTranslate({
 }) {
   const lang = languageSpec(selectedLanguage)
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
-  const batchSize = clampBatchSize(translationBatchSize)
+  const batchSize = effectiveBatchSize(settings)
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === batchSize ? translationReadiness : null
   const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project, readiness)
   const alreadyTranslated = canSkipModelTranslation(readiness)
@@ -4546,7 +4537,6 @@ function StepTranslate({
   const progress = getTranslationProgress(latestRun)
   const activeTranslation = Boolean(latestRun?.kind === 'translation' && ['queued', 'running'].includes(latestRun.status) && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
   const resumable = Boolean(latestRun?.kind === 'translation' && ['failed', 'needs_input', 'canceled'].includes(latestRun.status) && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
-  const selectedBatchPreset = batchPresets.find((preset) => preset.size === batchSize)
   const invalidIdText = readiness?.invalid_id_rows ? ` / 空 ID ${readiness.invalid_id_rows}` : ''
   const readinessText = readiness
     ? `${readiness.source_rows} 行原文 / ${readiness.translated_rows} 行已有译文 / 空译文 ${readiness.empty_target_rows} / 中文残留 ${readiness.cjk_target_rows}${invalidIdText} / 预计 ${readiness.estimated_batches} 批`
@@ -4576,39 +4566,13 @@ function StepTranslate({
           </div>
           <p>{readinessText}</p>
         </div>
-        <div className="translation-batch-panel">
+        <div className="translation-batch-panel compact">
           <div className="batch-control-head">
             <div>
-              <strong>批处理</strong>
-              <span>每批落盘、失败批次重试、可断点续跑。</span>
+              <strong>后台编排</strong>
+              <span>系统按预设自动拆批、限流、重试和断点续跑。</span>
             </div>
-            <em>当前 {batchSize} 行/批 · 预计 {estimatedBatches || '-'} 批</em>
-          </div>
-          <div className="batch-button-row" role="group" aria-label="批次大小">
-            {batchPresets.map((preset) => (
-              <button
-                key={preset.key}
-                type="button"
-                className={`batch-size-button ${batchSize === preset.size ? 'selected' : ''}`}
-                disabled={busy}
-                onClick={() => setTranslationBatchSize(preset.size)}
-                title={preset.desc}
-              >
-                <strong>{preset.label}</strong>
-                <span>{preset.size} 行/批</span>
-              </button>
-            ))}
-            <label className={`batch-custom-button ${selectedBatchPreset ? '' : 'selected'}`}>
-              <span>自定义</span>
-              <input
-                type="number"
-                min={1}
-                max={200}
-                value={batchSize}
-                disabled={busy}
-                onChange={(event) => setTranslationBatchSize(clampBatchSize(Number(event.target.value)))}
-              />
-            </label>
+            <em>{batchSize} 行/批 · 预计 {estimatedBatches || '-'} 批</em>
           </div>
         </div>
         <div className="translation-actions">
@@ -4667,8 +4631,6 @@ function TranslationProgressBar({ progress }: { progress: TranslationProgress })
       <div className="progress-foot">
         <span>{percent.toFixed(1)}%</span>
         <span>{progress.failed_batch ? `失败批次：${progress.failed_batch}` : `当前批次：${progress.current_batch || '-'}`}</span>
-        <span>并发 {progress.max_concurrent_batches || 1}</span>
-        <span>估算 token {progress.estimated_total_input_tokens ? progress.estimated_total_input_tokens.toLocaleString() : '-'}</span>
         {progress.rate_limit_wait_seconds ? <span>限流等待 {formatDuration(progress.rate_limit_wait_seconds)}</span> : null}
       </div>
     </div>
@@ -5343,6 +5305,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null)
   const [provider, setProvider] = useState('openai')
   const [preset, setPreset] = useState('balanced')
+  const apiKeyPlaceholder = settings?.api_key === 'configured' ? '已配置；留空不修改' : '写入私有 settings.local.json'
   useEffect(() => {
     api<Record<string, unknown>>('/api/settings').then((loaded) => {
       setSettings(loaded)
@@ -5357,14 +5320,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
       body: JSON.stringify({
         provider: form.get('provider'),
         preset: form.get('preset'),
-        api_key: form.get('api_key'),
-        batch_size: Number(form.get('batch_size') || 90),
-        max_concurrent_batches: Number(form.get('max_concurrent_batches') || 2),
-        max_requests_per_minute: Number(form.get('max_requests_per_minute') || 12),
-        max_estimated_tokens_per_minute: Number(form.get('max_estimated_tokens_per_minute') || 120000),
-        max_batch_input_tokens: Number(form.get('max_batch_input_tokens') || 12000),
-        api_budget_warning_tokens: Number(form.get('api_budget_warning_tokens') || 1000000),
-        max_batch_attempts: Number(form.get('max_batch_attempts') || 3)
+        api_key: form.get('api_key')
       })
     })
     setSettings(saved)
@@ -5395,34 +5351,10 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
           </label>
           <label className="settings-wide">
             <span>API key</span>
-            <input name="api_key" type="password" placeholder="完整版写入私有 settings.local.json" />
+            <input name="api_key" type="password" placeholder={apiKeyPlaceholder} />
           </label>
-          <label>
-            <span>批内并发</span>
-            <input name="max_concurrent_batches" type="number" min={1} max={4} defaultValue={Number(settings?.max_concurrent_batches || 2)} />
-          </label>
-          <label>
-            <span>每分钟请求</span>
-            <input name="max_requests_per_minute" type="number" min={1} max={120} defaultValue={Number(settings?.max_requests_per_minute || 12)} />
-          </label>
-          <label>
-            <span>每分钟估算 token</span>
-            <input name="max_estimated_tokens_per_minute" type="number" min={1000} max={2000000} defaultValue={Number(settings?.max_estimated_tokens_per_minute || 120000)} />
-          </label>
-          <label>
-            <span>单批输入 token</span>
-            <input name="max_batch_input_tokens" type="number" min={1000} max={100000} defaultValue={Number(settings?.max_batch_input_tokens || 12000)} />
-          </label>
-          <label>
-            <span>预算提醒 token</span>
-            <input name="api_budget_warning_tokens" type="number" min={10000} max={20000000} defaultValue={Number(settings?.api_budget_warning_tokens || 1000000)} />
-          </label>
-          <label>
-            <span>批次重试</span>
-            <input name="max_batch_attempts" type="number" min={1} max={5} defaultValue={Number(settings?.max_batch_attempts || 3)} />
-          </label>
+          <p className="settings-wide settings-note">长文本拆批、限流、重试和预算提醒由系统按预设自动管理。</p>
         </div>
-        <input name="batch_size" type="hidden" value={Number(settings?.batch_size || 90)} />
         <div className="settings-actions"><button className="btn btn-primary">保存设置</button></div>
       </form>
     </div>

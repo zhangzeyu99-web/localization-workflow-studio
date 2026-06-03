@@ -255,7 +255,7 @@ uploads/
 - Provider：OpenAI/GPT 或 Claude。
 - 预设：快速、平衡、深度。
 - API key。
-- 长文本编排参数：并发批次、RPM、估算 TPM、批次 token、预算提醒、最大重试次数。
+- 长文本拆批、限流、重试和预算提醒由系统按预设自动管理，不需要人工调参。
 
 API key 必须留在后端或本地私有配置中，不要写进前端、GitHub Pages、截图、README 或公开 issue。
 
