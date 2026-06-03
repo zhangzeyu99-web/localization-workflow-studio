@@ -15,11 +15,21 @@ If your current localization flow is a folder full of workbooks, prompts, manual
 ## Try It
 
 - Live public demo: https://zhangzeyu99-web.github.io/localization-workflow-studio/
+- AI game localization workflow guide: [docs/guides/ai-game-localization-workflow.html](docs/guides/ai-game-localization-workflow.html)
+- Excel translation QA guide: [docs/guides/excel-translation-qa.html](docs/guides/excel-translation-qa.html)
 - Getting started: [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
 - Public sample case: [docs/SHOWCASE.md](docs/SHOWCASE.md)
 - Synthetic workbook: [examples/synthetic-language.xlsx](examples/synthetic-language.xlsx)
 
 The hosted GitHub Pages demo is static and read-only. It does not upload files, call model providers, save data, or include real client material. Full workflow execution runs locally with the FastAPI backend.
+
+## What Makes It Different
+
+- Workbook-first: Excel language tables remain the delivery surface instead of being replaced by a SaaS database.
+- Local-first: private strings, provider keys, SQLite files, and generated artifacts stay outside the public repo.
+- Audit-first: prompts, glossary snapshots, workpack fingerprints, QA findings, and final workbooks are traceable.
+- Provider-safe: mock or missing-provider output is blocked before it can become real delivery.
+- LQA-oriented: placeholder, tag, line-break, terminology, readability, and UI-length checks are treated as delivery gates.
 
 ## Who It Is For
 
@@ -177,6 +187,7 @@ npm run e2e
 
 - [Getting started](docs/GETTING_STARTED.md)
 - [Showcase](docs/SHOWCASE.md)
+- [AI game localization workflow guide](docs/guides/ai-game-localization-workflow.html)
 - [Excel translation QA guide](docs/guides/excel-translation-qa.html)
 - [Configuration](docs/CONFIGURATION.md)
 - [File and data management](docs/FILE_MANAGEMENT.md)
