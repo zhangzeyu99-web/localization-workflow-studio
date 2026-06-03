@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://zhangzeyu99-web.github.io/localization-workflow-studio/sitemap.xml
