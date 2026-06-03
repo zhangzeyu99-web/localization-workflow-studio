@@ -53,14 +53,15 @@ test('user can complete the EN localization workflow from project tabs', async (
   await expect(page.getByText('只返回 JSONL')).toBeVisible()
 
   await page.getByRole('button', { name: '📚 术语表' }).click()
-  await page.getByPlaceholder('ID').fill('T-1')
-  await page.getByPlaceholder('CN').fill('战机')
+  await page.locator('input[name="term_key"]').fill('T-1')
+  await page.locator('input[name="source"]').fill('战机')
   await page.locator('input[name="target"]').fill('Warplane')
   await page.locator('input[name="target_alt"]').fill('Fighter')
-  await page.getByPlaceholder('分类').fill('unit')
-  await page.getByPlaceholder('备注').fill('E2E manual glossary assertion')
+  await page.locator('input[name="category"]').fill('unit')
+  await page.locator('input[name="note"]').fill('E2E manual glossary assertion')
   await page.getByRole('button', { name: '+ 新增 EN' }).click()
   await expect(inlineStatus(page, '词条已新增')).toBeVisible()
+  await page.getByTestId('glossary-search').fill('战机')
   const glossaryRow = page.locator('.glossary-table tbody tr').first()
   await expect(glossaryRow.getByText('战机')).toBeVisible()
   await expect(glossaryRow.getByText('Warplane')).toBeVisible()
@@ -263,10 +264,14 @@ test('project tabs show multilingual wide glossary and archive assets', async ({
   await page.locator('.view-tabs .view-tab').nth(1).click()
   await expect(page.locator('.glossary-wide-table thead')).toContainText('EN')
   await expect(page.locator('.glossary-wide-table thead')).toContainText('EN2')
-  await expect(page.locator('.glossary-wide-table thead')).toContainText('KR')
-  await expect(page.locator('.glossary-wide-table thead')).toContainText('JP')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR2')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP2')
+  await page.getByTestId('glossary-display-lang-ko').click()
+  await page.getByTestId('glossary-display-lang-ja').click()
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('JP')
   const glossaryRow = page.locator('.glossary-wide-table tbody tr', { hasText: '战机' }).first()
   await expect(glossaryRow).toContainText('Warplane')
   await expect(glossaryRow).toContainText('Fighter')
@@ -276,10 +281,64 @@ test('project tabs show multilingual wide glossary and archive assets', async ({
   await page.locator('.view-tabs .view-tab').nth(4).click()
   const archiveRow = page.locator('.translation-wide-table tbody tr', { hasText: '领取奖励' }).first()
   await expect(page.locator('.translation-wide-table thead')).toContainText('EN')
-  await expect(page.locator('.translation-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.translation-wide-table thead')).not.toContainText('KR')
   await expect(page.locator('.translation-wide-table thead')).not.toContainText('JP')
+  await page.getByTestId('archive-display-lang-ko').click()
+  await expect(page.locator('.translation-wide-table thead')).toContainText('KR')
   await expect(archiveRow).toContainText('Claim rewards')
   await expect(archiveRow).toContainText('보상 수령')
+})
+
+test('wide glossary and archive support strong search, display languages, and 100 row paging', async ({ page, request }) => {
+  const projectName = `E2E Search Paging ${Date.now()}`
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'search-paging', description: 'Search and paging smoke.' },
+  })
+  const project = await createResponse.json()
+  for (let index = 0; index < 101; index += 1) {
+    const suffix = String(index).padStart(3, '0')
+    await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+      data: { term_key: `G-${suffix}`, source: `术语${suffix}`, target: `English Term ${suffix}`, target_alt: `Alt ${suffix}`, language: 'en', category: 'cat', note: 'paging' },
+    })
+    await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+      data: { entry_key: `A-${suffix}`, source: `归档${suffix}`, target: `Archive Text ${suffix}`, language: 'en', source_type: 'qa_passed', note: 'paging' },
+    })
+  }
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'G-042', source: '术语042', target: '한국어定位', language: 'ko', category: 'cat', note: 'paging' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { entry_key: 'A-042', source: '归档042', target: '보상定位', language: 'ko', source_type: 'qa_passed', note: 'paging' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.view-tabs .view-tab').nth(1).click()
+  await expect(page.locator('.glossary-wide-table tbody tr')).toHaveCount(100)
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR')
+  await page.getByTestId('glossary-page-next').click()
+  await expect(page.locator('.glossary-wide-table tbody tr')).toHaveCount(1)
+  await page.getByTestId('glossary-search').fill('한국어定位')
+  await expect(page.locator('.glossary-wide-table tbody tr')).toHaveCount(1)
+  await expect(page.locator('.glossary-wide-table tbody tr').first()).toContainText('术语042')
+  await page.getByTestId('glossary-display-lang-ko').click()
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.glossary-wide-table tbody tr').first()).toContainText('한국어定位')
+  await page.getByTestId('glossary-search').fill('G-100')
+  await expect(page.locator('.glossary-wide-table tbody tr')).toHaveCount(1)
+  await expect(page.locator('.glossary-wide-table tbody tr').first()).toContainText('术语100')
+  await page.getByTestId('glossary-search').fill('no-hit')
+  await expect(page.locator('.glossary-wide-table tbody')).toContainText('暂无匹配结果')
+
+  await page.locator('.view-tabs .view-tab').nth(4).click()
+  await expect(page.locator('.translation-wide-table tbody tr')).toHaveCount(100)
+  await expect(page.locator('.translation-wide-table thead')).not.toContainText('KR')
+  await page.getByTestId('archive-search').fill('보상定位')
+  await expect(page.locator('.translation-wide-table tbody tr')).toHaveCount(1)
+  await expect(page.locator('.translation-wide-table tbody tr').first()).toContainText('归档042')
+  await page.getByTestId('archive-display-lang-ko').click()
+  await expect(page.locator('.translation-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.translation-wide-table tbody tr').first()).toContainText('보상定位')
 })
 
 test('project glossary import auto-detects EN KR JP into one wide row', async ({ page, request }) => {
@@ -311,6 +370,8 @@ wb.close()
   await page.getByRole('button', { name: '自动导入多语言术语' }).click()
   await expect(inlineStatus(page, /术语表已导入：5 条/)).toBeVisible({ timeout: 20000 })
 
+  await page.getByTestId('glossary-display-lang-ko').click()
+  await page.getByTestId('glossary-display-lang-ja').click()
   const wideRow = page.locator('.glossary-wide-table tbody tr', { hasText: '战机' }).first()
   await expect(wideRow).toContainText('Warplane')
   await expect(wideRow).toContainText('Fighter')

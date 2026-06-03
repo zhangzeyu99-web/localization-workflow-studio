@@ -507,6 +507,50 @@ function visibleLanguagesFromRows(rows: { languages: LanguageCode[] }[]): Langua
   return supportedLanguages.map((item) => item.code).filter((lang) => found.has(lang))
 }
 
+const WIDE_TABLE_PAGE_SIZE = 100
+
+function normalizeWideSearch(value: unknown): string {
+  return String(value ?? '').trim().toLocaleLowerCase()
+}
+
+function translationValuesForSearch(row: { translations: Partial<Record<LanguageCode, WideLanguageValue<GlossaryTerm | TranslationEntry>>> }): string[] {
+  return supportedLanguages.flatMap((lang) => {
+    const value = row.translations[lang.code]
+    return value ? [value.target, value.target_alt || ''] : []
+  })
+}
+
+function wideRowMatches(fields: unknown[], query: string): boolean {
+  const needle = normalizeWideSearch(query)
+  if (!needle) return true
+  return fields.some((field) => normalizeWideSearch(field).includes(needle))
+}
+
+function glossaryWideRowMatches(row: WideGlossaryRow, query: string): boolean {
+  return wideRowMatches([row.term_key, row.source, row.category, row.note, ...translationValuesForSearch(row)], query)
+}
+
+function translationWideRowMatches(row: WideTranslationRow, query: string): boolean {
+  return wideRowMatches([row.entry_key, row.source, row.note, ...translationValuesForSearch(row)], query)
+}
+
+function displayLanguagesForWideRows(rows: { languages: LanguageCode[] }[], selectedLanguages: LanguageCode[]): LanguageCode[] {
+  const available = new Set(visibleLanguagesFromRows(rows))
+  const selected = new Set(selectedLanguages)
+  return supportedLanguages
+    .map((lang) => lang.code)
+    .filter((code) => code === 'en' || (available.has(code) && selected.has(code)))
+}
+
+function rowRecords<T>(row: { translations: Partial<Record<LanguageCode, WideLanguageValue<T>>>; languages: LanguageCode[] }): T[] {
+  return row.languages.map((code) => row.translations[code]?.record).filter(Boolean) as T[]
+}
+
+function pagedRows<T>(rows: T[], page: number): T[] {
+  const start = (page - 1) * WIDE_TABLE_PAGE_SIZE
+  return rows.slice(start, start + WIDE_TABLE_PAGE_SIZE)
+}
+
 function glossaryCoverage(project: Project): Record<LanguageCode, number> {
   const rows = glossaryWideRows(project)
   return supportedLanguages.reduce((acc, lang) => {
@@ -2632,6 +2676,111 @@ function HarnessEditor({
   )
 }
 
+function WideTableSearchBar({
+  testId,
+  value,
+  onChange,
+  totalRows,
+  filteredRows,
+  placeholder
+}: {
+  testId: string
+  value: string
+  onChange: (value: string) => void
+  totalRows: number
+  filteredRows: number
+  placeholder: string
+}) {
+  return (
+    <div className="wide-table-search">
+      <input
+        data-testid={testId}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+      <span>{value.trim() ? `匹配 ${filteredRows} / ${totalRows}` : `共 ${totalRows} 行`}</span>
+    </div>
+  )
+}
+
+function WideTableLanguageControls({
+  testIdPrefix,
+  availableLanguages,
+  selectedLanguages,
+  onToggle
+}: {
+  testIdPrefix: string
+  availableLanguages: LanguageCode[]
+  selectedLanguages: LanguageCode[]
+  onToggle: (language: LanguageCode) => void
+}) {
+  if (!availableLanguages.length) return null
+  const selected = new Set(selectedLanguages)
+  return (
+    <div className="wide-table-language-controls">
+      <span>展示语言：</span>
+      {availableLanguages.map((code) => {
+        const lang = languageSpec(code)
+        return (
+          <button
+            key={code}
+            type="button"
+            data-testid={`${testIdPrefix}-display-lang-${code}`}
+            className={`lang-chip ${selected.has(code) ? 'selected' : ''}`}
+            onClick={() => onToggle(code)}
+          >
+            {lang.short} {lang.label.replace(`${lang.short} `, '')}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function WideTablePager({
+  testIdPrefix,
+  page,
+  totalRows,
+  onPageChange
+}: {
+  testIdPrefix: string
+  page: number
+  totalRows: number
+  onPageChange: (page: number) => void
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalRows / WIDE_TABLE_PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages)
+  if (totalRows <= WIDE_TABLE_PAGE_SIZE) {
+    return <div className="wide-table-pager muted-left">第 1 页 / 共 1 页</div>
+  }
+  return (
+    <div className="wide-table-pager">
+      <span>{totalRows} 行 · 第 {currentPage} / {totalPages} 页</span>
+      <div className="row-actions compact-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          data-testid={`${testIdPrefix}-page-prev`}
+          disabled={currentPage <= 1}
+          onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+        >
+          上一页
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          data-testid={`${testIdPrefix}-page-next`}
+          disabled={currentPage >= totalPages}
+          onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function GlossaryTab({
   project,
   sourceArtifact,
@@ -2668,10 +2817,27 @@ function GlossaryTab({
   setSelectedLanguage: (language: LanguageCode) => void
 }) {
   const [toolsOpen, setToolsOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [displayLanguages, setDisplayLanguages] = useState<LanguageCode[]>([])
+  const [page, setPage] = useState(1)
   const lang = languageSpec(selectedLanguage)
   const rows = glossaryWideRows(project)
-  const visibleLanguages = visibleLanguagesFromRows(rows)
+  const availableDisplayLanguages = visibleLanguagesFromRows(rows).filter((code) => code !== 'en')
+  const visibleLanguages = displayLanguagesForWideRows(rows, displayLanguages)
+  const filteredRows = rows.filter((row) => glossaryWideRowMatches(row, searchQuery))
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / WIDE_TABLE_PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages)
+  const currentRows = pagedRows(filteredRows, currentPage)
   const colSpan = 5 + visibleLanguages.reduce((total, code) => total + (altColumnVisible(code) ? 2 : 1), 0)
+
+  useEffect(() => {
+    setPage(1)
+  }, [searchQuery, displayLanguages.join('|'), rows.length])
+
+  function toggleDisplayLanguage(code: LanguageCode) {
+    setDisplayLanguages((value) => value.includes(code) ? value.filter((item) => item !== code) : [...value, code])
+  }
+
   return (
     <>
       <div className="card">
@@ -2679,6 +2845,14 @@ function GlossaryTab({
           <div className="left">项目术语表（{rows.length} 个 CN 概念）</div>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 生成 / 导出'}</button>
         </div>
+        <WideTableSearchBar
+          testId="glossary-search"
+          value={searchQuery}
+          onChange={setSearchQuery}
+          totalRows={rows.length}
+          filteredRows={filteredRows.length}
+          placeholder="强匹配搜索 ID / CN / 译文 / 分类 / 备注"
+        />
         {toolsOpen ? (
           <GlossaryToolsPanel
             project={project}
@@ -2710,6 +2884,12 @@ function GlossaryTab({
           <span>新增 / 生成语言：</span>
           <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
         </div>
+        <WideTableLanguageControls
+          testIdPrefix="glossary"
+          availableLanguages={availableDisplayLanguages}
+          selectedLanguages={displayLanguages}
+          onToggle={toggleDisplayLanguage}
+        />
         <div className="table-scroll">
           <table className="glossary-table glossary-wide-table">
             <thead>
@@ -2731,13 +2911,15 @@ function GlossaryTab({
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {currentRows.map((row) => (
                 <WideGlossaryTermRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdateTerm={onUpdateTerm} onDeleteTerm={onDeleteTerm} />
               ))}
               {!rows.length ? <tr><td colSpan={colSpan} className="muted">暂无术语。可上传已有术语表、从语言表生成，或手工新增。</td></tr> : null}
+              {rows.length && !filteredRows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
             </tbody>
           </table>
         </div>
+        <WideTablePager testIdPrefix="glossary" page={currentPage} totalRows={filteredRows.length} onPageChange={setPage} />
       </div>
     </>
   )
@@ -2833,7 +3015,7 @@ function WideGlossaryTermRow({
   }, [row.source_key, row.term_key, row.source, row.category, row.note, JSON.stringify(row.translations)])
 
   async function save() {
-    const records = visibleLanguages.map((code) => row.translations[code]?.record).filter(Boolean) as GlossaryTerm[]
+    const records = rowRecords<GlossaryTerm>(row)
     for (const record of records) {
       const code = languageFromValue(record.language) || 'en'
       await onUpdateTerm(record, {
@@ -2849,7 +3031,7 @@ function WideGlossaryTermRow({
   }
 
   async function remove() {
-    const records = visibleLanguages.map((code) => row.translations[code]?.record).filter(Boolean) as GlossaryTerm[]
+    const records = rowRecords<GlossaryTerm>(row)
     for (const record of records) await onDeleteTerm(record)
   }
 
@@ -2924,16 +3106,41 @@ function TranslationArchiveTab({
   setSelectedLanguage: (language: LanguageCode) => void
 }) {
   const [toolsOpen, setToolsOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [displayLanguages, setDisplayLanguages] = useState<LanguageCode[]>([])
+  const [page, setPage] = useState(1)
   const rows = translationWideRows(project)
-  const visibleLanguages = visibleLanguagesFromRows(rows)
+  const availableDisplayLanguages = visibleLanguagesFromRows(rows).filter((code) => code !== 'en')
+  const visibleLanguages = displayLanguagesForWideRows(rows, displayLanguages)
+  const filteredRows = rows.filter((row) => translationWideRowMatches(row, searchQuery))
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / WIDE_TABLE_PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages)
+  const currentRows = pagedRows(filteredRows, currentPage)
   const lang = languageSpec(selectedLanguage)
   const colSpan = 4 + visibleLanguages.reduce((total, code) => total + (altColumnVisible(code) ? 2 : 1), 0)
+
+  useEffect(() => {
+    setPage(1)
+  }, [searchQuery, displayLanguages.join('|'), rows.length])
+
+  function toggleDisplayLanguage(code: LanguageCode) {
+    setDisplayLanguages((value) => value.includes(code) ? value.filter((item) => item !== code) : [...value, code])
+  }
+
   return (
     <div className="card">
       <div className="card-title">
         <div className="left">项目译文归档（{rows.length} 个 CN 源文）</div>
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 导出'}</button>
       </div>
+      <WideTableSearchBar
+        testId="archive-search"
+        value={searchQuery}
+        onChange={setSearchQuery}
+        totalRows={rows.length}
+        filteredRows={filteredRows.length}
+        placeholder="强匹配搜索 ID / CN / 译文 / 备注"
+      />
       {toolsOpen ? (
         <div className="glossary-tools-panel">
           <div className="action-card">
@@ -2967,6 +3174,12 @@ function TranslationArchiveTab({
         <span>新增语言：</span>
         <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
       </div>
+      <WideTableLanguageControls
+        testIdPrefix="archive"
+        availableLanguages={availableDisplayLanguages}
+        selectedLanguages={displayLanguages}
+        onToggle={toggleDisplayLanguage}
+      />
       <div className="table-scroll">
         <table className="glossary-table translation-archive-table translation-wide-table">
           <thead>
@@ -2987,13 +3200,15 @@ function TranslationArchiveTab({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {currentRows.map((row) => (
               <WideTranslationEntryRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
             ))}
             {!rows.length ? <tr><td colSpan={colSpan} className="muted">暂无译文归档。QA 通过后会自动写入，也可以从已有译文表导入。</td></tr> : null}
+            {rows.length && !filteredRows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
           </tbody>
         </table>
       </div>
+      <WideTablePager testIdPrefix="archive" page={currentPage} totalRows={filteredRows.length} onPageChange={setPage} />
     </div>
   )
 }
@@ -3036,7 +3251,7 @@ function WideTranslationEntryRow({
   }, [row.source_key, row.entry_key, row.source, row.note, JSON.stringify(row.translations)])
 
   async function save() {
-    const records = visibleLanguages.map((code) => row.translations[code]?.record).filter(Boolean) as TranslationEntry[]
+    const records = rowRecords<TranslationEntry>(row)
     for (const record of records) {
       const code = languageFromValue(record.language) || 'en'
       await onUpdate(record, {
@@ -3051,7 +3266,7 @@ function WideTranslationEntryRow({
   }
 
   async function remove() {
-    const records = visibleLanguages.map((code) => row.translations[code]?.record).filter(Boolean) as TranslationEntry[]
+    const records = rowRecords<TranslationEntry>(row)
     for (const record of records) await onDelete(record)
   }
 
