@@ -521,8 +521,13 @@ function archiveCoverage(project: Project): Record<LanguageCode, number> {
   }, {} as Record<LanguageCode, number>)
 }
 
-function coverageLabel(coverage: Record<LanguageCode, number>): string {
-  return supportedLanguages.map((lang) => `${lang.short} ${coverage[lang.code] || 0}`).join(' / ')
+function coverageSummary(coverage: Record<LanguageCode, number>): string {
+  const entries = supportedLanguages
+    .map((lang) => ({ lang, count: coverage[lang.code] || 0 }))
+    .filter((item) => item.count > 0)
+  if (!entries.length) return '暂无覆盖'
+  const visible = entries.slice(0, 2).map((item) => `${item.lang.short} ${item.count}`).join(' / ')
+  return entries.length > 2 ? `${visible} / +${entries.length - 2}` : visible
 }
 
 function altColumnVisible(lang: LanguageCode): boolean {
@@ -2186,8 +2191,8 @@ function ProjectOverview({
       </div>
       <div className="stat-grid">
         <div className="stat-card"><div className="num">{project.stats.tasks}</div><div className="lbl">累计任务</div></div>
-        <div className="stat-card"><div className="num">{glossaryRows.length}</div><div className="lbl">CN 术语概念 · {coverageLabel(termCoverage)}</div></div>
-        <div className="stat-card"><div className="num">{archiveRows.length}</div><div className="lbl">CN 归档源文 · {coverageLabel(translationCoverage)}</div></div>
+        <div className="stat-card"><div className="num">{glossaryRows.length}</div><div className="lbl">CN 术语概念 · {coverageSummary(termCoverage)}</div></div>
+        <div className="stat-card"><div className="num">{archiveRows.length}</div><div className="lbl">CN 归档源文 · {coverageSummary(translationCoverage)}</div></div>
         <div className="stat-card"><div className="num">{project.stats.words}</div><div className="lbl">归档译文字数</div></div>
       </div>
       <AnnouncementProjectPanel
