@@ -1814,6 +1814,95 @@ def test_language_source_with_existing_translations_can_run_direct_qa(tmp_path: 
         assert archived[1]["entry_key"] == "2"
 
 
+def test_quick_task_artifacts_detect_languages_and_stay_temporary(tmp_path: Path) -> None:
+    workbook = tmp_path / "quick.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "KR", "JP"])
+    ws.append(["btn.claim", "领取奖励", "보상 받기", "報酬受取"])
+    wb.save(workbook)
+    wb.close()
+    reference = tmp_path / "quick-reference.txt"
+    reference.write_text("Style: concise sci-fi UI copy.", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Quick Target Detect", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            quick_input = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_input",
+                files={"file": ("quick.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with reference.open("rb") as fh:
+            quick_reference = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_reference",
+                files={"file": ("quick-reference.txt", fh, "text/plain")},
+            ).json()
+
+        assert quick_input["role"] == "quick_input"
+        assert quick_reference["role"] == "quick_reference"
+        assert client.get(f"/api/projects/{project['id']}/assets?role=language_source").json() == []
+        targets = client.get(f"/api/artifacts/{quick_input['id']}/translation-targets").json()
+        assert targets["source_detected"] is True
+        assert targets["detected_languages"] == ["ko", "ja"]
+        assert "idn" not in targets["detected_languages"]
+
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "qa",
+                "language": "ko",
+                "input_artifact_id": quick_input["id"],
+                "reference_artifact_ids": [quick_reference["id"]],
+                "task_origin": "quick_task",
+                "task_code": "QA",
+            },
+        ).json()
+        assert run["metadata"]["task_origin"] == "quick_task"
+        assert run["metadata"]["reference_artifact_ids"] == [quick_reference["id"]]
+
+
+def test_quick_task_qa_creates_reference_snapshot(tmp_path: Path) -> None:
+    workbook = tmp_path / "quick-translated.xlsx"
+    _target_language_workbook(workbook, "EN", ["Claim Reward", "Welcome back, {playerName}"])
+    reference = tmp_path / "style.txt"
+    reference.write_text("Use short UI text.", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Quick QA", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            quick_input = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_input",
+                files={"file": ("quick-translated.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with reference.open("rb") as fh:
+            quick_reference = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_reference",
+                files={"file": ("style.txt", fh, "text/plain")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "qa",
+                "language": "en",
+                "input_artifact_id": quick_input["id"],
+                "reference_artifact_ids": [quick_reference["id"]],
+                "task_origin": "quick_task",
+                "task_code": "QA",
+            },
+        ).json()
+        qa_response = client.post(f"/api/runs/{run['id']}/qa")
+        assert qa_response.status_code == 200, qa_response.text
+        result = qa_response.json()
+        assert result["run"]["metadata"]["task_origin"] == "quick_task"
+        snapshot_id = result["run"]["metadata"]["input_artifacts"]["quick_reference_snapshot"]
+        snapshot = client.get(f"/api/artifacts/{snapshot_id}/download")
+        assert snapshot.status_code == 200
+        assert "quick_task_reference" in snapshot.text
+
+
 def test_translation_archive_import_edit_and_export(tmp_path: Path) -> None:
     workbook = tmp_path / "translated.xlsx"
     _translated_workbook(workbook)

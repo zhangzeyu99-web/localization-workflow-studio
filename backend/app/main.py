@@ -89,6 +89,7 @@ if __package__ is None or __package__ == "":
         import_announcement_ai_response,
         import_announcement_terms,
         inspect_announcement_constraints,
+        inspect_translation_targets,
         legacy_apply_announcement_docx,
         legacy_deliver_announcement_docx,
         legacy_import_announcement_docx_ai,
@@ -180,6 +181,7 @@ else:
         import_announcement_ai_response,
         import_announcement_terms,
         inspect_announcement_constraints,
+        inspect_translation_targets,
         legacy_apply_announcement_docx,
         legacy_deliver_announcement_docx,
         legacy_import_announcement_docx_ai,
@@ -383,6 +385,16 @@ def list_project_assets(project_id: str, role: str | None = None, origin: str | 
 def artifact_translation_readiness(artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
     try:
         return inspect_translation_readiness(artifact_id, batch_size=batch_size, language=require_supported_language(language))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/artifacts/{artifact_id}/translation-targets")
+def artifact_translation_targets(artifact_id: str) -> dict[str, Any]:
+    try:
+        return inspect_translation_targets(artifact_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
     except ValueError as exc:
@@ -913,9 +925,18 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
     ]
     if active:
         raise HTTPException(status_code=409, detail=f"{payload.kind} run already active for this project")
+    reference_artifact_ids = [str(item).strip() for item in payload.reference_artifact_ids if str(item).strip()]
+    for artifact_id in reference_artifact_ids:
+        try:
+            artifact = db.get_artifact(artifact_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"reference artifact not found: {artifact_id}") from exc
+        if artifact["project_id"] != payload.project_id:
+            raise HTTPException(status_code=400, detail=f"reference artifact does not belong to project: {artifact_id}")
     metadata = {
         "input_artifact_id": payload.input_artifact_id,
         "term_artifact_id": payload.term_artifact_id,
+        "reference_artifact_ids": reference_artifact_ids,
         "batch_size": payload.batch_size,
         "task_origin": payload.task_origin or ("direct_import" if payload.kind == "qa" else "translation_run"),
         "source_run_id": payload.source_run_id,

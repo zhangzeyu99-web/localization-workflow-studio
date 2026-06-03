@@ -133,23 +133,60 @@ test('new translation task exposes the full supported language set', async ({ pa
   await page.getByRole('button', { name: '6 目标语言' }).click()
 
   for (const label of [
-    'US 英语 EN',
+    'EN 英语',
     'KR 韩语',
     'JP 日语',
-    'FR 法语 FR',
-    'DE 德语 DE',
-    'RU 俄语 RU',
-    'IT 意大利语 IT',
-    'ES 西班牙语 ES',
-    'PT 葡萄牙语 PT',
-    'TR 土耳其语 TR',
-    'ID 印尼语 ID',
-    'TH 泰语 TH',
-    'AR 阿拉伯语 AR',
+    'FR 法语',
+    'DE 德语',
+    'RU 俄语',
+    'IT 意大利语',
+    'ES 西班牙语',
+    'PT 葡萄牙语',
+    'TR 土耳其语',
+    'ID 印尼语',
+    'TH 泰语',
+    'AR 阿拉伯语',
   ]) {
     await expect(page.getByRole('button', { name: label })).toBeVisible()
   }
   await expect(page.getByText('其他语言未开放')).toHaveCount(0)
+})
+
+test('quick task creates a project-scoped QA run without nine step workflow', async ({ page, request }) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-quick-task-'))
+  const workbook = path.join(root, 'quick-translated.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "CN", "EN"])
+ws.append(["btn.claim", "\\u9886\\u53d6\\u5956\\u52b1", "Claim Reward"])
+ws.append(["msg.welcome", "\\u6b22\\u8fce\\u56de\\u6765 {playerName}", "Welcome back, {playerName}"])
+wb.save(r"${workbook.replace(/\\/g, '\\\\')}")
+wb.close()
+`])
+  const projectName = `E2E Quick Task ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'quick-task', description: 'Quick task smoke.' },
+  }).then((response) => response.json())
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await expect(page.locator('.quick-steps')).toBeVisible()
+  await expect(page.locator('.steps-nav')).toHaveCount(0)
+  await page.getByTestId('quick-input-upload').locator('input[type="file"]').setInputFiles(workbook)
+  await expect(page.getByTestId('quick-reference-next')).toBeVisible({ timeout: 15000 })
+  await page.getByTestId('quick-reference-next').click()
+  await page.getByTestId('quick-objective-qa').click()
+  await page.getByTestId('quick-task-start').click()
+
+  await expect.poll(async () => {
+    const detail = await request.get(`${baseURL}/api/projects/${project.id}`).then((response) => response.json())
+    const run = (detail.runs || []).find((item: any) => item.metadata?.task_origin === 'quick_task')
+    return run?.status || ''
+  }, { timeout: 60000 }).toBe('passed')
 })
 
 test('quick workflow can preview and import glossary terms', async ({ page, request }) => {
@@ -221,7 +258,7 @@ test('project tabs show multilingual wide glossary and archive assets', async ({
   await expect(page.locator('.proj-head')).not.toContainText('当前目标语言')
   await expect(page.locator('.proj-head .compact-lang-grid')).toHaveCount(0)
   await expect(page.locator('.stat-grid')).toContainText('CN 术语概念')
-  await expect(page.locator('.stat-grid')).toContainText('EN 1 / KR 1 / JP 1')
+  await expect(page.locator('.stat-grid')).toContainText('EN 1 / KR 1 / +1')
 
   await page.locator('.view-tabs .view-tab').nth(1).click()
   await expect(page.locator('.glossary-wide-table thead')).toContainText('EN')
@@ -363,7 +400,7 @@ wb.close()
     const chip = langChips.nth(index)
     const input = chip.locator('input[type="checkbox"]')
     const label = await chip.innerText()
-    if (label.includes('\u82f1\u8bed EN')) {
+    if (label.includes('EN')) {
       if (!await input.isChecked()) await input.check()
     } else if (await input.isChecked()) {
       await input.uncheck()
@@ -425,7 +462,7 @@ wb.close()
   await expect(page.getByRole('link', { name: /\u516c\u544a\u6210\u54c1.*EN/ })).toBeVisible()
   await page.getByRole('button', { name: '\u751f\u6210\u4ea4\u4ed8\u603b\u5305' }).click()
   await expect(page.getByRole('link', { name: /\u516c\u544a\u4ea4\u4ed8 ZIP/ })).toBeVisible({ timeout: 30000 })
-  await expect(page.locator('.announcement-subflow-card', { hasText: '\u82f1\u8bed EN' })).toContainText('delivered')
+  await expect(page.locator('.announcement-subflow-card', { hasText: 'EN' })).toContainText('delivered')
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await expect(page.locator('.announcement-project-panel .mini-lang')).toHaveCount(0)

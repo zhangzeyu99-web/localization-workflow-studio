@@ -249,6 +249,7 @@ class RunCreate(BaseModel):
     language: str = "en"
     input_artifact_id: str | None = None
     term_artifact_id: str | None = None
+    reference_artifact_ids: list[str] = Field(default_factory=list)
     batch_size: int | None = None
     task_origin: str | None = None
     source_run_id: str | None = None

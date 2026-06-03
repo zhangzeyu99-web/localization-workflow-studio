@@ -43,6 +43,28 @@ RowId = int | str
 LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
 AUTO_LANGUAGE_TARGET_ALIASES = {code: tuple(target_aliases(code)) for code in LANGUAGE_ORDER}
 AUTO_LANGUAGE_ALT_ALIASES = {code: tuple(alt_aliases(code)) for code in LANGUAGE_ORDER}
+_TARGET_DETECTION_ALIASES: dict[str, set[str]] = {
+    "en": {"en", "english"},
+    "ko": {"ko", "kr", "korean"},
+    "ja": {"ja", "jp", "japanese"},
+    "fr": {"fr", "fre", "french"},
+    "de": {"de", "ger", "german"},
+    "ru": {"ru", "rus", "russian"},
+    "it": {"it", "ita", "italian"},
+    "es": {"es", "spa", "spanish"},
+    "pt": {"pt", "pt-br", "ptbr", "por", "portuguese"},
+    "tr": {"tr", "tk", "tur", "turkish"},
+    "idn": {"idn", "ind", "indonesian", "bahasa", "bahasa indonesia"},
+    "th": {"th", "tha", "thai"},
+    "ar": {"ar", "ara", "arabic"},
+}
+_STRUCTURAL_TARGET_HEADERS = {
+    "id", "key", "编号", "序号",
+    "cn", "zh", "source", "original", "chinese", "term", "原文", "中文", "术语",
+    "category", "type", "分类", "类别", "类型",
+    "note", "notes", "comment", "备注",
+    "target", "translation", "译文",
+}
 
 
 def _looks_like_untranslated_seed(text: str, language: str) -> bool:
@@ -464,6 +486,85 @@ def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir
         "prompt_path": compiled_path,
         "harness_path": harness_path,
     }
+
+
+def _quick_reference_excerpt(artifact: dict[str, Any], max_chars: int = 5000) -> str:
+    path = Path(str(artifact.get("path") or ""))
+    if not path.exists():
+        return ""
+    suffix = path.suffix.lower()
+    try:
+        if suffix in {".txt", ".md", ".csv", ".json", ".jsonl"}:
+            return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+        if suffix in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+            wb = load_workbook(path, read_only=True, data_only=True)
+            try:
+                lines: list[str] = []
+                remaining = max_chars
+                for ws in wb.worksheets[:3]:
+                    lines.append(f"[Sheet] {ws.title}")
+                    for row in ws.iter_rows(max_row=16, values_only=True):
+                        text = " | ".join(str(cell).strip() for cell in row if cell not in (None, ""))
+                        if not text:
+                            continue
+                        lines.append(text)
+                        remaining -= len(text)
+                        if remaining <= 0:
+                            break
+                    if remaining <= 0:
+                        break
+                return "\n".join(lines)[:max_chars]
+            finally:
+                wb.close()
+    except Exception as exc:
+        return f"[reference read failed: {exc}]"
+    return f"[binary reference: {path.name}]"
+
+
+def create_quick_reference_snapshot(project_id: str, run_id: str, reference_artifact_ids: list[str] | None, output_dir: Path | None = None) -> dict[str, Any] | None:
+    ids = [str(item).strip() for item in (reference_artifact_ids or []) if str(item).strip()]
+    if not ids:
+        return None
+    output = output_dir or run_dir(run_id) / "snapshots"
+    output.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    context_parts = [
+        "Temporary reference material for this quick task only.",
+        "Use it as style/term/context guidance for this run. Do not treat it as permanent project memory unless the user imports it separately.",
+    ]
+    for artifact_id in ids:
+        artifact = db.get_artifact(artifact_id)
+        if artifact["project_id"] != project_id:
+            raise KeyError(artifact_id)
+        excerpt = _quick_reference_excerpt(artifact)
+        item = {
+            "id": artifact["id"],
+            "label": artifact.get("label", ""),
+            "kind": artifact.get("kind", ""),
+            "role": artifact.get("role", ""),
+            "origin": artifact.get("origin", ""),
+            "original_filename": (artifact.get("metadata") or {}).get("original_filename", ""),
+            "sha256": (artifact.get("metadata") or {}).get("sha256", ""),
+            "size": artifact.get("size", 0),
+            "excerpt": excerpt,
+        }
+        rows.append(item)
+        context_parts.append(f"\nReference: {item['original_filename'] or item['label']} ({item['kind']})\n{excerpt}")
+    snapshot_path = output / "quick_reference_snapshot.json"
+    snapshot = {"source": "quick_task_reference", "reference_artifact_ids": ids, "references": rows}
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    context = "\n".join(part for part in context_parts if part).strip()
+    artifact = db.add_artifact(
+        project_id,
+        "Quick task reference snapshot",
+        snapshot_path,
+        "quick_reference_snapshot",
+        run_id=run_id,
+        mime="application/json",
+        origin="generated",
+        metadata={"source": "quick_task_reference", "reference_artifact_ids": ids, "reference_count": len(rows)},
+    )
+    return {"artifact": artifact, "snapshot": snapshot, "context": context}
 
 
 def analyze_assets(artifact_ids: list[str], settings: dict[str, Any]) -> list[str]:
@@ -2569,6 +2670,53 @@ def _mime_for_path(path: Path) -> str:
     return "application/octet-stream"
 
 
+def inspect_translation_targets(artifact_id: str) -> dict[str, Any]:
+    artifact = db.get_artifact(artifact_id)
+    path = Path(artifact["path"])
+    result: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "label": artifact.get("label", ""),
+        "supported_file": path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"},
+        "source_detected": False,
+        "detected_languages": [],
+        "suggested_language": None,
+        "sheets": [],
+    }
+    if not result["supported_file"] or not path.exists():
+        return result
+    detected: set[str] = set()
+    sheet_rows: list[dict[str, Any]] = []
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            for ws in wb.worksheets:
+                headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1), ())]
+                normalized = [header.lower() for header in headers]
+                source_detected = any(header in {"cn", "zh", "source", "original", "chinese", "原文", "中文"} for header in normalized)
+                result["source_detected"] = bool(result["source_detected"] or source_detected)
+                sheet_languages: list[str] = []
+                for index, header in enumerate(normalized):
+                    if not header or header in _STRUCTURAL_TARGET_HEADERS:
+                        continue
+                    for code in LANGUAGE_ORDER:
+                        if header in _TARGET_DETECTION_ALIASES.get(code, set()):
+                            detected.add(code)
+                            sheet_languages.append(code)
+                            break
+                if sheet_languages or source_detected:
+                    sheet_rows.append({"sheet": ws.title, "languages": sorted(set(sheet_languages), key=LANGUAGE_ORDER.index), "source_detected": source_detected})
+        finally:
+            wb.close()
+    except Exception as exc:
+        result["reason"] = f"inspect_failed:{exc}"
+        return result
+    languages = [code for code in LANGUAGE_ORDER if code in detected]
+    result["detected_languages"] = languages
+    result["suggested_language"] = languages[0] if languages else None
+    result["sheets"] = sheet_rows
+    return result
+
+
 def inspect_translation_readiness(artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
     language = require_supported_language(language)
     artifact = db.get_artifact(artifact_id)
@@ -4524,6 +4672,7 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
     language = require_supported_language(run.get("language") or "en")
     glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, output_dir / "snapshots", language=language)
     snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, output_dir / "snapshots", language=language)
+    reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), output_dir / "snapshots")
     qa_result = run_localization_qa(
         project=project,
         run_id=run_id,
@@ -4542,6 +4691,8 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
         "prompt_snapshot": snapshots["prompt_artifact"]["id"],
         "harness_snapshot": snapshots["harness_artifact"]["id"],
     }
+    if reference_snapshot:
+        input_artifacts["quick_reference_snapshot"] = reference_snapshot["artifact"]["id"]
     if qa_result.get("qa_final_artifact"):
         input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
     status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
@@ -4997,7 +5148,7 @@ def _workbook_artifact_for_quality_run(run: dict[str, Any]) -> dict[str, Any]:
     input_artifact_id = metadata.get("input_artifacts", {}).get("translation_workbook") or metadata.get("input_artifact_id")
     if input_artifact_id:
         artifact = db.get_artifact(input_artifact_id)
-        if artifact["role"] in {"translation_workbook", "translation_draft", "language_source"}:
+        if artifact["role"] in {"translation_workbook", "translation_draft", "language_source", "quick_input"}:
             return artifact
     artifacts = db.list_artifacts(run_id=run["id"], role="translation_workbook") or db.list_artifacts(run_id=run["id"], role="language_source")
     if artifacts:
@@ -5725,10 +5876,30 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
     language = require_supported_language(run.get("language") or "en")
     glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir, language=language)
     snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir, language=language)
+    reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
     prompt = snapshots["prompt"]
     prompt_snapshot = snapshots["prompt_artifact"]
     harness_snapshot_artifact = snapshots["harness_artifact"]
     harness_snapshot = snapshots["harness_snapshot"]
+    prompt_path = snapshots["prompt_path"]
+    if reference_snapshot and reference_snapshot.get("context"):
+        prompt = f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}"
+        prompt_path = snapshot_dir / "compiled_project_harness_prompt_with_quick_refs.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_snapshot = db.add_artifact(
+            project["id"],
+            "Prompt snapshot with quick references",
+            prompt_path,
+            "prompt_snapshot",
+            run_id=run_id,
+            mime="text/plain",
+            origin="generated",
+            metadata={
+                "source": "project_prompt_harness_and_quick_references",
+                "language": language,
+                "reference_artifact_ids": metadata.get("reference_artifact_ids") or [],
+            },
+        )
 
     prepare_args = [
         sys.executable,
@@ -5740,7 +5911,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         "--output-dir",
         str(work_dir),
         "--style-hint-file",
-        str(snapshots["prompt_path"]),
+        str(prompt_path),
         "--term-base",
         glossary_snapshot["path"],
     ]
@@ -5825,6 +5996,8 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             "prompt_snapshot": prompt_snapshot["id"],
             "harness_snapshot": harness_snapshot_artifact["id"],
         }
+        if reference_snapshot:
+            input_artifacts["quick_reference_snapshot"] = reference_snapshot["artifact"]["id"]
         if qa_result.get("qa_final_artifact"):
             input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
             input_artifacts["translation_workbook"] = qa_result["qa_final_artifact"]["id"]

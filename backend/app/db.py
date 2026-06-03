@@ -14,6 +14,9 @@ from .languages import ANNOUNCEMENT_LANGUAGE_ORDER, normalize_language
 
 ARTIFACT_ROLE_BY_KIND = {
     "language_table": "language_source",
+    "quick_input": "quick_input",
+    "quick_reference": "quick_reference",
+    "quick_reference_snapshot": "run_snapshot",
     "term_base": "glossary_source",
     "glossary_detail": "glossary_source",
     "announcement_glossary": "glossary_source",
@@ -60,7 +63,7 @@ ARTIFACT_ROLE_BY_KIND = {
     "project_harness_snapshot": "harness_snapshot",
 }
 
-UPLOADED_KINDS = {"upload", "asset", "language_table", "term_base", "final_workbook"}
+UPLOADED_KINDS = {"upload", "asset", "language_table", "quick_input", "quick_reference", "term_base", "final_workbook"}
 
 
 def now_iso() -> str:
