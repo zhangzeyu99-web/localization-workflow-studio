@@ -1,32 +1,38 @@
 # Localization Workflow Studio
 
-面向游戏本地化团队的本地优先工作台：把 Excel 语言表、AI 辅助翻译、术语库、规则 QA、译文归档和最终交付物收进一条可审计流程。
+面向游戏本地化团队的本地优先工作台，用于处理 Excel 语言表、AI 辅助翻译、术语 QA、交付检查和最终 workbook 产物。
 
-## 入口
+[English README](README.md)
 
-- 公开 Demo：https://zhangzeyu99-web.github.io/localization-workflow-studio/
-- 快速上手：[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
-- 公开案例：[docs/SHOWCASE.md](docs/SHOWCASE.md)
-- 合成样例 workbook：[examples/synthetic-language.xlsx](examples/synthetic-language.xlsx)
-- 英文 README：[README.md](README.md)
+## 快速入口
 
-GitHub Pages Demo 是只读静态页面，不上传文件、不调用模型、不保存数据，也不包含真实客户素材。完整流程需要本地 FastAPI 后端。
+- 公开 Demo: https://zhangzeyu99-web.github.io/localization-workflow-studio/
+- 工作流指南: [docs/guides/ai-game-localization-workflow.html](docs/guides/ai-game-localization-workflow.html)
+- Excel QA 指南: [docs/guides/excel-translation-qa.html](docs/guides/excel-translation-qa.html)
+- 快速上手: [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
+- 公开案例: [docs/SHOWCASE.md](docs/SHOWCASE.md)
+- 合成示例 workbook: [examples/synthetic-language.xlsx](examples/synthetic-language.xlsx)
+- 反馈讨论: [GitHub Discussions #29](https://github.com/zhangzeyu99-web/localization-workflow-studio/discussions/29)
+- Help wanted: [真实 workbook 格式和 QA gates 反馈](https://github.com/zhangzeyu99-web/localization-workflow-studio/issues/30)
+
+GitHub Pages Demo 是只读静态页面，不上传文件、不调用模型、不保存数据，也不包含真实客户素材。完整工作流需要在本地启动 FastAPI 后端。
 
 ## 适合谁
 
-- 需要 Excel 交付门槛的游戏本地化 PM / 制作人。
-- 需要术语、占位符、标签、换行和 UI 长度检查的译者和 LQA。
-- 用 GPT 或 Claude 辅助翻译，但仍需要人工审查和可追溯交付物的小团队。
-- 想参考本地优先 AI 工作流设计的开发者。
+- 仍然用 Excel 语言表交付的游戏本地化 PM、制作人或运营同学。
+- 需要检查术语、占位符、富文本标签、换行和 UI 长度的译者或 LQA。
+- 使用 GPT/Claude 辅助翻译，但仍需要人工审查和可追溯交付物的小团队。
+- 想参考本地优先 AI 工作流、QA gates 和交付归档设计的开发者。
 
 ## 核心能力
 
-- 录入项目资料、风格规则和术语库。
-- 从 Excel 语言表生成带稳定 ID 的 workpack。
-- 按批次调用正式 provider 做 AI 辅助翻译。
-- 阻止 mock 或缺失 API key 的结果被当成真实交付。
+- 从项目资料、风格规则、术语表和语言表建立项目工作区。
+- 将 Excel 语言表转换为带稳定 ID 的 workpack。
+- 为 AI 辅助翻译生成带术语、占位符、标签和 UI 长度提示的 prompt。
+- 阻止 mock 输出或缺失 provider key 的结果进入真实交付链路。
 - 检查占位符、富文本标签、换行、术语一致性、可读性和 UI 长度。
-- QA 通过后写入译文归档并生成最终交付 workbook。
+- 支持人工修复后再生成最终交付 workbook。
+- 将运行数据、SQLite、日志、API key 和真实 workbook 保持在公开仓库之外。
 
 ## 本地启动
 
@@ -62,7 +68,7 @@ http://127.0.0.1:5173
 
 ## 数据边界
 
-真实配置和运行数据应放在仓库外：
+真实配置和运行数据应该放在仓库外，例如：
 
 ```text
 D:\codex\localization-workflow-studio-data
@@ -73,21 +79,17 @@ D:\codex\localization-workflow-studio-data
 - 真实项目 workbook
 - 客户源文
 - API key
-- SQLite
+- SQLite 数据库
 - run 日志
-- workpack
-- QA 报告
-- 私有项目最终交付物
+- 真实交付产物
 
-## 质量门槛
+## 为什么值得 Star
 
-正式交付必须满足：
+如果你关注这些方向，可以 star 这个仓库作为参考：
 
-1. 有 prompt snapshot、project harness snapshot、glossary snapshot。
-2. workpack 记录 ID、源文、文本类型、占位符、标签、换行形态、术语命中、UI 长度和输入指纹。
-3. 模型返回遵守 JSONL 行协议，每行只包含 `id` 和 `translation`。
-4. 回填前校验 ID、顺序、占位符、标签、换行和输入指纹。
-5. 最终 workbook 通过规则 QA 和项目规则 QA，hard issue 为 0。
-6. QA 通过后才写入译文归档并生成最终交付物。
-
-导入已有译文 workbook 做 QA 是支持的，但它只能证明 Studio 做过校对，不代表 Studio 做过原始翻译。
+- 本地优先 AI 工作流
+- 游戏本地化 QA 自动化
+- Excel 交付链路
+- provider 安全配置
+- 可复现的翻译审查 gates
+- React + FastAPI 工作台实现

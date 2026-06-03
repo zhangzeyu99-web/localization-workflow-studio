@@ -6,6 +6,16 @@ This file contains copy-ready launch material for Localization Workflow Studio. 
 
 Localization Workflow Studio is a local-first AI game localization workbench for Excel language tables, glossary QA, placeholder checks, and delivery gates.
 
+## Live Feedback Entry
+
+Use this GitHub Discussion as the main feedback target for public posts:
+
+https://github.com/zhangzeyu99-web/localization-workflow-studio/discussions/29
+
+Use this help-wanted issue when asking developers or localization engineers for concrete workbook formats and QA gates:
+
+https://github.com/zhangzeyu99-web/localization-workflow-studio/issues/30
+
 ## Short Description
 
 Localization teams often use AI translation while still shipping Excel workbooks. The hard part is not calling a model; it is preserving row IDs, placeholders, tags, line breaks, glossary decisions, QA evidence, and final delivery artifacts.
@@ -32,6 +42,8 @@ The GitHub Pages demo is static and uses synthetic data only. Real execution run
 Demo: https://zhangzeyu99-web.github.io/localization-workflow-studio/
 Workflow guide: https://zhangzeyu99-web.github.io/localization-workflow-studio/guides/ai-game-localization-workflow.html
 Repo: https://github.com/zhangzeyu99-web/localization-workflow-studio
+Feedback: https://github.com/zhangzeyu99-web/localization-workflow-studio/discussions/29
+Help wanted: https://github.com/zhangzeyu99-web/localization-workflow-studio/issues/30
 
 I am looking for feedback from people who ship localization workbooks, LQA reports, or game text pipelines.
 ```
@@ -60,6 +72,12 @@ https://zhangzeyu99-web.github.io/localization-workflow-studio/guides/ai-game-lo
 The repo is here:
 https://github.com/zhangzeyu99-web/localization-workflow-studio
 
+Feedback thread:
+https://github.com/zhangzeyu99-web/localization-workflow-studio/discussions/29
+
+Help-wanted issue:
+https://github.com/zhangzeyu99-web/localization-workflow-studio/issues/30
+
 I would like feedback from game localization producers, LQA reviewers, and developers maintaining localization pipelines.
 ```
 
@@ -72,6 +90,8 @@ It focuses on glossary QA, placeholders, tags, line breaks, workpack fingerprint
 
 Demo: https://zhangzeyu99-web.github.io/localization-workflow-studio/
 Repo: https://github.com/zhangzeyu99-web/localization-workflow-studio
+Feedback: https://github.com/zhangzeyu99-web/localization-workflow-studio/discussions/29
+Help wanted: https://github.com/zhangzeyu99-web/localization-workflow-studio/issues/30
 ```
 
 ## Target Communities
@@ -81,6 +101,14 @@ Repo: https://github.com/zhangzeyu99-web/localization-workflow-studio
 - LinkedIn game localization and LQA networks
 - X/Twitter game dev and AI tooling circles
 - Discord or Slack groups for localization engineers and indie game developers
+
+## Distribution Status
+
+- GitHub Discussions feedback thread: live.
+- GitHub help-wanted issue: live.
+- Release notes: updated with feedback and help-wanted links.
+- README and Chinese README: updated with feedback and help-wanted links.
+- Hacker News: submit page requires login; use the Show HN draft above after login.
 
 ## Feedback Questions
 
@@ -98,3 +126,5 @@ Repo: https://github.com/zhangzeyu99-web/localization-workflow-studio
 - Pages demo links to the workflow guide and Star CTA.
 - README links to setup, sample case, workflow guide, and QA guide.
 - CI and Pages deployment are green.
+- GitHub Discussions feedback thread is live.
+- Help-wanted issue for workbook formats and QA gates is live.

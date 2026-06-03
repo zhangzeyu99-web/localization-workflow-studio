@@ -3,6 +3,7 @@
 [![CI](https://github.com/zhangzeyu99-web/localization-workflow-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/zhangzeyu99-web/localization-workflow-studio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Demo](https://img.shields.io/badge/GitHub%20Pages-live%20demo-blue)](https://zhangzeyu99-web.github.io/localization-workflow-studio/)
+[![Feedback](https://img.shields.io/badge/feedback-Discussions-8957e5)](https://github.com/zhangzeyu99-web/localization-workflow-studio/discussions/29)
 
 [简体中文](README.zh-CN.md)
 
@@ -20,6 +21,8 @@ If your current localization flow is a folder full of workbooks, prompts, manual
 - Getting started: [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
 - Public sample case: [docs/SHOWCASE.md](docs/SHOWCASE.md)
 - Synthetic workbook: [examples/synthetic-language.xlsx](examples/synthetic-language.xlsx)
+- Feedback thread: [GitHub Discussions #29](https://github.com/zhangzeyu99-web/localization-workflow-studio/discussions/29)
+- Help wanted: [workbook formats and QA gates](https://github.com/zhangzeyu99-web/localization-workflow-studio/issues/30)
 
 The hosted GitHub Pages demo is static and read-only. It does not upload files, call model providers, save data, or include real client material. Full workflow execution runs locally with the FastAPI backend.
 
