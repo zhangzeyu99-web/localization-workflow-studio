@@ -108,7 +108,7 @@ Help wanted: https://github.com/zhangzeyu99-web/localization-workflow-studio/iss
 - GitHub help-wanted issue: live.
 - Release notes: updated with feedback and help-wanted links.
 - README and Chinese README: updated with feedback and help-wanted links.
-- IndexNow: key file added for the GitHub Pages project path; submit the Pages URLs after deployment.
+- IndexNow: key file added for the GitHub Pages project path; Pages URLs submitted to `api.indexnow.org` and accepted with HTTP 202.
 - Hacker News: submit page requires login; use the Show HN draft above after login.
 
 ## Feedback Questions
