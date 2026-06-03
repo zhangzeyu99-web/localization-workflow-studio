@@ -4,6 +4,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Demo](https://img.shields.io/badge/GitHub%20Pages-live%20demo-blue)](https://zhangzeyu99-web.github.io/localization-workflow-studio/)
 
+[简体中文](README.zh-CN.md)
+
 Local-first workflow studio for game localization teams that ship Excel language tables, AI-assisted translations, glossary checks, QA reports, and final delivery workbooks.
 
 If your current localization flow is a folder full of workbooks, prompts, manual QA notes, and hard-to-reproduce model outputs, this project turns it into one auditable local workspace.
@@ -175,12 +177,14 @@ npm run e2e
 
 - [Getting started](docs/GETTING_STARTED.md)
 - [Showcase](docs/SHOWCASE.md)
+- [Excel translation QA guide](docs/guides/excel-translation-qa.html)
 - [Configuration](docs/CONFIGURATION.md)
 - [File and data management](docs/FILE_MANAGEMENT.md)
 - [Storage model](docs/STORAGE.md)
 - [Use cases](docs/USE_CASES.md)
 - [Quality gates](docs/QUALITY_GATES.md)
 - [Iteration process](docs/ITERATION.md)
+- [Roadmap](docs/ROADMAP.md)
 - [GitHub management](docs/GITHUB_MANAGEMENT.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)

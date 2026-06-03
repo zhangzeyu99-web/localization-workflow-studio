@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Excel Translation QA for Game Localization - Localization Workflow Studio</title>
+  <meta name="description" content="A practical guide to Excel translation QA for game localization teams using placeholder checks, glossary consistency, AI-assisted review, and final delivery gates." />
+  <link rel="canonical" href="https://zhangzeyu99-web.github.io/localization-workflow-studio/guides/excel-translation-qa.html" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="Excel Translation QA for Game Localization" />
+  <meta property="og:description" content="How to review Excel language tables with placeholder checks, glossary consistency, quality gates, and final delivery artifacts." />
+  <meta property="og:url" content="https://zhangzeyu99-web.github.io/localization-workflow-studio/guides/excel-translation-qa.html" />
+  <meta property="og:image" content="https://zhangzeyu99-web.github.io/localization-workflow-studio/assets/social-preview.jpg" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e5e7eb;
+      line-height: 1.65;
+    }
+    a { color: #93c5fd; }
+    .page {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 48px 22px 72px;
+    }
+    .eyebrow {
+      color: #5eead4;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 10px 0 12px;
+      font-size: clamp(32px, 5vw, 54px);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin-top: 34px;
+      color: #fff;
+      font-size: 24px;
+    }
+    p, li { color: #cbd5e1; }
+    .lead {
+      font-size: 18px;
+      color: #dbeafe;
+      max-width: 780px;
+    }
+    .panel {
+      margin: 28px 0;
+      padding: 22px;
+      border: 1px solid rgba(148,163,184,.24);
+      border-radius: 12px;
+      background: rgba(15,23,42,.78);
+    }
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: rgba(148,163,184,.14);
+      color: #f8fafc;
+    }
+    .cta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 28px;
+    }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      min-height: 42px;
+      padding: 10px 14px;
+      border: 1px solid rgba(147,197,253,.35);
+      border-radius: 8px;
+      background: #1d4ed8;
+      color: #fff;
+      text-decoration: none;
+      font-weight: 700;
+    }
+    .button.secondary {
+      background: rgba(30,41,59,.9);
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="eyebrow">Localization Workflow Studio Guide</div>
+    <h1>Excel Translation QA for Game Localization</h1>
+    <p class="lead">Game localization teams often ship language tables through Excel. The hard part is not only translating strings, but proving that IDs, placeholders, tags, glossary terms, line breaks, and final delivery workbooks remain safe.</p>
+
+    <section class="panel">
+      <h2>Common Failure Points</h2>
+      <ul>
+        <li>Placeholders such as <code>{count}</code>, <code>%s</code>, or color tags are changed during translation.</li>
+        <li>Glossary terms drift across UI, equipment names, events, and reward descriptions.</li>
+        <li>AI output cannot be tied back to stable source IDs.</li>
+        <li>Manual fixes are not captured as a reviewable delivery artifact.</li>
+        <li>QA notes live outside the workbook and are hard to reproduce.</li>
+      </ul>
+    </section>
+
+    <h2>What a Safer Workflow Looks Like</h2>
+    <p>Localization Workflow Studio keeps the workflow local and artifact-driven. A workbook is imported into a project, converted into a workpack with stable IDs and source fingerprints, translated in batches with a configured provider, checked against rules, and only then written into final delivery artifacts.</p>
+
+    <h2>Quality Gates</h2>
+    <ul>
+      <li>Validate ID and row order before applying translations.</li>
+      <li>Preserve placeholders, rich-text tags, numbers, and line-break shape.</li>
+      <li>Check terminology against the project glossary.</li>
+      <li>Flag UI length and readability risks.</li>
+      <li>Keep a prompt snapshot, project snapshot, glossary snapshot, QA report, and final workbook output.</li>
+    </ul>
+
+    <h2>Try the Public Sample</h2>
+    <p>The repository includes a synthetic workbook at <code>examples/synthetic-language.xlsx</code>. It is safe for demos, tests, and issue reproduction because it does not contain real customer strings.</p>
+
+    <div class="cta">
+      <a class="button" href="../">Open the demo</a>
+      <a class="button secondary" href="https://github.com/zhangzeyu99-web/localization-workflow-studio">View the GitHub repo</a>
+    </div>
+  </main>
+</body>
+</html>
