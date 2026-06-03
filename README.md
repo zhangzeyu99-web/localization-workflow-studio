@@ -196,6 +196,7 @@ npm run e2e
 - [Quality gates](docs/QUALITY_GATES.md)
 - [Iteration process](docs/ITERATION.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Launch kit](docs/LAUNCH.md)
 - [GitHub management](docs/GITHUB_MANAGEMENT.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
