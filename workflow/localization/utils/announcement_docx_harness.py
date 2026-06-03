@@ -22,23 +22,28 @@ from openpyxl import Workbook, load_workbook
 
 TARGET_LANGUAGES: tuple[tuple[str, str], ...] = (
     ("EN", "en"),
+    ("KR", "ko"),
+    ("JP", "ja"),
     ("FR", "fr"),
     ("DE", "de"),
     ("RU", "ru"),
     ("IT", "it"),
     ("ES", "es"),
     ("PT", "pt"),
-    ("TK", "tr"),
-    ("ID", "idn"),
+    ("TR", "tr"),
+    ("IDN", "idn"),
     ("TH", "th"),
+    ("AR", "ar"),
 )
 SUPPORTED_LANGUAGES: tuple[tuple[str, str], ...] = (
     *TARGET_LANGUAGES,
-    ("KR", "ko"),
     ("KO", "ko"),
-    ("JP", "ja"),
     ("JA", "ja"),
+    ("TK", "tr"),
+    ("ID", "idn"),
 )
+CANONICAL_LANGUAGE_HEADER = {code: header for header, code in TARGET_LANGUAGES}
+LANGUAGE_CODE_BY_HEADER = {header: code for header, code in SUPPORTED_LANGUAGES}
 
 FIXED_COLUMNS = (
     "source_file",
@@ -519,11 +524,14 @@ def _read_announcement_language_specs(path: Path) -> list[LanguageSpec]:
 
 def _language_specs_from_headers(headers: list[str]) -> list[LanguageSpec]:
     languages: list[LanguageSpec] = []
+    seen_codes: set[str] = set()
     for col in range(3, len(headers) + 1):
-        header = headers[col - 1]
-        code = _language_code_for_header(header)
-        if not code:
+        input_header = headers[col - 1]
+        code = _language_code_for_header(input_header)
+        if not code or code in seen_codes:
             continue
+        seen_codes.add(code)
+        header = CANONICAL_LANGUAGE_HEADER[code]
         languages.append(LanguageSpec(header=header, code=code, column_index=col))
     return languages
 
@@ -667,7 +675,7 @@ def _resolve_language_pairs(
     if not languages:
         return list(TARGET_LANGUAGES)
     selected_headers = _resolve_language_headers(languages, valid_languages=SUPPORTED_LANGUAGES)
-    language_by_header = {header: code for header, code in SUPPORTED_LANGUAGES}
+    language_by_header = {header: code for header, code in TARGET_LANGUAGES}
     return [(header, language_by_header[header]) for header in selected_headers]
 
 
@@ -677,9 +685,10 @@ def _resolve_language_headers(
     valid_languages: list[tuple[str, str]] | tuple[tuple[str, str], ...] = TARGET_LANGUAGES,
 ) -> list[str]:
     valid_headers = {header for header, _ in valid_languages}
+    code_by_header = {header: code for header, code in valid_languages}
     valid_codes: dict[str, str] = {}
-    for header, code in valid_languages:
-        valid_codes.setdefault(code, header)
+    for _, code in valid_languages:
+        valid_codes.setdefault(code, CANONICAL_LANGUAGE_HEADER[code])
     if not languages:
         return [header for header, _ in valid_languages]
 
@@ -687,7 +696,7 @@ def _resolve_language_headers(
     for lang in languages:
         raw = str(lang).strip()
         if raw in valid_headers:
-            selected.append(raw)
+            selected.append(CANONICAL_LANGUAGE_HEADER[code_by_header[raw]])
             continue
         code = raw.lower()
         if code in valid_codes:
@@ -695,7 +704,7 @@ def _resolve_language_headers(
             continue
         normalized = raw.upper()
         if normalized in valid_headers:
-            selected.append(normalized)
+            selected.append(CANONICAL_LANGUAGE_HEADER[code_by_header[normalized]])
             continue
         raise ValueError(f"unsupported language: {lang}")
     return selected
@@ -712,16 +721,14 @@ def _manifest_languages(manifest: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def _infer_language_pairs_from_terms(pairs: list[tuple[Path, Path]]) -> list[tuple[str, str]]:
-    supported = {header: code for header, code in SUPPORTED_LANGUAGES}
     selected: list[tuple[str, str]] = []
     seen: set[str] = set()
     for _, term_path in pairs:
         terms = load_announcement_terms(term_path)
         for spec in terms.languages:
-            header = spec.header.strip().upper()
-            if header in supported and header not in seen:
-                selected.append((header, supported[header]))
-                seen.add(header)
+            if spec.code not in seen:
+                selected.append((spec.header, spec.code))
+                seen.add(spec.code)
     if not selected:
         raise ValueError("no supported target language columns found in announcement terms")
     return selected
@@ -951,8 +958,7 @@ def _contains_term(translation: str, target: str) -> bool:
 
 
 def _language_code_for_header(header: str) -> str:
-    mapping = {header: code for header, code in SUPPORTED_LANGUAGES}
-    return mapping.get(str(header or "").strip().upper(), "")
+    return LANGUAGE_CODE_BY_HEADER.get(str(header or "").strip().upper(), "")
 
 
 def _is_temp_file(path: Path) -> bool:

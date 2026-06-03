@@ -361,10 +361,7 @@ type LanguageOption = {
 const supportedLanguages: LanguageOption[] = [
   { code: 'en', label: 'US 英语 EN', short: 'EN', targetHeader: 'EN', altHeader: 'EN2' },
   { code: 'ko', label: 'KR 韩语', short: 'KR', targetHeader: 'KR', altHeader: '' },
-  { code: 'ja', label: 'JP 日语', short: 'JP', targetHeader: 'JP', altHeader: '' }
-]
-const announcementLanguages: LanguageOption[] = [
-  ...supportedLanguages,
+  { code: 'ja', label: 'JP 日语', short: 'JP', targetHeader: 'JP', altHeader: '' },
   { code: 'fr', label: 'FR 法语 FR', short: 'FR', targetHeader: 'FR', altHeader: '' },
   { code: 'de', label: 'DE 德语 DE', short: 'DE', targetHeader: 'DE', altHeader: '' },
   { code: 'ru', label: 'RU 俄语 RU', short: 'RU', targetHeader: 'RU', altHeader: '' },
@@ -376,7 +373,8 @@ const announcementLanguages: LanguageOption[] = [
   { code: 'th', label: 'TH 泰语 TH', short: 'TH', targetHeader: 'TH', altHeader: '' },
   { code: 'ar', label: 'AR 阿拉伯语 AR', short: 'AR', targetHeader: 'AR', altHeader: '' }
 ]
-const allLanguageOptions = announcementLanguages
+const announcementLanguages = supportedLanguages
+const allLanguageOptions = supportedLanguages
 const unsupportedLanguages: string[] = []
 
 const batchPresets = [
@@ -4475,7 +4473,7 @@ function StepLang({ selectedLanguage, setSelectedLanguage }: { selectedLanguage:
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 6</span>选择目标语言</div>
-      <div className="panel-desc">当前版本正式支持 EN / KR / JP 单语言任务；其他语言未开放，不提供假入口。</div>
+      <div className="panel-desc">选择本次任务的目标语言；每次 run 仍按单语言执行，多语言任务会拆成多个单语言流程。</div>
       <div className="lang-grid">
         {supportedLanguages.map((lang) => (
           <button

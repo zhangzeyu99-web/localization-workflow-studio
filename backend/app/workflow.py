@@ -41,14 +41,8 @@ GLOBAL_HARNESS_CONTRACT: dict[str, Any] = {
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 RowId = int | str
 LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
-AUTO_LANGUAGE_TARGET_ALIASES = {
-    "en": ("en", "english", "英文", "英语"),
-    "ko": ("ko", "kr", "korean", "韩语", "韓語", "한국어"),
-    "ja": ("ja", "jp", "japanese", "日语", "日語", "日本語"),
-}
-AUTO_LANGUAGE_ALT_ALIASES = {
-    "en": ("en2", "en 2", "english2", "english 2", "英文2", "英语2"),
-}
+AUTO_LANGUAGE_TARGET_ALIASES = {code: tuple(target_aliases(code)) for code in LANGUAGE_ORDER}
+AUTO_LANGUAGE_ALT_ALIASES = {code: tuple(alt_aliases(code)) for code in LANGUAGE_ORDER}
 
 
 def _looks_like_untranslated_seed(text: str, language: str) -> bool:
@@ -3291,8 +3285,10 @@ def export_glossary(project_id: str, fmt: str, language: str | None = None) -> d
         columns = ["ID", "CN", _visible_language_code(language), *(["EN2"] if language == "en" else []), "分类", "备注"]
         rows = [_glossary_export_row(term, include_alt=language == "en") for term in terms]
     else:
-        columns = ["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"]
-        rows = _glossary_wide_export_rows(project_id)
+        wide = list_glossary_wide(project_id)
+        languages = list(wide.get("languages") or [])
+        columns = ["ID", "CN", *_wide_language_columns(languages), "分类", "备注"]
+        rows = _glossary_wide_export_rows(wide, languages)
     if fmt == "csv":
         path = output_dir / _export_filename(project, "glossary", suffix, "csv")
         with path.open("w", encoding="utf-8-sig", newline="") as fh:
@@ -3332,24 +3328,27 @@ def _glossary_export_row(term: dict[str, Any], *, include_alt: bool = True) -> l
     return row
 
 
-def _glossary_wide_export_rows(project_id: str) -> list[list[Any]]:
-    wide = list_glossary_wide(project_id)
+def _wide_language_columns(languages: list[str]) -> list[str]:
+    columns: list[str] = []
+    for code in languages:
+        columns.append(_visible_language_code(code))
+        if code == "en":
+            columns.append("EN2")
+    return columns
+
+
+def _glossary_wide_export_rows(wide: dict[str, Any], languages: list[str]) -> list[list[Any]]:
     rows: list[list[Any]] = []
     for row in wide["rows"]:
         translations = row.get("translations") or {}
-        en = translations.get("en") or {}
-        ko = translations.get("ko") or {}
-        ja = translations.get("ja") or {}
-        rows.append([
-            row.get("term_key", ""),
-            row.get("source", ""),
-            en.get("target", ""),
-            en.get("target_alt", ""),
-            ko.get("target", ""),
-            ja.get("target", ""),
-            row.get("category", ""),
-            row.get("note", ""),
-        ])
+        values = [row.get("term_key", ""), row.get("source", "")]
+        for code in languages:
+            entry = translations.get(code) or {}
+            values.append(entry.get("target", ""))
+            if code == "en":
+                values.append(entry.get("target_alt", ""))
+        values.extend([row.get("category", ""), row.get("note", "")])
+        rows.append(values)
     return rows
 
 
@@ -3428,8 +3427,10 @@ def export_translation_archive(project_id: str, fmt: str, language: str | None =
         columns = ["ID", "CN", _visible_language_code(language), *(["EN2"] if language == "en" else []), "备注"]
         rows = [_translation_export_row(entry, include_alt=language == "en") for entry in entries]
     else:
-        columns = ["ID", "CN", "EN", "EN2", "KR", "JP", "备注"]
-        rows = _translation_wide_export_rows(project_id)
+        wide = list_translation_archive_wide(project_id)
+        languages = list(wide.get("languages") or [])
+        columns = ["ID", "CN", *_wide_language_columns(languages), "备注"]
+        rows = _translation_wide_export_rows(wide, languages)
     if fmt == "csv":
         path = output_dir / _export_filename(project, "translations", suffix, "csv")
         with path.open("w", encoding="utf-8-sig", newline="") as fh:
@@ -3536,7 +3537,24 @@ def _wide_conflicts(rows: list[dict[str, Any]], fields: tuple[str, ...]) -> list
     return conflicts
 
 
-def _auto_language_indices(normalized_headers: dict[str, int]) -> dict[str, tuple[int, int | None]]:
+def _normalized_header_indices(headers: list[str]) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        key = str(header or "").strip().lower()
+        if key and key not in normalized:
+            normalized[key] = index
+    return normalized
+
+
+def _auto_language_indices(headers: list[str], reserved_indices: set[int] | None = None) -> dict[str, tuple[int, int | None]]:
+    reserved = reserved_indices or set()
+    normalized_headers: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        if index in reserved:
+            continue
+        key = str(header or "").strip().lower()
+        if key:
+            normalized_headers[key] = index
     detected: dict[str, tuple[int, int | None]] = {}
     for code in LANGUAGE_ORDER:
         target_idx = _column_index(normalized_headers, None, list(AUTO_LANGUAGE_TARGET_ALIASES[code]), required=False)
@@ -3564,14 +3582,15 @@ def _read_multilingual_glossary_rows(
     try:
         ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
         headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-        normalized = {header.lower(): index for index, header in enumerate(headers) if header}
-        language_indices = _auto_language_indices(normalized)
-        if not language_indices:
-            return [], {}, []
+        normalized = _normalized_header_indices(headers)
         term_key_idx = _column_index(normalized, term_key_column, ["id", "key", "编号", "序号"], required=False)
         source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "term", "原文", "中文", "术语"])
         category_idx = _column_index(normalized, category_column, ["category", "type", "分类", "类别", "类型"], required=False)
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
+        reserved = {index for index in (term_key_idx, source_idx, category_idx, note_idx) if index is not None}
+        language_indices = _auto_language_indices(headers, reserved)
+        if not language_indices:
+            return [], {}, []
         rows: list[dict[str, Any]] = []
         source_rows = 0
         for row in ws.iter_rows(min_row=2, values_only=True):
@@ -3623,13 +3642,14 @@ def _read_multilingual_translation_rows(
     try:
         ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
         headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-        normalized = {header.lower(): index for index, header in enumerate(headers) if header}
-        language_indices = _auto_language_indices(normalized)
-        if not language_indices:
-            return []
+        normalized = _normalized_header_indices(headers)
         id_idx = _column_index(normalized, id_column, ["id", "key", "编号", "序号"], required=False)
         source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "原文", "中文"])
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
+        reserved = {index for index in (id_idx, source_idx, note_idx) if index is not None}
+        language_indices = _auto_language_indices(headers, reserved)
+        if not language_indices:
+            return []
         rows: list[dict[str, Any]] = []
         for row_index, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
             source = _value_at(row, source_idx)
@@ -3779,23 +3799,18 @@ def _translation_export_row(entry: dict[str, Any], *, include_alt: bool = True) 
     return row
 
 
-def _translation_wide_export_rows(project_id: str) -> list[list[Any]]:
-    wide = list_translation_archive_wide(project_id)
+def _translation_wide_export_rows(wide: dict[str, Any], languages: list[str]) -> list[list[Any]]:
     rows: list[list[Any]] = []
     for row in wide["rows"]:
         translations = row.get("translations") or {}
-        en = translations.get("en") or {}
-        ko = translations.get("ko") or {}
-        ja = translations.get("ja") or {}
-        rows.append([
-            row.get("entry_key", ""),
-            row.get("source", ""),
-            en.get("target", ""),
-            en.get("target_alt", ""),
-            ko.get("target", ""),
-            ja.get("target", ""),
-            row.get("note", ""),
-        ])
+        values = [row.get("entry_key", ""), row.get("source", "")]
+        for code in languages:
+            entry = translations.get(code) or {}
+            values.append(entry.get("target", ""))
+            if code == "en":
+                values.append(entry.get("target_alt", ""))
+        values.append(row.get("note", ""))
+        rows.append(values)
     return rows
 
 

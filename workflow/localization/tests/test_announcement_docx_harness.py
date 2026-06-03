@@ -35,11 +35,13 @@ def _write_terms(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH"])
+    ws.append(["ID", "CN", "EN", "KR", "JP", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH", "AR"])
     ws.append([
         "term_notice",
         "\u516c\u544a",
         "Notice",
+        "공지",
+        "Oshirase",
         "Annonce",
         "Ankündigung",
         "Объявление",
@@ -49,10 +51,13 @@ def _write_terms(path: Path) -> None:
         "Duyuru",
         "Pengumuman",
         "ประกาศ",
+        "إعلان",
     ])
     ws.append([
         "term_server_time_short",
         "\u670d\u52a1\u5668\u65f6\u95f4",
+        "Server Time",
+        "서버 시간",
         "Server Time",
         "Heure du serveur",
         "Serverzeit",
@@ -63,10 +68,13 @@ def _write_terms(path: Path) -> None:
         "Sunucu Saati",
         "Waktu Server",
         "เวลาเซิร์ฟเวอร์",
+        "وقت الخادم",
     ])
     ws.append([
         "term_server_time_long",
         "\u670d\u52a1\u5668\u65f6\u95f4 2026",
+        "Server Time 2026",
+        "서버 시간 2026",
         "Server Time 2026",
         "Heure du serveur 2026",
         "Serverzeit 2026",
@@ -77,10 +85,13 @@ def _write_terms(path: Path) -> None:
         "Sunucu Saati 2026",
         "Waktu Server 2026",
         "เวลาเซิร์ฟเวอร์ 2026",
+        "وقت الخادم 2026",
     ])
     ws.append([
         "term_maintenance",
         "\u7ef4\u62a4",
+        "Maintenance",
+        "점검",
         "Maintenance",
         "Maintenance",
         "Wartung",
@@ -91,10 +102,13 @@ def _write_terms(path: Path) -> None:
         "Bakım",
         "Maintenance",
         "ปรับปรุง",
+        "صيانة",
     ])
     ws.append([
         "term_trainer",
         "\u8bad\u7ec3\u5e08",
+        "Trainer",
+        "트레이너",
         "Trainer",
         "Dresseur",
         "Trainer",
@@ -105,6 +119,7 @@ def _write_terms(path: Path) -> None:
         "Eğitmen",
         "Pelatih",
         "เทรนเนอร์",
+        "مدرب",
     ])
     wb.save(path)
 
@@ -182,11 +197,32 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
 
             terms = load_announcement_terms(term_path)
 
-            id_specs = [spec for spec in terms.languages if spec.header == "ID"]
+            id_specs = [spec for spec in terms.languages if spec.header == "IDN"]
             self.assertEqual(len(id_specs), 1)
             self.assertEqual(id_specs[0].code, "idn")
-            self.assertEqual(id_specs[0].column_index, 11)
-            self.assertEqual(terms.by_language["ID"]["\u8bad\u7ec3\u5e08"].target, "Pelatih")
+            self.assertEqual(id_specs[0].column_index, 13)
+            self.assertEqual(terms.by_language["IDN"]["\u8bad\u7ec3\u5e08"].target, "Pelatih")
+
+    def test_prepare_uses_canonical_full_language_headers_and_alias_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            _write_docx(task_dir / "sample.docx")
+            _write_terms(task_dir / "sample_announcement_terms_20260526.xlsx")
+
+            prepared = prepare_announcement_docx_harness(task_dir, languages=["tk", "id", "ar"])
+            manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                manifest["languages"],
+                [{"header": "TR", "code": "tr"}, {"header": "IDN", "code": "idn"}, {"header": "AR", "code": "ar"}],
+            )
+            wb = load_workbook(prepared.translation_workbook, read_only=True, data_only=True)
+            try:
+                ws = wb["Translations"]
+                headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
+                self.assertEqual(headers[-3:], ["TR", "IDN", "AR"])
+            finally:
+                wb.close()
 
     def test_prepare_builds_translation_workbook_and_longest_term_hits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,15 +250,18 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
                     "protected_tokens",
                     "term_hits_json",
                     "EN",
+                    "KR",
+                    "JP",
                     "FR",
                     "DE",
                     "RU",
                     "IT",
                     "ES",
                     "PT",
-                    "TK",
-                    "ID",
+                    "TR",
+                    "IDN",
                     "TH",
+                    "AR",
                 ],
             )
             first_hits = json.loads(ws.cell(2, headers.index("term_hits_json") + 1).value)
@@ -333,8 +372,8 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
             doc.save(task_dir / "sample.docx")
             wb = Workbook()
             ws = wb.active
-            ws.append(["ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH"])
-            ws.append(["t1", "8\u5c0f\u65f6", "8H", "8 heures", "8 Std.", "8 \u0447.", "8 ore", "8 horas", "8 horas", "8 Saat", "8 jam", "8 \u0e0a\u0e21."])
+            ws.append(["ID", "CN", "EN", "KR", "JP", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH", "AR"])
+            ws.append(["t1", "8\u5c0f\u65f6", "8H", "8시간", "8H", "8 heures", "8 Std.", "8 \u0447.", "8 ore", "8 horas", "8 horas", "8 Saat", "8 jam", "8 \u0e0a\u0e21.", "8 ساعات"])
             wb.save(task_dir / "sample_announcement_terms_20260526.xlsx")
 
             prepared = prepare_announcement_docx_harness(task_dir)

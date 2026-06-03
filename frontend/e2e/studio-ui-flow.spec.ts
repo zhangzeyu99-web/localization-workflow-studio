@@ -121,6 +121,37 @@ test('real project formal translation is blocked while provider is mock', async 
   await expect(page.getByText('真实项目禁止用 mock 假装完成')).toBeVisible()
 })
 
+test('new translation task exposes the full supported language set', async ({ page, request }) => {
+  const projectName = `E2E Full Languages ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'language-ui', description: 'Full language selector smoke.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '🚀 启动新翻译任务' }).click()
+  await page.getByRole('button', { name: '6 目标语言' }).click()
+
+  for (const label of [
+    'US 英语 EN',
+    'KR 韩语',
+    'JP 日语',
+    'FR 法语 FR',
+    'DE 德语 DE',
+    'RU 俄语 RU',
+    'IT 意大利语 IT',
+    'ES 西班牙语 ES',
+    'PT 葡萄牙语 PT',
+    'TR 土耳其语 TR',
+    'ID 印尼语 ID',
+    'TH 泰语 TH',
+    'AR 阿拉伯语 AR',
+  ]) {
+    await expect(page.getByRole('button', { name: label })).toBeVisible()
+  }
+  await expect(page.getByText('其他语言未开放')).toHaveCount(0)
+})
+
 test('quick workflow can preview and import glossary terms', async ({ page, request }) => {
   const termWorkbook = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-quick-glossary-')), 'terms.xlsx')
   execFileSync('python', ['-c', `

@@ -1207,6 +1207,34 @@ def test_translation_readiness_accepts_jp_and_kr_target_header_aliases(tmp_path:
             assert readiness["reason"] == "empty_target_rows"
 
 
+def test_project_language_workflow_accepts_non_en_kr_jp_languages(tmp_path: Path) -> None:
+    fr_workbook = tmp_path / "fr-language.xlsx"
+    _target_language_workbook(fr_workbook, "FR")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "FR Readiness", "type": "QA"}).json()
+        with fr_workbook.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": (fr_workbook.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        readiness_response = client.get(f"/api/artifacts/{source_artifact['id']}/translation-readiness?language=fr&batch_size=90")
+        assert readiness_response.status_code == 200, readiness_response.text
+        readiness = readiness_response.json()
+        assert readiness["target_language"] == "fr"
+        assert readiness["source_rows"] == 2
+        assert readiness["needs_translation"] is True
+        assert readiness["reason"] == "empty_target_rows"
+
+        run_response = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "fr", "input_artifact_id": source_artifact["id"]},
+        )
+        assert run_response.status_code == 200, run_response.text
+        assert run_response.json()["language"] == "fr"
+
+
 def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
     terms = tmp_path / "terms.xlsx"
     _sample_term_workbook(terms)
@@ -1281,7 +1309,7 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         try:
             ws = wb.active
             headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"]
+            assert headers == ["ID", "CN", "EN", "EN2", "分类", "备注"]
         finally:
             wb.close()
 
@@ -2255,9 +2283,9 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "分类", "备注"])
-    ws.append(["T-1", "战机", "Warplane", "Fighter", "전투기", "戦闘機", "unit", "core term"])
-    ws.append(["T-2", "钻石", "Diamonds", "", "다이아몬드", "", "currency", ""])
+    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "FR", "DE", "ID", "TH", "AR", "分类", "备注"])
+    ws.append(["T-1", "战机", "Warplane", "Fighter", "전투기", "戦闘機", "Avion de chasse", "Kampfflugzeug", "Pesawat Tempur", "เครื่องบินรบ", "طائرة مقاتلة", "unit", "core term"])
+    ws.append(["T-2", "钻石", "Diamonds", "", "다이아몬드", "", "Diamants", "", "", "", "", "currency", ""])
     wb.save(glossary_path)
     wb.close()
 
@@ -2265,8 +2293,8 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Translations"
-    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "备注"])
-    ws.append(["A-1", "领取奖励", "Claim Rewards", "Claim", "보상 받기", "報酬を受け取る", "button"])
+    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "FR", "DE", "ID", "TH", "AR", "备注"])
+    ws.append(["A-1", "领取奖励", "Claim Rewards", "Claim", "보상 받기", "報酬を受け取る", "Recevoir les récompenses", "Belohnung abholen", "Klaim Hadiah", "รับรางวัล", "استلام المكافآت", "button"])
     wb.save(archive_path)
     wb.close()
 
@@ -2279,17 +2307,22 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
             ).json()
         glossary_import = client.post(f"/api/projects/{project['id']}/glossary/import", json={"artifact_id": glossary_artifact["id"]})
         assert glossary_import.status_code == 200, glossary_import.text
-        assert glossary_import.json()["imported_count"] == 5
+        assert glossary_import.json()["imported_count"] == 11
 
         ko_terms = client.get(f"/api/projects/{project['id']}/glossary?language=ko").json()
         assert {term["source"]: term["target"] for term in ko_terms} == {"战机": "전투기", "钻石": "다이아몬드"}
         assert all(term["target_alt"] == "" for term in ko_terms)
         glossary_wide = client.get(f"/api/projects/{project['id']}/glossary/wide").json()
-        assert glossary_wide["languages"] == ["en", "ko", "ja"]
+        assert glossary_wide["languages"] == ["en", "ko", "ja", "fr", "de", "idn", "th", "ar"]
         row = next(item for item in glossary_wide["rows"] if item["source"] == "战机")
         assert row["translations"]["en"]["target_alt"] == "Fighter"
         assert row["translations"]["ko"]["target"] == "전투기"
         assert row["translations"]["ja"]["target"] == "戦闘機"
+        assert row["translations"]["fr"]["target"] == "Avion de chasse"
+        assert row["translations"]["de"]["target"] == "Kampfflugzeug"
+        assert row["translations"]["idn"]["target"] == "Pesawat Tempur"
+        assert row["translations"]["th"]["target"] == "เครื่องบินรบ"
+        assert row["translations"]["ar"]["target"] == "طائرة مقاتلة"
 
         with archive_path.open("rb") as fh:
             archive_artifact = client.post(
@@ -2298,20 +2331,25 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
             ).json()
         archive_import = client.post(f"/api/projects/{project['id']}/translations/import", json={"artifact_id": archive_artifact["id"]})
         assert archive_import.status_code == 200, archive_import.text
-        assert archive_import.json()["imported_count"] == 3
+        assert archive_import.json()["imported_count"] == 8
         archive_wide = client.get(f"/api/projects/{project['id']}/translations/wide").json()
-        assert archive_wide["languages"] == ["en", "ko", "ja"]
+        assert archive_wide["languages"] == ["en", "ko", "ja", "fr", "de", "idn", "th", "ar"]
         archive_row = archive_wide["rows"][0]
         assert archive_row["translations"]["en"]["target_alt"] == "Claim"
         assert archive_row["translations"]["ko"].get("target_alt", "") == ""
         assert archive_row["translations"]["ja"]["target"] == "報酬を受け取る"
+        assert archive_row["translations"]["fr"]["target"] == "Recevoir les récompenses"
+        assert archive_row["translations"]["de"]["target"] == "Belohnung abholen"
+        assert archive_row["translations"]["idn"]["target"] == "Klaim Hadiah"
+        assert archive_row["translations"]["th"]["target"] == "รับรางวัล"
+        assert archive_row["translations"]["ar"]["target"] == "استلام المكافآت"
         glossary_export = workflow.export_glossary(project["id"], "xlsx")
         assert isinstance(glossary_export, Path)
         assert re.fullmatch(r"Auto Import Multilingual_glossary_ALL_\d{8}\.xlsx", glossary_export.name)
         wb = load_workbook(glossary_export, read_only=True, data_only=True)
         try:
             headers = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"]
+            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "FR", "DE", "IDN", "TH", "AR", "分类", "备注"]
         finally:
             wb.close()
 
@@ -2331,7 +2369,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         wb = load_workbook(archive_export, read_only=True, data_only=True)
         try:
             headers = [cell.value for cell in next(wb["Translations"].iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "备注"]
+            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "FR", "DE", "IDN", "TH", "AR", "备注"]
         finally:
             wb.close()
 

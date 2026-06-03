@@ -59,8 +59,8 @@ LANGUAGE_SPECS: dict[str, LanguageSpec] = {
     "ar": _spec("ar", "阿拉伯语 AR", "Arabic", "AR", ("ar", "ara", "arabic", "阿语", "阿拉伯语", "العربية")),
 }
 
-PROJECT_LANGUAGE_ORDER = ("en", "ko", "ja")
-ANNOUNCEMENT_LANGUAGE_ORDER = ("en", "ko", "ja", "fr", "de", "ru", "it", "es", "pt", "tr", "idn", "th", "ar")
+PROJECT_LANGUAGE_ORDER = ("en", "ko", "ja", "fr", "de", "ru", "it", "es", "pt", "tr", "idn", "th", "ar")
+ANNOUNCEMENT_LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
 SUPPORTED_LANGUAGES = frozenset(LANGUAGE_SPECS)
 
 _LANGUAGE_ALIASES = {
