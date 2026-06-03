@@ -192,7 +192,7 @@ npm run e2e
 
 ## Version
 
-Current version: `0.4.9`
+Current version: `0.5.0`
 
 Version references are maintained in:
 

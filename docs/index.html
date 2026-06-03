@@ -60,6 +60,12 @@
       max-width: 980px;
       font-size: 13px;
     }
+    .intro-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
     .app {
       max-width: 1400px;
       min-height: calc(100vh - 40px);
@@ -80,7 +86,7 @@
     }
     .header h1 { font-size: 22px; letter-spacing: 0; }
     .header p { opacity: 0.9; font-size: 13px; margin-top: 4px; }
-    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
     .status {
       min-width: 180px;
       max-width: 420px;
@@ -562,18 +568,24 @@
     <section class="seo-intro" aria-label="Product summary">
       <h2>Game localization workflow studio for Excel translation QA</h2>
       <p>Localization Workflow Studio helps teams manage AI-assisted game translation, glossary QA, placeholder checks, quality gates, and final workbook delivery in a local-first workflow.</p>
+      <div class="intro-actions" aria-label="Public project links">
+        <a class="btn btn-primary" href="https://github.com/zhangzeyu99-web/localization-workflow-studio/blob/master/docs/GETTING_STARTED.md" target="_blank" rel="noreferrer">Setup guide</a>
+        <a class="btn btn-ghost" href="guides/excel-translation-qa.html">Excel QA guide</a>
+        <a class="btn btn-ghost" href="https://github.com/zhangzeyu99-web/localization-workflow-studio/blob/master/docs/SHOWCASE.md" target="_blank" rel="noreferrer">Sample case</a>
+      </div>
     </section>
     <div class="app">
       <header class="header">
         <div>
-          <h1>🎮 游戏翻译本地化 · 项目工作台</h1>
-          <p>Localization Workflow Studio</p>
+          <h1>Localization Workflow Studio</h1>
+          <p>Local-first game localization QA workbench for Excel delivery</p>
         </div>
         <div class="header-actions">
-          <span class="status" id="status">准备就绪</span>
-          <a class="btn btn-ghost" href="https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc" target="_blank" rel="noreferrer">📘 使用说明</a>
+          <span class="status" id="status">Public demo · v0.5.0</span>
+          <a class="btn btn-ghost" href="https://github.com/zhangzeyu99-web/localization-workflow-studio/blob/master/docs/GETTING_STARTED.md" target="_blank" rel="noreferrer">Setup guide</a>
+          <a class="btn btn-ghost" href="guides/excel-translation-qa.html">QA guide</a>
           <a class="btn btn-ghost" href="https://github.com/zhangzeyu99-web/localization-workflow-studio" target="_blank" rel="noreferrer">GitHub</a>
-          <button class="btn btn-ghost" id="open-settings">⚙ 设置</button>
+          <button class="btn btn-ghost" id="open-settings">Settings</button>
         </div>
       </header>
 
