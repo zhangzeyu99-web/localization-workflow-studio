@@ -394,7 +394,7 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 
 ## 版本
 
-当前版本：`0.5.0`
+当前版本：`0.5.1`
 
 版本号需要同步维护：
 

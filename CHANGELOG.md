@@ -2,7 +2,7 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
-## 0.5.0 - 2026-06-04
+## 0.5.1 - 2026-06-04
 
 - Added project-scoped quick tasks and announcement translation workflow support, including glossary extraction, constraint lookup, AI-response import, QA/apply/deliver shells, and EN/KR/JP-oriented delivery handling.
 - Expanded multilingual asset handling with wide glossary/archive views, strong search, language-column controls, pagination, KR/JP display codes, and centralized language configuration through `/api/languages`.
