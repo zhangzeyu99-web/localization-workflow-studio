@@ -4,6 +4,17 @@
 
 Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web 工作台。它把项目资料、项目元信息、翻译提示词、术语库、模型翻译、规则 QA、译文归档、公告外文本工作流和最终交付集中到同一个项目视图里。
 
+
+## 风险收束与运行边界
+
+- 工作台是本地桌面 Web 应用：后端默认只应绑定本机地址，公网或局域网共享前需要额外认证和网络隔离。
+- 长文本翻译由后端编排器负责拆批、限流、断点续跑、取消和失败恢复；Codex/Agent 不是运行依赖。
+- 正式模型路径只支持 OpenAI Responses、Anthropic Messages 和测试 mock；mock 不得作为真实项目交付。
+- API key 写入私有 `settings.local.json`，不要提交到仓库；前端设置页只保留 provider、preset 和 key。
+- 项目明确禁止 Google Translate、`deep_translator`、`googletrans`、浏览器机翻和在线机翻聚合器。
+- 上传文件默认上限 200 MiB，可用 `LWS_MAX_UPLOAD_MB` 调整；超限会返回 413。
+
+
 ## 入口
 
 | 入口 | 地址 | 说明 |

@@ -30,6 +30,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_batch_input_tokens": 12000,
     "api_budget_warning_tokens": 1000000,
     "max_batch_attempts": 3,
+    "provider_timeout_seconds": 120,
     "multimodal": {
         "images": True,
         "pdf": True,
@@ -47,6 +48,7 @@ LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
         "max_batch_input_tokens": 10000,
         "api_budget_warning_tokens": 800000,
         "max_batch_attempts": 2,
+        "provider_timeout_seconds": 120,
     },
     "balanced": {
         "batch_size": 90,
@@ -56,6 +58,7 @@ LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
         "max_batch_input_tokens": 12000,
         "api_budget_warning_tokens": 1000000,
         "max_batch_attempts": 3,
+        "provider_timeout_seconds": 120,
     },
     "deep": {
         "batch_size": 60,
@@ -65,6 +68,7 @@ LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
         "max_batch_input_tokens": 16000,
         "api_budget_warning_tokens": 1500000,
         "max_batch_attempts": 3,
+        "provider_timeout_seconds": 180,
     },
 }
 

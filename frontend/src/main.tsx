@@ -1,6 +1,10 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
+import { API, api, apiErrorText } from './apiClient'
+import { WIDE_TABLE_PAGE_SIZE, pagedRows, wideRowMatches } from './assetTableState'
+import { allLanguageOptions, announcementLanguages, refreshLanguageOptions, supportedLanguages, unsupportedLanguages, type LanguageCode, type LanguageOption } from './languages'
+import { SettingsModal } from './SettingsModal'
 
 declare global {
   interface Window {
@@ -358,35 +362,7 @@ type DeliverableTask = {
   }
 }
 
-const API = import.meta.env.VITE_API_BASE_URL || ''
 const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
-type LanguageCode = 'en' | 'ko' | 'ja' | 'fr' | 'de' | 'ru' | 'it' | 'es' | 'pt' | 'tr' | 'idn' | 'th' | 'ar'
-type LanguageOption = {
-  code: LanguageCode
-  label: string
-  short: string
-  targetHeader: string
-  altHeader: string
-}
-const supportedLanguages: LanguageOption[] = [
-  { code: 'en', label: 'EN 英语', short: 'EN', targetHeader: 'EN', altHeader: 'EN2' },
-  { code: 'ko', label: 'KR 韩语', short: 'KR', targetHeader: 'KR', altHeader: '' },
-  { code: 'ja', label: 'JP 日语', short: 'JP', targetHeader: 'JP', altHeader: '' },
-  { code: 'fr', label: 'FR 法语', short: 'FR', targetHeader: 'FR', altHeader: '' },
-  { code: 'de', label: 'DE 德语', short: 'DE', targetHeader: 'DE', altHeader: '' },
-  { code: 'ru', label: 'RU 俄语', short: 'RU', targetHeader: 'RU', altHeader: '' },
-  { code: 'it', label: 'IT 意大利语', short: 'IT', targetHeader: 'IT', altHeader: '' },
-  { code: 'es', label: 'ES 西班牙语', short: 'ES', targetHeader: 'ES', altHeader: '' },
-  { code: 'pt', label: 'PT 葡萄牙语', short: 'PT', targetHeader: 'PT', altHeader: '' },
-  { code: 'tr', label: 'TR 土耳其语', short: 'TR', targetHeader: 'TR', altHeader: '' },
-  { code: 'idn', label: 'ID 印尼语', short: 'ID', targetHeader: 'IDN', altHeader: '' },
-  { code: 'th', label: 'TH 泰语', short: 'TH', targetHeader: 'TH', altHeader: '' },
-  { code: 'ar', label: 'AR 阿拉伯语', short: 'AR', targetHeader: 'AR', altHeader: '' }
-]
-const announcementLanguages = supportedLanguages
-const allLanguageOptions = supportedLanguages
-const unsupportedLanguages: string[] = []
-
 type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'archive' | 'delivery'
 type AppView = 'overview' | 'wizard' | 'announcement' | 'quick'
 
@@ -507,23 +483,11 @@ function visibleLanguagesFromRows(rows: { languages: LanguageCode[] }[]): Langua
   return supportedLanguages.map((item) => item.code).filter((lang) => found.has(lang))
 }
 
-const WIDE_TABLE_PAGE_SIZE = 100
-
-function normalizeWideSearch(value: unknown): string {
-  return String(value ?? '').trim().toLocaleLowerCase()
-}
-
 function translationValuesForSearch(row: { translations: Partial<Record<LanguageCode, WideLanguageValue<GlossaryTerm | TranslationEntry>>> }): string[] {
   return supportedLanguages.flatMap((lang) => {
     const value = row.translations[lang.code]
     return value ? [value.target, value.target_alt || ''] : []
   })
-}
-
-function wideRowMatches(fields: unknown[], query: string): boolean {
-  const needle = normalizeWideSearch(query)
-  if (!needle) return true
-  return fields.some((field) => normalizeWideSearch(field).includes(needle))
 }
 
 function glossaryWideRowMatches(row: WideGlossaryRow, query: string): boolean {
@@ -544,11 +508,6 @@ function displayLanguagesForWideRows(rows: { languages: LanguageCode[] }[], sele
 
 function rowRecords<T>(row: { translations: Partial<Record<LanguageCode, WideLanguageValue<T>>>; languages: LanguageCode[] }): T[] {
   return row.languages.map((code) => row.translations[code]?.record).filter(Boolean) as T[]
-}
-
-function pagedRows<T>(rows: T[], page: number): T[] {
-  const start = (page - 1) * WIDE_TABLE_PAGE_SIZE
-  return rows.slice(start, start + WIDE_TABLE_PAGE_SIZE)
 }
 
 function glossaryCoverage(project: Project): Record<LanguageCode, number> {
@@ -847,18 +806,6 @@ function artifactsByRoles(project: Project, roles: string | string[]): Artifact[
   return (project.artifacts || []).filter((artifact) => accepted.includes(artifactRole(artifact)))
 }
 
-function apiErrorText(text: string, fallback: string): string {
-  if (!text.trim()) return fallback
-  try {
-    const payload = JSON.parse(text) as { detail?: unknown; message?: unknown; error?: unknown }
-    const detail = payload.detail ?? payload.message ?? payload.error
-    if (typeof detail === 'string' && detail.trim()) return detail
-  } catch {
-    // Keep the original text when the backend returns plain text.
-  }
-  return text
-}
-
 function errorText(error: unknown): string {
   if (error instanceof Error) return apiErrorText(error.message, error.message)
   return String(error)
@@ -963,15 +910,6 @@ function ruleSummary(project: Project): string {
   return `必须规则 ${hard} 条，建议规则 ${soft} 条`
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API}${path}`, init)
-  if (!response.ok) {
-    const text = await response.text()
-    throw new Error(apiErrorText(text, response.statusText))
-  }
-  return response.json()
-}
-
 function compactSummary(summary: Record<string, unknown>): string {
   return Object.entries(summary)
     .filter(([, value]) => value !== undefined && value !== null && typeof value !== 'object')
@@ -982,6 +920,7 @@ function compactSummary(summary: Record<string, unknown>): string {
 
 function App() {
   const [projects, setProjects] = useState<Project[]>([])
+  const [, setLanguageVersion] = useState(0)
   const [currentId, setCurrentId] = useState<string>('')
   const [view, setView] = useState<AppView>('overview')
   const [tab, setTab] = useState<ProjectTab>('meta')
@@ -1022,6 +961,9 @@ function App() {
   useEffect(() => {
     refreshProjects()
     refreshSettings()
+    refreshLanguageOptions(API)
+      .then(() => setLanguageVersion((value) => value + 1))
+      .catch(() => undefined)
   }, [])
 
   const current = useMemo(() => projects.find((p) => p.id === currentId), [projects, currentId])
@@ -5841,66 +5783,6 @@ function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate:
         <label className="field-label">描述</label>
         <input name="description" placeholder="目标用户、题材、语气要求" />
         <div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={onClose}>取消</button><button className="btn btn-primary">创建</button></div>
-      </form>
-    </div>
-  )
-}
-
-function SettingsModal({ onClose }: { onClose: () => void }) {
-  const [settings, setSettings] = useState<Record<string, unknown> | null>(null)
-  const [provider, setProvider] = useState('openai')
-  const [preset, setPreset] = useState('balanced')
-  const apiKeyPlaceholder = settings?.api_key === 'configured' ? '已配置；留空不修改' : '写入私有 settings.local.json'
-  useEffect(() => {
-    api<Record<string, unknown>>('/api/settings').then((loaded) => {
-      setSettings(loaded)
-      setProvider(String(loaded.provider) === 'anthropic' ? 'anthropic' : 'openai')
-      setPreset(['fast', 'balanced', 'deep'].includes(String(loaded.preset)) ? String(loaded.preset) : 'balanced')
-    })
-  }, [])
-  async function submit(form: FormData) {
-    const saved = await api<Record<string, unknown>>('/api/settings', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: form.get('provider'),
-        preset: form.get('preset'),
-        api_key: form.get('api_key')
-      })
-    })
-    setSettings(saved)
-    onClose()
-  }
-  return (
-    <div className="modal-mask show">
-      <form className="modal settings-modal" onSubmit={(event) => { event.preventDefault(); submit(new FormData(event.currentTarget)) }}>
-        <div className="settings-head">
-          <h3>⚙ 设置</h3>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>关闭</button>
-        </div>
-        <div className="settings-grid">
-          <label>
-            <span>Provider</span>
-            <select name="provider" value={provider} onChange={(event) => setProvider(event.target.value)}>
-              <option value="openai">GPT</option>
-              <option value="anthropic">Claude</option>
-            </select>
-          </label>
-          <label>
-            <span>预设</span>
-            <select name="preset" value={preset} onChange={(event) => setPreset(event.target.value)}>
-              <option value="fast">快速响应</option>
-              <option value="balanced">平衡</option>
-              <option value="deep">深度思考</option>
-            </select>
-          </label>
-          <label className="settings-wide">
-            <span>API key</span>
-            <input name="api_key" type="password" placeholder={apiKeyPlaceholder} />
-          </label>
-          <p className="settings-wide settings-note">长文本拆批、限流、重试和预算提醒由系统按预设自动管理。</p>
-        </div>
-        <div className="settings-actions"><button className="btn btn-primary">保存设置</button></div>
       </form>
     </div>
   )

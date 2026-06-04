@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import mimetypes
-import json
 import os
 import shutil
 import sys
@@ -20,8 +19,10 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from app import db
     from app.config import DATA_ROOT, load_settings, public_settings, save_settings
+    from app.delivery_naming import safe_filename
     from app.jobs import active_job_id, cancel_singleton_job, start_singleton_job
-    from app.languages import require_supported_language
+    from app.languages import language_payload, require_supported_language
+    from app.upload_storage import UploadTooLargeError, stream_upload
     from app.schemas import (
         AnnouncementLookupRequest,
         AnnouncementDocxApplyRequest,
@@ -112,8 +113,10 @@ if __package__ is None or __package__ == "":
 else:
     from . import db
     from .config import DATA_ROOT, load_settings, public_settings, save_settings
+    from .delivery_naming import safe_filename
     from .jobs import active_job_id, cancel_singleton_job, start_singleton_job
-    from .languages import require_supported_language
+    from .languages import language_payload, require_supported_language
+    from .upload_storage import UploadTooLargeError, stream_upload
     from .schemas import (
         AnnouncementLookupRequest,
         AnnouncementDocxApplyRequest,
@@ -228,7 +231,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 def _query_language(language: str | None) -> str | None:
     if not language:
         return None
@@ -246,6 +248,11 @@ def health() -> dict[str, Any]:
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     return public_settings()
+
+
+@app.get("/api/languages")
+def get_languages() -> dict[str, Any]:
+    return language_payload()
 
 
 @app.patch("/api/settings")
@@ -347,17 +354,22 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
         db.get_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
-    safe_name = _safe_filename(file.filename or "upload.bin")
-    upload_bytes = file.file.read()
-    digest = hashlib.sha256(upload_bytes).hexdigest()
+    safe_name = safe_filename(file.filename or "upload.bin")
+    upload_root = project_dir(project_id) / "uploads"
+    upload_root.mkdir(parents=True, exist_ok=True)
+    temp_path = _unique_path(upload_root / f".{safe_name}.uploading")
+    try:
+        digest, _ = stream_upload(file.file, temp_path)
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     if kind == "asset":
         duplicate = _find_duplicate_project_upload(project_id, kind, digest)
         if duplicate:
+            temp_path.unlink(missing_ok=True)
             duplicate["duplicate"] = True
             return duplicate
-    destination = _unique_path(project_dir(project_id) / "uploads" / safe_name)
-    with destination.open("wb") as fh:
-        fh.write(upload_bytes)
+    destination = _unique_path(upload_root / safe_name)
+    temp_path.replace(destination)
     mime = file.content_type or mimetypes.guess_type(str(destination))[0] or "application/octet-stream"
     artifact = db.add_artifact(
         project_id,
@@ -633,7 +645,7 @@ def download_project_delivery(project_id: str, filename: str) -> FileResponse:
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
-@app.post("/api/projects/{project_id}/announcement-lookup")
+@app.post("/api/projects/{project_id}/announcement-lookup", deprecated=True)
 def create_announcement_lookup(project_id: str, payload: AnnouncementLookupRequest) -> dict[str, Any]:
     try:
         payload.language = _query_language(payload.language) or "en"
@@ -658,7 +670,7 @@ def create_announcement_terms(project_id: str, payload: AnnouncementTermsRequest
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/api/projects/{project_id}/announcement-docx/prepare")
+@app.post("/api/projects/{project_id}/announcement-docx/prepare", deprecated=True)
 def prepare_announcement_docx(project_id: str, payload: AnnouncementDocxPrepareRequest) -> dict[str, Any]:
     try:
         return legacy_prepare_announcement_docx(project_id, payload)
@@ -670,7 +682,7 @@ def prepare_announcement_docx(project_id: str, payload: AnnouncementDocxPrepareR
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/api/projects/{project_id}/announcement-docx/import-ai")
+@app.post("/api/projects/{project_id}/announcement-docx/import-ai", deprecated=True)
 def import_announcement_docx_ai(project_id: str, payload: AnnouncementDocxImportAiRequest) -> dict[str, Any]:
     try:
         return legacy_import_announcement_docx_ai(project_id, payload)
@@ -682,7 +694,7 @@ def import_announcement_docx_ai(project_id: str, payload: AnnouncementDocxImport
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/api/projects/{project_id}/announcement-docx/apply")
+@app.post("/api/projects/{project_id}/announcement-docx/apply", deprecated=True)
 def apply_announcement_docx(project_id: str, payload: AnnouncementDocxApplyRequest) -> dict[str, Any]:
     try:
         return legacy_apply_announcement_docx(project_id, payload)
@@ -694,7 +706,7 @@ def apply_announcement_docx(project_id: str, payload: AnnouncementDocxApplyReque
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/api/projects/{project_id}/announcement-docx/deliver")
+@app.post("/api/projects/{project_id}/announcement-docx/deliver", deprecated=True)
 def deliver_announcement_docx(project_id: str, payload: AnnouncementDocxDeliverRequest) -> dict[str, Any]:
     try:
         return legacy_deliver_announcement_docx(project_id, payload)
@@ -1174,8 +1186,7 @@ def _resolve_task_code(payload: RunCreate) -> str:
 
 
 def _safe_filename(name: str) -> str:
-    cleaned = "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip()
-    return cleaned or "upload.bin"
+    return safe_filename(name)
 
 
 def _unique_path(path: Path) -> Path:

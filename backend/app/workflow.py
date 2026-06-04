@@ -12,7 +12,6 @@ import subprocess
 import sys
 import math
 import time
-from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,8 +23,28 @@ from openpyxl import Workbook, load_workbook
 
 from . import db
 from .config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, load_settings
+from .delivery_naming import safe_delivery_name, source_stem
 from .languages import ANNOUNCEMENT_LANGUAGE_ORDER, PROJECT_LANGUAGE_ORDER, alt_aliases, language_spec, normalize_language, require_supported_language, target_aliases, visible_language_code
-from .providers import translate_batch
+from .providers import call_text, translate_batch
+from .translation_batches import (
+    AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
+    build_batch_manifest as _build_batch_manifest,
+    estimate_row_tokens as _estimate_row_tokens,
+    estimate_text_tokens as _estimate_text_tokens,
+    load_or_create_batch_manifest as _load_or_create_batch_manifest,
+    manifest_matches_rows as _manifest_matches_rows,
+    provider_retry_delay_seconds as _provider_retry_delay_seconds,
+)
+
+__all__ = [
+    "_AsyncTokenRateLimiter",
+    "_build_batch_manifest",
+    "_estimate_row_tokens",
+    "_estimate_text_tokens",
+    "_load_or_create_batch_manifest",
+    "_manifest_matches_rows",
+    "_provider_retry_delay_seconds",
+]
 
 
 HARNESS_SCHEMA_VERSION = 1
@@ -1720,7 +1739,9 @@ def _xlsx_announcement_segments(path: Path) -> list[dict[str, Any]]:
 
 
 def _segment_id(source_file: str, index: int, source: str) -> str:
-    return f"{Path(source_file).stem}:{index:04d}:{hashlib.sha1((source_file + '\\0' + str(index) + '\\0' + source).encode('utf-8')).hexdigest()[:10]}"
+    digest_source = "\0".join([source_file, str(index), source])
+    digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:10]
+    return f"{Path(source_file).stem}:{index:04d}:{digest}"
 
 
 def _detect_announcement_constraint_languages(project_id: str, metadata: dict[str, Any]) -> list[str]:
@@ -2275,7 +2296,7 @@ def _announcement_terms_validation(summary: dict[str, Any], rows: list[dict[str,
         [
             "# Announcement terms validation",
             "",
-            f"status: ok",
+            "status: ok",
             f"terms: {summary.get('terms', 0)}",
             f"languages: {', '.join(_visible_language_code(language) for language in languages)}",
             *[f"missing_{_visible_language_code(language)}: {count}" for language, count in missing.items()],
@@ -2584,8 +2605,7 @@ def _safe_file_stem(value: Any) -> str:
 
 
 def _safe_source_stem(value: Any) -> str:
-    stem = Path(str(value or "announcement")).stem
-    return _safe_delivery_name(stem)
+    return source_stem(value, fallback="announcement")
 
 
 def _artifact_source_stem(artifact: dict[str, Any]) -> str:
@@ -4206,9 +4226,7 @@ def _deliverable_provider_model(metadata: dict[str, Any], quality_summary: dict[
 
 
 def _safe_delivery_name(name: str) -> str:
-    cleaned = "".join(ch if ch not in '<>:"/\\|?*' else " " for ch in name)
-    cleaned = " ".join(cleaned.split()).strip(" .")
-    return cleaned or "project"
+    return safe_delivery_name(name)
 
 
 def _delivery_file(kind: str, path: Path) -> dict[str, str]:
@@ -4970,40 +4988,7 @@ def run_semantic_qa_report(
 
 
 def _call_semantic_provider(settings: dict[str, Any], prompt: str) -> str:
-    import httpx
-
-    provider = str(settings.get("provider") or "openai")
-    base_url = str(settings.get("base_url") or ("https://api.anthropic.com" if provider == "anthropic" else "https://api.openai.com")).rstrip("/")
-    api_key = str(settings.get("api_key") or "")
-    model = str(settings.get("model") or ("claude-opus-4-7" if provider == "anthropic" else "gpt-5.5"))
-    if provider == "anthropic":
-        response = httpx.post(
-            f"{base_url}/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-            json={"model": model, "max_tokens": 4096, "system": "Return strict JSON only.", "messages": [{"role": "user", "content": prompt}]},
-            timeout=120,
-        )
-        response.raise_for_status()
-        chunks = [str(item.get("text", "")) for item in response.json().get("content", []) if item.get("type") == "text"]
-        return "\n".join(chunks)
-    if str(settings.get("protocol") or "chat-completions") == "responses":
-        response = httpx.post(
-            f"{base_url}/v1/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "input": prompt, "reasoning": {"effort": settings.get("reasoning_effort") or "medium"}},
-            timeout=120,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return str(payload.get("output_text") or "")
-    response = httpx.post(
-        f"{base_url}/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model, "temperature": 0.1, "messages": [{"role": "system", "content": "Return strict JSON only."}, {"role": "user", "content": prompt}]},
-        timeout=120,
-    )
-    response.raise_for_status()
-    return str(response.json()["choices"][0]["message"]["content"])
+    return call_text(settings, prompt, system="Return strict JSON only.")
 
 
 def _parse_semantic_qa_payload(text: str) -> dict[str, Any]:
@@ -5406,19 +5391,6 @@ def _update_translation_progress(run_id: str, progress: dict[str, Any], status: 
     db.update_run(run_id, status=status, metadata={**current.get("metadata", {}), "translation_progress": progress})
 
 
-def _estimate_text_tokens(text: str) -> int:
-    value = str(text or "")
-    if not value:
-        return 1
-    ascii_chars = sum(1 for char in value if ord(char) < 128)
-    non_ascii = len(value) - ascii_chars
-    return max(1, math.ceil(ascii_chars / 4 + non_ascii / 1.6))
-
-
-def _estimate_row_tokens(row: dict[str, Any]) -> int:
-    return _estimate_text_tokens(json.dumps(row, ensure_ascii=False)) + 12
-
-
 def _translation_cancel_path(work_dir: Path) -> Path:
     return work_dir / "cancel.requested"
 
@@ -5477,83 +5449,6 @@ def _validate_translated_batch(batch: list[dict[str, Any]], rows: list[dict[str,
     return validated
 
 
-def _build_batch_manifest(rows: list[dict[str, Any]], project_prompt: str, settings: dict[str, Any], batch_size: int, language: str) -> dict[str, Any]:
-    max_rows = max(1, min(int(batch_size or settings.get("batch_size") or 90), 200))
-    max_tokens = max(1000, int(settings.get("max_batch_input_tokens") or 12000))
-    prompt_tokens = _estimate_text_tokens(project_prompt) + 120
-    batches: list[dict[str, Any]] = []
-    current_rows: list[dict[str, Any]] = []
-    current_tokens = prompt_tokens
-    current_start = 0
-
-    def flush() -> None:
-        nonlocal current_rows, current_tokens, current_start
-        if not current_rows:
-            return
-        index = len(batches) + 1
-        row_ids = [_normalize_translation_id(row.get("id")) for row in current_rows]
-        batches.append(
-            {
-                "batch_index": index,
-                "start": current_start,
-                "row_count": len(current_rows),
-                "row_ids": row_ids,
-                "estimated_input_tokens": current_tokens,
-                "status": "pending",
-                "attempts": 0,
-                "request_path": "",
-                "response_path": "",
-                "raw_response_path": "",
-                "error_path": "",
-                "updated_at": db.now_iso(),
-            }
-        )
-        current_start += len(current_rows)
-        current_rows = []
-        current_tokens = prompt_tokens
-
-    for row in rows:
-        row_tokens = _estimate_row_tokens(row)
-        if current_rows and (len(current_rows) >= max_rows or current_tokens + row_tokens > max_tokens):
-            flush()
-        current_rows.append(row)
-        current_tokens += row_tokens
-    flush()
-    return {
-        "schema_version": 1,
-        "kind": "translation_batch_manifest",
-        "language": language,
-        "batch_size": max_rows,
-        "max_batch_input_tokens": max_tokens,
-        "total_rows": len(rows),
-        "estimated_total_input_tokens": sum(int(batch["estimated_input_tokens"]) for batch in batches),
-        "batches": batches,
-        "created_at": db.now_iso(),
-        "updated_at": db.now_iso(),
-    }
-
-
-def _manifest_matches_rows(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> bool:
-    manifest_ids: list[RowId] = []
-    for batch in manifest.get("batches") or []:
-        manifest_ids.extend([_normalize_translation_id(value) for value in batch.get("row_ids") or []])
-    row_ids = [_normalize_translation_id(row.get("id")) for row in rows]
-    return manifest_ids == row_ids
-
-
-def _load_or_create_batch_manifest(manifest_path: Path, rows: list[dict[str, Any]], project_prompt: str, settings: dict[str, Any], batch_size: int, language: str) -> dict[str, Any]:
-    if manifest_path.exists():
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if _manifest_matches_rows(manifest, rows):
-                return manifest
-        except Exception:
-            pass
-    manifest = _build_batch_manifest(rows, project_prompt, settings, batch_size, language)
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    return manifest
-
-
 def _manifest_progress(
     manifest: dict[str, Any],
     *,
@@ -5581,50 +5476,12 @@ def _manifest_progress(
             "max_concurrent_batches": int(manifest.get("max_concurrent_batches") or 1),
             "estimated_total_input_tokens": int(manifest.get("estimated_total_input_tokens") or 0),
             "rate_limit_wait_seconds": round(rate_limit_wait_seconds, 2) if rate_limit_wait_seconds else 0,
+            "fingerprint": str(manifest.get("input_fingerprint") or ""),
+            "lease_status": (db.get_job_lease("long_text") or {}).get("status", ""),
+            "invalidated_reason": str(manifest.get("invalidated_reason") or ""),
         }
     )
     return progress
-
-
-class _AsyncTokenRateLimiter:
-    def __init__(self, requests_per_minute: int, tokens_per_minute: int) -> None:
-        self.requests_per_minute = max(1, int(requests_per_minute or 12))
-        self.tokens_per_minute = max(1000, int(tokens_per_minute or 120000))
-        self._requests: deque[float] = deque()
-        self._tokens: deque[tuple[float, int]] = deque()
-        self._lock = asyncio.Lock()
-
-    async def acquire(self, tokens: int) -> float:
-        waited = 0.0
-        requested_tokens = min(max(1, int(tokens or 1)), self.tokens_per_minute)
-        while True:
-            async with self._lock:
-                now = time.monotonic()
-                while self._requests and now - self._requests[0] >= 60:
-                    self._requests.popleft()
-                while self._tokens and now - self._tokens[0][0] >= 60:
-                    self._tokens.popleft()
-                token_sum = sum(item[1] for item in self._tokens)
-                if len(self._requests) < self.requests_per_minute and token_sum + requested_tokens <= self.tokens_per_minute:
-                    self._requests.append(now)
-                    self._tokens.append((now, requested_tokens))
-                    return waited
-                waits = []
-                if self._requests:
-                    waits.append(60 - (now - self._requests[0]))
-                if self._tokens:
-                    waits.append(60 - (now - self._tokens[0][0]))
-                sleep_for = max(0.25, min([value for value in waits if value > 0] or [1.0]))
-            await asyncio.sleep(min(sleep_for, 5.0))
-            waited += min(sleep_for, 5.0)
-
-
-def _provider_retry_delay_seconds(exc: Exception, attempt: int) -> float:
-    text = str(exc).lower()
-    base = 2 ** max(0, attempt - 1)
-    if any(marker in text for marker in ("429", "rate limit", "too many requests", "timeout", "temporarily unavailable", " 500", " 502", " 503", " 504")):
-        return float(min(30, max(3, base * 2)))
-    return float(min(10, base))
 
 
 async def _translate_rows_with_orchestration(
@@ -5645,8 +5502,8 @@ async def _translate_rows_with_orchestration(
         cancel_path.unlink()
     manifest_path = work_dir / "batch_manifest.json"
     batches_dir = work_dir / f"batches_{batch_size}"
-    batches_dir.mkdir(parents=True, exist_ok=True)
     manifest = _load_or_create_batch_manifest(manifest_path, rows, project_prompt, settings, batch_size, language)
+    batches_dir.mkdir(parents=True, exist_ok=True)
     manifest["max_concurrent_batches"] = max(1, min(int(settings.get("max_concurrent_batches") or 2), 4))
     manifest["updated_at"] = db.now_iso()
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -6060,6 +5917,7 @@ def cancel_translation_run(run_id: str) -> dict[str, Any]:
     work_dir = run_dir(run_id) / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
     _translation_cancel_path(work_dir).write_text(db.now_iso(), encoding="utf-8")
+    db.cancel_job_lease("long_text", run_id)
     metadata = run.get("metadata", {})
     db.update_run(run_id, status="canceled", metadata={**metadata, "cancel_requested_at": db.now_iso()})
     db.add_event(run_id, "translation cancel requested")
@@ -6094,6 +5952,7 @@ def translation_batch_file(run_id: str, batch_index: int, kind: str) -> Path:
 
 
 def reconcile_interrupted_background_jobs() -> dict[str, int]:
+    db.mark_running_job_leases_interrupted()
     translation_runs = 0
     announcement_tasks = 0
     for run in db.list_runs():

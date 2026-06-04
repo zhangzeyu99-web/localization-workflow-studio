@@ -28,7 +28,6 @@ ARTIFACT_ROLE_BY_KIND = {
     "translation_response": "translation_response",
     "glossary_snapshot": "run_snapshot",
     "prompt_snapshot": "run_snapshot",
-    "project_harness_snapshot": "run_snapshot",
     "announcement_lookup_workbook": "reference_pack",
     "announcement_lookup_manifest": "reference_pack",
     "announcement_lookup_prompt_context": "reference_pack",
@@ -79,6 +78,8 @@ def connect() -> Iterator[sqlite3.Connection]:
     ensure_data_dirs()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         yield conn
         conn.commit()
@@ -234,6 +235,15 @@ def init_db() -> None:
                 FOREIGN KEY(task_id) REFERENCES announcement_tasks(id),
                 FOREIGN KEY(project_id) REFERENCES projects(id)
             );
+            CREATE TABLE IF NOT EXISTS job_leases (
+                name TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'idle',
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         _ensure_column(conn, "artifacts", "role", "TEXT NOT NULL DEFAULT ''")
@@ -251,12 +261,88 @@ def init_db() -> None:
         _ensure_column(conn, "translation_entries", "target_alt", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "translation_entries", "language", "TEXT NOT NULL DEFAULT 'en'")
         _ensure_column(conn, "translation_entries", "source_artifact_id", "TEXT NOT NULL DEFAULT ''")
+        _dedupe_unique_index_rows(conn)
+        _ensure_indexes(conn)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+def _ensure_indexes(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        DROP INDEX IF EXISTS idx_glossary_terms_project_language_term_key_unique;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_glossary_terms_project_language_term_key_unique
+          ON glossary_terms(project_id, language, term_key)
+          WHERE TRIM(term_key) <> '' AND confirmed = 1;
+        CREATE INDEX IF NOT EXISTS idx_glossary_terms_project_language_source
+          ON glossary_terms(project_id, language, source);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_translation_entries_project_language_entry_key_unique
+          ON translation_entries(project_id, language, entry_key)
+          WHERE TRIM(entry_key) <> '';
+        CREATE INDEX IF NOT EXISTS idx_translation_entries_project_language_source
+          ON translation_entries(project_id, language, source);
+        CREATE INDEX IF NOT EXISTS idx_runs_project_kind_status
+          ON runs(project_id, kind, status);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_project_role_kind
+          ON artifacts(project_id, role, kind);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_run
+          ON artifacts(run_id);
+        CREATE INDEX IF NOT EXISTS idx_events_run
+          ON events(run_id);
+        CREATE INDEX IF NOT EXISTS idx_announcement_tasks_project_status
+          ON announcement_tasks(project_id, status);
+        """
+    )
+
+
+def _dedupe_unique_index_rows(conn: sqlite3.Connection) -> None:
+    _dedupe_table_by_key(conn, "glossary_terms", ("project_id", "language", "term_key"))
+    _dedupe_table_by_key(conn, "translation_entries", ("project_id", "language", "entry_key"))
+
+
+def _dedupe_table_by_key(conn: sqlite3.Connection, table: str, columns: tuple[str, str, str]) -> None:
+    project_col, language_col, key_col = columns
+    groups = conn.execute(
+        f"""
+        SELECT {project_col} AS project_id, {language_col} AS language, {key_col} AS row_key, COUNT(*) AS count
+        FROM {table}
+        WHERE TRIM({key_col}) <> ''
+        GROUP BY {project_col}, {language_col}, {key_col}
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for group in groups:
+        rows = [dict(row) for row in conn.execute(
+            f"""
+            SELECT * FROM {table}
+            WHERE {project_col} = ? AND {language_col} = ? AND {key_col} = ?
+            ORDER BY
+              CASE WHEN TRIM(target) <> '' OR TRIM(target_alt) <> '' THEN 0 ELSE 1 END,
+              updated_at DESC
+            """,
+            (group["project_id"], group["language"], group["row_key"]),
+        ).fetchall()]
+        if len(rows) < 2:
+            continue
+        canonical = rows[0]
+        updates: dict[str, Any] = {}
+        for duplicate in rows[1:]:
+            for field in ("source", "target", "target_alt", "category", "note", "sheet", "source_type", "source_artifact_id"):
+                if field not in canonical or field not in duplicate:
+                    continue
+                if str(canonical.get(field) or "").strip() in {"", "-"} and str(duplicate.get(field) or "").strip():
+                    canonical[field] = duplicate[field]
+                    updates[field] = duplicate[field]
+        if updates:
+            assignments = [f"{key} = ?" for key in updates]
+            values = [updates[key] for key in updates]
+            values.append(canonical["id"])
+            conn.execute(f"UPDATE {table} SET {', '.join(assignments)} WHERE id = ?", values)
+        conn.executemany(f"DELETE FROM {table} WHERE id = ?", [(row["id"],) for row in rows[1:]])
 
 
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1400,6 +1486,80 @@ def list_translation_entries(project_id: str, language: str | None = None) -> li
         else:
             rows = [dict(row) for row in conn.execute("SELECT * FROM translation_entries WHERE project_id = ?", (project_id,)).fetchall()]
     return sorted(rows, key=_translation_entry_rank)
+
+
+def acquire_job_lease(name: str, job_id: str, metadata: dict[str, Any] | None = None) -> bool:
+    ts = now_iso()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM job_leases WHERE name = ?", (name,)).fetchone()
+        if row and row["status"] == "running" and row["job_id"] != job_id:
+            return False
+        if row and row["job_id"] == job_id and row["status"] == "running":
+            return True
+        conn.execute(
+            """
+            INSERT INTO job_leases (name, job_id, status, cancel_requested, metadata_json, created_at, updated_at)
+            VALUES (?, ?, 'running', 0, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+              job_id = excluded.job_id,
+              status = 'running',
+              cancel_requested = 0,
+              metadata_json = excluded.metadata_json,
+              updated_at = excluded.updated_at
+            """,
+            (name, job_id, json.dumps(metadata or {}, ensure_ascii=False), ts, ts),
+        )
+        return True
+
+
+def release_job_lease(name: str, job_id: str, *, status: str = "completed", metadata: dict[str, Any] | None = None) -> None:
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE job_leases
+            SET status = ?, cancel_requested = 0, metadata_json = ?, updated_at = ?
+            WHERE name = ? AND job_id = ?
+            """,
+            (status, json.dumps(metadata or {}, ensure_ascii=False), ts, name, job_id),
+        )
+
+
+def cancel_job_lease(name: str, job_id: str | None = None) -> bool:
+    ts = now_iso()
+    with connect() as conn:
+        if job_id:
+            cur = conn.execute(
+                "UPDATE job_leases SET cancel_requested = 1, status = 'cancel_requested', updated_at = ? WHERE name = ? AND job_id = ? AND status = 'running'",
+                (ts, name, job_id),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE job_leases SET cancel_requested = 1, status = 'cancel_requested', updated_at = ? WHERE name = ? AND status = 'running'",
+                (ts, name),
+            )
+        return cur.rowcount > 0
+
+
+def get_job_lease(name: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM job_leases WHERE name = ?", (name,)).fetchone()
+        if not row:
+            return None
+        payload = dict(row)
+        payload["cancel_requested"] = bool(payload["cancel_requested"])
+        payload["metadata"] = json.loads(payload.pop("metadata_json") or "{}")
+        return payload
+
+
+def mark_running_job_leases_interrupted() -> int:
+    ts = now_iso()
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE job_leases SET status = 'interrupted', cancel_requested = 0, updated_at = ? WHERE status IN ('running', 'cancel_requested')",
+            (ts,),
+        )
+        return cur.rowcount
 
 
 def update_translation_entry(entry_id: str, payload: dict[str, Any], conn: sqlite3.Connection | None = None) -> dict[str, Any]:
