@@ -60,3 +60,40 @@ export async function refreshLanguageOptions(apiBase = ''): Promise<LanguageOpti
   }
   return supportedLanguages
 }
+
+// Shared language helpers
+export function languageSpec(code: string): LanguageOption {
+  return allLanguageOptions.find((item) => item.code === code) || supportedLanguages[0]
+}
+
+export function languageChipTitle(lang: LanguageOption): string {
+  return lang.label
+}
+
+export function languageQuery(code: LanguageCode): string {
+  return `language=${encodeURIComponent(code)}`
+}
+
+export function isLanguageCode(value: string): value is LanguageCode {
+  return allLanguageOptions.some((lang) => lang.code === value)
+}
+
+export function normalizeLanguageCode(value: unknown): LanguageCode | null {
+  const raw = String(value || '').trim().toLowerCase().replace('_', '-')
+  const compact = raw.replace(/[\s-]/g, '')
+  const aliases: Record<string, LanguageCode> = {
+    kr: 'ko', jp: 'ja', fre: 'fr', ger: 'de', rus: 'ru', ita: 'it', spa: 'es', por: 'pt', ptbr: 'pt', 'pt-br': 'pt', tk: 'tr', tur: 'tr', id: 'idn', ind: 'idn', tha: 'th', ara: 'ar'
+  }
+  const code = aliases[raw] || aliases[compact] || raw
+  return isLanguageCode(code) ? code : null
+}
+
+export function normalizeLanguageArray(value: unknown): LanguageCode[] {
+  if (!Array.isArray(value)) return []
+  const normalized: LanguageCode[] = []
+  for (const item of value) {
+    const code = normalizeLanguageCode(item)
+    if (code && !normalized.includes(code)) normalized.push(code)
+  }
+  return allLanguageOptions.map((lang) => lang.code).filter((code) => normalized.includes(code))
+}

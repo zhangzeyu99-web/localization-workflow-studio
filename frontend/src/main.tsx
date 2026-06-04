@@ -2,9 +2,11 @@
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { API, api, apiErrorText } from './apiClient'
-import { WIDE_TABLE_PAGE_SIZE, pagedRows, wideRowMatches } from './assetTableState'
-import { allLanguageOptions, announcementLanguages, refreshLanguageOptions, supportedLanguages, unsupportedLanguages, type LanguageCode, type LanguageOption } from './languages'
+import { WIDE_TABLE_PAGE_SIZE, pagedRows } from './assetTableState'
+import { allLanguageOptions, announcementLanguages, refreshLanguageOptions, supportedLanguages, unsupportedLanguages, languageSpec, languageChipTitle, languageQuery, normalizeLanguageCode, normalizeLanguageArray, type LanguageCode, type LanguageOption } from './languages'
 import { SettingsModal } from './SettingsModal'
+import { artifactFileName, artifactKindLabel, artifactPickerLabel, artifactRole, artifactsByRole, artifactsByRoles, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, newestArtifact, pickerArtifacts, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
+import { altColumnVisible, archiveCoverage, availableLookupLanguages, coverageSummary, displayLanguagesForWideRows, fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, glossaryCoverage, glossaryWideRowMatches, glossaryWideRows, languageFromValue, linesToFixedTerms, linesToList, linesToRules, listToLines, normalizeGlossaryNote, projectPromptForLanguage, profileText, rowRecords, ruleSummary, rulesToLines, scopeProjectToLanguage, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from './domain/projectAssets'
 
 declare global {
   interface Window {
@@ -12,799 +14,62 @@ declare global {
   }
 }
 
-type Project = {
-  id: string
-  name: string
-  type: string
-  icon: string
-  description: string
-  prompt_text: string
-  created_at?: string
-  updated_at?: string
-  profile?: Record<string, unknown>
-  stats: {
-    tasks: number
-    translation_runs?: number
-    qa_runs?: number
-    words: string
-    archived_rows?: number
-    langs: number
-    glossary: number
-  }
-  artifacts?: Artifact[]
-  runs?: Run[]
-  glossary?: GlossaryTerm[]
-  translations?: TranslationEntry[]
-  announcement_tasks?: AnnouncementTask[]
-  harness?: ProjectHarness
-  duplicate?: boolean
-}
-
-type ProjectHarness = {
-  schema_version?: number
-  updated_at?: string
-  project_metadata?: Record<string, unknown>
-  style_guidance?: string
-  target_audience?: string
-  tone?: string
-  forbidden_translations?: string[]
-  fixed_terms?: { source?: string; target?: string; note?: string; severity?: string }[]
-  hard_rules?: { label?: string; description?: string; pattern?: string; enabled?: boolean }[]
-  soft_rules?: { label?: string; description?: string; pattern?: string; enabled?: boolean }[]
-  reference_examples?: { source?: string; target?: string; note?: string }[]
-  manual_fixes?: Record<string, unknown>[]
-  qa_summary?: Record<string, unknown>
-}
-
-type Artifact = {
-  id: string
-  label: string
-  kind: string
-  role?: string
-  origin?: string
-  metadata?: Record<string, unknown>
-  path: string
-  size: number
-  created_at: string
-  run_id?: string | null
-  duplicate?: boolean
-}
-
-type Run = {
-  id: string
-  project_id: string
-  kind: string
-  language: string
-  status: string
-  created_at: string
-  updated_at: string
-  metadata?: Record<string, unknown>
-  events?: { id: number; level: string; message: string; created_at: string }[]
-  artifacts?: Artifact[]
-}
-
-type GlossaryTerm = {
-  id: string
-  term_key?: string
-  source: string
-  target: string
-  target_alt?: string
-  language?: string
-  category: string
-  note: string
-  source_type: string
-  confirmed: boolean
-}
-
-type TranslationEntry = {
-  id: string
-  entry_key: string
-  source: string
-  target: string
-  target_alt: string
-  language: string
-  sheet: string
-  row_number: number
-  note: string
-  source_type: string
-  source_artifact_id: string
-}
-
-type GlossaryPreviewRow = {
-  term_key?: string
-  source: string
-  target: string
-  target_alt?: string
-  category: string
-  note: string
-  language?: string
-}
-
-type WideLanguageValue<T> = {
-  record: T
-  target: string
-  target_alt?: string
-}
-
-type WideConflict = {
-  field: string
-  values: string[]
-}
-
-type WideGlossaryRow = {
-  source_key: string
-  source: string
-  term_key: string
-  category: string
-  note: string
-  translations: Partial<Record<LanguageCode, WideLanguageValue<GlossaryTerm>>>
-  languages: LanguageCode[]
-  conflicts: WideConflict[]
-}
-
-type WideTranslationRow = {
-  source_key: string
-  source: string
-  entry_key: string
-  note: string
-  translations: Partial<Record<LanguageCode, WideLanguageValue<TranslationEntry>>>
-  languages: LanguageCode[]
-  conflicts: WideConflict[]
-}
-
-type GlossaryBatch = {
-  id: string
-  project_id: string
-  run_id?: string
-  source_artifact_id?: string
-  label: string
-  language?: string
-  status: string
-  metadata?: Record<string, unknown>
-  created_at: string
-  updated_at: string
-  counts: {
-    total: number
-    pending: number
-    accepted: number
-    rejected: number
-    pending_new: number
-    pending_supplement: number
-  }
-}
-
-type GlossaryCandidate = {
-  id: string
-  batch_id: string
-  project_id: string
-  existing_term_id?: string
-  action: 'new' | 'supplement' | string
-  term_key?: string
-  source: string
-  target: string
-  target_alt?: string
-  language?: string
-  category: string
-  note: string
-  translation_status?: 'needs_translation' | 'suggested' | 'reviewed' | string
-  translation_source?: 'language_table' | 'model' | 'manual' | 'none' | string
-  metadata?: Record<string, unknown>
-  status: 'pending' | 'accepted' | 'rejected' | string
-}
-
-type QualityIssue = {
-  id: string
-  source: string
-  rule_source: string
-  severity: string
-  sheet: string
-  row: number
-  check_type: string
-  message: string
-  current_translation: string
-}
-
-type AppSettings = {
-  provider?: string
-  preset?: string
-  api_key?: string
-  model?: string
-  reasoning_effort?: string
-  batch_size?: number
-  max_concurrent_batches?: number
-  max_requests_per_minute?: number
-  max_estimated_tokens_per_minute?: number
-  max_batch_input_tokens?: number
-  api_budget_warning_tokens?: number
-  max_batch_attempts?: number
-}
-
-type TranslationReadiness = {
-  artifact_id: string
-  label: string
-  target_language: string
-  source_rows: number
-  translated_rows: number
-  empty_target_rows: number
-  cjk_target_rows: number
-  invalid_id_rows?: number
-  invalid_id_samples?: string[]
-  needs_translation: boolean
-  ready_for_qa: boolean
-  reason: string
-  batch_size: number
-  estimated_batches: number
-}
-
-type TranslationTargets = {
-  artifact_id: string
-  label: string
-  supported_file: boolean
-  source_detected: boolean
-  detected_languages: LanguageCode[]
-  suggested_language?: LanguageCode | null
-  reason?: string
-}
-
-type TranslationProgress = {
-  total_rows: number
-  completed_rows: number
-  total_batches: number
-  completed_batches: number
-  remaining_batches: number
-  current_batch?: number | null
-  failed_batch?: number | null
-  batch_size: number
-  max_concurrent_batches?: number
-  estimated_total_input_tokens?: number
-  rate_limit_wait_seconds?: number
-  percent: number
-  elapsed_seconds?: number | null
-  average_batch_seconds?: number | null
-  eta_seconds?: number | null
-}
-
-type DeliveryFile = {
-  kind: string
-  filename: string
-  path: string
-  download_url?: string
-}
-
-type AnnouncementLookupSummary = {
-  language: string
-  text_chars: number
-  materials: number
-  matched_terms: number
-  matched_translations: number
-  constraint_status: string
-}
-
-type AnnouncementLookupResult = {
-  run: Run
-  summary: AnnouncementLookupSummary
-  artifacts: Artifact[]
-  manifest: Record<string, unknown>
-}
-
-type AnnouncementTaskLanguage = {
-  id: string
-  task_id: string
-  project_id: string
-  language: LanguageCode
-  status: string
-  current_step: number
-  metadata?: Record<string, unknown>
-}
-
-type AnnouncementTask = {
-  id: string
-  project_id: string
-  title: string
-  source_artifact_id: string
-  source_format: string
-  selected_languages: LanguageCode[]
-  status: string
-  current_step: number
-  metadata?: Record<string, unknown>
-  languages?: AnnouncementTaskLanguage[]
-  artifacts?: Artifact[]
-  created_at?: string
-  updated_at?: string
-}
-
-type AnnouncementTaskResult = {
-  task: AnnouncementTask
-  run?: Run
-  summary?: Record<string, unknown>
-  artifacts?: Artifact[]
-  manifest?: Record<string, unknown>
-  detected_languages?: LanguageCode[]
-  selected_languages?: LanguageCode[]
-  constraints?: Record<string, unknown>
-}
-
-type AnnouncementTermRow = {
-  id?: string
-  source?: string
-  translations?: Record<string, string>
-  hit_count?: number
-  first_position?: number
-}
-
-type AnnouncementLookupOptions = {
-  includeGlossary: boolean
-  includeTranslationArchive: boolean
-}
-
-type DeliverableTask = {
-  run_id: string
-  task_code: 'A' | 'T' | 'QA' | string
-  task_id: string
-  task_label: string
-  task_type: string
-  language: string
-  created_at: string
-  updated_at: string
-  status: string
-  processed_rows: number
-  source_rows?: number
-  translated_rows?: number
-  provider?: string
-  model?: string
-  input_label?: string
-  qa_status?: string
-  qa_hard_errors?: number
-  qa_soft_warnings?: number
-  files: {
-    final?: DeliveryFile
-    changes?: DeliveryFile
-  }
-}
+import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, Project, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
 
 const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
-type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'archive' | 'delivery'
-type AppView = 'overview' | 'wizard' | 'announcement' | 'quick'
-
-function getProjectHarness(project: Project): ProjectHarness {
-  return project.harness || {}
-}
-
-function languageSpec(code: string): LanguageOption {
-  return allLanguageOptions.find((item) => item.code === code) || supportedLanguages[0]
-}
-
-function languageChipTitle(lang: LanguageOption): string {
-  return lang.label
-}
-
-function languageQuery(code: LanguageCode): string {
-  return `language=${encodeURIComponent(code)}`
-}
 
 
-function normalizeSourceKey(value: unknown): string {
-  return String(value || '').trim().replace(/\s+/g, '').toLowerCase()
-}
 
-function termHasTranslation(term: GlossaryTerm): boolean {
-  return Boolean(String(term.target || '').trim() || String(term.target_alt || '').trim())
-}
 
-function entryHasTranslation(entry: TranslationEntry): boolean {
-  return Boolean(String(entry.target || '').trim() || String(entry.target_alt || '').trim())
-}
 
-function languageFromValue(value: unknown): LanguageCode | null {
-  return normalizeLanguageCode(value || 'en')
-}
 
-function pickSharedValue<T extends Record<string, unknown>>(rows: T[], field: keyof T): string {
-  for (const row of rows) {
-    const value = String(row[field] || '').trim()
-    if (value && value !== '-') return value
-  }
-  return ''
-}
 
-function sharedConflicts<T extends Record<string, unknown>>(rows: T[], fields: (keyof T)[]): WideConflict[] {
-  return fields.flatMap((field) => {
-    const values: string[] = []
-    for (const row of rows) {
-      const value = String(row[field] || '').trim()
-      if (value && value !== '-' && !values.includes(value)) values.push(value)
-    }
-    return values.length > 1 ? [{ field: String(field), values }] : []
-  })
-}
 
-function newestByUpdatedAt<T>(rows: T[]): T {
-  return [...rows].sort((a, b) => String((b as { updated_at?: string }).updated_at || '').localeCompare(String((a as { updated_at?: string }).updated_at || '')))[0]
-}
 
-function glossaryWideRows(project: Project): WideGlossaryRow[] {
-  const grouped = new Map<string, GlossaryTerm[]>()
-  for (const term of project.glossary || []) {
-    const key = normalizeSourceKey(term.source)
-    if (!key) continue
-    grouped.set(key, [...(grouped.get(key) || []), term])
-  }
-  return [...grouped.entries()].map(([sourceKey, rows]) => {
-    const translations: WideGlossaryRow['translations'] = {}
-    for (const lang of supportedLanguages.map((item) => item.code)) {
-      const candidateRows = rows.filter((term) => languageFromValue(term.language) === lang && termHasTranslation(term))
-      if (!candidateRows.length) continue
-      const record = newestByUpdatedAt(candidateRows)
-      translations[lang] = { record, target: record.target || '', target_alt: record.target_alt || '' }
-    }
-    return {
-      source_key: sourceKey,
-      source: pickSharedValue(rows, 'source'),
-      term_key: pickSharedValue(rows, 'term_key'),
-      category: pickSharedValue(rows, 'category'),
-      note: normalizeGlossaryNote(pickSharedValue(rows, 'note')),
-      translations,
-      languages: supportedLanguages.map((item) => item.code).filter((lang) => Boolean(translations[lang])),
-      conflicts: sharedConflicts(rows, ['source', 'term_key', 'category', 'note'])
-    }
-  }).sort((a, b) => a.source.localeCompare(b.source) || a.term_key.localeCompare(b.term_key))
-}
 
-function translationWideRows(project: Project): WideTranslationRow[] {
-  const grouped = new Map<string, TranslationEntry[]>()
-  for (const entry of project.translations || []) {
-    const key = normalizeSourceKey(entry.source)
-    if (!key) continue
-    grouped.set(key, [...(grouped.get(key) || []), entry])
-  }
-  return [...grouped.entries()].map(([sourceKey, rows]) => {
-    const translations: WideTranslationRow['translations'] = {}
-    for (const lang of supportedLanguages.map((item) => item.code)) {
-      const candidateRows = rows.filter((entry) => languageFromValue(entry.language) === lang && entryHasTranslation(entry))
-      if (!candidateRows.length) continue
-      const record = newestByUpdatedAt(candidateRows)
-      translations[lang] = { record, target: record.target || '', target_alt: record.target_alt || '' }
-    }
-    return {
-      source_key: sourceKey,
-      source: pickSharedValue(rows, 'source'),
-      entry_key: pickSharedValue(rows, 'entry_key'),
-      note: pickSharedValue(rows, 'note'),
-      translations,
-      languages: supportedLanguages.map((item) => item.code).filter((lang) => Boolean(translations[lang])),
-      conflicts: sharedConflicts(rows, ['source', 'entry_key', 'note'])
-    }
-  }).sort((a, b) => a.source.localeCompare(b.source) || a.entry_key.localeCompare(b.entry_key))
-}
 
-function visibleLanguagesFromRows(rows: { languages: LanguageCode[] }[]): LanguageCode[] {
-  const found = new Set<LanguageCode>()
-  for (const row of rows) row.languages.forEach((lang) => found.add(lang))
-  return supportedLanguages.map((item) => item.code).filter((lang) => found.has(lang))
-}
 
-function translationValuesForSearch(row: { translations: Partial<Record<LanguageCode, WideLanguageValue<GlossaryTerm | TranslationEntry>>> }): string[] {
-  return supportedLanguages.flatMap((lang) => {
-    const value = row.translations[lang.code]
-    return value ? [value.target, value.target_alt || ''] : []
-  })
-}
 
-function glossaryWideRowMatches(row: WideGlossaryRow, query: string): boolean {
-  return wideRowMatches([row.term_key, row.source, row.category, row.note, ...translationValuesForSearch(row)], query)
-}
 
-function translationWideRowMatches(row: WideTranslationRow, query: string): boolean {
-  return wideRowMatches([row.entry_key, row.source, row.note, ...translationValuesForSearch(row)], query)
-}
 
-function displayLanguagesForWideRows(rows: { languages: LanguageCode[] }[], selectedLanguages: LanguageCode[]): LanguageCode[] {
-  const available = new Set(visibleLanguagesFromRows(rows))
-  const selected = new Set(selectedLanguages)
-  return supportedLanguages
-    .map((lang) => lang.code)
-    .filter((code) => code === 'en' || (available.has(code) && selected.has(code)))
-}
 
-function rowRecords<T>(row: { translations: Partial<Record<LanguageCode, WideLanguageValue<T>>>; languages: LanguageCode[] }): T[] {
-  return row.languages.map((code) => row.translations[code]?.record).filter(Boolean) as T[]
-}
 
-function glossaryCoverage(project: Project): Record<LanguageCode, number> {
-  const rows = glossaryWideRows(project)
-  return supportedLanguages.reduce((acc, lang) => {
-    acc[lang.code] = rows.filter((row) => Boolean(row.translations[lang.code])).length
-    return acc
-  }, {} as Record<LanguageCode, number>)
-}
 
-function archiveCoverage(project: Project): Record<LanguageCode, number> {
-  const rows = translationWideRows(project)
-  return supportedLanguages.reduce((acc, lang) => {
-    acc[lang.code] = rows.filter((row) => Boolean(row.translations[lang.code])).length
-    return acc
-  }, {} as Record<LanguageCode, number>)
-}
 
-function coverageSummary(coverage: Record<LanguageCode, number>): string {
-  const entries = supportedLanguages
-    .map((lang) => ({ lang, count: coverage[lang.code] || 0 }))
-    .filter((item) => item.count > 0)
-  if (!entries.length) return '暂无覆盖'
-  const visible = entries.slice(0, 2).map((item) => `${item.lang.short} ${item.count}`).join(' / ')
-  return entries.length > 2 ? `${visible} / +${entries.length - 2}` : visible
-}
 
-function altColumnVisible(lang: LanguageCode): boolean {
-  return lang === 'en'
-}
 
-function scopeProjectToLanguage(project: Project, code: LanguageCode): Project {
-  const glossary = (project.glossary || []).filter((term) => (term.language || 'en') === code)
-  const translations = (project.translations || []).filter((entry) => (entry.language || 'en') === code)
-  return {
-    ...project,
-    glossary,
-    translations,
-    stats: {
-      ...project.stats,
-      glossary: glossary.length,
-      archived_rows: translations.length,
-      langs: project.stats.langs
-    }
-  }
-}
 
-function isLanguageCode(value: string): value is LanguageCode {
-  return allLanguageOptions.some((lang) => lang.code === value)
-}
 
-function availableLookupLanguages(project: Project): LanguageCode[] {
-  const found = new Set<LanguageCode>()
-  for (const term of project.glossary || []) {
-    const code = String(term.language || 'en').toLowerCase()
-    if (isLanguageCode(code) && (term.target?.trim() || term.target_alt?.trim())) found.add(code)
-  }
-  for (const entry of project.translations || []) {
-    const code = String(entry.language || 'en').toLowerCase()
-    if (isLanguageCode(code) && (entry.target?.trim() || entry.target_alt?.trim())) found.add(code)
-  }
-  return supportedLanguages.map((lang) => lang.code).filter((code) => found.has(code))
-}
 
-function projectPromptForLanguage(project: Project, code: LanguageCode): string {
-  const prompts = project.profile?.prompts_by_language
-  if (prompts && typeof prompts === 'object' && code in prompts) {
-    return String((prompts as Record<string, unknown>)[code] || '')
-  }
-  return project.prompt_text || ''
-}
 
-function listToLines(value: unknown): string {
-  return Array.isArray(value) ? value.map((item) => String(item)).join('\n') : ''
-}
 
-function linesToList(value: string): string[] {
-  return value.split('\n').map((line) => line.trim()).filter(Boolean)
-}
 
-function rulesToLines(rules: ProjectHarness['hard_rules']): string {
-  return (rules || [])
-    .map((rule) => [rule.label, rule.description, rule.pattern].filter(Boolean).join(' | '))
-    .join('\n')
-}
 
-function linesToRules(value: string): ProjectHarness['hard_rules'] {
-  return linesToList(value).map((line) => {
-    const [label, description, pattern] = line.split('|').map((part) => part.trim())
-    return { label: label || line, description: description || label || line, pattern: pattern || '', enabled: true }
-  })
-}
 
-function fixedTermsToLines(terms: ProjectHarness['fixed_terms']): string {
-  return (terms || [])
-    .map((term) => `${term.source || ''} => ${term.target || ''}${term.note ? ` | ${term.note}` : ''}`.trim())
-    .filter(Boolean)
-    .join('\n')
-}
 
-function linesToFixedTerms(value: string): ProjectHarness['fixed_terms'] {
-  return linesToList(value).map((line) => {
-    const [pair, note] = line.split('|').map((part) => part.trim())
-    const [source, target] = pair.split('=>').map((part) => part.trim())
-    return { source: source || pair, target: target || '', note: note || '', severity: 'hard' }
-  })
-}
 
-function newestArtifact(artifacts: Artifact[] | undefined, kinds: string[]): Artifact | null {
-  return [...(artifacts || [])]
-    .filter((artifact) => kinds.includes(artifact.kind))
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] || null
-}
 
-function artifactContentKey(artifact: Artifact): string {
-  const sha256 = artifact.metadata?.sha256
-  if (typeof sha256 === 'string' && sha256) return `sha:${sha256}`
-  return `fallback:${artifact.kind}:${artifact.label}:${artifact.size}`
-}
 
-function uniqueArtifactsByContent(artifacts: Artifact[]): Artifact[] {
-  const seen = new Set<string>()
-  return artifacts.filter((artifact) => {
-    const key = artifactContentKey(artifact)
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
 
-function artifactFileName(artifact: Artifact): string {
-  const original = artifact.metadata?.original_filename
-  if (typeof original === 'string' && original.trim()) return original.trim()
-  const parts = String(artifact.path || artifact.label || '').split(/[\\/]/)
-  return parts[parts.length - 1] || artifact.label
-}
 
-function stripExtension(name: string): string {
-  return name.replace(/\.[^.]+$/, '')
-}
 
-function artifactSourceStem(artifact: Artifact): string {
-  let stem = stripExtension(artifactFileName(artifact))
-  stem = stem
-    .replace(/_ID_CN_[A-Z0-9_]+$/i, '')
-    .replace(/_glossary_details$/i, '')
-    .replace(/_announcement_terms_\d{8}$/i, '')
-    .replace(/_announcement_translation_workbook$/i, '')
-    .replace(/_workpack_[A-Z]+$/i, '')
-    .replace(/_ai_response_[A-Z]+$/i, '')
-    .replace(/_prompt_[A-Z]+$/i, '')
-  return stem || artifact.label
-}
 
-function artifactDateLabel(artifact: Artifact): string {
-  const date = new Date(artifact.created_at)
-  if (Number.isNaN(date.getTime())) return ''
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
 
-function artifactKindLabel(artifact: Artifact): string {
-  if (artifact.kind === 'asset') return '参考文件'
-  if (artifact.kind === 'quick_input') return '快速任务输入'
-  if (artifact.kind === 'quick_reference') return '快速任务参考'
-  if (artifact.kind === 'quick_reference_snapshot') return '快速参考快照'
-  if (artifact.kind === 'glossary_final') return '生成术语表'
-  if (artifact.kind === 'term_base') return '上传术语表'
-  if (artifact.kind === 'glossary_detail') return '术语提取明细'
-  if (artifact.kind === 'language_table') return artifact.origin === 'uploaded' ? '上传语言表' : '语言表'
-  if (artifact.kind === 'final_workbook' || artifact.kind === 'qa_final_workbook') return '已译语言表'
-  if (artifact.kind === 'qa_changes') return '修改记录'
-  if (artifact.kind === 'qa_result') return 'QA 回填表'
-  if (artifact.kind === 'qa_report') return 'QA 报告'
-  if (artifact.kind === 'quality_summary') return 'QA 摘要'
-  if (artifact.kind === 'translation_workbook') return '翻译中转表'
-  if (artifact.kind === 'announcement_terms_workbook') return '公告术语表'
-  if (artifact.kind === 'announcement_translation_workbook') return '公告翻译中转表'
-  if (artifact.kind === 'announcement_delivery_package' || artifact.kind === 'announcement_docx_delivery_package') return '公告交付 ZIP'
-  if (artifact.kind === 'announcement_output_file' || artifact.kind === 'announcement_docx_output_docx') return '公告成品'
-  if (artifact.kind === 'announcement_qa_summary' || artifact.kind === 'announcement_docx_qa_summary') return '公告 QA 摘要'
-  if (artifact.kind === 'announcement_workpack') return '公告 Workpack'
-  if (artifact.kind === 'announcement_docx_manifest' || artifact.kind === 'announcement_lookup_manifest' || artifact.kind === 'announcement_terms_manifest') return '公告 Manifest'
-  if (artifact.kind === 'announcement_lookup_prompt_context') return '公告 Prompt Context'
-  if (artifact.kind === 'announcement_ai_supplement_packet') return 'AI 补充包'
-  if (artifact.kind === 'announcement_ai_supplement_report') return 'AI 补充报告'
-  if (artifact.kind === 'announcement_terms_validation') return '公告术语校验'
-  if (artifact.kind === 'prompt_snapshot') return '提示词快照'
-  if (artifact.kind === 'project_harness_snapshot') return '项目规则快照'
-  if (artifact.kind === 'glossary_snapshot') return '术语快照'
-  if (artifact.kind === 'translation_prompt') return '项目翻译提示词'
-  if (artifact.kind === 'project_brief') return '项目资料'
-  if (artifact.kind === 'project_profile') return '项目分析结果'
-  return artifact.origin === 'uploaded' ? '上传文件' : artifact.label
-}
 
-function artifactLanguageLabel(artifact: Artifact): string {
-  const single = normalizeLanguageCode(artifact.metadata?.language)
-  if (single) return languageSpec(single).short
-  const multiple = normalizeLanguageArray(artifact.metadata?.languages)
-  return multiple.map((lang) => languageSpec(lang).short).join('/')
-}
 
-function artifactPickerLabel(artifact: Artifact): string {
-  const parts = [artifactKindLabel(artifact), artifactLanguageLabel(artifact), artifactSourceStem(artifact), artifactDateLabel(artifact)]
-    .map((item) => item.trim())
-    .filter(Boolean)
-  return [...new Set(parts)].join('｜')
-}
 
-function artifactPickerKey(artifact: Artifact): string {
-  const sha256 = artifact.metadata?.sha256
-  if (artifact.origin === 'uploaded') {
-    return typeof sha256 === 'string' && sha256
-      ? `uploaded:${artifact.kind}:${sha256}`
-      : `uploaded:${artifact.kind}:${artifactSourceStem(artifact).toLowerCase()}:${artifact.size}`
-  }
-  const language = artifact.metadata?.language || artifact.metadata?.languages || ''
-  if (['glossary_final', 'glossary_detail', 'announcement_terms_workbook', 'announcement_translation_workbook'].includes(artifact.kind)) {
-    return `generated:${artifact.kind}:${artifactSourceStem(artifact).toLowerCase()}:${JSON.stringify(language)}`
-  }
-  return artifactContentKey(artifact)
-}
 
-function isPickerProcessArtifact(artifact: Artifact): boolean {
-  return artifact.kind === 'glossary_detail'
-}
 
-function pickerArtifacts(artifacts: Artifact[]): Artifact[] {
-  const seen = new Set<string>()
-  return [...artifacts]
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))
-    .filter((artifact) => !isPickerProcessArtifact(artifact))
-    .filter((artifact) => {
-      const key = artifactPickerKey(artifact)
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-}
 
-function isAnnouncementSourceDocument(artifact: Artifact): boolean {
-  const name = artifactFileName(artifact).toLowerCase()
-  return /\.(docx|txt|xlsx)$/.test(name)
-}
 
-function isGeneratedAnnouncementTermsArtifact(artifact: Artifact): boolean {
-  if (artifact.kind === 'announcement_terms_workbook') return true
-  const original = artifact.metadata?.original_filename
-  const text = [artifact.label, artifact.path, typeof original === 'string' ? original : ''].join(' ').toLowerCase()
-  return artifact.kind === 'language_table' && (text.includes('announcement_terms') || text.includes('公告术语'))
-}
 
-function runArtifacts(project: Project, runId: string | undefined): Artifact[] {
-  if (!runId) return []
-  return (project.artifacts || []).filter((artifact) => artifact.run_id === runId)
-}
 
-function artifactRole(artifact: Artifact): string {
-  if (artifact.role) return artifact.role
-  const map: Record<string, string> = {
-    language_table: 'language_source',
-    quick_input: 'quick_input',
-    quick_reference: 'quick_reference',
-    quick_reference_snapshot: 'run_snapshot',
-    term_base: 'glossary_source',
-    announcement_glossary: 'glossary_source',
-    glossary_final: 'glossary_curated',
-    final_workbook: 'translation_workbook',
-    qa_final_workbook: 'translation_workbook',
-    raw_translated_workbook: 'translation_draft',
-    qa_report: 'qa_report',
-    qa_result: 'qa_report',
-    quality_summary: 'qa_report',
-    glossary_snapshot: 'run_snapshot',
-    prompt_snapshot: 'run_snapshot',
-    announcement_lookup_workbook: 'reference_pack',
-    announcement_lookup_manifest: 'reference_pack',
-    announcement_lookup_prompt_context: 'reference_pack',
-    translation_prompt: 'prompt',
-    project_brief: 'profile',
-    project_profile: 'profile',
-    project_harness_snapshot: 'harness_snapshot'
-  }
-  return map[artifact.kind] || artifact.kind
-}
 
-function artifactsByRole(project: Project, role: string): Artifact[] {
-  return (project.artifacts || []).filter((artifact) => artifactRole(artifact) === role)
-}
 
-function artifactsByRoles(project: Project, roles: string | string[]): Artifact[] {
-  const accepted = Array.isArray(roles) ? roles : [roles]
-  return (project.artifacts || []).filter((artifact) => accepted.includes(artifactRole(artifact)))
-}
+
+
+
+
 
 function errorText(error: unknown): string {
   if (error instanceof Error) return apiErrorText(error.message, error.message)
@@ -854,11 +119,6 @@ function formatDuration(seconds: number | null | undefined): string {
   return `${secs}s`
 }
 
-function normalizeGlossaryNote(value: string | undefined): string {
-  const note = String(value || '')
-  if (/高频词扫描补全 (EN|JP|JA|KR|KO)\/(EN2|JP2|JA2|KR2|KO2)\?+/.test(note)) return '高频词候选，需人工确认'
-  return note
-}
 
 function formatDate(value?: string): string {
   if (!value) return '-'
@@ -878,37 +138,9 @@ function shortRunId(runId?: string): string {
   return (runId || '').replace(/^run_/, '').slice(0, 6) || '-'
 }
 
-function fieldText(value: unknown, fallback = '未生成'): string {
-  if (Array.isArray(value)) {
-    const items = value.map((item) => String(item).trim()).filter(Boolean)
-    return items.length ? items.join('、') : fallback
-  }
-  if (value === null || value === undefined) return fallback
-  const text = String(value).trim()
-  return text || fallback
-}
 
-function profileText(project: Project, key: string, fallback = '未生成'): string {
-  return fieldText(project.profile?.[key], fallback)
-}
 
-function fixedTermsSummary(project: Project): string {
-  const terms = getProjectHarness(project).fixed_terms || []
-  if (!terms.length) return '未设置'
-  return terms
-    .slice(0, 5)
-    .map((term) => [term.source, term.target].filter(Boolean).join(' => '))
-    .filter(Boolean)
-    .join('；') || '未设置'
-}
 
-function ruleSummary(project: Project): string {
-  const harness = getProjectHarness(project)
-  const hard = (harness.hard_rules || []).length
-  const soft = (harness.soft_rules || []).length
-  if (!hard && !soft) return '未设置'
-  return `必须规则 ${hard} 条，建议规则 ${soft} 条`
-}
 
 function compactSummary(summary: Record<string, unknown>): string {
   return Object.entries(summary)
@@ -4127,27 +3359,8 @@ function announcementTaskConstraintIds(task: AnnouncementTask | null): string[] 
   return [...new Set(values.filter(Boolean))]
 }
 
-function normalizeLanguageCode(value: unknown): LanguageCode | null {
-  const raw = String(value || '').trim().toLowerCase().replace('_', '-')
-  const compact = raw.replace(/[\s-]/g, '')
-  const aliases: Record<string, LanguageCode> = {
-    kr: 'ko', jp: 'ja', fre: 'fr', ger: 'de', rus: 'ru', ita: 'it', spa: 'es', por: 'pt', ptbr: 'pt', 'pt-br': 'pt', tk: 'tr', tur: 'tr', id: 'idn', ind: 'idn', tha: 'th', ara: 'ar'
-  }
-  const code = aliases[raw] || aliases[compact] || raw
-  return isLanguageCode(code) ? code : null
-}
 
-function normalizeLanguageArray(value: unknown): LanguageCode[] {
-  if (!Array.isArray(value)) return []
-  const normalized: LanguageCode[] = []
-  for (const item of value) {
-    const code = normalizeLanguageCode(item)
-    if (code && !normalized.includes(code)) normalized.push(code)
-  }
-  return allLanguageOptions.map((lang) => lang.code).filter((code) => normalized.includes(code))
-}
 
-type QuickObjective = 'translate' | 'qa'
 
 function quickTaskRuns(project: Project): Run[] {
   return (project.runs || []).filter((run) => run.metadata?.task_origin === 'quick_task')
@@ -5309,7 +4522,6 @@ function StepDone({ project, latestRun }: { project: Project; latestRun: Run | n
   )
 }
 
-type HistoryKind = 'translation' | 'qa' | 'all'
 
 function TaskHistoryTable({ project, kind, title }: { project: Project; kind: HistoryKind; title: string }) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
