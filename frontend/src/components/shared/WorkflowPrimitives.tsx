@@ -1,7 +1,8 @@
 import { artifactFileName, artifactPickerLabel, artifactsByRoles, pickerArtifacts } from '../../domain/artifacts'
 import { altColumnVisible } from '../../domain/projectAssets'
+import { formatDuration } from '../../domain/translationFlow'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
-import type { Artifact, GlossaryPreviewRow, Project } from '../../types'
+import type { Artifact, GlossaryPreviewRow, Project, TranslationProgress } from '../../types'
 
 export function SelectedInput({ label, artifact }: { label: string; artifact: Artifact | null }) {
   return (
@@ -120,6 +121,24 @@ export function LanguageSelector({ selectedLanguage, setSelectedLanguage }: { se
           {lang.label}
         </button>
       ))}
+    </div>
+  )
+}
+
+export function TranslationProgressBar({ progress }: { progress: TranslationProgress }) {
+  const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)))
+  return (
+    <div className="translation-progress">
+      <div className="progress-head">
+        <strong>翻译进度</strong>
+        <span>{progress.completed_batches}/{progress.total_batches} 批 · {progress.completed_rows}/{progress.total_rows} 行 · ETA {formatDuration(progress.eta_seconds)}</span>
+      </div>
+      <div className="progress-track"><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
+      <div className="progress-foot">
+        <span>{percent.toFixed(1)}%</span>
+        <span>{progress.failed_batch ? `失败批次：${progress.failed_batch}` : `当前批次：${progress.current_batch || '-'}`}</span>
+        {progress.rate_limit_wait_seconds ? <span>限流等待 {formatDuration(progress.rate_limit_wait_seconds)}</span> : null}
+      </div>
     </div>
   )
 }
