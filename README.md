@@ -394,12 +394,13 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 
 ## 版本
 
-当前版本：`0.4.9`
+当前版本：`0.5.0`
 
 版本号需要同步维护：
 
 - `VERSION`
 - `backend/app/main.py`
 - `frontend/package.json`
+- `frontend/package-lock.json`
 
 发布和打 tag 前按 [GitHub 管理](docs/GITHUB_MANAGEMENT.md) 的 release checklist 执行。
