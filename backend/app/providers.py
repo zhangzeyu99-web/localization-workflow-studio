@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from .translation_batches import manage_project_prompt_context
+
 
 class ProviderError(RuntimeError):
     pass
@@ -258,6 +260,7 @@ async def translate_batch(
 ) -> list[TranslationItem]:
     provider = provider_override or settings.get("provider", "mock")
     _ = protocol_override
+    project_prompt = manage_project_prompt_context(project_prompt, settings)
     if provider == "mock":
         return mock_translate_batch(rows, settings)
     if provider == "anthropic":

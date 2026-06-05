@@ -29,20 +29,26 @@ from .providers import call_text, translate_batch
 from .translation_batches import (
     AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
     build_batch_manifest as _build_batch_manifest,
+    cap_context_text as _cap_context_text,
     estimate_row_tokens as _estimate_row_tokens,
     estimate_text_tokens as _estimate_text_tokens,
     load_or_create_batch_manifest as _load_or_create_batch_manifest,
+    manage_project_prompt_context as _manage_project_prompt_context,
     manifest_matches_rows as _manifest_matches_rows,
+    project_context_summary as _project_context_summary,
     provider_retry_delay_seconds as _provider_retry_delay_seconds,
 )
 
 __all__ = [
     "_AsyncTokenRateLimiter",
     "_build_batch_manifest",
+    "_cap_context_text",
     "_estimate_row_tokens",
     "_estimate_text_tokens",
     "_load_or_create_batch_manifest",
+    "_manage_project_prompt_context",
     "_manifest_matches_rows",
+    "_project_context_summary",
     "_provider_retry_delay_seconds",
 ]
 
@@ -303,7 +309,8 @@ def _apply_project_analysis_provider(project: dict[str, Any], intro: str, asset_
     provider = str(settings.get("provider") or "mock")
     if provider not in {"openai", "anthropic"} or not settings.get("api_key"):
         return profile
-    payload = _parse_semantic_qa_payload(_call_semantic_provider(settings, _project_analysis_provider_prompt(project, intro, asset_notes, profile)))
+    prompt = _cap_context_text(_project_analysis_provider_prompt(project, intro, asset_notes, profile), 6000, "project analysis")
+    payload = _parse_semantic_qa_payload(_call_semantic_provider(settings, prompt))
     if not isinstance(payload, dict):
         raise ValueError("project analysis provider must return a JSON object")
     updates: dict[str, str] = {}
@@ -422,13 +429,16 @@ def compile_project_harness_prompt(project: dict[str, Any], base_prompt: str, ou
             "Project Harness (project-specific; apply only to this project, do not generalize):\n"
             + "\n".join(project_parts)
         )
-    compiled = "\n\n".join(part for part in parts if part)
+    raw_compiled = "\n\n".join(part for part in parts if part)
+    settings = load_settings()
+    compiled = _manage_project_prompt_context(raw_compiled, settings)
     prompt_path = output_dir / "compiled_project_harness_prompt.txt"
     snapshot_path = output_dir / "project_harness_snapshot.json"
     snapshot = {
         "global_harness": GLOBAL_HARNESS_CONTRACT,
         "project_harness": harness,
         "summary": _harness_summary(harness),
+        "context_budget": _project_context_summary(raw_compiled, settings),
     }
     prompt_path.write_text(compiled, encoding="utf-8")
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -573,6 +583,15 @@ def create_quick_reference_snapshot(project_id: str, run_id: str, reference_arti
     snapshot = {"source": "quick_task_reference", "reference_artifact_ids": ids, "references": rows}
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     context = "\n".join(part for part in context_parts if part).strip()
+    settings = load_settings()
+    quick_ref_budget = max(500, int(settings.get("max_quick_reference_context_tokens") or 2000))
+    managed_context = _cap_context_text(context, quick_ref_budget, "quick task references")
+    context_summary = {
+        "original_estimated_tokens": _estimate_text_tokens(context),
+        "managed_estimated_tokens": _estimate_text_tokens(managed_context),
+        "max_quick_reference_context_tokens": quick_ref_budget,
+        "trimmed": managed_context != context,
+    }
     artifact = db.add_artifact(
         project_id,
         "Quick task reference snapshot",
@@ -581,9 +600,9 @@ def create_quick_reference_snapshot(project_id: str, run_id: str, reference_arti
         run_id=run_id,
         mime="application/json",
         origin="generated",
-        metadata={"source": "quick_task_reference", "reference_artifact_ids": ids, "reference_count": len(rows)},
+        metadata={"source": "quick_task_reference", "reference_artifact_ids": ids, "reference_count": len(rows), "context_budget": context_summary},
     )
-    return {"artifact": artifact, "snapshot": snapshot, "context": context}
+    return {"artifact": artifact, "snapshot": snapshot, "context": managed_context, "context_budget": context_summary}
 
 
 def analyze_assets(artifact_ids: list[str], settings: dict[str, Any]) -> list[str]:
@@ -1276,7 +1295,8 @@ def prepare_announcement_translation(task_id: str, request: Any) -> dict[str, An
     prompts: dict[str, str] = {}
     for language in languages:
         prompt_snapshot = create_prompt_and_harness_snapshots(task["project_id"], run["id"], output / "snapshots" / language, language=language)
-        prompt = _announcement_translation_prompt(project, language, prompt_snapshot["prompt"], lookup.get(language, {}))
+        raw_prompt = _announcement_translation_prompt(project, language, prompt_snapshot["prompt"], lookup.get(language, {}))
+        prompt = _manage_project_prompt_context(raw_prompt, load_settings())
         lang_code = _visible_language_code(language)
         prompt_path = output / f"{source_stem}_prompt_{lang_code}.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
@@ -2321,12 +2341,15 @@ def _project_archive_by_language(project_id: str, languages: list[str]) -> dict[
 def _announcement_translation_prompt(project: dict[str, Any], language: str, project_prompt: str, lookup: dict[str, Any]) -> str:
     spec = language_spec(language)
     missing = lookup.get("missing_terms") or []
+    missing_for_prompt = missing[:80]
+    if len(missing) > len(missing_for_prompt):
+        missing_for_prompt.append({"note": f"{len(missing) - len(missing_for_prompt)} missing terms omitted from prompt context; see lookup workbook for full list"})
     return (
         f"{project_prompt.strip()}\n\n"
         f"Announcement translation task: translate Chinese game external announcement text into {spec.prompt_name}.\n"
         "Use the provided term_hits when present. Preserve IDs, placeholders, tags, dates, numbers, line breaks and JSONL row order.\n"
         "Return JSONL only: {\"id\": string, \"translation\": string}. Do not use browser translation, online MT, or machine-translation aggregators.\n"
-        f"Terms missing target translation and requiring human review: {json.dumps(missing, ensure_ascii=False)}\n"
+        f"Terms missing target translation and requiring human review: {json.dumps(missing_for_prompt, ensure_ascii=False)}\n"
     ).strip()
 
 
@@ -3328,6 +3351,12 @@ def _glossary_candidate_translation_prompt(project: dict[str, Any], rows: list[d
     spec = language_spec(language)
     profile = project.get("profile") or {}
     prompt_text = str((profile.get("prompts_by_language") or {}).get(language) or project.get("prompt_text") or "").strip()
+    prompt_text = _manage_project_prompt_context(prompt_text, load_settings())
+    profile_summary = {
+        key: profile.get(key)
+        for key in ("game_type", "target_audience", "content_scope", "translation_style", "tone", "language_assets")
+        if profile.get(key)
+    }
     existing_terms = [
         {"source": term.get("source"), "target": term.get("target"), "target_alt": term.get("target_alt")}
         for term in db.list_glossary_terms(project["id"], language=language)[:200]
@@ -3344,7 +3373,7 @@ def _glossary_candidate_translation_prompt(project: dict[str, Any], rows: list[d
         f"{term_instruction}"
         "Keep UI terms concise and consistent with existing glossary.\n\n"
         f"Project: {project.get('name', '')}\n"
-        f"Profile: {json.dumps(profile, ensure_ascii=False)}\n"
+        f"Profile: {json.dumps(profile_summary, ensure_ascii=False)}\n"
         f"Project prompt:\n{prompt_text}\n\n"
         f"Existing glossary examples:\n{json.dumps(existing_terms, ensure_ascii=False)}\n\n"
         f"Candidates:\n" + "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
@@ -5174,7 +5203,10 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
 
 
 def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-    prompt = str(project.get("prompt_text") or "").strip()
+    language = require_supported_language(run.get("language") or "en")
+    profile = project.get("profile") or {}
+    prompt = str((profile.get("prompts_by_language") or {}).get(language) or project.get("prompt_text") or "").strip()
+    prompt = _manage_project_prompt_context(prompt, load_settings())
     harness = read_project_harness(project["id"])
     return (
         "你是游戏本地化 QA 修复模型。请根据项目提示词、项目规则、术语要求和 QA 问题，"
@@ -5497,6 +5529,8 @@ async def _translate_rows_with_orchestration(
     confirm_api_budget: bool = False,
 ) -> list[dict[str, Any]]:
     batch_size = max(1, min(int(batch_size or settings.get("batch_size") or 90), 200))
+    provider_prompt = _manage_project_prompt_context(project_prompt, settings)
+    context_summary = _project_context_summary(project_prompt, settings)
     cancel_path = _translation_cancel_path(work_dir)
     if not (cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)()) and cancel_path.exists():
         cancel_path.unlink()
@@ -5504,9 +5538,17 @@ async def _translate_rows_with_orchestration(
     batches_dir = work_dir / f"batches_{batch_size}"
     manifest = _load_or_create_batch_manifest(manifest_path, rows, project_prompt, settings, batch_size, language)
     batches_dir.mkdir(parents=True, exist_ok=True)
+    manifest["project_context"] = context_summary
     manifest["max_concurrent_batches"] = max(1, min(int(settings.get("max_concurrent_batches") or 2), 4))
     manifest["updated_at"] = db.now_iso()
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    if context_summary.get("trimmed"):
+        db.add_event(
+            run_id,
+            "project context trimmed before provider call: "
+            f"{context_summary.get('original_estimated_tokens')} -> {context_summary.get('managed_estimated_tokens')} estimated tokens",
+            level="warning",
+        )
 
     budget_warning_tokens = int(settings.get("api_budget_warning_tokens") or 1000000)
     estimated_total = int(manifest.get("estimated_total_input_tokens") or 0)
@@ -5586,9 +5628,9 @@ async def _translate_rows_with_orchestration(
                 await persist_manifest(current_batch=batch_index, rate_wait=wait_seconds)
             db.add_event(run_id, f"translating batch {batch_index}/{len(manifest.get('batches') or [])}: rows={len(batch)}, attempt={attempt}/{max_attempts}")
             try:
-                prompt = project_prompt
+                prompt = provider_prompt
                 if attempt > 1:
-                    prompt = f"{project_prompt}\n\nRepair request: previous output for this batch failed local validation. Return the full corrected batch only, preserving IDs, order, placeholders, tags, entities, and newlines."
+                    prompt = f"{provider_prompt}\n\nRepair request: previous output for this batch failed local validation. Return the full corrected batch only, preserving IDs, order, placeholders, tags, entities, and newlines."
                 items = await translate_batch(batch, settings, prompt)
                 batch_output = [{"id": item.id, "translation": item.translation} for item in items]
                 write_jsonl(raw_response_path, batch_output)
@@ -5740,7 +5782,9 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
     harness_snapshot = snapshots["harness_snapshot"]
     prompt_path = snapshots["prompt_path"]
     if reference_snapshot and reference_snapshot.get("context"):
-        prompt = f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}"
+        raw_prompt = f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}"
+        settings = load_settings()
+        prompt = _manage_project_prompt_context(raw_prompt, settings)
         prompt_path = snapshot_dir / "compiled_project_harness_prompt_with_quick_refs.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
         prompt_snapshot = db.add_artifact(
@@ -5755,6 +5799,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
                 "source": "project_prompt_harness_and_quick_references",
                 "language": language,
                 "reference_artifact_ids": metadata.get("reference_artifact_ids") or [],
+                "context_budget": _project_context_summary(raw_prompt, settings),
             },
         )
 

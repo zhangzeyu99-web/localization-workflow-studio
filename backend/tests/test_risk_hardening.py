@@ -44,6 +44,66 @@ def test_manifest_invalidates_when_source_language_prompt_or_settings_change() -
     assert not workflow._manifest_matches_rows(manifest, rows, "Prompt A", base_settings, 1, "ko")
 
 
+def test_context_cap_keeps_project_prompt_under_batch_budget() -> None:
+    rows = [{"id": 1, "source": "开始游戏"}]
+    long_prompt = "项目规则开始\n" + ("超长项目背景 " * 2000) + "\n输出协议：只返回 JSONL"
+    settings = {
+        **DEFAULT_SETTINGS,
+        "provider": "mock",
+        "batch_size": 1,
+        "max_batch_input_tokens": 1000,
+        "max_project_context_tokens": 240,
+    }
+
+    manifest = workflow._build_batch_manifest(rows, long_prompt, settings, batch_size=1, language="en")
+
+    context = manifest["project_context"]
+    assert context["trimmed"] is True
+    assert context["managed_estimated_tokens"] <= 260
+    assert context["original_estimated_tokens"] > context["managed_estimated_tokens"]
+    assert all(batch["estimated_input_tokens"] <= settings["max_batch_input_tokens"] for batch in manifest["batches"])
+
+
+def test_orchestrator_passes_managed_project_context_to_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = db.insert_project("Managed Context", "QA", "", "馃幃")
+    run = db.insert_run(project["id"], "translation", "en", metadata={})
+    rows = [{"id": 1, "source": "寮€濮?{count}"}]
+    long_prompt = "项目规则开始\n" + ("超长项目背景 " * 2000) + "\n输出协议：只返回 JSONL"
+    settings = {
+        **DEFAULT_SETTINGS,
+        "provider": "mock",
+        "batch_size": 1,
+        "max_batch_input_tokens": 1000,
+        "max_project_context_tokens": 240,
+        "api_budget_warning_tokens": 20_000_000,
+    }
+    captured: dict[str, Any] = {}
+
+    async def fake_translate_batch(batch: list[dict[str, Any]], provider_settings: dict[str, Any], project_prompt: str) -> list[TranslationItem]:
+        _ = provider_settings
+        captured["prompt"] = project_prompt
+        return [TranslationItem(id=row["id"], translation="Translated {count}") for row in batch]
+
+    monkeypatch.setattr(workflow, "translate_batch", fake_translate_batch)
+
+    result = asyncio.run(
+        workflow._translate_rows_with_orchestration(
+            run_id=run["id"],
+            rows=rows,
+            settings=settings,
+            project_prompt=long_prompt,
+            work_dir=tmp_path,
+            batch_size=1,
+            language="en",
+            confirm_api_budget=True,
+        )
+    )
+
+    assert result[0]["translation"] == "Translated {count}"
+    assert workflow._estimate_text_tokens(captured["prompt"]) <= 260
+    assert "[context trimmed:" in captured["prompt"]
+
+
 def test_manifest_fingerprint_mismatch_does_not_reuse_completed_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project = db.insert_project("Fingerprint", "QA", "", "🎮")
     run = db.insert_run(project["id"], "translation", "en", metadata={})
