@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.5.1 - 2026-06-04
+
+- Added project-scoped quick tasks and announcement translation workflow support, including glossary extraction, constraint lookup, AI-response import, QA/apply/deliver shells, and EN/KR/JP-oriented delivery handling.
+- Expanded multilingual asset handling with wide glossary/archive views, strong search, language-column controls, pagination, KR/JP display codes, and centralized language configuration through `/api/languages`.
+- Hardened long-text AI orchestration with persistent batch fingerprints, local job leases, resumable/cancelable progress, provider rate limiting, and budget-aware batch execution.
+- Consolidated provider calls so OpenAI uses Responses, Anthropic uses Messages, semantic QA/AI supplement/project analysis share one provider seam, and Google/external machine-translation paths remain absent.
+- Hardened repository/runtime operations with streaming upload limits, SQLite foreign keys/indexes/dedupe, unified delivery naming helpers, frontend module extraction, and guardrail tests.
+- Verified with backend tests, workflow harness tests, Ruff, frontend build, Playwright E2E, restart smoke, and forbidden-machine-translation scanning.
+
 ## 0.5.0 - 2026-06-03
 
 - Reworked the public README around external-user value, live demo access, screenshots, quick start, safety boundaries, and quality gates.

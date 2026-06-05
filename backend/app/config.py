@@ -24,11 +24,56 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "model": "gpt-5.5",
     "reasoning_effort": "medium",
     "batch_size": 90,
+    "max_concurrent_batches": 2,
+    "max_requests_per_minute": 12,
+    "max_estimated_tokens_per_minute": 120000,
+    "max_batch_input_tokens": 12000,
+    "max_project_context_tokens": 6000,
+    "max_quick_reference_context_tokens": 2000,
+    "api_budget_warning_tokens": 1000000,
+    "max_batch_attempts": 3,
+    "provider_timeout_seconds": 120,
     "multimodal": {
         "images": True,
         "pdf": True,
         "video": False,
         "audio": False,
+    },
+}
+
+LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
+    "fast": {
+        "batch_size": 100,
+        "max_concurrent_batches": 2,
+        "max_requests_per_minute": 16,
+        "max_estimated_tokens_per_minute": 160000,
+        "max_batch_input_tokens": 10000,
+        "max_project_context_tokens": 4000,
+        "api_budget_warning_tokens": 800000,
+        "max_batch_attempts": 2,
+        "provider_timeout_seconds": 120,
+    },
+    "balanced": {
+        "batch_size": 90,
+        "max_concurrent_batches": 2,
+        "max_requests_per_minute": 12,
+        "max_estimated_tokens_per_minute": 120000,
+        "max_batch_input_tokens": 12000,
+        "max_project_context_tokens": 6000,
+        "api_budget_warning_tokens": 1000000,
+        "max_batch_attempts": 3,
+        "provider_timeout_seconds": 120,
+    },
+    "deep": {
+        "batch_size": 60,
+        "max_concurrent_batches": 1,
+        "max_requests_per_minute": 8,
+        "max_estimated_tokens_per_minute": 90000,
+        "max_batch_input_tokens": 16000,
+        "max_project_context_tokens": 8000,
+        "api_budget_warning_tokens": 1500000,
+        "max_batch_attempts": 3,
+        "provider_timeout_seconds": 180,
     },
 }
 
@@ -131,6 +176,7 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         payload["model"] = payload.get("model") or "mock-localization"
         payload["reasoning_effort"] = "none"
         payload["protocol"] = "mock"
+        _normalize_long_text_settings(payload)
         return payload
 
     preset = str(payload.get("preset") or DEFAULT_SETTINGS["preset"])
@@ -143,4 +189,12 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     payload["base_url"] = selected["base_url"]
     payload["max_output_tokens"] = selected["max_output_tokens"]
     payload["protocol"] = "responses" if provider == "openai" else "messages"
+    _normalize_long_text_settings(payload)
     return payload
+
+
+def _normalize_long_text_settings(payload: dict[str, Any]) -> None:
+    preset = str(payload.get("preset") or DEFAULT_SETTINGS["preset"])
+    profile = LONG_TEXT_PRESET_DEFAULTS.get(preset, LONG_TEXT_PRESET_DEFAULTS["balanced"])
+    for key, value in profile.items():
+        payload[key] = value

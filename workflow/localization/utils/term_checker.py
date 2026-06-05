@@ -6,7 +6,7 @@ Layer 2: Check grammar correctness (capitalization, plurals, articles).
 import re
 from dataclasses import dataclass
 
-from utils.text_normalize import strip_tags_and_vars, normalize_escapes
+from utils.text_normalize import strip_tags_and_vars
 
 ROMANIZED_NAME_RESIDUES = {
     '巨石阵': ['jushizhen'],
@@ -39,18 +39,20 @@ BUILTIN_NAME_TERM_LOOKUP = {
         '玫瑰湖': {'primary': 'Danau Mawar', 'variants': []},
         '蓝石堤': {'primary': 'Tanggul Batu Biru', 'variants': []},
     },
+    'ko': {},
+    'ja': {},
 }
 
 TERM_ALIASES = {
-    'atk': ['attack', 'attacks', 'attacked', 'attacking'],
-    'dmg': ['damage', 'damages'],
+    'atk': ['attack', 'attacks', 'attacked', 'attacking', 'serangan', 'menyerang'],
+    'dmg': ['damage', 'damages', 'kerusakan'],
     'def': ['defense', 'defence'],
     'hp': ['health', 'hit points'],
     'role': ['character', 'characters'],
     'heroes': ['hero'],
     'hero': ['heroes'],
     'events': ['event', 'activity', 'activities'],
-    'event': ['events', 'activity', 'activities'],
+    'event': ['events', 'activity', 'activities', 'acara'],
     'upgrade': ['level up', 'level-up', 'leveled up', 'leveling up', 'levelled up', 'levelling up'],
     'upgrading': ['leveling up', 'levelling up', 'leveled up', 'levelled up', 'level-up'],
     'use': ['using', 'used', 'uses'],
@@ -67,7 +69,7 @@ TERM_ALIASES = {
     'purchase': ['buy', 'purchased', 'buying', 'purchasing'],
     'claim': ['claimed', 'collect', 'collected', 'receive', 'received', 'redeem', 'redeemed'],
     'march': ['deploy', 'deployed', 'deploying', 'marching', 'expedition', 'expeditions', 'proceed'],
-    'faq': ['help', 'helps', 'helping', 'assist', 'assists', 'assistance'],
+    'faq': ['help', 'helps', 'helping', 'assist', 'assists', 'assistance', 'bantuan', 'membantu', 'dibantu', 'tolong'],
     'speedup': ['accelerate', 'accelerated', 'accelerating', 'boost', 'boosts', 'boosted', 'boosting'],
     'recover': ['recovered', 'recovery', 'restore', 'restored', 'restoring', 'regenerate', 'regenerated', 'regenerating'],
     'get': ['acquire', 'acquired', 'acquiring', 'obtain', 'obtained', 'obtaining', 'earn', 'earned', 'retrieve', 'retrieved'],
@@ -77,13 +79,9 @@ TERM_ALIASES = {
     'pembelian': ['beli', 'membeli', 'dibeli'],
     'pengaturan': ['atur', 'diatur', 'mengatur', 'tetapkan', 'ditetapkan'],
     'pasukan': ['berbaris', 'tim', 'antre', 'formasi'],
-    'event': ['acara'],
     'pahlawan': ['hero'],
-    'faq': ['help', 'bantuan', 'membantu', 'dibantu', 'tolong'],
     'tingkatkan': ['ditingkatkan', 'peningkatan', 'naik level'],
     'meningkatkan': ['ditingkatkan', 'peningkatan', 'naik level'],
-    'dmg': ['damage', 'damages', 'kerusakan'],
-    'atk': ['attack', 'attacks', 'attacked', 'attacking', 'serangan', 'menyerang'],
 }
 
 
@@ -408,14 +406,16 @@ def check_term_hit(
     original: str,
     translation: str,
     term_lookup: dict,
+    lang: str = 'en',
 ) -> list[TermCheckResult]:
     """Check if standard terms appear in the translation.
 
     Args:
         row_id: Row identifier
         original: Chinese source text
-        translation: English translation
-        term_lookup: Dict of {chinese_term: english_term}
+        translation: target translation
+        term_lookup: Dict of {chinese_term: target_term}
+        lang: Target language code.
     """
     results = []
 
@@ -437,7 +437,7 @@ def check_term_hit(
         if romanized_results:
             results.extend(romanized_results)
             continue
-        search_terms = _expand_search_terms(accepted_terms)
+        search_terms = _expand_search_terms(accepted_terms) if lang in {'en', 'idn'} else accepted_terms
 
         # Layer 1: term hit detection
         found = False
@@ -452,7 +452,7 @@ def check_term_hit(
         if not found:
             # Check for partial matches or common variants
             en_words = primary_term.split()
-            if len(en_words) > 1:
+            if lang in {'en', 'idn'} and len(en_words) > 1:
                 # Multi-word term: check if any words appear
                 hits = sum(1 for w in en_words if w.lower() in translation.lower())
                 if hits > 0 and hits < len(en_words):
@@ -488,7 +488,7 @@ def check_term_hit(
                 ))
         else:
             # Optional Layer 2: capitalization checks (default disabled)
-            if enforce_case and matched_expected:
+            if lang == 'en' and enforce_case and matched_expected:
                 cap_results = _check_capitalization(matched_expected, translation, row_id, cn_term)
                 results.extend(cap_results)
 
@@ -498,9 +498,12 @@ def check_term_hit(
 def check_chinese_residue(
     row_id: int,
     translation: str,
+    lang: str = 'en',
 ) -> list[TermCheckResult]:
     """Check for residual Chinese characters in translation."""
     results = []
+    if lang == 'ja':
+        return results
     translation = str(translation)
     cn_chars = re.findall(r'[\u4e00-\u9fa5]+', translation)
     if cn_chars:

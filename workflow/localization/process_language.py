@@ -24,7 +24,7 @@ from utils.variable_checker import check_all as check_variables
 from utils.term_checker import check_term_hit, check_chinese_residue, merge_builtin_name_terms
 from utils.pattern_detector import detect_patterns
 from utils.ui_detector import is_ui_text
-from utils.ai_checker import prepare_all_batches, apply_corrections
+from utils.ai_checker import prepare_all_batches
 from utils.text_normalize import repair_translation_surface
 from utils.ui_length_checker import assess_ui_length, check_ui_length
 from utils.readability_checker import check_readability
@@ -154,6 +154,14 @@ LANG_TERM_PATTERNS = {
     'idn': {
         'primary': [r'印尼语', r'印度尼西亚语', r'indonesian', r'bahasa indonesia'],
         'variant': [r'印尼语2', r'印度尼西亚语2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'ko': {
+        'primary': [r'^ko$', r'^kr$', r'korean', r'韩语', r'韓語', r'한국어'],
+        'variant': [r'^ko2$', r'^kr2$', r'ko\s*2', r'kr\s*2', r'korean2', r'韩语2', r'韓語2', r'한국어2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'ja': {
+        'primary': [r'^ja$', r'^jp$', r'japanese', r'日语', r'日語', r'日本語'],
+        'variant': [r'^ja2$', r'^jp2$', r'ja\s*2', r'japanese2', r'日语2', r'日語2', r'日本語2', r'补充形式', r'另一词性', r'动词译法'],
     },
 }
 
@@ -291,11 +299,11 @@ def _run_surface_fixes(states: dict[RowId, RowState], auto_fix: bool, lang: str)
             state.review_confidence = 0.95
 
 
-def _run_term_checks(states: dict[RowId, RowState], term_lookup: dict, auto_fix: bool):
+def _run_term_checks(states: dict[RowId, RowState], term_lookup: dict, auto_fix: bool, lang: str):
     if not term_lookup:
         return
     for state in states.values():
-        for r in check_term_hit(state.row_id, state.original, state.fixed_translation, term_lookup):
+        for r in check_term_hit(state.row_id, state.original, state.fixed_translation, term_lookup, lang=lang):
             state.issues.append(r)
             if auto_fix and r.auto_fix and r.confidence >= 0.8:
                 _safe_apply_fix(state, r.auto_fix, f"术语修复: {r.message}")
@@ -306,9 +314,9 @@ def _run_term_checks(states: dict[RowId, RowState], term_lookup: dict, auto_fix:
                 state.review_confidence = r.confidence
 
 
-def _run_chinese_residue_checks(states: dict[RowId, RowState]):
+def _run_chinese_residue_checks(states: dict[RowId, RowState], lang: str):
     for state in states.values():
-        for r in check_chinese_residue(state.row_id, state.fixed_translation):
+        for r in check_chinese_residue(state.row_id, state.fixed_translation, lang=lang):
             state.issues.append(r)
             state.needs_human_review = True
             state.human_review_reason = r.message
@@ -771,27 +779,27 @@ def run_machine_review(
     if skipped:
         print(f"       (跳过 {skipped} 行缺少有效 ID)")
 
-    print(f"[2/9] 加载术语库")
+    print("[2/9] 加载术语库")
     term_lookup = _load_term_base(term_base_path, lang=lang)
     print(f"       {len(term_lookup)} 条术语" if term_lookup else "       (无术语库)")
 
-    print(f"[3/9] 变量 & 标签检查")
+    print("[3/9] 变量 & 标签检查")
     _run_surface_fixes(states, auto_fix, lang)
     _run_variable_checks(states, auto_fix)
 
-    print(f"[4/9] 术语检查")
-    _run_term_checks(states, term_lookup, auto_fix)
+    print("[4/9] 术语检查")
+    _run_term_checks(states, term_lookup, auto_fix, lang)
 
-    print(f"[5/9] 句式一致性检查")
+    print("[5/9] 句式一致性检查")
     groups = _run_pattern_checks(states, auto_fix)
 
-    print(f"[6/9] 中文残留检查")
-    _run_chinese_residue_checks(states)
+    print("[6/9] 中文残留检查")
+    _run_chinese_residue_checks(states, lang)
 
-    print(f"[7/9] UI文本识别")
+    print("[7/9] UI文本识别")
     _run_ui_detection(states)
 
-    print(f"[8/9] UI长度预算检查")
+    print("[8/9] UI长度预算检查")
     _run_ui_length_checks(states, lang)
 
     print("[9/9] 可读缩写/截断词检查")

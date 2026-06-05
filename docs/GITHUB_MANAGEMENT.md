@@ -111,6 +111,7 @@ PR 模板位于 `.github/pull_request_template.md`。
 - `VERSION`
 - `backend/app/main.py`
 - `frontend/package.json`
+- `frontend/package-lock.json`
 
 规则：
 
@@ -121,8 +122,8 @@ PR 模板位于 `.github/pull_request_template.md`。
 打 tag：
 
 ```powershell
-git tag -a v0.4.10 -m "Release v0.4.10"
-git push origin v0.4.10
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
 ## Release checklist

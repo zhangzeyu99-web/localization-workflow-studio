@@ -38,6 +38,16 @@ def _write_term_workbook(path: Path) -> None:
     wb.save(path)
 
 
+def _write_korean_language_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "KO"])
+    ws.append(["btn.claim", "\u9886\u53d6\u5956\u52b1", ""])
+    ws.append(["msg.welcome", "\u6b22\u8fce\u56de\u6765\uff0c{playerName}", ""])
+    wb.save(path)
+
+
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text(
         "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
@@ -313,6 +323,43 @@ class TranslationHarnessTests(unittest.TestCase):
             )
 
             self.assertEqual(applied.row_count, 3)
+
+    def test_prepare_and_apply_support_korean_target_column_and_string_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "ko.xlsx"
+            out_dir = tmp_path / "out"
+            _write_korean_language_workbook(lang_path)
+
+            prepared = prepare_translation_harness(lang_path, lang="ko", output_dir=out_dir)
+
+            self.assertEqual(prepared.manifest["language"], "ko")
+            self.assertEqual(prepared.manifest["row_ids"], ["btn.claim", "msg.welcome"])
+
+            response_path = tmp_path / "translation_response.jsonl"
+            _write_jsonl(
+                response_path,
+                [
+                    {"id": "btn.claim", "translation": "보상 받기"},
+                    {"id": "msg.welcome", "translation": "{playerName}님, 다시 오신 것을 환영합니다"},
+                ],
+            )
+            applied = apply_translation_response(
+                input_path=lang_path,
+                manifest_path=prepared.manifest_path,
+                response_path=response_path,
+                output_dir=out_dir,
+                lang="ko",
+            )
+
+            wb = load_workbook(applied.final_workbook_path, read_only=True, data_only=False)
+            try:
+                ws = wb["Language"]
+                self.assertEqual(ws.cell(2, 3).value, "보상 받기")
+                self.assertIn("{playerName}", ws.cell(3, 3).value)
+            finally:
+                wb.close()
+            self.assertEqual(applied.cache_path.name, "ko.jsonl")
 
 
 if __name__ == "__main__":

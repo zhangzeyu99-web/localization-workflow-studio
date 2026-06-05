@@ -7,11 +7,11 @@ Detects:
 - Tag order/nesting issues
 """
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from utils.text_normalize import (
     normalize_escapes, extract_vars, extract_bbcode_opens,
-    extract_bbcode_closes, count_newlines, BBCODE_OPEN,
+    extract_bbcode_closes, count_newlines,
 )
 
 

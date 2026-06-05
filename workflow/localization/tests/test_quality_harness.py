@@ -238,6 +238,78 @@ class QualityHarnessTests(unittest.TestCase):
             self.assertEqual(result.issue_counts["workbook_scan_empty"], 1)
             self.assertEqual(result.issues[0]["check_type"], "workbook_scan_empty")
 
+    def test_scan_workbook_uses_japanese_column_and_allows_kanji(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ja_language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "JA"])
+            ws.append([1, "领取奖励", "報酬を受け取る"])
+            wb.save(path)
+
+            result = scan_workbook(path, lang="ja")
+
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.rows_scanned, 1)
+            self.assertEqual(result.issue_counts["chinese_residue"], 0)
+
+    def test_scan_workbook_uses_korean_term_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "ko_language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "KO"])
+            ws.append([1, "战机升级", "Fighter upgrade"])
+            wb.save(workbook_path)
+
+            term_path = Path(tmp) / "terms.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "术语表"
+            ws.append(["CN", "KO", "KO2", "分类"])
+            ws.append(["战机", "전투기", "", "系统名"])
+            wb.save(term_path)
+
+            result = scan_workbook(workbook_path, lang="ko", term_base=term_path)
+
+            self.assertFalse(result.passed)
+            self.assertEqual(result.issue_counts["term_missing"], 1)
+
+    def test_scan_workbook_accepts_jp_and_kr_header_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ja_path = Path(tmp) / "ja_language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "Notes", "JP"])
+            ws.append([1, "领取奖励", 123, "報酬を受け取る"])
+            wb.save(ja_path)
+
+            ja_result = scan_workbook(ja_path, lang="ja")
+
+            self.assertTrue(ja_result.passed, ja_result.issues)
+            self.assertEqual(ja_result.rows_scanned, 1)
+
+            ko_path = Path(tmp) / "ko_language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "Notes", "KR"])
+            ws.append([1, "战机升级", 123, "Fighter upgrade"])
+            wb.save(ko_path)
+
+            term_path = Path(tmp) / "terms.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Lookup"
+            ws.append(["CN", "KR", "KR2", "分类"])
+            ws.append(["战机", "전투기", "", "系统名"])
+            wb.save(term_path)
+
+            ko_result = scan_workbook(ko_path, lang="ko", term_base=term_path)
+
+            self.assertEqual(ko_result.rows_scanned, 1)
+            self.assertFalse(ko_result.passed)
+            self.assertEqual(ko_result.issue_counts["term_missing"], 1)
+
     def test_scan_workbook_skips_glossary_sheet(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "with_glossary.xlsx"

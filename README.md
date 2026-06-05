@@ -46,6 +46,7 @@ The hosted GitHub Pages demo is static and read-only. It does not upload files, 
 - Builds project profiles from game context, reference material, and glossary data.
 - Generates translation prompts with project rules, terminology, placeholders, tags, and UI length hints.
 - Converts Excel language tables into batchable workpacks for AI-assisted translation.
+- Runs project-scoped quick tasks and announcement translation workflows for long-form game operations text.
 - Blocks mock or missing-provider output from being treated as real delivery.
 - Runs rule-based QA for placeholders, tags, line breaks, terminology, readability, and UI length.
 - Supports manual fix loops before final delivery.
@@ -207,7 +208,7 @@ npm run e2e
 
 ## Version
 
-Current version: `0.5.0`
+Current version: `0.5.1`
 
 Version references are maintained in:
 

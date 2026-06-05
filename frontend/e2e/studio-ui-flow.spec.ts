@@ -7,6 +7,7 @@ import path from 'node:path'
 const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:15173'
 const sourceWorkbook = process.env.E2E_SOURCE_WORKBOOK ?? path.resolve('..', 'examples', 'synthetic-language.xlsx')
 const fileName = (value: string) => path.basename(value.replace(/\\/g, '/'))
+const fileStem = (value: string) => fileName(value).replace(/\.[^.]+$/, '')
 const inlineStatus = (page: any, text: string) => page.locator('.inline-status', { hasText: text })
 
 test.use({ acceptDownloads: true })
@@ -37,7 +38,7 @@ test('user can complete the EN localization workflow from project tabs', async (
 
   await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 15000 })
   await expect(page.getByText('累计任务')).toBeVisible()
-  await expect(page.getByText('累计归档条数')).toBeVisible()
+  await expect(page.getByText('CN 归档源文')).toBeVisible()
   await expect(page.getByRole('button', { name: projectName })).toBeVisible()
 
   await page.getByText('编辑项目元信息 / 重新生成输入').click()
@@ -52,14 +53,15 @@ test('user can complete the EN localization workflow from project tabs', async (
   await expect(page.getByText('只返回 JSONL')).toBeVisible()
 
   await page.getByRole('button', { name: '📚 术语表' }).click()
-  await page.getByPlaceholder('ID').fill('T-1')
-  await page.getByPlaceholder('CN').fill('战机')
+  await page.locator('input[name="term_key"]').fill('T-1')
+  await page.locator('input[name="source"]').fill('战机')
   await page.locator('input[name="target"]').fill('Warplane')
   await page.locator('input[name="target_alt"]').fill('Fighter')
-  await page.getByPlaceholder('分类').fill('unit')
-  await page.getByPlaceholder('备注').fill('E2E manual glossary assertion')
-  await page.getByRole('button', { name: '+ 新增' }).click()
+  await page.locator('input[name="category"]').fill('unit')
+  await page.locator('input[name="note"]').fill('E2E manual glossary assertion')
+  await page.getByRole('button', { name: '+ 新增 EN' }).click()
   await expect(inlineStatus(page, '词条已新增')).toBeVisible()
+  await page.getByTestId('glossary-search').fill('战机')
   const glossaryRow = page.locator('.glossary-table tbody tr').first()
   await expect(glossaryRow.getByText('战机')).toBeVisible()
   await expect(glossaryRow.getByText('Warplane')).toBeVisible()
@@ -81,7 +83,7 @@ test('user can complete the EN localization workflow from project tabs', async (
 
   await page.getByRole('button', { name: '⚡ 翻译' }).click()
   await page.locator('label.upload-box', { hasText: '上传待翻译 workbook' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
-  await expect(page.locator('.selected-input span', { hasText: fileName(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
+  await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeEnabled()
   await page.getByTestId('formal-translate').click()
   await expect(inlineStatus(page, 'EN 翻译和 QA 已通过，最终产物已归档。')).toBeVisible({ timeout: 120000 })
@@ -115,9 +117,77 @@ test('real project formal translation is blocked while provider is mock', async 
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '⚡ 翻译' }).click()
   await page.locator('label.upload-box', { hasText: '上传待翻译 workbook' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
-  await expect(page.locator('.selected-input span', { hasText: fileName(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
+  await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeDisabled()
   await expect(page.getByText('真实项目禁止用 mock 假装完成')).toBeVisible()
+})
+
+test('new translation task exposes the full supported language set', async ({ page, request }) => {
+  const projectName = `E2E Full Languages ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'language-ui', description: 'Full language selector smoke.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '🚀 启动新翻译任务' }).click()
+  await page.getByRole('button', { name: '6 目标语言' }).click()
+
+  for (const label of [
+    'EN 英语',
+    'KR 韩语',
+    'JP 日语',
+    'FR 法语',
+    'DE 德语',
+    'RU 俄语',
+    'IT 意大利语',
+    'ES 西班牙语',
+    'PT 葡萄牙语',
+    'TR 土耳其语',
+    'ID 印尼语',
+    'TH 泰语',
+    'AR 阿拉伯语',
+  ]) {
+    await expect(page.getByRole('button', { name: label })).toBeVisible()
+  }
+  await expect(page.getByText('其他语言未开放')).toHaveCount(0)
+})
+
+test('quick task creates a project-scoped QA run without nine step workflow', async ({ page, request }) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-quick-task-'))
+  const workbook = path.join(root, 'quick-translated.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "CN", "EN"])
+ws.append(["btn.claim", "\\u9886\\u53d6\\u5956\\u52b1", "Claim Reward"])
+ws.append(["msg.welcome", "\\u6b22\\u8fce\\u56de\\u6765 {playerName}", "Welcome back, {playerName}"])
+wb.save(r"${workbook.replace(/\\/g, '\\\\')}")
+wb.close()
+`])
+  const projectName = `E2E Quick Task ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'quick-task', description: 'Quick task smoke.' },
+  }).then((response) => response.json())
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await expect(page.locator('.quick-steps')).toBeVisible()
+  await expect(page.locator('.steps-nav')).toHaveCount(0)
+  await page.getByTestId('quick-input-upload').locator('input[type="file"]').setInputFiles(workbook)
+  await expect(page.getByTestId('quick-reference-next')).toBeVisible({ timeout: 15000 })
+  await page.getByTestId('quick-reference-next').click()
+  await page.getByTestId('quick-objective-qa').click()
+  await page.getByTestId('quick-task-start').click()
+
+  await expect.poll(async () => {
+    const detail = await request.get(`${baseURL}/api/projects/${project.id}`).then((response) => response.json())
+    const run = (detail.runs || []).find((item: any) => item.metadata?.task_origin === 'quick_task')
+    return run?.status || ''
+  }, { timeout: 60000 }).toBe('passed')
 })
 
 test('quick workflow can preview and import glossary terms', async ({ page, request }) => {
@@ -145,7 +215,7 @@ wb.close()
   await page.getByRole('button', { name: '🚀 启动新翻译任务' }).click()
   await page.getByRole('button', { name: '3 术语表' }).click()
   await page.locator('label.upload-box', { hasText: '上传术语表 xlsx/csv/json' }).locator('input[type="file"]').setInputFiles(termWorkbook)
-  await expect(inlineStatus(page, `已上传：${fileName(termWorkbook)}`)).toBeVisible({ timeout: 15000 })
+  await expect(inlineStatus(page, `已上传：上传术语表｜${fileStem(termWorkbook)}`)).toBeVisible({ timeout: 15000 })
   await page.getByRole('button', { name: '预览术语' }).click()
   await expect(inlineStatus(page, '术语表预览完成：2 条')).toBeVisible({ timeout: 20000 })
   await page.getByRole('button', { name: '导入到项目术语' }).click()
@@ -160,6 +230,311 @@ wb.close()
     expect.objectContaining({ source: '战机', target: 'Warplane', target_alt: 'Fighter' }),
     expect.objectContaining({ source: '钻石', target: 'Diamonds', target_alt: 'Gems' }),
   ]))
+})
+
+test('project tabs show multilingual wide glossary and archive assets', async ({ page, request }) => {
+  const projectName = `E2E Wide Assets ${Date.now()}`
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'wide', description: 'Multilingual wide table smoke.' },
+  })
+  const project = await createResponse.json()
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'plane', source: '战机', target: 'Warplane', target_alt: 'Fighter', language: 'en', category: 'unit', note: 'wide' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'plane', source: '战机', target: '전투기', language: 'ko', category: 'unit', note: 'wide' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'plane', source: '战机', target: '戦闘機', language: 'ja', category: 'unit', note: 'wide' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { entry_key: 'claim', source: '领取奖励', target: 'Claim rewards', language: 'en', source_type: 'qa_passed' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { entry_key: 'claim', source: '领取奖励', target: '보상 수령', language: 'ko', source_type: 'qa_passed' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await expect(page.locator('.proj-head')).not.toContainText('当前目标语言')
+  await expect(page.locator('.proj-head .compact-lang-grid')).toHaveCount(0)
+  await expect(page.locator('.stat-grid')).toContainText('CN 术语概念')
+  await expect(page.locator('.stat-grid')).toContainText('EN 1 / KR 1 / +1')
+
+  await page.locator('.view-tabs .view-tab').nth(1).click()
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('EN')
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('EN2')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR2')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP2')
+  await page.getByTestId('glossary-display-lang-ko').click()
+  await page.getByTestId('glossary-display-lang-ja').click()
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('JP')
+  const glossaryRow = page.locator('.glossary-wide-table tbody tr', { hasText: '战机' }).first()
+  await expect(glossaryRow).toContainText('Warplane')
+  await expect(glossaryRow).toContainText('Fighter')
+  await expect(glossaryRow).toContainText('전투기')
+  await expect(glossaryRow).toContainText('戦闘機')
+
+  await page.locator('.view-tabs .view-tab').nth(4).click()
+  const archiveRow = page.locator('.translation-wide-table tbody tr', { hasText: '领取奖励' }).first()
+  await expect(page.locator('.translation-wide-table thead')).toContainText('EN')
+  await expect(page.locator('.translation-wide-table thead')).not.toContainText('KR')
+  await expect(page.locator('.translation-wide-table thead')).not.toContainText('JP')
+  await page.getByTestId('archive-display-lang-ko').click()
+  await expect(page.locator('.translation-wide-table thead')).toContainText('KR')
+  await expect(archiveRow).toContainText('Claim rewards')
+  await expect(archiveRow).toContainText('보상 수령')
+})
+
+test('wide glossary and archive support strong search, display languages, and 100 row paging', async ({ page, request }) => {
+  const projectName = `E2E Search Paging ${Date.now()}`
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'search-paging', description: 'Search and paging smoke.' },
+  })
+  const project = await createResponse.json()
+  for (let index = 0; index < 101; index += 1) {
+    const suffix = String(index).padStart(3, '0')
+    await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+      data: { term_key: `G-${suffix}`, source: `术语${suffix}`, target: `English Term ${suffix}`, target_alt: `Alt ${suffix}`, language: 'en', category: 'cat', note: 'paging' },
+    })
+    await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+      data: { entry_key: `A-${suffix}`, source: `归档${suffix}`, target: `Archive Text ${suffix}`, language: 'en', source_type: 'qa_passed', note: 'paging' },
+    })
+  }
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'G-042', source: '术语042', target: '한국어定位', language: 'ko', category: 'cat', note: 'paging' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { entry_key: 'A-042', source: '归档042', target: '보상定位', language: 'ko', source_type: 'qa_passed', note: 'paging' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.view-tabs .view-tab').nth(1).click()
+  await expect(page.locator('.glossary-wide-table tbody tr')).toHaveCount(100)
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR')
+  await page.getByTestId('glossary-page-next').click()
+  await expect(page.locator('.glossary-wide-table tbody tr')).toHaveCount(1)
+  await page.getByTestId('glossary-search').fill('한국어定位')
+  await expect(page.locator('.glossary-wide-table tbody tr')).toHaveCount(1)
+  await expect(page.locator('.glossary-wide-table tbody tr').first()).toContainText('术语042')
+  await page.getByTestId('glossary-display-lang-ko').click()
+  await expect(page.locator('.glossary-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.glossary-wide-table tbody tr').first()).toContainText('한국어定位')
+  await page.getByTestId('glossary-search').fill('G-100')
+  await expect(page.locator('.glossary-wide-table tbody tr')).toHaveCount(1)
+  await expect(page.locator('.glossary-wide-table tbody tr').first()).toContainText('术语100')
+  await page.getByTestId('glossary-search').fill('no-hit')
+  await expect(page.locator('.glossary-wide-table tbody')).toContainText('暂无匹配结果')
+
+  await page.locator('.view-tabs .view-tab').nth(4).click()
+  await expect(page.locator('.translation-wide-table tbody tr')).toHaveCount(100)
+  await expect(page.locator('.translation-wide-table thead')).not.toContainText('KR')
+  await page.getByTestId('archive-search').fill('보상定位')
+  await expect(page.locator('.translation-wide-table tbody tr')).toHaveCount(1)
+  await expect(page.locator('.translation-wide-table tbody tr').first()).toContainText('归档042')
+  await page.getByTestId('archive-display-lang-ko').click()
+  await expect(page.locator('.translation-wide-table thead')).toContainText('KR')
+  await expect(page.locator('.translation-wide-table tbody tr').first()).toContainText('보상定位')
+})
+
+test('project glossary import auto-detects EN KR JP into one wide row', async ({ page, request }) => {
+  const termWorkbook = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-wide-glossary-')), 'terms-wide.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Glossary"
+ws.append(["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"])
+ws.append(["W-1", "战机", "Warplane", "Fighter", "전투기", "戦闘機", "unit", "wide import"])
+ws.append(["W-2", "钻石", "Diamonds", "Gems", "다이아몬드", "", "currency", "wide import"])
+wb.save(sys.argv[1])
+wb.close()
+`, termWorkbook])
+
+  const projectName = `E2E Wide Import ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'wide-import', description: 'Wide import smoke.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.view-tabs .view-tab').nth(1).click()
+  await page.getByRole('button', { name: '导入 / 生成 / 导出' }).click()
+  await page.locator('label.upload-box', { hasText: '上传术语表 xlsx/csv/json' }).locator('input[type="file"]').setInputFiles(termWorkbook)
+  await expect(inlineStatus(page, `已上传：上传术语表｜${fileStem(termWorkbook)}`)).toBeVisible({ timeout: 15000 })
+  await page.getByRole('button', { name: '自动导入多语言术语' }).click()
+  await expect(inlineStatus(page, /术语表已导入：5 条/)).toBeVisible({ timeout: 20000 })
+
+  await page.getByTestId('glossary-display-lang-ko').click()
+  await page.getByTestId('glossary-display-lang-ja').click()
+  const wideRow = page.locator('.glossary-wide-table tbody tr', { hasText: '战机' }).first()
+  await expect(wideRow).toContainText('Warplane')
+  await expect(wideRow).toContainText('Fighter')
+  await expect(wideRow).toContainText('전투기')
+  await expect(wideRow).toContainText('戦闘機')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR2')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP2')
+})
+
+test('project announcement workflow extracts terms with AI supplement and prepares delivery', async ({ page, request }) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-announcement-supplement-'))
+  const languageTable = path.join(tempDir, 'announcement_language.xlsx')
+  const supplementResponse = path.join(tempDir, 'ai_supplement_response.json')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "CN", "EN"])
+ws.append(["T1", "\u79d8\u5883", "Trial Realm"])
+ws.append(["S1", "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218", "Unlock Astral Rift Challenge"])
+ws.append(["N1", "\u5b8c\u5168\u65e0\u5173\u7cfb\u7edf", "Unrelated System"])
+wb.save(sys.argv[1])
+wb.close()
+`, languageTable])
+  fs.writeFileSync(
+    supplementResponse,
+    JSON.stringify({
+      supplement_terms: [
+        {
+          cn: '\u661f\u754c\u88c2\u9699',
+          translations: { EN: 'Astral Rift' },
+          source_ids: ['S1'],
+          confidence: 'high',
+          reason: 'split from language-table sentence',
+          evidence_ids: ['S1'],
+          action: 'add_to_main',
+        },
+      ],
+    }),
+    'utf-8',
+  )
+
+  const projectName = `E2E Announcement Lookup ${Date.now()}`
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'RPG', description: 'Announcement lookup e2e.' },
+  })
+  const project = await createResponse.json()
+  await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { source: '\u79d8\u5883', target: 'Trial Realm', language: 'en', source_type: 'qa_passed' },
+  })
+  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=asset`, {
+    multipart: {
+      file: {
+        name: 'announcement_notice.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('\u672c\u6b21\u66f4\u65b0\u65b0\u589e\u79d8\u5883\u548c\u661f\u754c\u88c2\u9699\u73a9\u6cd5\uff0c\u5e76\u5f00\u653e\u7eb9\u7ae0\u7cfb\u7edf\u3002', 'utf-8'),
+      },
+    },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: /\u516c\u544a\u7ffb\u8bd1/ }).click()
+  await expect(page.getByRole('heading', { name: /\u516c\u544a\u7ffb\u8bd1/ })).toBeVisible()
+  await expect(page.locator('.panel-title', { hasText: '\u516c\u544a\u8d44\u6599' })).toBeVisible()
+  await expect(page.locator('.announcement-side')).toHaveCount(0)
+  await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  await page.locator('.check-row', { hasText: 'announcement_notice.txt' }).locator('input').check()
+  await page.getByRole('button', { name: '\u521b\u5efa\u516c\u544a\u4efb\u52a1' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u7ea6\u675f\u6765\u6e90' })).toBeVisible({ timeout: 20000 })
+  await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  await page.locator('label.upload-box', { hasText: /XLSX/ }).locator('input[type="file"]').setInputFiles(languageTable)
+  await expect(page.locator('.inline-status')).toContainText(fileStem(languageTable), { timeout: 15000 })
+  await expect(page.locator('.check-row', { hasText: fileStem(languageTable) }).locator('input')).toBeChecked()
+  await page.getByRole('button', { name: '\u8bc6\u522b\u8bed\u8a00\u4e0e\u7ea6\u675f' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u76ee\u6807\u8bed\u8a00' })).toBeVisible({ timeout: 20000 })
+  await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  await expect(page.locator('.announcement-panel .announcement-lang-card')).toHaveCount(0)
+  await expect(page.locator('.announcement-panel .announcement-language-chip')).toHaveCount(13)
+  await expect(page.locator('.announcement-panel')).not.toContainText('\u517c\u5bb9')
+  await expect(page.locator('.announcement-panel')).not.toContainText('KO')
+  await expect(page.locator('.announcement-panel')).not.toContainText('JA')
+  const langChips = page.locator('.announcement-panel .announcement-language-chip')
+  for (let index = 0; index < await langChips.count(); index += 1) {
+    const chip = langChips.nth(index)
+    const input = chip.locator('input[type="checkbox"]')
+    const label = await chip.innerText()
+    if (label.includes('EN')) {
+      if (!await input.isChecked()) await input.check()
+    } else if (await input.isChecked()) {
+      await input.uncheck()
+    }
+  }
+  await page.getByRole('button', { name: '\u786e\u8ba4\u76ee\u6807\u8bed\u8a00' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u672f\u8bed\u63d0\u53d6' })).toBeVisible({ timeout: 20000 })
+  await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  const aiSupplementToggle = page.locator('.check-row', { hasText: '\u9ed8\u8ba4\u542f\u7528 AI \u6f0f\u8bcd\u590d\u67e5' }).locator('input')
+  if (!await aiSupplementToggle.isChecked()) await aiSupplementToggle.check()
+  await page.locator('label.upload-box', { hasText: '\u4e0a\u4f20\u5916\u90e8 AI \u7ed3\u679c JSON' }).locator('input[type="file"]').setInputFiles(supplementResponse)
+  await expect(page.locator('.inline-status')).toContainText(fileStem(supplementResponse), { timeout: 15000 })
+  await page.getByRole('button', { name: '\u63d0\u53d6\u672f\u8bed\u5e76 AI \u590d\u67e5' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u8bd1\u6587\u53cd\u67e5' })).toBeVisible({ timeout: 30000 })
+  await page.locator('.announcement-steps .step-item').nth(3).click()
+  await expect(page.locator('.panel-title', { hasText: '\u672f\u8bed\u63d0\u53d6' })).toBeVisible()
+  const termsTable = page.locator('.announcement-terms-table')
+  await expect(termsTable.locator('tbody tr')).toHaveCount(2, { timeout: 30000 })
+  await expect(termsTable.locator('tbody tr').nth(0).locator('input').nth(1)).toHaveValue('\u79d8\u5883')
+  await expect(termsTable.locator('tbody tr').nth(1).locator('input').nth(1)).toHaveValue('\u661f\u754c\u88c2\u9699')
+  await expect(termsTable.locator('tbody tr').nth(1).locator('input').nth(2)).toHaveValue('Astral Rift')
+  await expect(page.getByRole('link', { name: '\u5bfc\u51fa XLSX' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '\u4e0b\u8f7d\u68c0\u67e5\u5305' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '\u4e0b\u8f7d AI \u62a5\u544a' })).toBeVisible()
+  await page.locator('.announcement-steps .step-item').nth(4).click()
+  await expect(page.locator('.panel-title', { hasText: '\u8bd1\u6587\u53cd\u67e5' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: '\u53cd\u67e5\u672f\u8bed\u8bd1\u6587' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u7ffb\u8bd1\u51c6\u5907' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: '\u751f\u6210\u7ffb\u8bd1\u51c6\u5907\u5305' }).click()
+  await expect(page.locator('.panel-title', { hasText: 'AI \u7ffb\u8bd1 / \u5bfc\u5165' })).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('.panel-desc', { hasText: '\u4e0d\u4f1a\u4f7f\u7528\u8c37\u6b4c\u673a\u7ffb' })).toBeVisible()
+  const processArtifacts = page.locator('.announcement-artifacts details.asset-list')
+  await processArtifacts.locator('summary', { hasText: '\u8fc7\u7a0b\u4ea7\u7269 / \u5ba1\u8ba1\u4ea7\u7269' }).click()
+  await expect(processArtifacts.getByRole('link', { name: /\u516c\u544a Workpack.*EN/ })).toBeVisible()
+  await expect(processArtifacts.getByRole('link', { name: /\u516c\u544a\u7ffb\u8bd1\u4e2d\u8f6c\u8868/ })).toBeVisible()
+
+  const taskResponse = await request.get(`${baseURL}/api/projects/${project.id}/announcement-tasks`)
+  const tasks = await taskResponse.json()
+  const task = tasks.find((item: { title: string }) => item.title === 'announcement_notice.txt')
+  expect(task).toBeTruthy()
+  const segments = task.metadata.segments as { id: string }[]
+  expect(segments.length).toBeGreaterThan(0)
+  const responseFile = path.join(tempDir, 'ai_response_en.jsonl')
+  fs.writeFileSync(
+    responseFile,
+    segments.map((segment) => JSON.stringify({
+      para_id: segment.id,
+      translation: 'Trial Realm and Astral Rift gameplay are now available, and the Emblem system is open.',
+    })).join('\n') + '\n',
+    'utf-8',
+  )
+
+  await page.locator('label.upload-box', { hasText: '\u4e0a\u4f20 ai_response_<lang>.jsonl' }).locator('input[type="file"]').setInputFiles(responseFile)
+  await expect(page.locator('.inline-status')).toContainText(fileStem(responseFile), { timeout: 15000 })
+  await page.getByRole('button', { name: '\u5bfc\u5165 AI response' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u6821\u5bf9\u56de\u586b' })).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: 'QA \u5e76\u56de\u586b\u540c\u683c\u5f0f\u6587\u4ef6' }).click()
+  await expect(page.locator('.panel-title', { hasText: '\u4ea4\u4ed8' })).toBeVisible({ timeout: 30000 })
+  await expect(page.getByRole('link', { name: /\u516c\u544a\u6210\u54c1.*EN/ })).toBeVisible()
+  await page.getByRole('button', { name: '\u751f\u6210\u4ea4\u4ed8\u603b\u5305' }).click()
+  await expect(page.getByRole('link', { name: /\u516c\u544a\u4ea4\u4ed8 ZIP/ })).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('.announcement-subflow-card', { hasText: 'EN' })).toContainText('delivered')
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await expect(page.locator('.announcement-project-panel .mini-lang')).toHaveCount(0)
+  await expect(page.locator('.announcement-project-panel')).not.toContainText('terms_ready')
+  await page.locator('.announcement-task-row', { hasText: 'announcement_notice.txt' }).getByRole('button', { name: '\u7ee7\u7eed' }).click()
+
+  const stepTitles = ['\u516c\u544a\u8d44\u6599', '\u7ea6\u675f\u6765\u6e90', '\u76ee\u6807\u8bed\u8a00', '\u672f\u8bed\u63d0\u53d6', '\u8bd1\u6587\u53cd\u67e5', '\u7ffb\u8bd1\u51c6\u5907', 'AI \u7ffb\u8bd1 / \u5bfc\u5165', '\u6821\u5bf9\u56de\u586b', '\u4ea4\u4ed8']
+  for (const [index, title] of stepTitles.entries()) {
+    await page.locator('.announcement-steps .step-item').nth(index).click()
+    await expect(page.locator('.panel-title', { hasText: title })).toBeVisible()
+  }
 })
 
 test('user can upload an existing translated workbook and run QA directly', async ({ page, request }) => {

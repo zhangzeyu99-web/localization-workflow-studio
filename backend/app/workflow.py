@@ -1,7 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -13,16 +15,46 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zipfile import ZipFile
+import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook, load_workbook
 
 from . import db
 from .config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, load_settings
-from .providers import translate_batch
+from .delivery_naming import safe_delivery_name, source_stem
+from .languages import ANNOUNCEMENT_LANGUAGE_ORDER, PROJECT_LANGUAGE_ORDER, alt_aliases, language_spec, normalize_language, require_supported_language, target_aliases, visible_language_code
+from .providers import call_text, translate_batch
+from .translation_batches import (
+    AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
+    build_batch_manifest as _build_batch_manifest,
+    cap_context_text as _cap_context_text,
+    estimate_row_tokens as _estimate_row_tokens,
+    estimate_text_tokens as _estimate_text_tokens,
+    load_or_create_batch_manifest as _load_or_create_batch_manifest,
+    manage_project_prompt_context as _manage_project_prompt_context,
+    manifest_matches_rows as _manifest_matches_rows,
+    project_context_summary as _project_context_summary,
+    provider_retry_delay_seconds as _provider_retry_delay_seconds,
+)
+
+__all__ = [
+    "_AsyncTokenRateLimiter",
+    "_build_batch_manifest",
+    "_cap_context_text",
+    "_estimate_row_tokens",
+    "_estimate_text_tokens",
+    "_load_or_create_batch_manifest",
+    "_manage_project_prompt_context",
+    "_manifest_matches_rows",
+    "_project_context_summary",
+    "_provider_retry_delay_seconds",
+]
 
 
 HARNESS_SCHEMA_VERSION = 1
+_GLOSSARY_EXTRACTOR_MODULE: Any | None = None
 GLOBAL_HARNESS_CONTRACT: dict[str, Any] = {
     "source": "global_harness",
     "workpack": "translation_workpack.jsonl",
@@ -33,6 +65,40 @@ GLOBAL_HARNESS_CONTRACT: dict[str, Any] = {
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 RowId = int | str
+LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
+AUTO_LANGUAGE_TARGET_ALIASES = {code: tuple(target_aliases(code)) for code in LANGUAGE_ORDER}
+AUTO_LANGUAGE_ALT_ALIASES = {code: tuple(alt_aliases(code)) for code in LANGUAGE_ORDER}
+_TARGET_DETECTION_ALIASES: dict[str, set[str]] = {
+    "en": {"en", "english"},
+    "ko": {"ko", "kr", "korean"},
+    "ja": {"ja", "jp", "japanese"},
+    "fr": {"fr", "fre", "french"},
+    "de": {"de", "ger", "german"},
+    "ru": {"ru", "rus", "russian"},
+    "it": {"it", "ita", "italian"},
+    "es": {"es", "spa", "spanish"},
+    "pt": {"pt", "pt-br", "ptbr", "por", "portuguese"},
+    "tr": {"tr", "tk", "tur", "turkish"},
+    "idn": {"idn", "ind", "indonesian", "bahasa", "bahasa indonesia"},
+    "th": {"th", "tha", "thai"},
+    "ar": {"ar", "ara", "arabic"},
+}
+_STRUCTURAL_TARGET_HEADERS = {
+    "id", "key", "编号", "序号",
+    "cn", "zh", "source", "original", "chinese", "term", "原文", "中文", "术语",
+    "category", "type", "分类", "类别", "类型",
+    "note", "notes", "comment", "备注",
+    "target", "translation", "译文",
+}
+
+
+def _looks_like_untranslated_seed(text: str, language: str) -> bool:
+    value = str(text or "")
+    if not _CJK_RE.search(value):
+        return False
+    if language == "ja":
+        return False
+    return True
 
 
 def project_dir(project_id: str) -> Path:
@@ -182,21 +248,24 @@ def _is_warplane_project(project: dict[str, Any], intro: str, material_labels: l
     return any(token in text for token in ("战机", "飞行射击", "导弹", "装备", "Warplane", "warplane"))
 
 
-def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: list[str]) -> dict[str, Any]:
+def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: list[str], target_language: str = "en") -> dict[str, Any]:
+    target_language = require_supported_language(target_language)
+    spec = language_spec(target_language)
     material_labels = _project_material_labels(project["id"])
     description = project.get("description", "") or intro or "；".join(asset_notes[:3])
     is_warplane = _is_warplane_project(project, intro, material_labels, asset_notes)
+    style_language = "英文" if target_language == "en" else spec.label
     if is_warplane:
         game_type = "科幻战机 / 飞行射击 / RPG养成"
         target_audience = "偏中重度、喜欢战机养成、战斗数值、装备强化和活动推进的移动端玩家。"
         content_scope = "战机、导弹、射击、弹幕等战斗内容；英雄、装备、技能、属性和战力成长；建造、升级、采集、生产等基地系统；角色剧情对话；活动、礼包和奖励。"
-        translation_style = "UI/玩法精简适配移动端；剧情自然、地道、通顺，参考美剧日常对白；整体语气冷静、利落、偏科幻军事；战机、装备、导弹、技能和战斗数值要专业清晰，避免可爱化、生活化或过度口语化。"
+        translation_style = f"翻译为自然{style_language}；UI/玩法精简适配移动端；剧情自然、地道、通顺，保留角色语气；整体语气冷静、利落、偏科幻军事；战机、装备、导弹、技能和战斗数值要专业清晰，避免可爱化、生活化或过度口语化。"
         tone = "冷静、利落、偏科幻军事"
     else:
         game_type = project.get("type", "") or "游戏本地化项目"
         target_audience = "目标语区游戏玩家；以当前项目描述和参考素材为准。"
         content_scope = description or "UI、系统、任务、道具、活动和剧情文本。"
-        translation_style = "准确翻译为自然英文；UI/按钮/任务短句清晰；剧情对话自然但不改设定；术语以项目术语表为准；保留变量、占位符、富文本标签、数字和换行。"
+        translation_style = f"准确翻译为自然{style_language}；UI/按钮/任务短句清晰；剧情对话自然但不改设定；术语以项目术语表为准；保留变量、占位符、富文本标签、数字和换行。"
         tone = "自然、准确、游戏 UI 友好"
     return {
         "project_name": project["name"],
@@ -210,22 +279,70 @@ def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: lis
         "content_scope": content_scope,
         "translation_style": translation_style,
         "language_assets": _language_assets_summary(project["id"]),
-        "target_language": "en",
+        "target_language": target_language,
+        "target_language_label": spec.label,
+        "target_language_name": spec.prompt_name,
         "tone": tone,
         "generated_date": db.now_iso()[:10],
+        "analysis_source": "template",
+    }
+
+
+def _project_analysis_provider_prompt(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any]) -> str:
+    return (
+        "You are analyzing source material for a game localization project.\n"
+        "Return strict JSON only. No markdown fences or prose.\n"
+        "Use the project intro and reference material semantically; do not invent lore not supported by the input.\n"
+        "Required JSON fields: game_type, target_audience, content_scope, translation_style, tone.\n\n"
+        f"Project name: {project.get('name', '')}\n"
+        f"Project type: {project.get('type', '')}\n"
+        f"Project description: {project.get('description', '')}\n"
+        f"Target language: {profile.get('target_language_name', profile.get('target_language', 'en'))}\n"
+        f"User intro:\n{intro}\n\n"
+        f"Reference material notes:\n{json.dumps(asset_notes, ensure_ascii=False, indent=2)}\n\n"
+        f"Template baseline:\n{json.dumps({key: profile.get(key, '') for key in ('game_type', 'target_audience', 'content_scope', 'translation_style', 'tone')}, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _apply_project_analysis_provider(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any]) -> dict[str, Any]:
+    settings = load_settings()
+    provider = str(settings.get("provider") or "mock")
+    if provider not in {"openai", "anthropic"} or not settings.get("api_key"):
+        return profile
+    prompt = _cap_context_text(_project_analysis_provider_prompt(project, intro, asset_notes, profile), 6000, "project analysis")
+    payload = _parse_semantic_qa_payload(_call_semantic_provider(settings, prompt))
+    if not isinstance(payload, dict):
+        raise ValueError("project analysis provider must return a JSON object")
+    updates: dict[str, str] = {}
+    for key in ("game_type", "target_audience", "content_scope", "translation_style", "tone"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            updates[key] = value
+    return {
+        **profile,
+        **updates,
+        "analysis_source": "provider",
+        "analysis_provider": provider,
+        "analysis_model": str(settings.get("model") or ""),
     }
 
 
 def _project_prompt_from_profile(profile: dict[str, Any]) -> str:
+    spec = language_spec(profile.get("target_language") or "en")
+    term_rule = (
+        f"关键术语以随附术语表为准，{spec.target_header} 为标准译法，{spec.alt_header} 为项目中稳定出现的手动适配译法；"
+        if spec.alt_header
+        else f"关键术语以随附术语表为准，{spec.target_header} 为标准译法；"
+    )
     return (
-        f"你是一位资深游戏本地化译者，正在翻译《{profile['project_name']}》这款{profile['game_type']}游戏。\n"
+        f"你是一位资深游戏本地化译者，正在将《{profile['project_name']}》这款{profile['game_type']}游戏翻译为{spec.label}（{spec.prompt_name}）。\n"
         "译文需符合以下要求：\n"
         "1. 游戏内容/UI/玩法说明尽量精简，适配移动游戏按钮、弹窗、任务、道具和奖励说明；\n"
         "2. 剧情对话必须自然、地道、通顺，保留角色语气、冲突、幽默和情绪，不要逐字直译；\n"
         f"3. 项目内容范围：{profile['content_scope']}\n"
         f"4. 译文风格：{profile['translation_style']}\n"
-        "5. 关键术语以随附术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法；\n"
-        "6. 已有英文译文代表项目历史用法；如现有译法不自然，可以优化，但不要破坏已固定的系统术语；\n"
+        f"5. {term_rule}\n"
+        f"6. 已有{spec.label}译文代表项目历史用法；如现有译法不自然，可以优化，但不要破坏已固定的系统术语；\n"
         "7. 保留所有游戏代码、变量、数字、换行、颜色标签、HTML/富文本标签和占位符，如 {0}、%s、<color> 等；\n"
         "8. 无法确认的专有名词或信息缺口用 [TBD] 标记，不要自行编造设定。\n"
         "输出协议：只返回 JSONL，每行包含 id 和 translation。"
@@ -275,18 +392,31 @@ def _save_generated_project_harness(project: dict[str, Any], profile: dict[str, 
     )
 
 
-def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[str]) -> tuple[Path, Path, Path, str]:
+def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[str], target_language: str = "en") -> tuple[Path, Path, Path, str]:
+    target_language = require_supported_language(target_language)
     root = project_dir(project["id"]) / "profile"
-    profile = _build_project_profile(project, intro, asset_notes)
+    profile = _build_project_profile(project, intro, asset_notes, target_language=target_language)
+    profile = _apply_project_analysis_provider(project, intro, asset_notes, profile)
     prompt = _project_prompt_from_profile(profile)
     _save_generated_project_harness(project, profile)
-    profile_path = root / "project_profile.json"
-    prompt_path = root / "translation_prompt.txt"
-    brief_path = root / "project_brief.md"
+    profile_path = root / f"project_profile_{target_language}.json"
+    prompt_path = root / f"translation_prompt_{target_language}.txt"
+    brief_path = root / f"project_brief_{target_language}.md"
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
     prompt_path.write_text(prompt, encoding="utf-8")
     brief_path.write_text(_project_brief_markdown(profile, prompt), encoding="utf-8")
-    db.update_project(project["id"], {"profile": profile, "prompt_text": prompt})
+    project_profile = dict(project.get("profile") or {})
+    prompts = dict(project_profile.get("prompts_by_language") or {})
+    prompts[target_language] = prompt
+    profiles = dict(project_profile.get("profiles_by_language") or {})
+    profiles[target_language] = profile
+    project_profile.update(profile if target_language == "en" else {})
+    project_profile["prompts_by_language"] = prompts
+    project_profile["profiles_by_language"] = profiles
+    updates: dict[str, Any] = {"profile": project_profile}
+    if target_language == "en" or not str(project.get("prompt_text") or "").strip():
+        updates["prompt_text"] = prompt
+    db.update_project(project["id"], updates)
     return profile_path, prompt_path, brief_path, prompt
 
 
@@ -299,30 +429,35 @@ def compile_project_harness_prompt(project: dict[str, Any], base_prompt: str, ou
             "Project Harness (project-specific; apply only to this project, do not generalize):\n"
             + "\n".join(project_parts)
         )
-    compiled = "\n\n".join(part for part in parts if part)
+    raw_compiled = "\n\n".join(part for part in parts if part)
+    settings = load_settings()
+    compiled = _manage_project_prompt_context(raw_compiled, settings)
     prompt_path = output_dir / "compiled_project_harness_prompt.txt"
     snapshot_path = output_dir / "project_harness_snapshot.json"
     snapshot = {
         "global_harness": GLOBAL_HARNESS_CONTRACT,
         "project_harness": harness,
         "summary": _harness_summary(harness),
+        "context_budget": _project_context_summary(raw_compiled, settings),
     }
     prompt_path.write_text(compiled, encoding="utf-8")
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     return prompt_path, snapshot_path, compiled, snapshot
 
 
-def create_project_glossary_snapshot(project_id: str, run_id: str, output_dir: Path | None = None) -> dict[str, Any]:
+def create_project_glossary_snapshot(project_id: str, run_id: str, output_dir: Path | None = None, language: str = "en") -> dict[str, Any]:
+    language = require_supported_language(language)
+    spec = language_spec(language)
     output = output_dir or run_dir(run_id) / "snapshots"
     output.mkdir(parents=True, exist_ok=True)
-    path = output / "project_glossary_snapshot.xlsx"
+    path = output / ("project_glossary_snapshot.xlsx" if language == "en" else f"project_glossary_snapshot_{language}.xlsx")
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["ID", "CN", "EN", "EN2", "分类", "备注"])
-    terms = db.list_glossary_terms(project_id)
+    ws.append(["ID", "CN", spec.target_header, *(["EN2"] if spec.alt_header else []), "分类", "备注"])
+    terms = db.list_glossary_terms(project_id, language=language)
     for term in reversed(terms):
-        ws.append(_glossary_export_row(term))
+        ws.append(_glossary_export_row(term, include_alt=bool(spec.alt_header)))
     wb.save(path)
     wb.close()
     return db.add_artifact(
@@ -333,17 +468,23 @@ def create_project_glossary_snapshot(project_id: str, run_id: str, output_dir: P
         run_id=run_id,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         origin="generated",
-        metadata={"term_count": len(terms), "source": "project_glossary"},
+        metadata={"term_count": len(terms), "source": "project_glossary", "language": language},
     )
 
 
-def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir: Path | None = None) -> dict[str, Any]:
+def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir: Path | None = None, language: str = "en") -> dict[str, Any]:
+    language = require_supported_language(language)
     project = db.get_project(project_id)
     output = output_dir or run_dir(run_id) / "snapshots"
     output.mkdir(parents=True, exist_ok=True)
-    prompt_path = project_dir(project_id) / "profile" / "translation_prompt.txt"
+    profile = project.get("profile") or {}
+    prompt_path = project_dir(project_id) / "profile" / f"translation_prompt_{language}.txt"
     if not prompt_path.exists():
-        write_project_prompt(project, project.get("description", ""), [])
+        prompt_text = str((profile.get("prompts_by_language") or {}).get(language) or "")
+        if prompt_text:
+            prompt_path.write_text(prompt_text, encoding="utf-8")
+        else:
+            write_project_prompt(project, project.get("description", ""), [], target_language=language)
     base_prompt = prompt_path.read_text(encoding="utf-8")
     compiled_path, harness_path, compiled_prompt, harness_snapshot = compile_project_harness_prompt(project, base_prompt, output)
     prompt_artifact = db.add_artifact(
@@ -354,7 +495,7 @@ def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir
         run_id=run_id,
         mime="text/plain",
         origin="generated",
-        metadata={"source": "project_prompt_and_harness"},
+        metadata={"source": "project_prompt_and_harness", "language": language},
     )
     harness_artifact = db.add_artifact(
         project_id,
@@ -364,7 +505,7 @@ def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir
         run_id=run_id,
         mime="application/json",
         origin="generated",
-        metadata={"source": "project_harness"},
+        metadata={"source": "project_harness", "language": language},
     )
     return {
         "prompt": compiled_prompt,
@@ -374,6 +515,94 @@ def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir
         "prompt_path": compiled_path,
         "harness_path": harness_path,
     }
+
+
+def _quick_reference_excerpt(artifact: dict[str, Any], max_chars: int = 5000) -> str:
+    path = Path(str(artifact.get("path") or ""))
+    if not path.exists():
+        return ""
+    suffix = path.suffix.lower()
+    try:
+        if suffix in {".txt", ".md", ".csv", ".json", ".jsonl"}:
+            return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+        if suffix in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+            wb = load_workbook(path, read_only=True, data_only=True)
+            try:
+                lines: list[str] = []
+                remaining = max_chars
+                for ws in wb.worksheets[:3]:
+                    lines.append(f"[Sheet] {ws.title}")
+                    for row in ws.iter_rows(max_row=16, values_only=True):
+                        text = " | ".join(str(cell).strip() for cell in row if cell not in (None, ""))
+                        if not text:
+                            continue
+                        lines.append(text)
+                        remaining -= len(text)
+                        if remaining <= 0:
+                            break
+                    if remaining <= 0:
+                        break
+                return "\n".join(lines)[:max_chars]
+            finally:
+                wb.close()
+    except Exception as exc:
+        return f"[reference read failed: {exc}]"
+    return f"[binary reference: {path.name}]"
+
+
+def create_quick_reference_snapshot(project_id: str, run_id: str, reference_artifact_ids: list[str] | None, output_dir: Path | None = None) -> dict[str, Any] | None:
+    ids = [str(item).strip() for item in (reference_artifact_ids or []) if str(item).strip()]
+    if not ids:
+        return None
+    output = output_dir or run_dir(run_id) / "snapshots"
+    output.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    context_parts = [
+        "Temporary reference material for this quick task only.",
+        "Use it as style/term/context guidance for this run. Do not treat it as permanent project memory unless the user imports it separately.",
+    ]
+    for artifact_id in ids:
+        artifact = db.get_artifact(artifact_id)
+        if artifact["project_id"] != project_id:
+            raise KeyError(artifact_id)
+        excerpt = _quick_reference_excerpt(artifact)
+        item = {
+            "id": artifact["id"],
+            "label": artifact.get("label", ""),
+            "kind": artifact.get("kind", ""),
+            "role": artifact.get("role", ""),
+            "origin": artifact.get("origin", ""),
+            "original_filename": (artifact.get("metadata") or {}).get("original_filename", ""),
+            "sha256": (artifact.get("metadata") or {}).get("sha256", ""),
+            "size": artifact.get("size", 0),
+            "excerpt": excerpt,
+        }
+        rows.append(item)
+        context_parts.append(f"\nReference: {item['original_filename'] or item['label']} ({item['kind']})\n{excerpt}")
+    snapshot_path = output / "quick_reference_snapshot.json"
+    snapshot = {"source": "quick_task_reference", "reference_artifact_ids": ids, "references": rows}
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    context = "\n".join(part for part in context_parts if part).strip()
+    settings = load_settings()
+    quick_ref_budget = max(500, int(settings.get("max_quick_reference_context_tokens") or 2000))
+    managed_context = _cap_context_text(context, quick_ref_budget, "quick task references")
+    context_summary = {
+        "original_estimated_tokens": _estimate_text_tokens(context),
+        "managed_estimated_tokens": _estimate_text_tokens(managed_context),
+        "max_quick_reference_context_tokens": quick_ref_budget,
+        "trimmed": managed_context != context,
+    }
+    artifact = db.add_artifact(
+        project_id,
+        "Quick task reference snapshot",
+        snapshot_path,
+        "quick_reference_snapshot",
+        run_id=run_id,
+        mime="application/json",
+        origin="generated",
+        metadata={"source": "quick_task_reference", "reference_artifact_ids": ids, "reference_count": len(rows), "context_budget": context_summary},
+    )
+    return {"artifact": artifact, "snapshot": snapshot, "context": managed_context, "context_budget": context_summary}
 
 
 def analyze_assets(artifact_ids: list[str], settings: dict[str, Any]) -> list[str]:
@@ -410,14 +639,2136 @@ def _text_asset_note(path: Path) -> str:
     return f"text_material:{compact[:800]}"
 
 
-def inspect_translation_readiness(artifact_id: str, batch_size: int | None = None) -> dict[str, Any]:
+def _read_lookup_text_file(path: Path) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _read_lookup_csv_text(path: Path) -> str:
+    raw = _read_lookup_text_file(path)
+    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+    rows = csv.reader(raw.splitlines(), delimiter=delimiter)
+    cells: list[str] = []
+    for row in rows:
+        cells.extend(str(cell).strip() for cell in row if str(cell).strip())
+    return "\n".join(cells)
+
+
+def _read_lookup_xlsx_text(path: Path) -> str:
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        cells: list[str] = []
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(values_only=True):
+                cells.extend(str(cell).strip() for cell in row if cell not in (None, ""))
+        return "\n".join(cells)
+    finally:
+        wb.close()
+
+
+def _read_lookup_docx_text(path: Path) -> str:
+    with ZipFile(path) as zf:
+        xml = zf.read("word/document.xml")
+    root = ET.fromstring(xml)
+    texts = [node.text for node in root.iter() if node.tag.endswith("}t") and node.text]
+    return "\n".join(texts)
+
+
+def _read_lookup_material_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".txt", ".md", ".markdown", ".json"}:
+        return _read_lookup_text_file(path)
+    if suffix in {".csv", ".tsv"}:
+        return _read_lookup_csv_text(path)
+    if suffix in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return _read_lookup_xlsx_text(path)
+    if suffix == ".docx":
+        return _read_lookup_docx_text(path)
+    return ""
+
+
+def _compact_lookup_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _count_lookup_hits(text: str, needle: str) -> tuple[int, int]:
+    if not needle:
+        return (0, -1)
+    count = 0
+    first = -1
+    start = 0
+    while True:
+        index = text.find(needle, start)
+        if index < 0:
+            break
+        if first < 0:
+            first = index
+        count += 1
+        start = index + max(1, len(needle))
+    return (count, first)
+
+
+def _suppress_overlapping_lookup_hits(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    accepted: list[dict[str, Any]] = []
+    spans: list[tuple[int, int]] = []
+    for row in sorted(rows, key=lambda item: (int(item.get("first_position") or 0), -len(str(item.get("source") or "")), str(item.get("source") or ""))):
+        start = int(row.get("first_position") or 0)
+        end = start + len(str(row.get("source") or ""))
+        if any(start < existing_end and end > existing_start for existing_start, existing_end in spans):
+            continue
+        accepted.append(row)
+        spans.append((start, end))
+    return accepted
+
+
+def _rank_translation_lookup_source(source_type: str) -> int:
+    priority = {
+        "qa_passed": 0,
+        "qa_final": 0,
+        "manual": 1,
+        "imported": 2,
+        "archive": 2,
+        "translation_archive": 2,
+    }
+    return priority.get(str(source_type or "").strip().lower(), 3)
+
+
+def _lookup_terms(text: str, terms: list[dict[str, Any]], *, min_length: int, limit: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for term in terms:
+        source = str(term.get("source") or "").strip()
+        if len(source) < min_length or not (str(term.get("target") or "").strip() or str(term.get("target_alt") or "").strip()):
+            continue
+        hit_count, first_position = _count_lookup_hits(text, source)
+        if not hit_count:
+            continue
+        rows.append(
+            {
+                "id": term.get("id"),
+                "term_key": term.get("term_key", ""),
+                "source": source,
+                "target": term.get("target", ""),
+                "target_alt": term.get("target_alt", ""),
+                "language": term.get("language", "en"),
+                "category": term.get("category", ""),
+                "note": term.get("note", ""),
+                "source_type": term.get("source_type", ""),
+                "first_position": first_position,
+                "hit_count": hit_count,
+            }
+        )
+    return _suppress_overlapping_lookup_hits(rows)[:limit]
+
+
+def _lookup_translation_entries(text: str, entries: list[dict[str, Any]], *, min_length: int, limit: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        source = str(entry.get("source") or "").strip()
+        if len(source) < min_length or not (str(entry.get("target") or "").strip() or str(entry.get("target_alt") or "").strip()):
+            continue
+        hit_count, first_position = _count_lookup_hits(text, source)
+        if not hit_count:
+            continue
+        rows.append(
+            {
+                "id": entry.get("id"),
+                "entry_key": entry.get("entry_key", ""),
+                "source": source,
+                "target": entry.get("target", ""),
+                "target_alt": entry.get("target_alt", ""),
+                "language": entry.get("language", "en"),
+                "sheet": entry.get("sheet", ""),
+                "row_number": entry.get("row_number", 0),
+                "note": entry.get("note", ""),
+                "source_type": entry.get("source_type", ""),
+                "source_artifact_id": entry.get("source_artifact_id", ""),
+                "first_position": first_position,
+                "hit_count": hit_count,
+                "_priority": _rank_translation_lookup_source(str(entry.get("source_type") or "")),
+            }
+        )
+    rows.sort(key=lambda item: (int(item.get("first_position") or 0), item.get("_priority", 3), -len(str(item.get("source") or "")), str(item.get("source") or "")))
+    accepted = _suppress_overlapping_lookup_hits(rows)[:limit]
+    for row in accepted:
+        row.pop("_priority", None)
+    return accepted
+
+
+def _announcement_prompt_context(project: dict[str, Any], language: str, terms: list[dict[str, Any]], translations: list[dict[str, Any]]) -> str:
+    spec = language_spec(language)
+    lines = [
+        "公告翻译检索上下文（不含正文译文）",
+        f"项目：{project['name']}",
+        f"目标语言：{spec.prompt_name} / {spec.target_header}",
+        "用途：供下游长文本翻译工作流使用；必须优先遵守项目术语和 QA 通过译文参考。",
+        "",
+        "【命中的项目术语】",
+    ]
+    if terms:
+        for term in terms:
+            alt = f" / {term['target_alt']}" if term.get("target_alt") else ""
+            note = f"（{term['note']}）" if term.get("note") else ""
+            lines.append(f"- {term['source']} => {term['target']}{alt}{note}")
+    else:
+        lines.append("- 无命中；当前语言缺少术语约束或公告文本未命中现有术语。")
+    lines.extend(["", "【命中的 QA/归档译文参考】"])
+    if translations:
+        for entry in translations:
+            alt = f" / {entry['target_alt']}" if entry.get("target_alt") else ""
+            meta = f"{entry.get('sheet') or 'Archive'}:{entry.get('row_number') or ''}".rstrip(":")
+            lines.append(f"- {entry['source']} => {entry['target']}{alt}（{meta} / {entry.get('source_type') or 'archive'}）")
+    else:
+        lines.append("- 无命中；下游翻译需仅依赖项目提示词和通用语言质量要求。")
+    lines.extend(
+        [
+            "",
+            "【硬性要求】",
+            "- 不修改变量、占位符、HTML/富文本标签、数字、专名和换行结构。",
+            "- 术语命中时使用上述译法；同一概念在整篇公告中保持一致。",
+            "- 本检索包不代表公告正文已翻译，正文翻译和 QA 由后续工作流完成。",
+        ]
+    )
+    return "\n".join(lines).strip() + "\n"
+
+
+def _write_announcement_lookup_workbook(path: Path, project: dict[str, Any], language: str, text: str, terms: list[dict[str, Any]], translations: list[dict[str, Any]], prompt_context: str) -> None:
+    spec = language_spec(language)
+    wb = Workbook()
+    overview = wb.active
+    overview.title = "Overview"
+    overview.append(["Field", "Value"])
+    overview.append(["Project", project["name"]])
+    overview.append(["Project ID", project["id"]])
+    overview.append(["Language", language])
+    overview.append(["Target header", spec.target_header])
+    overview.append(["Text chars", len(text)])
+    overview.append(["Matched terms", len(terms)])
+    overview.append(["Matched translations", len(translations)])
+
+    term_sheet = wb.create_sheet("MatchedTerms")
+    term_sheet.append(["CN", spec.target_header, *([spec.alt_header] if spec.alt_header else []), "分类", "备注", "first_position", "hit_count", "term_id"])
+    for term in terms:
+        row = [term["source"], term["target"]]
+        if spec.alt_header:
+            row.append(term.get("target_alt", ""))
+        row.extend([term.get("category", ""), term.get("note", ""), term["first_position"], term["hit_count"], term.get("id", "")])
+        term_sheet.append(row)
+
+    translation_sheet = wb.create_sheet("MatchedTranslations")
+    translation_sheet.append(["ID", "CN", spec.target_header, *([spec.alt_header] if spec.alt_header else []), "source_type", "sheet", "row_number", "first_position", "hit_count", "entry_id"])
+    for entry in translations:
+        row = [entry.get("entry_key", ""), entry["source"], entry["target"]]
+        if spec.alt_header:
+            row.append(entry.get("target_alt", ""))
+        row.extend([entry.get("source_type", ""), entry.get("sheet", ""), entry.get("row_number", 0), entry["first_position"], entry["hit_count"], entry.get("id", "")])
+        translation_sheet.append(row)
+
+    context_sheet = wb.create_sheet("PromptContext")
+    context_sheet.append(["Prompt context"])
+    for line in prompt_context.splitlines():
+        context_sheet.append([line])
+    wb.save(path)
+    wb.close()
+
+
+def run_announcement_lookup(project_id: str, request: Any) -> dict[str, Any]:
+    project = db.get_project(project_id)
+    language = require_supported_language(getattr(request, "language", "en") or "en")
+    material_ids = list(getattr(request, "material_artifact_ids", []) or [])
+    direct_text = str(getattr(request, "text", "") or "")
+    if not material_ids and not direct_text.strip():
+        raise ValueError("announcement lookup requires material_artifact_ids or text")
+
+    text_parts: list[str] = []
+    materials: list[dict[str, Any]] = []
+    if direct_text.strip():
+        text_parts.append(direct_text)
+    for artifact_id in material_ids:
+        artifact = db.get_artifact(artifact_id)
+        if artifact["project_id"] != project_id:
+            raise KeyError(artifact_id)
+        path = Path(artifact["path"])
+        material_text = _read_lookup_material_text(path) if path.exists() else ""
+        text_parts.append(material_text)
+        materials.append({"id": artifact["id"], "label": artifact.get("label", ""), "kind": artifact.get("kind", ""), "chars": len(material_text)})
+
+    text = _compact_lookup_text("\n".join(text_parts))
+    if not text:
+        raise ValueError("announcement lookup text is empty")
+
+    max_terms = max(0, min(int(getattr(request, "max_terms", 300) or 300), 1000))
+    max_translation_rows = max(0, min(int(getattr(request, "max_translation_rows", 300) or 300), 1000))
+    min_term_length = max(1, int(getattr(request, "min_term_length", 2) or 2))
+    min_translation_length = max(1, int(getattr(request, "min_translation_length", 4) or 4))
+
+    run = db.insert_run(
+        project_id,
+        kind="announcement_lookup",
+        language=language,
+        metadata={
+            "request": {
+                "material_artifact_ids": material_ids,
+                "has_inline_text": bool(direct_text.strip()),
+                "language": language,
+                "include_glossary": bool(getattr(request, "include_glossary", True)),
+                "include_translation_archive": bool(getattr(request, "include_translation_archive", True)),
+            }
+        },
+    )
+    db.add_event(run["id"], "announcement lookup started")
+    try:
+        glossary_rows = db.list_glossary_terms(project_id, language=language) if bool(getattr(request, "include_glossary", True)) else []
+        archive_rows = db.list_translation_entries(project_id, language=language) if bool(getattr(request, "include_translation_archive", True)) else []
+        matched_terms = _lookup_terms(text, glossary_rows, min_length=min_term_length, limit=max_terms)
+        matched_translations = _lookup_translation_entries(text, archive_rows, min_length=min_translation_length, limit=max_translation_rows)
+        text_fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        constraint_status = "available" if matched_terms or matched_translations else "missing"
+        summary = {
+            "language": language,
+            "text_chars": len(text),
+            "text_fingerprint": text_fingerprint,
+            "materials": len(materials),
+            "matched_terms": len(matched_terms),
+            "matched_translations": len(matched_translations),
+            "constraint_status": constraint_status,
+        }
+        prompt_context = _announcement_prompt_context(project, language, matched_terms, matched_translations)
+        manifest = {
+            "kind": "announcement_lookup",
+            "project_id": project_id,
+            "project_name": project["name"],
+            "language": language,
+            "materials": materials,
+            "text_fingerprint": text_fingerprint,
+            "limits": {
+                "min_term_length": min_term_length,
+                "min_translation_length": min_translation_length,
+                "max_terms": max_terms,
+                "max_translation_rows": max_translation_rows,
+            },
+            "summary": summary,
+            "matched_terms": matched_terms,
+            "matched_translations": matched_translations,
+        }
+
+        output = run_dir(run["id"]) / "announcement_lookup"
+        output.mkdir(parents=True, exist_ok=True)
+        lang_code = _visible_language_code(language)
+        workbook_path = output / f"announcement_lookup_{lang_code}.xlsx"
+        manifest_path = output / f"announcement_lookup_manifest_{lang_code}.json"
+        prompt_path = output / f"announcement_lookup_prompt_context_{lang_code}.txt"
+        _write_announcement_lookup_workbook(workbook_path, project, language, text, matched_terms, matched_translations, prompt_context)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        prompt_path.write_text(prompt_context, encoding="utf-8")
+
+        artifact_metadata = {"language": language, "summary": summary, "text_fingerprint": text_fingerprint}
+        artifacts = [
+            db.add_artifact(project_id, f"Announcement lookup workbook ({lang_code})", workbook_path, "announcement_lookup_workbook", run_id=run["id"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", metadata=artifact_metadata),
+            db.add_artifact(project_id, f"Announcement lookup manifest ({lang_code})", manifest_path, "announcement_lookup_manifest", run_id=run["id"], mime="application/json", metadata=artifact_metadata),
+            db.add_artifact(project_id, f"Announcement lookup prompt context ({lang_code})", prompt_path, "announcement_lookup_prompt_context", run_id=run["id"], mime="text/plain", metadata=artifact_metadata),
+        ]
+        db.add_event(run["id"], f"announcement lookup matched terms={len(matched_terms)} translations={len(matched_translations)}")
+        run = db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary, "manifest_path": str(manifest_path)})
+        return {"run": run, "summary": summary, "artifacts": artifacts, "manifest": manifest}
+    except Exception as exc:
+        db.add_event(run["id"], f"announcement lookup failed: {exc}", level="error")
+        db.update_run(run["id"], status="failed", metadata={**run.get("metadata", {}), "error": str(exc)})
+        raise
+
+
+ANNOUNCEMENT_STEP = {
+    "source": 1,
+    "constraints": 2,
+    "languages": 3,
+    "terms": 4,
+    "lookup": 5,
+    "prepare": 6,
+    "translate": 7,
+    "apply": 8,
+    "deliver": 9,
+}
+
+
+def list_announcement_tasks(project_id: str) -> list[dict[str, Any]]:
+    db.get_project(project_id)
+    return [_hydrate_announcement_task(task) for task in db.list_announcement_tasks(project_id)]
+
+
+def get_announcement_task(task_id: str) -> dict[str, Any]:
+    return _hydrate_announcement_task(db.get_announcement_task(task_id))
+
+
+def cancel_announcement_task(task_id: str) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    metadata["canceled_at"] = db.now_iso()
+    task = db.update_announcement_task(
+        task_id,
+        status="canceled",
+        current_step=task.get("current_step") or 1,
+        metadata=metadata,
+    )
+    for item in task.get("languages") or []:
+        lang_meta = dict(item.get("metadata") or {})
+        lang_meta["canceled_at"] = metadata["canceled_at"]
+        db.upsert_announcement_task_language(
+            task_id,
+            task["project_id"],
+            item["language"],
+            status="canceled",
+            current_step=item.get("current_step") or task.get("current_step") or 1,
+            metadata=lang_meta,
+        )
+    return {"task": _hydrate_announcement_task(db.get_announcement_task(task_id))}
+
+
+def cancel_announcement_translation_task(task_id: str) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    metadata["translation_cancel_requested_at"] = db.now_iso()
+    metadata["reason"] = "announcement_translation_canceled"
+    task = db.update_announcement_task(
+        task_id,
+        status="prepared",
+        current_step=ANNOUNCEMENT_STEP["translate"],
+        metadata=metadata,
+    )
+    for item in task.get("languages") or []:
+        if item.get("status") in {"queued", "running"}:
+            lang_meta = dict(item.get("metadata") or {})
+            lang_meta["translation_cancel_requested_at"] = metadata["translation_cancel_requested_at"]
+            db.upsert_announcement_task_language(
+                task_id,
+                task["project_id"],
+                str(item["language"]),
+                status="prepared",
+                current_step=ANNOUNCEMENT_STEP["translate"],
+                metadata=lang_meta,
+            )
+    return {"task": _hydrate_announcement_task(db.get_announcement_task(task_id))}
+
+
+def create_announcement_task(project_id: str, request: Any) -> dict[str, Any]:
+    project = db.get_project(project_id)
+    source_artifact_id = str(getattr(request, "source_artifact_id", "") or "").strip()
+    text = str(getattr(request, "text", "") or "")
+    if not source_artifact_id and text.strip():
+        source_artifact_id = _create_inline_announcement_source(project_id, text, getattr(request, "title", "") or "announcement")["id"]
+    if not source_artifact_id:
+        raise ValueError("announcement task requires source_artifact_id or text")
+    source_artifact = db.get_artifact(source_artifact_id)
+    if source_artifact["project_id"] != project_id:
+        raise KeyError(source_artifact_id)
+    source_format = _announcement_source_format(Path(source_artifact["path"]))
+    if source_format not in {"docx", "txt", "xlsx"}:
+        raise ValueError("announcement source must be DOCX, TXT, or XLSX")
+
+    metadata = {
+        "project_name": project["name"],
+        "output_policy": str(getattr(request, "output_policy", "same_format") or "same_format"),
+        "language_table_artifact_ids": list(getattr(request, "language_table_artifact_ids", []) or []),
+        "constraint_artifact_ids": list(getattr(request, "constraint_artifact_ids", []) or []),
+        "include_project_archive": bool(getattr(request, "include_project_archive", True)),
+        "source": _announcement_source_manifest(source_artifact),
+    }
+    detected_languages = _detect_announcement_constraint_languages(project_id, metadata)
+    requested_languages = _normalize_announcement_languages(getattr(request, "languages", []) or [], fallback=detected_languages)
+    task = db.insert_announcement_task(
+        project_id,
+        {
+            "title": str(getattr(request, "title", "") or source_artifact.get("label") or "公告翻译").strip(),
+            "source_artifact_id": source_artifact_id,
+            "source_format": source_format,
+            "selected_languages": requested_languages,
+            "status": "source_ready",
+            "current_step": ANNOUNCEMENT_STEP["constraints"],
+            "metadata": {**metadata, "detected_languages": detected_languages},
+        },
+    )
+    return _hydrate_announcement_task(task)
+
+
+def inspect_announcement_constraints(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    metadata = _merge_announcement_constraint_request(metadata, request)
+    detected = _detect_announcement_constraint_languages(task["project_id"], metadata)
+    selected = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=detected)
+    metadata["detected_languages"] = detected
+    metadata["language_constraints"] = _announcement_language_constraint_summary(task["project_id"], metadata, selected)
+    confirmed = bool(getattr(request, "confirm_languages", False))
+    next_step = ANNOUNCEMENT_STEP["terms"] if confirmed else ANNOUNCEMENT_STEP["languages"]
+    next_status = "languages_ready" if confirmed else "constraints_ready" if detected or selected else "missing_constraints"
+    task = db.update_announcement_task(
+        task_id,
+        status=next_status,
+        current_step=next_step,
+        selected_languages=selected,
+        metadata=metadata,
+    )
+    for language in selected:
+        db.upsert_announcement_task_language(task_id, task["project_id"], language, status=next_status, current_step=next_step)
+    return {"task": _hydrate_announcement_task(task), "detected_languages": detected, "selected_languages": selected, "constraints": metadata["language_constraints"]}
+
+
+def extract_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    project_id = task["project_id"]
+    metadata = _merge_announcement_constraint_request(_announcement_task_metadata(task), request)
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("detected_languages") or [])
+    source_text = _announcement_task_source_text(task)
+    if not source_text:
+        raise ValueError("announcement source text is empty")
+    min_hit = max(1, int(getattr(request, "announcement_min_hit", 1) or 1))
+    candidates = _announcement_constraint_rows(project_id, metadata, languages)
+    rows = _select_announcement_constraint_rows(source_text, candidates, languages, min_hit=min_hit)
+
+    run = db.insert_run(project_id, kind="announcement_terms", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages})
+    db.update_run(run["id"], status="running")
+    output = run_dir(run["id"]) / "announcement_terms"
+    output.mkdir(parents=True, exist_ok=True)
+    base = _announcement_task_source_stem(task)
+    stamp = _today_stamp()
+    workbook_path = output / f"{base}_announcement_terms_{stamp}.xlsx"
+    manifest_path = output / f"{base}_announcement_terms_manifest_{stamp}.json"
+    validation_path = output / f"{base}_announcement_terms_validation_{stamp}.md"
+    rows, ai_summary = _apply_announcement_ai_supplement(
+        project_id=project_id,
+        output_dir=output,
+        base_name=base,
+        source_text=source_text,
+        rows=rows,
+        candidates=candidates,
+        languages=languages,
+        request=request,
+        project_name=db.get_project(project_id).get("name", ""),
+    )
+    _write_announcement_terms_workbook(workbook_path, rows, languages)
+    summary = {"terms": len(rows), "languages": languages, "source_chars": len(source_text)}
+    if ai_summary:
+        summary["ai_supplement"] = {
+            key: ai_summary[key]
+            for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "project_name_translation_missing")
+        }
+    manifest = {"kind": "announcement_terms", "task_id": task_id, "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    validation_path.write_text(_announcement_terms_validation(summary, rows, languages), encoding="utf-8")
+    artifacts = [
+        db.add_artifact(project_id, "公告术语表", workbook_path, "announcement_terms_workbook", run_id=run["id"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", metadata={"task_id": task_id, "languages": languages}),
+        db.add_artifact(project_id, "公告术语 manifest", manifest_path, "announcement_terms_manifest", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages}),
+        db.add_artifact(project_id, "公告术语 validation", validation_path, "announcement_terms_validation", run_id=run["id"], mime="text/markdown", metadata={"task_id": task_id, "languages": languages}),
+    ]
+    if ai_summary:
+        packet_artifact = db.add_artifact(project_id, "公告 AI 补充包", Path(ai_summary["packet_path"]), "announcement_ai_supplement_packet", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages})
+        response_artifact = None
+        if ai_summary.get("response_path"):
+            response_artifact = db.add_artifact(project_id, "公告 AI 补充响应", Path(ai_summary["response_path"]), "announcement_ai_supplement_response", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages, "provider": ai_summary.get("provider", "")})
+        report_artifact = db.add_artifact(project_id, "公告 AI 补充报告", Path(ai_summary["report_path"]), "announcement_ai_supplement_report", run_id=run["id"], mime="text/markdown", metadata={"task_id": task_id, "languages": languages})
+        artifacts.extend([artifact for artifact in (packet_artifact, response_artifact, report_artifact) if artifact])
+        summary["ai_supplement"]["packet_artifact_id"] = packet_artifact["id"]
+        if response_artifact:
+            summary["ai_supplement"]["response_artifact_id"] = response_artifact["id"]
+        summary["ai_supplement"]["report_artifact_id"] = report_artifact["id"]
+    metadata.update({"languages": languages, "terms": rows, "terms_artifact_id": artifacts[0]["id"], "terms_manifest_artifact_id": artifacts[1]["id"], "terms_validation_artifact_id": artifacts[2]["id"], "terms_summary": summary})
+    if ai_summary:
+        metadata["ai_supplement"] = summary["ai_supplement"]
+    task = db.update_announcement_task(task_id, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], selected_languages=languages, metadata=metadata)
+    for language in languages:
+        missing = sum(1 for row in rows if not str((row.get("translations") or {}).get(language) or "").strip())
+        db.upsert_announcement_task_language(task_id, project_id, language, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], metadata={"terms": len(rows), "missing_terms": missing})
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary, "task_id": task_id})
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
+
+
+def import_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    project_id = task["project_id"]
+    metadata = _announcement_task_metadata(task)
+    source_artifact_id = str(getattr(request, "terms_artifact_id", "") or "").strip()
+    requested_languages = list(getattr(request, "languages", []) or [])
+    raw_terms = list(getattr(request, "terms", []) or [])
+
+    rows: list[dict[str, Any]] = []
+    detected_languages: list[str] = []
+    if source_artifact_id:
+        artifact = db.get_artifact(source_artifact_id)
+        if artifact["project_id"] != project_id:
+            raise KeyError(source_artifact_id)
+        detected_languages = _detect_language_columns(Path(artifact["path"]))
+        languages = _normalize_announcement_languages(requested_languages, fallback=detected_languages or task.get("selected_languages") or metadata.get("languages") or [])
+        rows = _read_language_table_rows(Path(artifact["path"]), languages)
+        metadata["imported_terms_artifact_id"] = source_artifact_id
+    else:
+        rows = _normalize_announcement_terms_payload(raw_terms)
+        detected_languages = _announcement_terms_languages(rows)
+        languages = _normalize_announcement_languages(requested_languages, fallback=detected_languages or task.get("selected_languages") or metadata.get("languages") or [])
+        rows = _filter_announcement_terms_languages(rows, languages)
+
+    if not rows:
+        raise ValueError("announcement terms are empty")
+    if not languages:
+        languages = _announcement_terms_languages(rows)
+    if not languages:
+        raise ValueError("announcement terms contain no target languages")
+
+    return _save_announcement_terms(task_id, rows, languages, run_kind="announcement_terms_import")
+
+
+def lookup_announcement_translations(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    project = db.get_project(task["project_id"])
+    metadata = _merge_announcement_constraint_request(_announcement_task_metadata(task), request)
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+    terms = list(metadata.get("terms") or [])
+    if not terms:
+        raise ValueError("extract terms before lookup")
+    archive_by_language = _project_archive_by_language(task["project_id"], languages)
+    lookup: dict[str, Any] = {}
+    run = db.insert_run(task["project_id"], kind="announcement_translation_lookup", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages})
+    output = run_dir(run["id"]) / "announcement_lookup"
+    output.mkdir(parents=True, exist_ok=True)
+    artifacts: list[dict[str, Any]] = []
+    for language in languages:
+        rows = []
+        for term in terms:
+            source = str(term.get("source") or "").strip()
+            archive_entry = archive_by_language.get(language, {}).get(_wide_source_key(source))
+            table_target = str((term.get("translations") or {}).get(language) or "").strip()
+            target = str((archive_entry or {}).get("target") or "").strip() or table_target
+            rows.append({**term, "language": language, "target": target, "source_type": "qa_archive" if archive_entry else "language_table" if table_target else "missing"})
+        missing = [row for row in rows if not str(row.get("target") or "").strip()]
+        prompt_context = _announcement_prompt_context(
+            project,
+            language,
+            [
+                {"source": row.get("source", ""), "target": row.get("target", ""), "target_alt": "", "category": "", "note": f"{row.get('hit_count', 0)} hit(s)"}
+                for row in rows
+                if row.get("target")
+            ],
+            [],
+        )
+        context_path = output / f"{_announcement_task_source_stem(task)}_prompt_context_{_visible_language_code(language)}.txt"
+        context_path.write_text(prompt_context, encoding="utf-8")
+        artifacts.append(db.add_artifact(task["project_id"], f"公告 prompt context ({_visible_language_code(language)})", context_path, "announcement_lookup_prompt_context", run_id=run["id"], mime="text/plain", metadata={"task_id": task_id, "language": language}))
+        lookup[language] = {"terms": rows, "missing_terms": [{"source": row.get("source", ""), "id": row.get("id", "")} for row in missing], "prompt_context_artifact_id": artifacts[-1]["id"]}
+        db.upsert_announcement_task_language(task_id, task["project_id"], language, status="lookup_ready", current_step=ANNOUNCEMENT_STEP["prepare"], metadata={"terms": len(rows), "missing_terms": len(missing), "prompt_context_artifact_id": artifacts[-1]["id"]})
+    summary = {"languages": languages, "terms": len(terms), "missing_terms": sum(len(lookup[language]["missing_terms"]) for language in languages)}
+    manifest_path = output / "announcement_lookup_manifest.json"
+    manifest = {"kind": "announcement_translation_lookup", "task_id": task_id, "project_id": task["project_id"], "summary": summary, "lookup": lookup}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    artifacts.append(db.add_artifact(task["project_id"], "公告译文反查 manifest", manifest_path, "announcement_lookup_manifest", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages}))
+    metadata.update({"lookup": lookup, "lookup_manifest_artifact_id": artifacts[-1]["id"], "lookup_summary": summary})
+    task = db.update_announcement_task(task_id, status="lookup_ready", current_step=ANNOUNCEMENT_STEP["prepare"], selected_languages=languages, metadata=metadata)
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary})
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
+
+
+def prepare_announcement_translation(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    project = db.get_project(task["project_id"])
+    metadata = _announcement_task_metadata(task)
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+    if not languages:
+        raise ValueError("select at least one target language")
+    segments = _announcement_task_segments(task)
+    if not segments:
+        raise ValueError("announcement source contains no translatable text")
+    lookup = metadata.get("lookup") or {}
+    run = db.insert_run(task["project_id"], kind="announcement_prepare", language=languages[0], metadata={"task_id": task_id, "languages": languages})
+    output = run_dir(run["id"]) / "announcement_prepare"
+    output.mkdir(parents=True, exist_ok=True)
+    source_stem = _announcement_task_source_stem(task)
+    workbook_path = output / f"{source_stem}_announcement_translation_workbook.xlsx"
+    manifest_path = output / "announcement_manifest.json"
+    _write_announcement_translation_workbook(workbook_path, task, segments, languages, lookup)
+    manifest = {"kind": "announcement_prepare", "task_id": task_id, "project_id": task["project_id"], "source_format": task["source_format"], "languages": languages, "segments": segments}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    artifacts = [
+        db.add_artifact(task["project_id"], "公告翻译中转表", workbook_path, "announcement_translation_workbook", run_id=run["id"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", metadata={"task_id": task_id, "languages": languages}),
+        db.add_artifact(task["project_id"], "公告翻译 manifest", manifest_path, "announcement_docx_manifest", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages}),
+    ]
+    workpacks: dict[str, str] = {}
+    prompts: dict[str, str] = {}
+    for language in languages:
+        prompt_snapshot = create_prompt_and_harness_snapshots(task["project_id"], run["id"], output / "snapshots" / language, language=language)
+        raw_prompt = _announcement_translation_prompt(project, language, prompt_snapshot["prompt"], lookup.get(language, {}))
+        prompt = _manage_project_prompt_context(raw_prompt, load_settings())
+        lang_code = _visible_language_code(language)
+        prompt_path = output / f"{source_stem}_prompt_{lang_code}.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        prompts[language] = db.add_artifact(task["project_id"], f"公告翻译提示词 ({lang_code})", prompt_path, "prompt_snapshot", run_id=run["id"], mime="text/plain", metadata={"task_id": task_id, "language": language})["id"]
+        workpack_path = output / f"{source_stem}_workpack_{lang_code}.jsonl"
+        write_jsonl(workpack_path, _announcement_workpack_rows(segments, language, lookup))
+        workpack_artifact = db.add_artifact(task["project_id"], f"公告 workpack ({lang_code})", workpack_path, "announcement_workpack", run_id=run["id"], mime="application/jsonl", metadata={"task_id": task_id, "language": language})
+        workpacks[language] = workpack_artifact["id"]
+        artifacts.append(workpack_artifact)
+        db.upsert_announcement_task_language(task_id, task["project_id"], language, status="prepared", current_step=ANNOUNCEMENT_STEP["translate"], metadata={"workpack_artifact_id": workpack_artifact["id"], "prompt_artifact_id": prompts[language], "translation_workbook_artifact_id": artifacts[0]["id"]})
+    metadata.update({"segments": segments, "prepare_run_id": run["id"], "translation_workbook_artifact_id": artifacts[0]["id"], "manifest_artifact_id": artifacts[1]["id"], "workpack_artifact_ids": workpacks, "prompt_artifact_ids": prompts})
+    task = db.update_announcement_task(task_id, status="prepared", current_step=ANNOUNCEMENT_STEP["translate"], selected_languages=languages, metadata=metadata)
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": {"segments": len(segments), "languages": languages}})
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"segments": len(segments), "languages": languages}, "artifacts": artifacts, "manifest": manifest}
+
+
+def translate_announcement_task(task_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+    return asyncio.run(_translate_announcement_task(task_id, request, cancel_event=cancel_event))
+
+
+async def _translate_announcement_task(task_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+    if not metadata.get("translation_workbook_artifact_id") or not metadata.get("workpack_artifact_ids"):
+        raise ValueError("prepare announcement translation before AI translation")
+    settings = load_settings()
+    provider = str(getattr(request, "provider", None) or settings.get("provider") or "mock")
+    if getattr(request, "provider", None):
+        settings["provider"] = request.provider
+    if getattr(request, "protocol", None):
+        settings["protocol"] = request.protocol
+    if provider == "mock" and not bool(getattr(request, "allow_mock", False)):
+        for language in languages:
+            db.upsert_announcement_task_language(task_id, task["project_id"], language, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"])
+        return {"task": _hydrate_announcement_task(db.update_announcement_task(task_id, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)), "summary": {"status": "awaiting_ai_response", "reason": "mock provider disabled for announcement translation"}, "artifacts": []}
+    if provider in {"openai", "anthropic"} and not settings.get("api_key"):
+        for language in languages:
+            db.upsert_announcement_task_language(task_id, task["project_id"], language, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"])
+        return {"task": _hydrate_announcement_task(db.update_announcement_task(task_id, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)), "summary": {"status": "awaiting_ai_response", "reason": f"{provider} api_key is required; upload AI response instead"}, "artifacts": []}
+    run = db.insert_run(task["project_id"], kind="announcement_translate", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages, "provider": provider})
+    metadata = {**metadata, "translate_run_id": run["id"]}
+    db.update_announcement_task(task_id, status="running", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)
+    output = run_dir(run["id"]) / "announcement_translate"
+    output.mkdir(parents=True, exist_ok=True)
+    artifacts: list[dict[str, Any]] = []
+    response_artifacts: dict[str, str] = {}
+    source_stem = _announcement_task_source_stem(task)
+    for language in languages:
+        lang_code = _visible_language_code(language)
+        db.upsert_announcement_task_language(task_id, task["project_id"], language, status="running", current_step=ANNOUNCEMENT_STEP["translate"])
+        workpack_artifact = db.get_artifact(metadata["workpack_artifact_ids"][language])
+        rows = read_jsonl(Path(workpack_artifact["path"]))
+        provider_rows = [{"id": row["id"], "source": row["source"], "term_hits": row.get("term_hits") or []} for row in rows]
+        prompt = Path(db.get_artifact(metadata.get("prompt_artifact_ids", {}).get(language, ""))["path"]).read_text(encoding="utf-8") if metadata.get("prompt_artifact_ids", {}).get(language) else ""
+        translated = await _translate_rows_with_orchestration(
+            run_id=run["id"],
+            rows=provider_rows,
+            settings=settings,
+            project_prompt=prompt,
+            work_dir=output / language,
+            batch_size=int(getattr(request, "batch_size", None) or settings.get("batch_size") or 90),
+            language=language,
+            cancel_event=cancel_event,
+            confirm_api_budget=bool(getattr(request, "confirm_api_budget", False)),
+        )
+        if not translated and db.get_run(run["id"]).get("status") == "needs_input":
+            task = db.update_announcement_task(task_id, status="needs_input", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)
+            return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"status": "needs_input", "reason": "api_budget_confirmation_required"}, "artifacts": artifacts}
+        response_path = output / f"{source_stem}_ai_response_{lang_code}.jsonl"
+        write_jsonl(response_path, [{"para_id": item["id"], "translation": item["translation"]} for item in translated])
+        artifact = db.add_artifact(task["project_id"], f"公告 AI response ({lang_code})", response_path, "announcement_ai_response", run_id=run["id"], mime="application/jsonl", metadata={"task_id": task_id, "language": language, "provider": provider})
+        response_artifacts[language] = artifact["id"]
+        artifacts.append(artifact)
+    import_result = import_announcement_ai_response(task_id, _SimpleRequest(languages=languages, response_artifacts_by_language=response_artifacts))
+    metadata = _announcement_task_metadata(db.get_announcement_task(task_id))
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "response_artifact_ids": response_artifacts})
+    return {"task": import_result["task"], "run": db.get_run(run["id"]), "summary": {"status": "translated", "languages": languages}, "artifacts": [*artifacts, *import_result.get("artifacts", [])]}
+
+
+def import_announcement_ai_response(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+    workbook_artifact = db.get_artifact(metadata.get("translation_workbook_artifact_id", ""))
+    response_map = _announcement_response_artifact_map(request, languages)
+    if not response_map:
+        raise ValueError("response_artifact_ids or response_artifacts_by_language is required")
+    imported_languages: list[str] = []
+    for language in languages:
+        artifact_id = response_map.get(language)
+        if not artifact_id:
+            continue
+        response_artifact = db.get_artifact(artifact_id)
+        if response_artifact["project_id"] != task["project_id"]:
+            raise KeyError(artifact_id)
+        _import_announcement_response_into_workbook(Path(workbook_artifact["path"]), Path(response_artifact["path"]), language)
+        imported_languages.append(language)
+        db.upsert_announcement_task_language(task_id, task["project_id"], language, status="translated", current_step=ANNOUNCEMENT_STEP["apply"], metadata={"response_artifact_id": artifact_id, "translation_workbook_artifact_id": workbook_artifact["id"]})
+    metadata.setdefault("response_artifact_ids", {}).update(response_map)
+    task = db.update_announcement_task(task_id, status="translated", current_step=ANNOUNCEMENT_STEP["apply"], metadata=metadata)
+    return {"task": _hydrate_announcement_task(task), "summary": {"languages": [language_spec(code).target_header for code in imported_languages], "imported": len(imported_languages)}, "artifacts": [workbook_artifact]}
+
+
+def apply_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+    workbook_artifact_id = str(getattr(request, "translation_workbook_artifact_id", "") or metadata.get("translation_workbook_artifact_id") or "")
+    if not workbook_artifact_id:
+        raise ValueError("translation workbook is required")
+    workbook_artifact = db.get_artifact(workbook_artifact_id)
+    segments = metadata.get("segments") or _announcement_task_segments(task)
+    rows = _read_announcement_translation_workbook(Path(workbook_artifact["path"]), languages)
+    issues = _validate_announcement_translation_rows(segments, rows, languages)
+    run = db.insert_run(task["project_id"], kind="announcement_apply", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages})
+    output = run_dir(run["id"]) / "announcement_apply"
+    output.mkdir(parents=True, exist_ok=True)
+    qa_path = output / "QA摘要.xlsx"
+    if issues:
+        _write_announcement_qa_summary(qa_path, issues, [])
+        qa_artifact = db.add_artifact(task["project_id"], "公告 QA 摘要", qa_path, "announcement_qa_summary", run_id=run["id"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", metadata={"task_id": task_id, "hard_blockers": len(issues)})
+        metadata.update({"qa_summary_artifact_id": qa_artifact["id"], "hard_blockers": len(issues), "qa_issues": issues})
+        task = db.update_announcement_task(task_id, status="qa_failed", current_step=ANNOUNCEMENT_STEP["apply"], metadata=metadata)
+        db.update_run(run["id"], status="failed", metadata={**run.get("metadata", {}), "hard_blockers": len(issues)})
+        raise ValueError(f"hard blockers: {len(issues)}")
+    output_files = _write_announcement_outputs(task, segments, rows, languages, output / "outputs")
+    _write_announcement_qa_summary(qa_path, [], output_files)
+    artifacts = [db.add_artifact(task["project_id"], "公告 QA 摘要", qa_path, "announcement_qa_summary", run_id=run["id"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", metadata={"task_id": task_id, "hard_blockers": 0})]
+    output_artifacts: dict[str, str] = {}
+    for language, path in output_files:
+        artifact = db.add_artifact(task["project_id"], f"公告成品 ({_visible_language_code(language)})", path, "announcement_output_file", run_id=run["id"], mime=_mime_for_path(path), metadata={"task_id": task_id, "language": language})
+        artifacts.append(artifact)
+        output_artifacts[language] = artifact["id"]
+        db.upsert_announcement_task_language(task_id, task["project_id"], language, status="applied", current_step=ANNOUNCEMENT_STEP["deliver"], metadata={"output_artifact_id": artifact["id"], "qa_summary_artifact_id": artifacts[0]["id"]})
+    metadata.update({"qa_summary_artifact_id": artifacts[0]["id"], "output_artifact_ids": output_artifacts, "hard_blockers": 0})
+    task = db.update_announcement_task(task_id, status="applied", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "outputs": output_artifacts})
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"hard_blockers": 0, "languages": languages}, "artifacts": artifacts}
+
+
+def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    if int(metadata.get("hard_blockers") or 0) > 0:
+        raise ValueError("hard blockers must be fixed before delivery")
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+    output_artifact_ids = metadata.get("output_artifact_ids") or {}
+    if not output_artifact_ids:
+        raise ValueError("apply announcement translations before delivery")
+    run = db.insert_run(task["project_id"], kind="announcement_deliver", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages})
+    output = run_dir(run["id"]) / "announcement_delivery"
+    output.mkdir(parents=True, exist_ok=True)
+    stamp = str(getattr(request, "date_stamp", "") or datetime.now().strftime("%Y%m%d"))
+    zip_path = output / f"{_announcement_delivery_base_name(task)}_announcement_delivery_{stamp}.zip"
+    qa_artifact_id = metadata.get("qa_summary_artifact_id")
+    with ZipFile(zip_path, "w") as archive:
+        for language in languages:
+            artifact_id = output_artifact_ids.get(language)
+            if not artifact_id:
+                continue
+            artifact = db.get_artifact(artifact_id)
+            archive.write(artifact["path"], f"{_visible_language_code(language)}/{Path(artifact['path']).name}")
+        if qa_artifact_id:
+            qa_artifact = db.get_artifact(qa_artifact_id)
+            archive.write(qa_artifact["path"], "QA摘要.xlsx")
+    artifact = db.add_artifact(task["project_id"], "公告交付总包", zip_path, "announcement_delivery_package", run_id=run["id"], mime="application/zip", metadata={"task_id": task_id, "languages": languages})
+    metadata["delivery_artifact_id"] = artifact["id"]
+    task = db.update_announcement_task(task_id, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
+    for language in languages:
+        db.upsert_announcement_task_language(task_id, task["project_id"], language, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"])
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "delivery_artifact_id": artifact["id"]})
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"]}, "artifacts": [artifact]}
+
+
+def generate_announcement_terms_package(project_id: str, request: Any) -> dict[str, Any]:
+    text = str(getattr(request, "text", "") or "")
+    material_ids = list(getattr(request, "material_artifact_ids", []) or [])
+    if not text.strip() and not material_ids:
+        raise ValueError("announcement terms requires text or material_artifact_ids")
+    if material_ids:
+        text = "\n".join([text, *[_read_lookup_material_text(Path(db.get_artifact(artifact_id)["path"])) for artifact_id in material_ids]]).strip()
+    if not text.strip():
+        raise ValueError("announcement text is empty")
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or [], fallback=["en"])
+    metadata = {
+        "language_table_artifact_ids": list(getattr(request, "language_table_artifact_ids", []) or []),
+        "constraint_artifact_ids": [],
+        "include_project_archive": False,
+    }
+    candidates = _announcement_constraint_rows(project_id, metadata, languages)
+    rows = _select_announcement_constraint_rows(_compact_lookup_text(text), candidates, languages, min_hit=max(1, int(getattr(request, "announcement_min_hit", 1) or 1)))
+    run = db.insert_run(project_id, kind="announcement_terms", language=languages[0] if languages else "en", metadata={"languages": languages})
+    output = run_dir(run["id"]) / "announcement_terms"
+    output.mkdir(parents=True, exist_ok=True)
+    base = "announcement"
+    if material_ids:
+        try:
+            base = _artifact_source_stem(db.get_artifact(material_ids[0]))
+        except KeyError:
+            base = "announcement"
+    stamp = _today_stamp()
+    workbook_path = output / f"{base}_announcement_terms_{stamp}.xlsx"
+    manifest_path = output / f"{base}_announcement_terms_manifest_{stamp}.json"
+    validation_path = output / f"{base}_announcement_terms_validation_{stamp}.md"
+    rows, ai_summary = _apply_announcement_ai_supplement(
+        project_id=project_id,
+        output_dir=output,
+        base_name=base,
+        source_text=_compact_lookup_text(text),
+        rows=rows,
+        candidates=candidates,
+        languages=languages,
+        request=request,
+        project_name=db.get_project(project_id).get("name", ""),
+    )
+    _write_announcement_terms_workbook(workbook_path, rows, languages)
+    summary = {"terms": len(rows), "languages": languages, "source_chars": len(text)}
+    if ai_summary:
+        summary["ai_supplement"] = {
+            key: ai_summary[key]
+            for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "project_name_translation_missing")
+        }
+    manifest = {"kind": "announcement_terms", "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    validation_path.write_text(_announcement_terms_validation(summary, rows, languages), encoding="utf-8")
+    artifacts = [
+        db.add_artifact(project_id, "公告术语表", workbook_path, "announcement_terms_workbook", run_id=run["id"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", metadata={"languages": languages}),
+        db.add_artifact(project_id, "公告术语 validation", validation_path, "announcement_terms_validation", run_id=run["id"], mime="text/markdown", metadata={"languages": languages}),
+        db.add_artifact(project_id, "公告术语 manifest", manifest_path, "announcement_terms_manifest", run_id=run["id"], mime="application/json", metadata={"languages": languages}),
+    ]
+    if ai_summary:
+        packet_artifact = db.add_artifact(project_id, "公告 AI 补充包", Path(ai_summary["packet_path"]), "announcement_ai_supplement_packet", run_id=run["id"], mime="application/json", metadata={"languages": languages})
+        response_artifact = None
+        if ai_summary.get("response_path"):
+            response_artifact = db.add_artifact(project_id, "公告 AI 补充响应", Path(ai_summary["response_path"]), "announcement_ai_supplement_response", run_id=run["id"], mime="application/json", metadata={"languages": languages, "provider": ai_summary.get("provider", "")})
+        report_artifact = db.add_artifact(project_id, "公告 AI 补充报告", Path(ai_summary["report_path"]), "announcement_ai_supplement_report", run_id=run["id"], mime="text/markdown", metadata={"languages": languages})
+        artifacts.extend([artifact for artifact in (packet_artifact, response_artifact, report_artifact) if artifact])
+        summary["ai_supplement"]["packet_artifact_id"] = packet_artifact["id"]
+        if response_artifact:
+            summary["ai_supplement"]["response_artifact_id"] = response_artifact["id"]
+        summary["ai_supplement"]["report_artifact_id"] = report_artifact["id"]
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary})
+    return {"run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
+
+
+def legacy_prepare_announcement_docx(project_id: str, request: Any) -> dict[str, Any]:
+    if not list(getattr(request, "source_artifact_ids", []) or []):
+        raise ValueError("source_artifact_ids is required")
+    source_artifact_id = list(getattr(request, "source_artifact_ids", []))[0]
+    create_request = _SimpleRequest(
+        source_artifact_id=source_artifact_id,
+        title="公告 DOCX",
+        languages=list(getattr(request, "languages", []) or []),
+        constraint_artifact_ids=[getattr(request, "terms_artifact_id")],
+        language_table_artifact_ids=[getattr(request, "terms_artifact_id")],
+        include_project_archive=False,
+    )
+    task = create_announcement_task(project_id, create_request)
+    extract_announcement_terms(task["id"], _SimpleRequest(languages=create_request.languages, language_table_artifact_ids=create_request.language_table_artifact_ids, include_project_archive=False))
+    lookup_announcement_translations(task["id"], _SimpleRequest(languages=create_request.languages, include_project_archive=False))
+    prepared = prepare_announcement_translation(task["id"], _SimpleRequest(languages=create_request.languages))
+    run = prepared["run"]
+    db.update_run(run["id"], metadata={**run.get("metadata", {}), "task_id": task["id"], "legacy_prepare": True})
+    artifacts = []
+    for artifact in prepared["artifacts"]:
+        if artifact["kind"] == "announcement_translation_workbook":
+            artifact = db.update_artifact(artifact["id"], {"label": "Announcement DOCX translation workbook", "metadata": {**artifact.get("metadata", {}), "legacy_kind": "announcement_docx_translation_workbook"}})
+            artifact["kind"] = "announcement_docx_translation_workbook"
+        elif artifact["kind"] == "announcement_workpack":
+            artifact = db.update_artifact(artifact["id"], {"label": artifact["label"].replace("公告", "Announcement DOCX"), "metadata": {**artifact.get("metadata", {}), "legacy_kind": "announcement_docx_workpack"}})
+            artifact["kind"] = "announcement_docx_workpack"
+        elif artifact["kind"] == "announcement_docx_manifest":
+            pass
+        artifacts.append(artifact)
+    return {**prepared, "run": db.get_run(run["id"]), "artifacts": artifacts}
+
+
+def legacy_import_announcement_docx_ai(project_id: str, request: Any) -> dict[str, Any]:
+    run = db.get_run(getattr(request, "prepare_run_id"))
+    task_id = str((run.get("metadata") or {}).get("task_id") or "")
+    if not task_id:
+        raise KeyError("task_id")
+    result = import_announcement_ai_response(task_id, request)
+    return {"summary": result["summary"], "task": result["task"], "artifacts": result["artifacts"]}
+
+
+def legacy_apply_announcement_docx(project_id: str, request: Any) -> dict[str, Any]:
+    run = db.get_run(getattr(request, "prepare_run_id"))
+    task_id = str((run.get("metadata") or {}).get("task_id") or "")
+    result = apply_announcement_task(task_id, request)
+    legacy_artifacts = []
+    for artifact in result["artifacts"]:
+        if artifact["kind"] == "announcement_output_file" and str(artifact.get("path", "")).lower().endswith(".docx"):
+            artifact["kind"] = "announcement_docx_output_docx"
+        elif artifact["kind"] == "announcement_qa_summary":
+            artifact["kind"] = "announcement_docx_qa_summary"
+        legacy_artifacts.append(artifact)
+    result["artifacts"] = legacy_artifacts
+    return result
+
+
+def legacy_deliver_announcement_docx(project_id: str, request: Any) -> dict[str, Any]:
+    run = db.get_run(getattr(request, "prepare_run_id"))
+    task_id = str((run.get("metadata") or {}).get("task_id") or "")
+    result = deliver_announcement_task(task_id, request)
+    for artifact in result["artifacts"]:
+        if artifact["kind"] == "announcement_delivery_package":
+            artifact["kind"] = "announcement_docx_delivery_package"
+    return result
+
+
+class _SimpleRequest:
+    def __init__(self, **kwargs: Any) -> None:
+        self.__dict__.update(kwargs)
+
+
+def _hydrate_announcement_task(task: dict[str, Any]) -> dict[str, Any]:
+    metadata = task.get("metadata") or {}
+    translate_run_id = str(metadata.get("translate_run_id") or "")
+    if translate_run_id:
+        try:
+            translate_run = db.get_run(translate_run_id)
+            metadata = {
+                **metadata,
+                "translate_run_status": translate_run.get("status"),
+                "translation_progress": (translate_run.get("metadata") or {}).get("translation_progress"),
+                "api_budget_estimate": (translate_run.get("metadata") or {}).get("api_budget_estimate"),
+            }
+            task["metadata"] = metadata
+        except KeyError:
+            pass
+    artifact_ids: set[str] = set()
+    for key in (
+        "terms_artifact_id",
+        "terms_manifest_artifact_id",
+        "terms_validation_artifact_id",
+        "translation_workbook_artifact_id",
+        "manifest_artifact_id",
+        "qa_summary_artifact_id",
+        "delivery_artifact_id",
+    ):
+        if metadata.get(key):
+            artifact_ids.add(str(metadata[key]))
+    for mapping_key in ("workpack_artifact_ids", "prompt_artifact_ids", "response_artifact_ids", "output_artifact_ids"):
+        value = metadata.get(mapping_key)
+        if isinstance(value, dict):
+            artifact_ids.update(str(item) for item in value.values() if item)
+    ai_supplement = metadata.get("ai_supplement")
+    if isinstance(ai_supplement, dict):
+        for key in ("packet_artifact_id", "report_artifact_id"):
+            if ai_supplement.get(key):
+                artifact_ids.add(str(ai_supplement[key]))
+    artifacts: list[dict[str, Any]] = []
+    for artifact_id in sorted(artifact_ids):
+        try:
+            artifacts.append(db.get_artifact(artifact_id))
+        except KeyError:
+            continue
+    task["artifacts"] = artifacts
+    return task
+
+
+def _announcement_task_metadata(task: dict[str, Any]) -> dict[str, Any]:
+    return dict(task.get("metadata") or {})
+
+
+def _merge_announcement_constraint_request(metadata: dict[str, Any], request: Any) -> dict[str, Any]:
+    merged = dict(metadata)
+    for key in ("language_table_artifact_ids", "constraint_artifact_ids"):
+        value = list(getattr(request, key, []) or [])
+        if value:
+            merged[key] = value
+    if hasattr(request, "include_project_archive"):
+        merged["include_project_archive"] = bool(getattr(request, "include_project_archive", True))
+    return merged
+
+
+def _create_inline_announcement_source(project_id: str, text: str, title: str) -> dict[str, Any]:
+    output = project_dir(project_id) / "announcements" / "inline"
+    output.mkdir(parents=True, exist_ok=True)
+    path = output / f"{_safe_file_stem(title or 'announcement')}_{hashlib.sha1(text.encode('utf-8')).hexdigest()[:8]}.txt"
+    path.write_text(text, encoding="utf-8")
+    return db.add_artifact(project_id, "Inline announcement source", path, "asset", mime="text/plain", origin="uploaded")
+
+
+def _announcement_source_format(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        return "docx"
+    if suffix in {".txt", ".md", ".markdown"}:
+        return "txt"
+    if suffix in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return "xlsx"
+    return suffix.lstrip(".")
+
+
+def _announcement_source_manifest(artifact: dict[str, Any]) -> dict[str, Any]:
+    path = Path(artifact["path"])
+    return {"artifact_id": artifact["id"], "label": artifact.get("label", ""), "path": str(path), "format": _announcement_source_format(path), "sha256": _file_sha256(path) if path.exists() else ""}
+
+
+def _announcement_task_source_text(task: dict[str, Any]) -> str:
+    artifact = db.get_artifact(task["source_artifact_id"])
+    return _compact_lookup_text(_read_lookup_material_text(Path(artifact["path"])))
+
+
+def _announcement_task_segments(task: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = _announcement_task_metadata(task)
+    if metadata.get("segments"):
+        return list(metadata["segments"])
+    artifact = db.get_artifact(task["source_artifact_id"])
+    path = Path(artifact["path"])
+    fmt = _announcement_source_format(path)
+    if fmt == "docx":
+        return _docx_announcement_segments(path)
+    if fmt == "xlsx":
+        return _xlsx_announcement_segments(path)
+    return _txt_announcement_segments(path)
+
+
+def _docx_announcement_segments(path: Path) -> list[dict[str, Any]]:
+    from docx import Document
+
+    doc = Document(str(path))
+    rows = []
+    for index, paragraph in enumerate(doc.paragraphs):
+        source = paragraph.text
+        if not source.strip():
+            continue
+        rows.append({"id": _segment_id(path.name, index, source), "source_file": path.name, "index": index, "kind": "paragraph", "source": source, "style": paragraph.style.name if paragraph.style else ""})
+    return rows
+
+
+def _txt_announcement_segments(path: Path) -> list[dict[str, Any]]:
+    text = path.read_text(encoding="utf-8-sig")
+    rows = []
+    for index, line in enumerate(text.splitlines()):
+        if not line.strip():
+            continue
+        rows.append({"id": _segment_id(path.name, index, line), "source_file": path.name, "index": index, "kind": "line", "source": line})
+    return rows
+
+
+def _xlsx_announcement_segments(path: Path) -> list[dict[str, Any]]:
+    wb = load_workbook(path, read_only=True, data_only=True)
+    rows: list[dict[str, Any]] = []
+    try:
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    value = str(cell.value or "").strip()
+                    if not value or not _CJK_RE.search(value):
+                        continue
+                    key = f"{ws.title}!{cell.coordinate}"
+                    rows.append({"id": _segment_id(path.name, len(rows), f"{key}:{value}"), "source_file": path.name, "index": len(rows), "kind": "cell", "sheet": ws.title, "coordinate": cell.coordinate, "source": value})
+    finally:
+        wb.close()
+    return rows
+
+
+def _segment_id(source_file: str, index: int, source: str) -> str:
+    digest_source = "\0".join([source_file, str(index), source])
+    digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:10]
+    return f"{Path(source_file).stem}:{index:04d}:{digest}"
+
+
+def _detect_announcement_constraint_languages(project_id: str, metadata: dict[str, Any]) -> list[str]:
+    found: set[str] = set()
+    for artifact_id in [*metadata.get("language_table_artifact_ids", []), *metadata.get("constraint_artifact_ids", [])]:
+        try:
+            artifact = db.get_artifact(artifact_id)
+        except KeyError:
+            continue
+        if artifact["project_id"] != project_id:
+            continue
+        if _is_generated_announcement_terms_artifact(artifact):
+            continue
+        found.update(_detect_language_columns(Path(artifact["path"])))
+    if metadata.get("include_project_archive", True):
+        for language in ANNOUNCEMENT_LANGUAGE_ORDER:
+            if db.list_translation_entries(project_id, language=language):
+                found.add(language)
+    return [language for language in ANNOUNCEMENT_LANGUAGE_ORDER if language in found]
+
+
+def _announcement_language_constraint_summary(project_id: str, metadata: dict[str, Any], languages: list[str]) -> dict[str, Any]:
+    table_rows = _language_table_rows_from_artifacts(project_id, [*metadata.get("language_table_artifact_ids", []), *metadata.get("constraint_artifact_ids", [])], languages)
+    archive_counts = {language: len(db.list_translation_entries(project_id, language=language)) for language in languages}
+    table_counts = {language: sum(1 for row in table_rows if row.get("translations", {}).get(language)) for language in languages}
+    return {language: {"language_table": table_counts.get(language, 0), "qa_archive": archive_counts.get(language, 0)} for language in languages}
+
+
+def _normalize_announcement_languages(raw: Any, fallback: list[str] | tuple[str, ...] = ()) -> list[str]:
+    values = list(raw or []) or list(fallback or [])
+    normalized: list[str] = []
+    for value in values:
+        try:
+            code = require_supported_language(value)
+        except ValueError:
+            continue
+        if code not in normalized:
+            normalized.append(code)
+    return [code for code in ANNOUNCEMENT_LANGUAGE_ORDER if code in normalized]
+
+
+def _detect_language_columns(path: Path) -> list[str]:
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return []
+    wb = load_workbook(path, read_only=True, data_only=True)
+    found: set[str] = set()
+    try:
+        for ws in wb.worksheets:
+            headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            normalized = _header_index(headers, prefer_last=True)
+            reserved_indices = set(_reserved_language_table_indices(headers))
+            for code in ANNOUNCEMENT_LANGUAGE_ORDER:
+                index = _language_column_index(normalized, code)
+                if index is not None and index not in reserved_indices:
+                    found.add(code)
+    finally:
+        wb.close()
+    return [code for code in ANNOUNCEMENT_LANGUAGE_ORDER if code in found]
+
+
+def _language_column_index(normalized_headers: dict[str, int], language: str) -> int | None:
+    aliases = [alias.lower() for alias in target_aliases(language)]
+    for alias in aliases:
+        if alias in normalized_headers:
+            return normalized_headers[alias]
+    return None
+
+
+def _header_index(headers: list[str], *, prefer_last: bool = False) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        key = str(header or "").strip().lower()
+        if not key:
+            continue
+        if prefer_last or key not in normalized:
+            normalized[key] = index
+    return normalized
+
+
+def _reserved_language_table_indices(headers: list[str]) -> list[int]:
+    normalized_first = _header_index(headers)
+    indices = [
+        _column_by_alias(normalized_first, ["id", "key", "编号", "序号"]),
+        _column_by_alias(normalized_first, ["cn", "zh", "source", "chinese", "中文", "原文", "简体中文", "term", "术语"]),
+    ]
+    return [index for index in indices if index is not None]
+
+
+def _column_by_alias(normalized_headers: dict[str, int], aliases: list[str]) -> int | None:
+    for alias in aliases:
+        key = alias.lower()
+        if key in normalized_headers:
+            return normalized_headers[key]
+    return None
+
+
+def _announcement_constraint_rows(project_id: str, metadata: dict[str, Any], languages: list[str]) -> list[dict[str, Any]]:
+    rows = _language_table_rows_from_artifacts(project_id, [*metadata.get("language_table_artifact_ids", []), *metadata.get("constraint_artifact_ids", [])], languages)
+    if metadata.get("include_project_archive", True):
+        by_source: dict[str, dict[str, Any]] = {_wide_source_key(row.get("source")): row for row in rows if _wide_source_key(row.get("source"))}
+        for language in languages:
+            for entry in db.list_translation_entries(project_id, language=language):
+                source = str(entry.get("source") or "").strip()
+                if not source:
+                    continue
+                key = _wide_source_key(source)
+                row = by_source.setdefault(key, {"id": entry.get("entry_key") or entry.get("id"), "source": source, "translations": {}, "sources": []})
+                if str(entry.get("target") or "").strip():
+                    current = row["translations"].get(language)
+                    if not current or _rank_translation_lookup_source(entry.get("source_type", "")) < _rank_translation_lookup_source(row.get("source_type", "")):
+                        row["translations"][language] = entry.get("target", "")
+                        row["source_type"] = entry.get("source_type", "")
+                row.setdefault("sources", []).append({"type": "qa_archive", "language": language, "entry_id": entry.get("id")})
+        rows = list(by_source.values())
+    return rows
+
+
+def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str], languages: list[str]) -> list[dict[str, Any]]:
+    by_source: dict[str, dict[str, Any]] = {}
+    for artifact_id in artifact_ids:
+        if not artifact_id:
+            continue
+        artifact = db.get_artifact(artifact_id)
+        if artifact["project_id"] != project_id:
+            raise KeyError(artifact_id)
+        if _is_generated_announcement_terms_artifact(artifact):
+            continue
+        for row in _read_language_table_rows(Path(artifact["path"]), languages):
+            key = _wide_source_key(row.get("source"))
+            if not key:
+                continue
+            existing = by_source.setdefault(key, {"id": row.get("id", ""), "source": row.get("source", ""), "translations": {}, "sources": []})
+            if row.get("id") and not existing.get("id"):
+                existing["id"] = row["id"]
+            for language, target in (row.get("translations") or {}).items():
+                if target and not existing["translations"].get(language):
+                    existing["translations"][language] = target
+            existing["sources"].append({"type": "language_table", "artifact_id": artifact_id})
+    return list(by_source.values())
+
+
+def _is_generated_announcement_terms_artifact(artifact: dict[str, Any]) -> bool:
+    if artifact.get("kind") == "announcement_terms_workbook":
+        return True
+    text = " ".join(
+        str(part or "")
+        for part in (
+            artifact.get("label"),
+            artifact.get("path"),
+            (artifact.get("metadata") or {}).get("original_filename"),
+        )
+    ).lower()
+    if "announcement_terms" not in text and "公告术语" not in text:
+        return False
+    return _workbook_looks_like_announcement_terms(Path(str(artifact.get("path") or "")))
+
+
+def _workbook_looks_like_announcement_terms(path: Path) -> bool:
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"} or not path.exists():
+        return True
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        for ws in wb.worksheets:
+            try:
+                headers = [str(value or "").strip().lower() for value in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+            except StopIteration:
+                continue
+            has_source = any(header in {"cn", "zh", "source", "chinese", "中文", "原文", "术语", "term"} for header in headers)
+            has_hit_count = any(header in {"hit count", "hit_count", "hits", "命中次数"} or "命中" in header for header in headers)
+            has_origin = any(header in {"来源", "origin", "source"} for header in headers)
+            if has_source and has_hit_count and has_origin:
+                return True
+    finally:
+        wb.close()
+    return False
+
+
+def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str, Any]]:
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return []
+    wb = load_workbook(path, read_only=True, data_only=True)
+    rows: list[dict[str, Any]] = []
+    try:
+        for ws in wb.worksheets:
+            iterator = ws.iter_rows(values_only=True)
+            try:
+                headers = [str(value or "").strip() for value in next(iterator)]
+            except StopIteration:
+                continue
+            normalized_first = _header_index(headers)
+            normalized_last = _header_index(headers, prefer_last=True)
+            id_idx = _column_by_alias(normalized_first, ["id", "key", "编号", "序号"])
+            source_idx = _column_by_alias(normalized_first, ["cn", "zh", "source", "chinese", "中文", "原文", "简体中文", "term", "术语"])
+            if source_idx is None:
+                continue
+            reserved_indices = set(index for index in (id_idx, source_idx) if index is not None)
+            lang_indices = {
+                language: index if index not in reserved_indices else None
+                for language in languages
+                for index in [_language_column_index(normalized_last, language)]
+            }
+            if not any(index is not None for index in lang_indices.values()):
+                continue
+            for values in iterator:
+                source = str(values[source_idx] or "").strip() if source_idx < len(values) else ""
+                if not source:
+                    continue
+                translations = {}
+                for language, index in lang_indices.items():
+                    if index is not None and index < len(values):
+                        value = str(values[index] or "").strip()
+                        if value:
+                            translations[language] = value
+                rows.append({"id": str(values[id_idx] or "").strip() if id_idx is not None and id_idx < len(values) else "", "source": source, "translations": translations, "sheet": ws.title})
+    finally:
+        wb.close()
+    return rows
+
+
+def _select_announcement_constraint_rows(text: str, candidates: list[dict[str, Any]], languages: list[str], *, min_hit: int) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for row in candidates:
+        source = str(row.get("source") or "").strip()
+        if len(source) < 2:
+            continue
+        hit_count, first_position = _count_lookup_hits(text, source)
+        if hit_count < min_hit:
+            continue
+        selected.append({"id": row.get("id", ""), "source": source, "translations": {language: (row.get("translations") or {}).get(language, "") for language in languages}, "hit_count": hit_count, "first_position": first_position})
+    selected.sort(key=lambda row: (int(row.get("first_position") or 0), -len(str(row.get("source") or "")), str(row.get("source") or "")))
+    return _suppress_overlapping_lookup_hits(selected)
+
+
+def _glossary_extractor_module() -> Any:
+    global _GLOSSARY_EXTRACTOR_MODULE
+    if _GLOSSARY_EXTRACTOR_MODULE is not None:
+        return _GLOSSARY_EXTRACTOR_MODULE
+    script_path = GLOSSARY_ROOT / "scripts" / "extract_glossary.py"
+    spec = importlib.util.spec_from_file_location("lws_embedded_extract_glossary", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load glossary extractor: {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("lws_embedded_extract_glossary", module)
+    spec.loader.exec_module(module)
+    _GLOSSARY_EXTRACTOR_MODULE = module
+    return module
+
+
+def _announcement_ai_headers(languages: list[str]) -> list[str]:
+    return ["ID", "CN", *[visible_language_code(language) for language in languages]]
+
+
+def _announcement_term_to_ai_row(row: dict[str, Any], languages: list[str]) -> dict[str, object]:
+    output: dict[str, object] = {
+        "ID": str(row.get("id") or row.get("ID") or "").strip(),
+        "CN": str(row.get("source") or row.get("CN") or "").strip(),
+    }
+    translations = row.get("translations") if isinstance(row.get("translations"), dict) else {}
+    for language in languages:
+        output[visible_language_code(language)] = str((translations or {}).get(language) or "").strip()
+    return output
+
+
+def _normalize_ai_supplement_response(response: dict[str, Any], languages: list[str]) -> dict[str, Any]:
+    terms = response.get("supplement_terms")
+    if not isinstance(terms, list):
+        return {"supplement_terms": []}
+    normalized_terms: list[dict[str, Any]] = []
+    for term in terms:
+        if not isinstance(term, dict):
+            continue
+        item = dict(term)
+        translations = item.get("translations")
+        if isinstance(translations, dict):
+            normalized_translations = {str(key): value for key, value in translations.items()}
+            lower_lookup = {str(key).strip().lower(): value for key, value in translations.items()}
+            for language in languages:
+                header = visible_language_code(language)
+                if str(normalized_translations.get(header) or "").strip():
+                    continue
+                aliases = {language, header.lower(), *[alias.lower() for alias in target_aliases(language)]}
+                for alias in aliases:
+                    if alias in lower_lookup and str(lower_lookup[alias] or "").strip():
+                        normalized_translations[header] = lower_lookup[alias]
+                        break
+            item["translations"] = normalized_translations
+        normalized_terms.append(item)
+    return {**response, "supplement_terms": normalized_terms}
+
+
+def _announcement_ai_rows_to_terms(ai_rows: list[dict[str, object]], original_rows: list[dict[str, Any]], source_text: str, languages: list[str]) -> list[dict[str, Any]]:
+    original_by_source = {_wide_source_key(row.get("source")): row for row in original_rows if _wide_source_key(row.get("source"))}
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ai_row in ai_rows:
+        source = str(ai_row.get("CN") or "").strip()
+        key = _wide_source_key(source)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if key in original_by_source:
+            output.append(original_by_source[key])
+            continue
+        hit_count, first_position = _count_lookup_hits(source_text, source)
+        translations = {
+            language: str(ai_row.get(visible_language_code(language)) or "").strip()
+            for language in languages
+        }
+        output.append(
+            {
+                "id": str(ai_row.get("ID") or "").strip(),
+                "source": source,
+                "translations": translations,
+                "hit_count": hit_count,
+                "first_position": first_position,
+                "source_type": "ai_supplement",
+            }
+        )
+    return output
+
+
+def _read_ai_supplement_response_artifact(project_id: str, artifact_id: str | None) -> dict[str, Any] | None:
+    if not artifact_id:
+        return None
+    artifact = db.get_artifact(artifact_id)
+    if artifact["project_id"] != project_id:
+        raise KeyError(artifact_id)
+    payload = json.loads(Path(artifact["path"]).read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError("AI supplement response must be a JSON object")
+    return payload
+
+
+def _ai_supplement_provider_prompt(packet: dict[str, Any]) -> str:
+    return (
+        "You are auditing a game announcement glossary extraction result.\n"
+        "Use only the supplied packet. Do not invent translations without evidence_rows.\n"
+        "Return strict JSON only, no markdown fences, matching packet.response_schema.\n"
+        "Only add terms that appear verbatim in announcement_text and are backed by evidence_ids.\n\n"
+        f"Packet JSON:\n{json.dumps(packet, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _call_ai_supplement_provider(settings: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
+    text = _call_semantic_provider(settings, _ai_supplement_provider_prompt(packet))
+    payload = _parse_semantic_qa_payload(text)
+    if not isinstance(payload, dict):
+        raise ValueError("AI supplement provider must return a JSON object")
+    return payload
+
+
+def _apply_announcement_ai_supplement(
+    *,
+    project_id: str,
+    output_dir: Path,
+    base_name: str,
+    source_text: str,
+    rows: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    languages: list[str],
+    request: Any,
+    project_name: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not bool(getattr(request, "ai_supplement", False)):
+        return rows, {}
+    extractor = _glossary_extractor_module()
+    headers = _announcement_ai_headers(languages)
+    packet_path = output_dir / f"{base_name}_ai_supplement_packet_{_today_stamp()}.json"
+    report_path = output_dir / f"{base_name}_ai_supplement_report_{_today_stamp()}.md"
+    matched_rows = [_announcement_term_to_ai_row(row, languages) for row in rows]
+    candidate_rows = [_announcement_term_to_ai_row(row, languages) for row in candidates]
+    packet = extractor.build_ai_supplement_packet(
+        announcement_text=source_text,
+        matched_rows=matched_rows,
+        candidate_rows=candidate_rows,
+        headers=headers,
+        project_name=project_name,
+    )
+    packet_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2), encoding="utf-8")
+    response_artifact_id = str(getattr(request, "ai_supplement_response_artifact_id", "") or "")
+    response_path: Path | None = None
+    provider = ""
+    provider_status = "not_configured"
+    provider_error = ""
+    response = _read_ai_supplement_response_artifact(project_id, response_artifact_id)
+    if response is not None:
+        provider = "uploaded"
+        provider_status = "uploaded_response"
+    elif not packet.get("evidence_rows"):
+        provider_status = "no_evidence"
+        response = {"supplement_terms": []}
+    else:
+        settings = load_settings()
+        configured_provider = str(settings.get("provider") or "mock")
+        if configured_provider in {"openai", "anthropic"} and settings.get("api_key"):
+            provider = configured_provider
+            try:
+                response = _call_ai_supplement_provider(settings, packet)
+                provider_status = "provider_response"
+                response_path = output_dir / f"{base_name}_ai_supplement_response_{_today_stamp()}.json"
+                response_path.write_text(json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception as exc:
+                provider_status = "provider_error"
+                provider_error = str(exc)
+                response = {"supplement_terms": []}
+        else:
+            response = {"supplement_terms": []}
+    response = _normalize_ai_supplement_response(response, languages)
+    merged_ai_rows, report = extractor.apply_ai_supplement_response(
+        announcement_rows=matched_rows,
+        headers=headers,
+        announcement_text=source_text,
+        packet=packet,
+        response=response,
+        project_name=project_name,
+    )
+    report_markdown = extractor.build_ai_supplement_report_markdown(
+        report=report,
+        packet_path=packet_path,
+        response_path=Path(db.get_artifact(response_artifact_id)["path"]) if response_artifact_id else response_path,
+        output_path=report_path,
+    )
+    report_path.write_text(report_markdown, encoding="utf-8")
+    merged_rows = _announcement_ai_rows_to_terms(merged_ai_rows, rows, source_text, languages)
+    report_terms = report.get("terms") if isinstance(report.get("terms"), list) else []
+    ai_summary = {
+        "enabled": True,
+        "packet_path": str(packet_path),
+        "report_path": str(report_path),
+        "response_path": str(response_path or ""),
+        "response_artifact_id": response_artifact_id,
+        "provider": provider,
+        "provider_status": provider_status,
+        "provider_error": provider_error,
+        "term_count": len(report_terms),
+        "added_to_main": sum(1 for term in report_terms if isinstance(term, dict) and term.get("status") == "added_to_main"),
+        "project_name_translation_missing": bool(report.get("project_name_translation_missing")),
+        "report": report,
+    }
+    return merged_rows, ai_summary
+
+
+def _save_announcement_terms(task_id: str, rows: list[dict[str, Any]], languages: list[str], *, run_kind: str) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    project_id = task["project_id"]
+    metadata = _announcement_task_metadata(task)
+    source_text = _announcement_task_source_text(task)
+    run = db.insert_run(project_id, kind=run_kind, language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages})
+    db.update_run(run["id"], status="running")
+    output = run_dir(run["id"]) / "announcement_terms"
+    output.mkdir(parents=True, exist_ok=True)
+    base = _announcement_task_source_stem(task)
+    stamp = _today_stamp()
+    workbook_path = output / f"{base}_announcement_terms_{stamp}.xlsx"
+    manifest_path = output / f"{base}_announcement_terms_manifest_{stamp}.json"
+    validation_path = output / f"{base}_announcement_terms_validation_{stamp}.md"
+    _write_announcement_terms_workbook(workbook_path, rows, languages)
+    summary = {"terms": len(rows), "languages": languages, "source_chars": len(source_text)}
+    manifest = {"kind": "announcement_terms", "task_id": task_id, "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    validation_path.write_text(_announcement_terms_validation(summary, rows, languages), encoding="utf-8")
+    artifacts = [
+        db.add_artifact(project_id, "公告术语表", workbook_path, "announcement_terms_workbook", run_id=run["id"], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", metadata={"task_id": task_id, "languages": languages}),
+        db.add_artifact(project_id, "公告术语 manifest", manifest_path, "announcement_terms_manifest", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages}),
+        db.add_artifact(project_id, "公告术语 validation", validation_path, "announcement_terms_validation", run_id=run["id"], mime="text/markdown", metadata={"task_id": task_id, "languages": languages}),
+    ]
+    metadata.update({"languages": languages, "terms": rows, "terms_artifact_id": artifacts[0]["id"], "terms_manifest_artifact_id": artifacts[1]["id"], "terms_validation_artifact_id": artifacts[2]["id"], "terms_summary": summary})
+    task = db.update_announcement_task(task_id, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], selected_languages=languages, metadata=metadata)
+    for language in languages:
+        missing = sum(1 for row in rows if not str((row.get("translations") or {}).get(language) or "").strip())
+        db.upsert_announcement_task_language(task_id, project_id, language, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], metadata={"terms": len(rows), "missing_terms": missing})
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary, "task_id": task_id})
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
+
+
+def _normalize_announcement_terms_payload(raw_terms: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_terms, start=1):
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or item.get("cn") or item.get("term") or "").strip()
+        if not source:
+            continue
+        translations: dict[str, str] = {}
+        raw_translations = item.get("translations") if isinstance(item.get("translations"), dict) else {}
+        for key, value in {**raw_translations, **item}.items():
+            try:
+                language = require_supported_language(key)
+            except ValueError:
+                continue
+            text = str(value or "").strip()
+            if text:
+                translations[language] = text
+        rows.append({
+            "id": str(item.get("id") or item.get("term_key") or item.get("key") or index).strip(),
+            "source": source,
+            "translations": translations,
+            "hit_count": int(item.get("hit_count") or 0),
+            "first_position": int(item.get("first_position") or 0),
+        })
+    return rows
+
+
+def _announcement_terms_languages(rows: list[dict[str, Any]]) -> list[str]:
+    found: set[str] = set()
+    for row in rows:
+        for language, value in (row.get("translations") or {}).items():
+            try:
+                code = require_supported_language(language)
+            except ValueError:
+                continue
+            if str(value or "").strip():
+                found.add(code)
+    return [code for code in ANNOUNCEMENT_LANGUAGE_ORDER if code in found]
+
+
+def _filter_announcement_terms_languages(rows: list[dict[str, Any]], languages: list[str]) -> list[dict[str, Any]]:
+    selected = set(languages)
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        translations = {language: value for language, value in (row.get("translations") or {}).items() if language in selected}
+        output.append({**row, "translations": translations})
+    return output
+
+
+def _write_announcement_terms_workbook(path: Path, rows: list[dict[str, Any]], languages: list[str]) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    headers = ["ID", "CN", *[_visible_language_code(language) for language in languages], "命中次数", "来源", "备注"]
+    ws.append(headers)
+    for row in rows:
+        translations = row.get("translations") or {}
+        sources = row.get("sources") if isinstance(row.get("sources"), list) else []
+        source_label = row.get("source_type") or "/".join(sorted({str(item.get("type") or "") for item in sources if isinstance(item, dict) and item.get("type")}))
+        ws.append([
+            row.get("id", ""),
+            row.get("source", ""),
+            *[translations.get(language, "") for language in languages],
+            row.get("hit_count", ""),
+            source_label,
+            row.get("note", ""),
+        ])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    wb.close()
+
+
+def _announcement_terms_validation(summary: dict[str, Any], rows: list[dict[str, Any]], languages: list[str]) -> str:
+    missing = {language: sum(1 for row in rows if not (row.get("translations") or {}).get(language)) for language in languages}
+    return "\n".join(
+        [
+            "# Announcement terms validation",
+            "",
+            "status: ok",
+            f"terms: {summary.get('terms', 0)}",
+            f"languages: {', '.join(_visible_language_code(language) for language in languages)}",
+            *[f"missing_{_visible_language_code(language)}: {count}" for language, count in missing.items()],
+            "",
+        ]
+    )
+
+
+def _project_archive_by_language(project_id: str, languages: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
+    result: dict[str, dict[str, dict[str, Any]]] = {}
+    for language in languages:
+        rows = sorted(db.list_translation_entries(project_id, language=language), key=lambda row: _rank_translation_lookup_source(row.get("source_type", "")))
+        mapping: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = _wide_source_key(row.get("source"))
+            if key and key not in mapping:
+                mapping[key] = row
+        result[language] = mapping
+    return result
+
+
+def _announcement_translation_prompt(project: dict[str, Any], language: str, project_prompt: str, lookup: dict[str, Any]) -> str:
+    spec = language_spec(language)
+    missing = lookup.get("missing_terms") or []
+    missing_for_prompt = missing[:80]
+    if len(missing) > len(missing_for_prompt):
+        missing_for_prompt.append({"note": f"{len(missing) - len(missing_for_prompt)} missing terms omitted from prompt context; see lookup workbook for full list"})
+    return (
+        f"{project_prompt.strip()}\n\n"
+        f"Announcement translation task: translate Chinese game external announcement text into {spec.prompt_name}.\n"
+        "Use the provided term_hits when present. Preserve IDs, placeholders, tags, dates, numbers, line breaks and JSONL row order.\n"
+        "Return JSONL only: {\"id\": string, \"translation\": string}. Do not use browser translation, online MT, or machine-translation aggregators.\n"
+        f"Terms missing target translation and requiring human review: {json.dumps(missing_for_prompt, ensure_ascii=False)}\n"
+    ).strip()
+
+
+def _write_announcement_translation_workbook(path: Path, task: dict[str, Any], segments: list[dict[str, Any]], languages: list[str], lookup: dict[str, Any]) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Translations"
+    headers = ["source_file", "segment_id", "segment_index", "location", "CN", "protected_tokens", "term_hits_json", *[language_spec(language).target_header for language in languages]]
+    ws.append(headers)
+    for segment in segments:
+        location = segment.get("coordinate") or segment.get("kind") or ""
+        protected_tokens = _announcement_protected_tokens(str(segment.get("source") or ""))
+        term_hits = {language: _announcement_segment_term_hits(segment, language, lookup) for language in languages}
+        ws.append(
+            [
+                segment.get("source_file", ""),
+                segment.get("id", ""),
+                segment.get("index", 0),
+                location,
+                segment.get("source", ""),
+                json.dumps(protected_tokens, ensure_ascii=False),
+                json.dumps(term_hits, ensure_ascii=False),
+                *["" for _ in languages],
+            ]
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    wb.close()
+
+
+def _announcement_workpack_rows(segments: list[dict[str, Any]], language: str, lookup: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for segment in segments:
+        rows.append(
+            {
+                "id": segment["id"],
+                "para_id": segment["id"],
+                "source_file": segment.get("source_file", ""),
+                "source": segment.get("source", ""),
+                "term_hits": _announcement_segment_term_hits(segment, language, lookup),
+                "protected_tokens": _announcement_protected_tokens(str(segment.get("source") or "")),
+            }
+        )
+    return rows
+
+
+def _announcement_segment_term_hits(segment: dict[str, Any], language: str, lookup: dict[str, Any]) -> list[dict[str, Any]]:
+    source = str(segment.get("source") or "")
+    hits = []
+    for term in (lookup.get(language) or {}).get("terms", []):
+        term_source = str(term.get("source") or "")
+        target = str(term.get("target") or "").strip()
+        if term_source and target and term_source in source:
+            hits.append({"source": term_source, "target": target})
+    return hits
+
+
+def _announcement_protected_tokens(text: str) -> list[str]:
+    tokens = []
+    seen = set()
+    for pattern in (r"\{[^{}]+\}", r"%[sdif]", r"<[^>]+>", r"\[[A-Za-z0-9_/-]+\]", r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b", r"\b\d{1,2}:\d{2}(?:[-–~]\d{1,2}:\d{2})?\b"):
+        for token in re.findall(pattern, text):
+            token = str(token)
+            if token and token not in seen:
+                seen.add(token)
+                tokens.append(token)
+    return tokens
+
+
+def _announcement_response_artifact_map(request: Any, languages: list[str]) -> dict[str, str]:
+    mapping = {require_supported_language(key): value for key, value in dict(getattr(request, "response_artifacts_by_language", {}) or {}).items() if value}
+    response_ids = list(getattr(request, "response_artifact_ids", []) or [])
+    if response_ids:
+        for artifact_id in response_ids:
+            try:
+                artifact = db.get_artifact(artifact_id)
+            except KeyError:
+                continue
+            name = f"{artifact.get('label','')} {Path(artifact.get('path','')).name}".lower()
+            detected = next((language for language in languages if language in name or language_spec(language).target_header.lower() in name), None)
+            if detected:
+                mapping[detected] = artifact_id
+            elif len(languages) == 1:
+                mapping[languages[0]] = artifact_id
+    return mapping
+
+
+def _import_announcement_response_into_workbook(workbook_path: Path, response_path: Path, language: str) -> None:
+    rows = read_jsonl(response_path)
+    translations = {str(row.get("para_id") or row.get("id") or ""): str(row.get("translation") or "") for row in rows}
+    wb = load_workbook(workbook_path)
+    try:
+        ws = wb["Translations"]
+        headers = [str(ws.cell(1, col).value or "") for col in range(1, ws.max_column + 1)]
+        segment_col = headers.index("segment_id") + 1
+        target_header = language_spec(language).target_header
+        if target_header not in headers:
+            raise ValueError(f"translation workbook missing language column: {target_header}")
+        target_col = headers.index(target_header) + 1
+        expected_ids = []
+        for row in range(2, ws.max_row + 1):
+            segment_id = str(ws.cell(row, segment_col).value or "")
+            if not segment_id:
+                continue
+            expected_ids.append(segment_id)
+            if segment_id in translations:
+                ws.cell(row, target_col).value = translations[segment_id]
+        if list(translations) != expected_ids:
+            missing = sorted(set(expected_ids) - set(translations))
+            extra = sorted(set(translations) - set(expected_ids))
+            if missing:
+                raise ValueError(f"AI response missing rows: {missing[:5]}")
+            if extra:
+                raise ValueError(f"AI response extra rows: {extra[:5]}")
+            raise ValueError("AI response row order mismatch")
+        wb.save(workbook_path)
+    finally:
+        wb.close()
+
+
+def _read_announcement_translation_workbook(path: Path, languages: list[str]) -> dict[str, dict[str, Any]]:
+    wb = load_workbook(path, read_only=True, data_only=True)
+    rows: dict[str, dict[str, Any]] = {}
+    try:
+        ws = wb["Translations"]
+        headers = [str(ws.cell(1, col).value or "") for col in range(1, ws.max_column + 1)]
+        header_index = {header: index + 1 for index, header in enumerate(headers)}
+        for required in ("segment_id", "CN", "protected_tokens", "term_hits_json"):
+            if required not in header_index:
+                raise ValueError(f"translation workbook missing {required}")
+        for row_idx in range(2, ws.max_row + 1):
+            segment_id = str(ws.cell(row_idx, header_index["segment_id"]).value or "")
+            if not segment_id:
+                continue
+            translations = {}
+            for language in languages:
+                header = language_spec(language).target_header
+                if header not in header_index:
+                    raise ValueError(f"translation workbook missing {header}")
+                translations[language] = str(ws.cell(row_idx, header_index[header]).value or "").strip()
+            rows[segment_id] = {
+                "source": str(ws.cell(row_idx, header_index["CN"]).value or ""),
+                "protected_tokens": json.loads(str(ws.cell(row_idx, header_index["protected_tokens"]).value or "[]")),
+                "term_hits": json.loads(str(ws.cell(row_idx, header_index["term_hits_json"]).value or "{}")),
+                "translations": translations,
+            }
+    finally:
+        wb.close()
+    return rows
+
+
+def _validate_announcement_translation_rows(segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    expected_ids = [str(segment["id"]) for segment in segments]
+    actual_ids = list(rows)
+    if actual_ids != expected_ids:
+        issues.append({"severity": "hard", "check_type": "row_order", "message": "segment IDs missing, extra, or out of order", "expected": expected_ids, "actual": actual_ids})
+        return issues
+    for segment in segments:
+        row = rows[str(segment["id"])]
+        for language in languages:
+            translation = str(row["translations"].get(language) or "")
+            base = {"severity": "hard", "segment_id": segment["id"], "language": language, "source": segment.get("source", ""), "translation": translation}
+            if not translation:
+                issues.append({**base, "check_type": "empty_translation", "message": "Translation is empty"})
+                continue
+            if language != "ja" and _CJK_RE.search(translation):
+                issues.append({**base, "check_type": "chinese_residue", "message": "Chinese residue found"})
+            for token in row.get("protected_tokens") or []:
+                if token and token not in translation:
+                    issues.append({**base, "check_type": "protected_token_missing", "message": f"Missing protected token: {token}"})
+            lang_hits = (row.get("term_hits") or {}).get(language) or []
+            for hit in lang_hits:
+                target = str(hit.get("target") or "").strip()
+                if target and target not in translation:
+                    issues.append({**base, "check_type": "term_missing", "message": f"Missing term target: {target}"})
+    return issues
+
+
+def _write_announcement_outputs(task: dict[str, Any], segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str], output_dir: Path) -> list[tuple[str, Path]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source_artifact = db.get_artifact(task["source_artifact_id"])
+    source_path = Path(source_artifact["path"])
+    fmt = task["source_format"]
+    if fmt == "docx":
+        return _write_announcement_docx_outputs(source_path, segments, rows, languages, output_dir)
+    if fmt == "xlsx":
+        return _write_announcement_xlsx_outputs(source_path, segments, rows, languages, output_dir)
+    return _write_announcement_txt_outputs(source_path, segments, rows, languages, output_dir)
+
+
+def _write_announcement_docx_outputs(source_path: Path, segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str], output_dir: Path) -> list[tuple[str, Path]]:
+    from docx import Document
+
+    outputs = []
+    for language in languages:
+        doc = Document(str(source_path))
+        for segment in segments:
+            index = int(segment.get("index") or 0)
+            if index < len(doc.paragraphs):
+                _replace_docx_paragraph(doc.paragraphs[index], rows[segment["id"]]["translations"][language])
+        path = output_dir / f"{_safe_source_stem(source_path.name)}_{_visible_language_code(language)}.docx"
+        doc.save(path)
+        outputs.append((language, path))
+    return outputs
+
+
+def _write_announcement_txt_outputs(source_path: Path, segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str], output_dir: Path) -> list[tuple[str, Path]]:
+    lines = source_path.read_text(encoding="utf-8-sig").splitlines()
+    outputs = []
+    for language in languages:
+        out_lines = list(lines)
+        for segment in segments:
+            index = int(segment.get("index") or 0)
+            if index < len(out_lines):
+                out_lines[index] = rows[segment["id"]]["translations"][language]
+        path = output_dir / f"{_safe_source_stem(source_path.name)}_{_visible_language_code(language)}.txt"
+        path.write_text("\n".join(out_lines) + ("\n" if lines else ""), encoding="utf-8")
+        outputs.append((language, path))
+    return outputs
+
+
+def _write_announcement_xlsx_outputs(source_path: Path, segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str], output_dir: Path) -> list[tuple[str, Path]]:
+    outputs = []
+    for language in languages:
+        target = output_dir / f"{_safe_source_stem(source_path.name)}_{_visible_language_code(language)}.xlsx"
+        shutil.copy2(source_path, target)
+        wb = load_workbook(target)
+        try:
+            for segment in segments:
+                sheet = segment.get("sheet")
+                coordinate = segment.get("coordinate")
+                if sheet in wb.sheetnames and coordinate:
+                    wb[sheet][coordinate].value = rows[segment["id"]]["translations"][language]
+            wb.save(target)
+        finally:
+            wb.close()
+        outputs.append((language, target))
+    return outputs
+
+
+def _replace_docx_paragraph(paragraph: Any, text: str) -> None:
+    if paragraph.runs:
+        paragraph.runs[0].text = text
+        for run in paragraph.runs[1:]:
+            run.text = ""
+    else:
+        paragraph.add_run(text)
+
+
+def _write_announcement_qa_summary(path: Path, issues: list[dict[str, Any]], outputs: list[tuple[str, Path]]) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    ws.append(["metric", "value"])
+    ws.append(["hard_blockers", len(issues)])
+    ws.append(["outputs", len(outputs)])
+    ws.append(["languages", " / ".join(_visible_language_code(language) for language, _ in outputs)])
+    details = wb.create_sheet("Issues")
+    headers = ["severity", "language", "segment_id", "check_type", "message", "source", "translation"]
+    details.append(headers)
+    for issue in issues:
+        details.append([_visible_language_code(issue.get(header, "")) if header == "language" and issue.get(header) else issue.get(header, "") for header in headers])
+    out = wb.create_sheet("Outputs")
+    out.append(["language", "filename", "path"])
+    for language, output_path in outputs:
+        out.append([_visible_language_code(language), output_path.name, str(output_path)])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    wb.close()
+
+
+def _safe_file_stem(value: Any) -> str:
+    text = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", str(value or "").strip(), flags=re.UNICODE).strip("._")
+    return text or "announcement"
+
+
+def _safe_source_stem(value: Any) -> str:
+    return source_stem(value, fallback="announcement")
+
+
+def _artifact_source_stem(artifact: dict[str, Any]) -> str:
+    metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), dict) else {}
+    name = metadata.get("original_filename") or Path(str(artifact.get("path") or "")).name or artifact.get("label")
+    return _safe_source_stem(name)
+
+
+def _artifact_kind_label(artifact: dict[str, Any]) -> str:
+    kind = str(artifact.get("kind") or "")
+    origin = str(artifact.get("origin") or "")
+    labels = {
+        "language_table": "上传语言表" if origin == "uploaded" else "语言表",
+        "term_base": "上传术语表",
+        "glossary_final": "生成术语表",
+        "glossary_detail": "术语提取明细",
+        "qa_final_workbook": "已译语言表",
+        "final_workbook": "已译语言表",
+        "qa_changes": "修改记录",
+        "translation_workbook": "翻译中转表",
+        "announcement_terms_workbook": "公告术语表",
+        "announcement_translation_workbook": "公告翻译中转表",
+    }
+    return labels.get(kind, "上传文件" if origin == "uploaded" else str(artifact.get("label") or "产物"))
+
+
+def _artifact_display_label(artifact: dict[str, Any]) -> str:
+    parts = [_artifact_kind_label(artifact), _artifact_source_stem(artifact)]
+    deduped: list[str] = []
+    for part in parts:
+        if part and part not in deduped:
+            deduped.append(part)
+    return "｜".join(deduped) or str(artifact.get("label") or artifact.get("id") or "-")
+
+
+def _announcement_task_source_stem(task: dict[str, Any]) -> str:
+    return _artifact_source_stem(db.get_artifact(task["source_artifact_id"]))
+
+
+def _announcement_delivery_base_name(task: dict[str, Any]) -> str:
+    metadata = _announcement_task_metadata(task)
+    project_name = metadata.get("project_name")
+    if not project_name:
+        try:
+            project_name = db.get_project(task["project_id"])["name"]
+        except KeyError:
+            project_name = ""
+    parts = [_safe_delivery_name(project_name), _announcement_task_source_stem(task)]
+    return "_".join(part for part in parts if part and part != "project") or _announcement_task_source_stem(task)
+
+
+def _visible_language_code(language: Any) -> str:
+    return visible_language_code(language)
+
+
+def _today_stamp() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _mime_for_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if suffix == ".xlsx":
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if suffix == ".txt":
+        return "text/plain"
+    if suffix == ".zip":
+        return "application/zip"
+    if suffix == ".jsonl":
+        return "application/jsonl"
+    if suffix == ".json":
+        return "application/json"
+    return "application/octet-stream"
+
+
+def inspect_translation_targets(artifact_id: str) -> dict[str, Any]:
+    artifact = db.get_artifact(artifact_id)
+    path = Path(artifact["path"])
+    result: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "label": artifact.get("label", ""),
+        "supported_file": path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"},
+        "source_detected": False,
+        "detected_languages": [],
+        "suggested_language": None,
+        "sheets": [],
+    }
+    if not result["supported_file"] or not path.exists():
+        return result
+    detected: set[str] = set()
+    sheet_rows: list[dict[str, Any]] = []
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            for ws in wb.worksheets:
+                headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1), ())]
+                normalized = [header.lower() for header in headers]
+                source_detected = any(header in {"cn", "zh", "source", "original", "chinese", "原文", "中文"} for header in normalized)
+                result["source_detected"] = bool(result["source_detected"] or source_detected)
+                sheet_languages: list[str] = []
+                for index, header in enumerate(normalized):
+                    if not header or header in _STRUCTURAL_TARGET_HEADERS:
+                        continue
+                    for code in LANGUAGE_ORDER:
+                        if header in _TARGET_DETECTION_ALIASES.get(code, set()):
+                            detected.add(code)
+                            sheet_languages.append(code)
+                            break
+                if sheet_languages or source_detected:
+                    sheet_rows.append({"sheet": ws.title, "languages": sorted(set(sheet_languages), key=LANGUAGE_ORDER.index), "source_detected": source_detected})
+        finally:
+            wb.close()
+    except Exception as exc:
+        result["reason"] = f"inspect_failed:{exc}"
+        return result
+    languages = [code for code in LANGUAGE_ORDER if code in detected]
+    result["detected_languages"] = languages
+    result["suggested_language"] = languages[0] if languages else None
+    result["sheets"] = sheet_rows
+    return result
+
+
+def inspect_translation_readiness(artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
+    language = require_supported_language(language)
     artifact = db.get_artifact(artifact_id)
     path = Path(artifact["path"])
     effective_batch_size = max(1, min(int(batch_size or load_settings().get("batch_size") or 90), 200))
     summary = {
         "artifact_id": artifact_id,
         "label": artifact.get("label", ""),
-        "target_language": "en",
+        "target_language": language,
         "source_rows": 0,
         "translated_rows": 0,
         "empty_target_rows": 0,
@@ -443,7 +2794,7 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
                 except Exception:
                     continue
                 source_col = _first_col(headers, ["cn", "source", "original", "zh", "chinese", "原文", "中文"])
-                target_col = _first_col(headers, ["en", "target", "translation", "english", "译文", "英文"])
+                target_col = _first_col(headers, target_aliases(language))
                 id_col = _first_col(headers, ["id", "编号", "序号"])
                 if source_col is None:
                     continue
@@ -462,7 +2813,7 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
                     target = _row_cell(row, target_col) if target_col is not None else ""
                     if not target:
                         summary["empty_target_rows"] += 1
-                    elif _CJK_RE.search(target):
+                    elif _looks_like_untranslated_seed(target, language):
                         summary["cjk_target_rows"] += 1
                     else:
                         summary["translated_rows"] += 1
@@ -658,16 +3009,26 @@ def parse_key_output(text: str) -> dict[str, str]:
 def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
     project = db.get_project(project_id)
     artifact = db.get_artifact(request.input_artifact_id)
+    language = require_supported_language(getattr(request, "language", "en") or "en")
+    spec = language_spec(language)
     material_artifact_ids = list(getattr(request, "project_material_artifact_ids", []) or [])
+    announcement_material_artifact_ids = list(getattr(request, "announcement_material_artifact_ids", []) or [])
+    announcement_only = bool(getattr(request, "announcement_only", False))
+    announcement_min_hit = max(1, int(getattr(request, "announcement_min_hit", 1) or 1))
+    if announcement_only and not announcement_material_artifact_ids:
+        raise ValueError("announcement_only requires announcement_material_artifact_ids")
     project_notes = [str(note).strip() for note in getattr(request, "project_notes", []) or [] if str(note).strip()]
     material_notes = analyze_assets(material_artifact_ids, load_settings()) if material_artifact_ids else []
     run = db.insert_run(
         project_id,
         kind="glossary",
-        language="en",
+        language=language,
         metadata={
             "input_artifact_id": request.input_artifact_id,
             "project_material_artifact_ids": material_artifact_ids,
+            "announcement_material_artifact_ids": announcement_material_artifact_ids,
+            "announcement_only": announcement_only,
+            "announcement_min_hit": announcement_min_hit,
             "project_notes": project_notes,
             "project_material_notes": material_notes,
         },
@@ -677,9 +3038,15 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     input_path = Path(artifact["path"])
     detail_output = output_dir / f"{input_path.stem}_glossary_details.xlsx"
-    final_output = output_dir / f"{input_path.stem}_ID_CN_EN_EN2.xlsx"
+    final_suffix = f"{spec.target_header}_{spec.alt_header}" if spec.alt_header else spec.target_header
+    final_output = output_dir / f"{input_path.stem}_ID_CN_{final_suffix}.xlsx"
     brief_output = output_dir / "project_brief.md"
     prompt_output = output_dir / "translation_prompt.txt"
+    announcement_base = _safe_source_stem(input_path.name)
+    announcement_output = output_dir / f"{announcement_base}_announcement_terms_{_today_stamp()}.xlsx" if announcement_material_artifact_ids else None
+    ai_supplement = bool(getattr(request, "ai_supplement", False))
+    ai_supplement_packet_output = output_dir / f"{announcement_base}_ai_supplement_packet_{_today_stamp()}.json" if ai_supplement else None
+    ai_supplement_report_output = output_dir / f"{announcement_base}_ai_supplement_report_{_today_stamp()}.md" if ai_supplement else None
     args = [
         sys.executable,
         str(GLOSSARY_ROOT / "scripts" / "extract_glossary.py"),
@@ -690,46 +3057,105 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
         request.source_column,
         "--target-column",
         request.target_column,
-        "--output",
-        str(detail_output),
-        "--final-output",
-        str(final_output),
-        "--project-name",
-        request.project_name or project["name"],
-        "--project-brief-output",
-        str(brief_output),
-        "--translation-prompt-output",
-        str(prompt_output),
         "--curated-rules",
         str(project_dir(project_id) / "glossary" / "curated_terms.json"),
         "--observations-store",
         str(project_dir(project_id) / "glossary" / "observed_terms.json"),
     ]
+    if not announcement_only:
+        args.extend(
+            [
+                "--output",
+                str(detail_output),
+                "--final-output",
+                str(final_output),
+                "--project-name",
+                request.project_name or project["name"],
+                "--project-brief-output",
+                str(brief_output),
+                "--translation-prompt-output",
+                str(prompt_output),
+            ]
+        )
     if request.sheet:
         args.extend(["--sheet", request.sheet])
     if request.source_only:
         args.append("--source-only")
     if request.include_empty_final_terms:
         args.append("--include-empty-final-terms")
-    for material_artifact_id in material_artifact_ids:
-        material_artifact = db.get_artifact(material_artifact_id)
-        args.extend(["--project-material", material_artifact["path"]])
-    for note in [*project_notes, *material_notes]:
-        args.extend(["--project-note", note])
+    for announcement_artifact_id in announcement_material_artifact_ids:
+        announcement_artifact = db.get_artifact(announcement_artifact_id)
+        args.extend(["--announcement-material", announcement_artifact["path"]])
+    if announcement_output is not None:
+        args.extend(["--announcement-output", str(announcement_output), "--announcement-min-hit", str(announcement_min_hit)])
+    if ai_supplement:
+        if not announcement_material_artifact_ids:
+            raise ValueError("ai_supplement requires announcement_material_artifact_ids")
+        args.append("--ai-supplement")
+        if ai_supplement_packet_output is not None:
+            args.extend(["--ai-supplement-packet-output", str(ai_supplement_packet_output)])
+        if ai_supplement_report_output is not None:
+            args.extend(["--ai-supplement-report-output", str(ai_supplement_report_output)])
+        response_artifact_id = str(getattr(request, "ai_supplement_response_artifact_id", "") or "").strip()
+        if response_artifact_id:
+            response_artifact = db.get_artifact(response_artifact_id)
+            if response_artifact["project_id"] != project_id:
+                raise KeyError(response_artifact_id)
+            args.extend(["--ai-supplement-response", response_artifact["path"]])
+    if not announcement_only:
+        for material_artifact_id in material_artifact_ids:
+            material_artifact = db.get_artifact(material_artifact_id)
+            args.extend(["--project-material", material_artifact["path"]])
+        for note in [*project_notes, *material_notes]:
+            args.extend(["--project-note", note])
     try:
         proc = run_subprocess(args, GLOSSARY_ROOT, run["id"])
         parsed = parse_key_output(proc.stdout)
-        artifacts = [
-            db.add_artifact(project_id, "Glossary details", detail_output, "glossary_detail", run_id=run["id"]),
-            db.add_artifact(project_id, "ID CN EN EN2 glossary", final_output, "glossary_final", run_id=run["id"]),
-            db.add_artifact(project_id, "Project brief", brief_output, "project_brief", run_id=run["id"], mime="text/markdown"),
-            db.add_artifact(project_id, "Translation prompt", prompt_output, "translation_prompt", run_id=run["id"], mime="text/plain"),
-        ]
-        backfill = backfill_project_glossary_from_final(project_id, final_output, run["id"])
-        if prompt_output.exists():
+        artifacts = []
+        backfill: dict[str, Any] = {}
+        if not announcement_only:
+            artifacts.extend(
+                [
+                    db.add_artifact(project_id, "Glossary details", detail_output, "glossary_detail", run_id=run["id"]),
+                    db.add_artifact(project_id, "ID CN EN EN2 glossary", final_output, "glossary_final", run_id=run["id"]),
+                    db.add_artifact(project_id, "Project brief", brief_output, "project_brief", run_id=run["id"], mime="text/markdown"),
+                    db.add_artifact(project_id, "Translation prompt", prompt_output, "translation_prompt", run_id=run["id"], mime="text/plain"),
+                ]
+            )
+            backfill = backfill_project_glossary_from_final(project_id, final_output, run["id"], language=language)
+        if announcement_output is not None and announcement_output.exists():
+            artifacts.append(
+                db.add_artifact(
+                    project_id,
+                    "Announcement glossary lookup",
+                    announcement_output,
+                    "announcement_glossary",
+                    run_id=run["id"],
+                )
+            )
+        if ai_supplement_packet_output is not None and ai_supplement_packet_output.exists():
+            artifacts.append(db.add_artifact(project_id, "公告 AI 补充包", ai_supplement_packet_output, "announcement_ai_supplement_packet", run_id=run["id"], mime="application/json"))
+        if ai_supplement_report_output is not None and ai_supplement_report_output.exists():
+            artifacts.append(db.add_artifact(project_id, "公告 AI 补充报告", ai_supplement_report_output, "announcement_ai_supplement_report", run_id=run["id"], mime="text/markdown"))
+        if not announcement_only and prompt_output.exists():
             prompt = prompt_output.read_text(encoding="utf-8")
             db.update_project(project_id, {"prompt_text": prompt})
-        db.update_run(run["id"], status="passed", metadata={"output": parsed, "glossary_backfill": backfill})
+        db.update_run(
+            run["id"],
+            status="passed",
+            metadata={
+                "output": parsed,
+                "glossary_backfill": backfill,
+                "announcement": {
+                    "material_artifact_ids": announcement_material_artifact_ids,
+                    "only": announcement_only,
+                    "output": str(announcement_output) if announcement_output else "",
+                    "terms": int(parsed.get("ANNOUNCEMENT_TERMS") or 0),
+                    "ai_supplement_packet": parsed.get("AI_SUPPLEMENT_PACKET_OUTPUT") or "disabled",
+                    "ai_supplement_report": parsed.get("AI_SUPPLEMENT_REPORT_OUTPUT") or "disabled",
+                },
+            },
+        )
         return {"run": db.get_run(run["id"]), "artifacts": artifacts, "output": parsed, "glossary_backfill": backfill}
     except Exception as exc:
         db.add_event(run["id"], str(exc), level="error")
@@ -737,8 +3163,9 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
         raise
 
 
-def backfill_project_glossary_from_final(project_id: str, final_output: Path, run_id: str | None = None) -> dict[str, Any]:
+def backfill_project_glossary_from_final(project_id: str, final_output: Path, run_id: str | None = None, language: str = "en") -> dict[str, Any]:
     """Stage generated high-frequency terms for review without changing the project glossary."""
+    language = require_supported_language(language)
     result = {
         "candidates": 0,
         "unique_candidates": 0,
@@ -756,11 +3183,11 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
             db.add_event(run_id, "Glossary backfill skipped: generated ID/CN/EN/EN2 file was not found.", level="warn")
         return result
 
-    rows, _columns = _read_glossary_rows(final_output, limit=None)
+    rows, _columns = _read_glossary_rows(final_output, limit=None, language=language)
     result["candidates"] = len(rows)
 
     existing: dict[str, dict[str, Any]] = {}
-    for term in db.list_glossary_terms(project_id):
+    for term in db.list_glossary_terms(project_id, language=language):
         source_key = _glossary_source_key(term.get("source"))
         if not source_key:
             continue
@@ -789,6 +3216,7 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
         source_artifact_id="",
         label=f"Glossary scan {datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M')}",
         metadata={"strategy": "stage_candidates_then_accept", "source": str(final_output)},
+        language=language,
     )
     result["batch_id"] = batch["id"]
     if run_id:
@@ -816,6 +3244,7 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
                 "source": source,
                 "target": target,
                 "target_alt": target_alt,
+                "language": language,
                 "category": row.get("category", ""),
                 "note": row.get("note", "") or ("高频词候选，需补译后人工确认" if not target and not target_alt else "高频词候选，需人工确认"),
                 "action": "new",
@@ -840,6 +3269,7 @@ async def translate_missing_glossary_candidates(project_id: str, batch_id: str) 
     batch = db.get_glossary_batch(batch_id)
     if batch["project_id"] != project_id:
         raise KeyError(batch_id)
+    language = require_supported_language(batch.get("language") or "en")
     settings = load_settings()
     provider = str(settings.get("provider") or "mock")
     if provider == "mock":
@@ -847,14 +3277,14 @@ async def translate_missing_glossary_candidates(project_id: str, batch_id: str) 
     if provider in {"openai", "anthropic"} and not settings.get("api_key"):
         raise ValueError(f"{provider} api_key is required to translate glossary candidates")
 
-    pending = db.list_glossary_candidates(project_id, batch_id=batch_id, status="pending")
+    pending = db.list_glossary_candidates(project_id, batch_id=batch_id, status="pending", language=language)
     missing = [candidate for candidate in pending if not str(candidate.get("target") or "").strip()]
     if not missing:
         return {
             "batch": batch,
             "translated_count": 0,
             "skipped_count": len(pending),
-            "candidates": db.list_glossary_candidates(project_id, batch_id=batch_id),
+            "candidates": db.list_glossary_candidates(project_id, batch_id=batch_id, language=language),
         }
 
     rows: list[dict[str, Any]] = []
@@ -871,7 +3301,7 @@ async def translate_missing_glossary_candidates(project_id: str, batch_id: str) 
         )
         id_to_candidate[index] = candidate
 
-    prompt = _glossary_candidate_translation_prompt(project, rows)
+    prompt = _glossary_candidate_translation_prompt(project, rows, language=language)
     try:
         items = await translate_batch(rows, settings, prompt)
     except Exception as exc:
@@ -903,12 +3333,12 @@ async def translate_missing_glossary_candidates(project_id: str, batch_id: str) 
         translated_count += 1
 
     if batch.get("run_id"):
-        db.add_event(batch["run_id"], f"Glossary candidate translation filled {translated_count} missing EN values.")
+        db.add_event(batch["run_id"], f"Glossary candidate translation filled {translated_count} missing {language.upper()} values.")
     return {
         "batch": db.get_glossary_batch(batch_id),
         "translated_count": translated_count,
         "skipped_count": len(pending) - len(missing),
-        "candidates": db.list_glossary_candidates(project_id, batch_id=batch_id),
+        "candidates": db.list_glossary_candidates(project_id, batch_id=batch_id, language=language),
     }
 
 
@@ -916,21 +3346,34 @@ def translate_missing_glossary_candidates_sync(project_id: str, batch_id: str) -
     return asyncio.run(translate_missing_glossary_candidates(project_id, batch_id))
 
 
-def _glossary_candidate_translation_prompt(project: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+def _glossary_candidate_translation_prompt(project: dict[str, Any], rows: list[dict[str, Any]], language: str = "en") -> str:
+    language = require_supported_language(language)
+    spec = language_spec(language)
     profile = project.get("profile") or {}
-    prompt_text = str(project.get("prompt_text") or "").strip()
+    prompt_text = str((profile.get("prompts_by_language") or {}).get(language) or project.get("prompt_text") or "").strip()
+    prompt_text = _manage_project_prompt_context(prompt_text, load_settings())
+    profile_summary = {
+        key: profile.get(key)
+        for key in ("game_type", "target_audience", "content_scope", "translation_style", "tone", "language_assets")
+        if profile.get(key)
+    }
     existing_terms = [
         {"source": term.get("source"), "target": term.get("target"), "target_alt": term.get("target_alt")}
-        for term in db.list_glossary_terms(project["id"])[:200]
+        for term in db.list_glossary_terms(project["id"], language=language)[:200]
         if str(term.get("source") or "").strip() and str(term.get("target") or "").strip()
     ]
+    term_instruction = (
+        f"Translate only the {spec.target_header} term. Do not create {spec.alt_header}, notes, categories, explanations, or markdown. "
+        if spec.alt_header
+        else f"Translate only the {spec.target_header} term. Do not create notes, categories, explanations, or markdown. "
+    )
     return (
-        "Translate short game glossary term candidates from Chinese to English. "
+        f"Translate short game glossary term candidates from Chinese to {spec.prompt_name}. "
         "Return JSONL only; each line must be {\"id\": number, \"translation\": string}. "
-        "Translate only the EN term. Do not create EN2, notes, categories, explanations, or markdown. "
+        f"{term_instruction}"
         "Keep UI terms concise and consistent with existing glossary.\n\n"
         f"Project: {project.get('name', '')}\n"
-        f"Profile: {json.dumps(profile, ensure_ascii=False)}\n"
+        f"Profile: {json.dumps(profile_summary, ensure_ascii=False)}\n"
         f"Project prompt:\n{prompt_text}\n\n"
         f"Existing glossary examples:\n{json.dumps(existing_terms, ensure_ascii=False)}\n\n"
         f"Candidates:\n" + "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
@@ -967,6 +3410,20 @@ def preview_glossary_import(project_id: str, request: Any, import_all: bool = Fa
     _ = project
     artifact = db.get_artifact(request.artifact_id)
     path = Path(artifact["path"])
+    language = require_supported_language(getattr(request, "language", "en") or "en")
+    auto_languages = bool(getattr(request, "auto_languages", True))
+    if auto_languages and not getattr(request, "target_column", None) and not getattr(request, "target_alt_column", None):
+        rows, columns, languages = _read_multilingual_glossary_rows(
+            path,
+            sheet=getattr(request, "sheet", None),
+            term_key_column=getattr(request, "term_key_column", None),
+            source_column=getattr(request, "source_column", None),
+            category_column=getattr(request, "category_column", None),
+            note_column=getattr(request, "note_column", None),
+            limit=None if import_all else int(getattr(request, "limit", 100) or 100),
+        )
+        if languages:
+            return {"artifact": artifact, "columns": columns, "rows": rows, "total_rows": len(rows), "language": "auto", "languages": languages}
     rows, columns = _read_glossary_rows(
         path,
         sheet=getattr(request, "sheet", None),
@@ -976,13 +3433,15 @@ def preview_glossary_import(project_id: str, request: Any, import_all: bool = Fa
         target_alt_column=getattr(request, "target_alt_column", None),
         category_column=getattr(request, "category_column", None),
         note_column=getattr(request, "note_column", None),
+        language=language,
         limit=None if import_all else int(getattr(request, "limit", 100) or 100),
     )
-    return {"artifact": artifact, "columns": columns, "rows": rows, "total_rows": len(rows)}
+    return {"artifact": artifact, "columns": columns, "rows": rows, "total_rows": len(rows), "language": language}
 
 
 def import_glossary(project_id: str, request: Any) -> dict[str, Any]:
     preview = preview_glossary_import(project_id, request, import_all=True)
+    language = preview["language"]
     imported = []
     for row in preview["rows"]:
         if not row.get("source"):
@@ -995,6 +3454,7 @@ def import_glossary(project_id: str, request: Any) -> dict[str, Any]:
                     "source": row.get("source", ""),
                     "target": row.get("target", ""),
                     "target_alt": row.get("target_alt", ""),
+                    "language": row.get("language") or language,
                     "category": row.get("category", ""),
                     "note": row.get("note", ""),
                     "source_type": "imported",
@@ -1002,68 +3462,137 @@ def import_glossary(project_id: str, request: Any) -> dict[str, Any]:
                 },
             )
         )
-    return {"imported_count": len(imported), "terms": imported, "preview": preview}
+    return {"imported_count": len(imported), "terms": imported, "preview": preview, "languages": preview.get("languages") or ([language] if language != "auto" else [])}
 
 
-def export_glossary(project_id: str, fmt: str) -> dict[str, Any] | Path:
-    terms = db.list_glossary_terms(project_id)
+def export_glossary(project_id: str, fmt: str, language: str | None = None) -> dict[str, Any] | Path:
+    project = db.get_project(project_id)
+    language = require_supported_language(language or "en") if language else None
+    terms = db.list_glossary_terms(project_id, language=language)
     if fmt == "json":
         return {
             "project_id": project_id,
-            "terms": [dict(zip(("term_key", "source", "target", "target_alt", "category", "note"), _glossary_export_row(term))) for term in terms],
+            "language": language,
+            "terms": [dict(zip(("term_key", "source", "target", "target_alt", "category", "note"), _glossary_export_row(term))) | {"language": term.get("language", "en")} for term in terms],
         }
     output_dir = project_dir(project_id) / "glossary" / "exports"
     output_dir.mkdir(parents=True, exist_ok=True)
-    columns = ["ID", "CN", "EN", "EN2", "分类", "备注"]
+    suffix = _export_language_suffix(language)
+    if language:
+        columns = ["ID", "CN", _visible_language_code(language), *(["EN2"] if language == "en" else []), "分类", "备注"]
+        rows = [_glossary_export_row(term, include_alt=language == "en") for term in terms]
+    else:
+        wide = list_glossary_wide(project_id)
+        languages = list(wide.get("languages") or [])
+        columns = ["ID", "CN", *_wide_language_columns(languages), "分类", "备注"]
+        rows = _glossary_wide_export_rows(wide, languages)
     if fmt == "csv":
-        path = output_dir / "project_glossary.csv"
+        path = output_dir / _export_filename(project, "glossary", suffix, "csv")
         with path.open("w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.writer(fh)
             writer.writerow(columns)
-            for term in terms:
-                writer.writerow(_glossary_export_row(term))
+            writer.writerows(rows)
         return path
-    path = output_dir / "project_glossary.xlsx"
+    path = output_dir / _export_filename(project, "glossary", suffix, "xlsx")
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
     ws.append(columns)
-    for term in terms:
-        ws.append(_glossary_export_row(term))
+    for row in rows:
+        ws.append(row)
     wb.save(path)
     wb.close()
     return path
 
 
-def _glossary_export_row(term: dict[str, Any]) -> list[Any]:
-    return [
+def _export_language_suffix(language: str | None) -> str:
+    return _visible_language_code(language) if language else "ALL"
+
+
+def _export_filename(project: dict[str, Any], kind: str, suffix: str, ext: str) -> str:
+    return f"{_safe_delivery_name(project['name'])}_{kind}_{suffix}_{_today_stamp()}.{ext}"
+
+
+def _glossary_export_row(term: dict[str, Any], *, include_alt: bool = True) -> list[Any]:
+    row = [
         term.get("term_key", ""),
         term.get("source", ""),
         term.get("target", ""),
-        term.get("target_alt", ""),
-        term.get("category", ""),
-        term.get("note", ""),
     ]
+    if include_alt:
+        row.append(term.get("target_alt", ""))
+    row.extend([term.get("category", ""), term.get("note", "")])
+    return row
+
+
+def _wide_language_columns(languages: list[str]) -> list[str]:
+    columns: list[str] = []
+    for code in languages:
+        columns.append(_visible_language_code(code))
+        if code == "en":
+            columns.append("EN2")
+    return columns
+
+
+def _glossary_wide_export_rows(wide: dict[str, Any], languages: list[str]) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    for row in wide["rows"]:
+        translations = row.get("translations") or {}
+        values = [row.get("term_key", ""), row.get("source", "")]
+        for code in languages:
+            entry = translations.get(code) or {}
+            values.append(entry.get("target", ""))
+            if code == "en":
+                values.append(entry.get("target_alt", ""))
+        values.extend([row.get("category", ""), row.get("note", "")])
+        rows.append(values)
+    return rows
 
 
 def import_translation_archive(project_id: str, request: Any, source_type: str = "imported") -> dict[str, Any]:
+    language = require_supported_language(getattr(request, "language", "en") or "en")
     artifact = db.get_artifact(request.artifact_id)
     if artifact["project_id"] != project_id:
         raise KeyError("artifact")
-    rows = _read_translation_rows(
-        Path(artifact["path"]),
-        sheet=getattr(request, "sheet", None),
-        id_column=getattr(request, "id_column", None),
-        source_column=getattr(request, "source_column", None),
-        target_column=getattr(request, "target_column", None),
-        target_alt_column=getattr(request, "target_alt_column", None),
-        note_column=getattr(request, "note_column", None),
-        language=getattr(request, "language", "en") or "en",
-        source_artifact_id=artifact["id"],
-        source_type=source_type,
-    )
+    if bool(getattr(request, "auto_languages", True)) and not getattr(request, "target_column", None) and not getattr(request, "target_alt_column", None):
+        rows = _read_multilingual_translation_rows(
+            Path(artifact["path"]),
+            sheet=getattr(request, "sheet", None),
+            id_column=getattr(request, "id_column", None),
+            source_column=getattr(request, "source_column", None),
+            note_column=getattr(request, "note_column", None),
+            source_artifact_id=artifact["id"],
+            source_type=source_type,
+        )
+        if not rows:
+            rows = _read_translation_rows(
+                Path(artifact["path"]),
+                sheet=getattr(request, "sheet", None),
+                id_column=getattr(request, "id_column", None),
+                source_column=getattr(request, "source_column", None),
+                target_column=getattr(request, "target_column", None),
+                target_alt_column=getattr(request, "target_alt_column", None),
+                note_column=getattr(request, "note_column", None),
+                language=language,
+                source_artifact_id=artifact["id"],
+                source_type=source_type,
+            )
+    else:
+        rows = _read_translation_rows(
+            Path(artifact["path"]),
+            sheet=getattr(request, "sheet", None),
+            id_column=getattr(request, "id_column", None),
+            source_column=getattr(request, "source_column", None),
+            target_column=getattr(request, "target_column", None),
+            target_alt_column=getattr(request, "target_alt_column", None),
+            note_column=getattr(request, "note_column", None),
+            language=language,
+            source_artifact_id=artifact["id"],
+            source_type=source_type,
+        )
     imported = [db.upsert_translation_entry(project_id, row) for row in rows if row.get("source") or row.get("target")]
-    return {"project_id": project_id, "artifact_id": artifact["id"], "imported_count": len(imported), "entries": imported}
+    languages = [code for code in LANGUAGE_ORDER if any(row.get("language") == code for row in rows)]
+    return {"project_id": project_id, "artifact_id": artifact["id"], "imported_count": len(imported), "entries": imported, "languages": languages or [language]}
 
 
 def archive_translation_artifact(project_id: str, artifact_id: str, language: str = "en", source_type: str = "qa_passed") -> dict[str, Any]:
@@ -1082,31 +3611,269 @@ def archive_translation_artifact(project_id: str, artifact_id: str, language: st
     return import_translation_archive(project_id, request, source_type=source_type)
 
 
-def export_translation_archive(project_id: str, fmt: str) -> dict[str, Any] | Path:
-    entries = db.list_translation_entries(project_id)
+def export_translation_archive(project_id: str, fmt: str, language: str | None = None) -> dict[str, Any] | Path:
+    project = db.get_project(project_id)
+    language = require_supported_language(language or "en") if language else None
+    entries = db.list_translation_entries(project_id, language=language)
     if fmt == "json":
-        return {"project_id": project_id, "entries": [_translation_export_payload(entry) for entry in entries]}
+        return {"project_id": project_id, "language": language, "entries": [_translation_export_payload(entry) for entry in entries]}
     output_dir = project_dir(project_id) / "translations" / "exports"
     output_dir.mkdir(parents=True, exist_ok=True)
-    columns = ["ID", "CN", "EN", "EN2", "备注"]
+    suffix = _export_language_suffix(language)
+    if language:
+        columns = ["ID", "CN", _visible_language_code(language), *(["EN2"] if language == "en" else []), "备注"]
+        rows = [_translation_export_row(entry, include_alt=language == "en") for entry in entries]
+    else:
+        wide = list_translation_archive_wide(project_id)
+        languages = list(wide.get("languages") or [])
+        columns = ["ID", "CN", *_wide_language_columns(languages), "备注"]
+        rows = _translation_wide_export_rows(wide, languages)
     if fmt == "csv":
-        path = output_dir / "project_translations.csv"
+        path = output_dir / _export_filename(project, "translations", suffix, "csv")
         with path.open("w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.writer(fh)
             writer.writerow(columns)
-            for entry in entries:
-                writer.writerow(_translation_export_row(entry))
+            writer.writerows(rows)
         return path
-    path = output_dir / "project_translations.xlsx"
+    path = output_dir / _export_filename(project, "translations", suffix, "xlsx")
     wb = Workbook()
     ws = wb.active
     ws.title = "Translations"
     ws.append(columns)
-    for entry in entries:
-        ws.append(_translation_export_row(entry))
+    for row in rows:
+        ws.append(row)
     wb.save(path)
     wb.close()
     return path
+
+
+def list_glossary_wide(project_id: str) -> dict[str, Any]:
+    db.get_project(project_id)
+    rows = _wide_rows(
+        db.list_glossary_terms(project_id),
+        key_field="term_key",
+        shared_fields=("term_key", "category", "note"),
+    )
+    return {"project_id": project_id, **rows}
+
+
+def list_translation_archive_wide(project_id: str) -> dict[str, Any]:
+    db.get_project(project_id)
+    rows = _wide_rows(
+        db.list_translation_entries(project_id),
+        key_field="entry_key",
+        shared_fields=("entry_key", "note"),
+    )
+    return {"project_id": project_id, **rows}
+
+
+def _wide_rows(items: list[dict[str, Any]], *, key_field: str, shared_fields: tuple[str, ...]) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        source_key = _wide_source_key(item.get("source"))
+        if not source_key:
+            continue
+        grouped.setdefault(source_key, []).append(item)
+
+    wide_rows: list[dict[str, Any]] = []
+    coverage: dict[str, int] = {}
+    for source_key, group in grouped.items():
+        translations: dict[str, dict[str, Any]] = {}
+        for code in LANGUAGE_ORDER:
+            candidates = [item for item in group if normalize_language(item.get("language") or "en") == code and (str(item.get("target") or "").strip() or str(item.get("target_alt") or "").strip())]
+            if not candidates:
+                continue
+            selected = sorted(candidates, key=lambda item: str(item.get("updated_at") or ""), reverse=True)[0]
+            payload = {
+                "id": selected.get("id", ""),
+                "language": code,
+                "target": selected.get("target", ""),
+                "target_alt": selected.get("target_alt", ""),
+            }
+            translations[code] = payload
+            coverage[code] = coverage.get(code, 0) + 1
+        shared = {field: _first_non_blank(group, field) for field in shared_fields}
+        wide_rows.append(
+            {
+                "source_key": source_key,
+                "source": _first_non_blank(group, "source"),
+                **shared,
+                "translations": translations,
+                "languages": [code for code in LANGUAGE_ORDER if code in translations],
+                "conflicts": _wide_conflicts(group, ("source", *shared_fields)),
+            }
+        )
+
+    languages = [code for code in LANGUAGE_ORDER if coverage.get(code, 0) > 0]
+    wide_rows.sort(key=lambda row: (str(row.get("source") or ""), str(row.get(key_field) or "")))
+    return {"languages": languages, "coverage": {code: coverage[code] for code in languages}, "row_count": len(wide_rows), "rows": wide_rows}
+
+
+def _wide_source_key(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).casefold()
+
+
+def _first_non_blank(rows: list[dict[str, Any]], field: str) -> str:
+    for row in rows:
+        value = str(row.get(field) or "").strip()
+        if value and value != "-":
+            return value
+    return ""
+
+
+def _wide_conflicts(rows: list[dict[str, Any]], fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    for field in fields:
+        values: list[str] = []
+        for row in rows:
+            value = str(row.get(field) or "").strip()
+            if value and value != "-" and value not in values:
+                values.append(value)
+        if len(values) > 1:
+            conflicts.append({"field": field, "values": values})
+    return conflicts
+
+
+def _normalized_header_indices(headers: list[str]) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        key = str(header or "").strip().lower()
+        if key and key not in normalized:
+            normalized[key] = index
+    return normalized
+
+
+def _auto_language_indices(headers: list[str], reserved_indices: set[int] | None = None) -> dict[str, tuple[int, int | None]]:
+    reserved = reserved_indices or set()
+    normalized_headers: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        if index in reserved:
+            continue
+        key = str(header or "").strip().lower()
+        if key:
+            normalized_headers[key] = index
+    detected: dict[str, tuple[int, int | None]] = {}
+    for code in LANGUAGE_ORDER:
+        target_idx = _column_index(normalized_headers, None, list(AUTO_LANGUAGE_TARGET_ALIASES[code]), required=False)
+        if target_idx is None:
+            continue
+        alt_idx = None
+        if code == "en":
+            alt_idx = _column_index(normalized_headers, None, list(AUTO_LANGUAGE_ALT_ALIASES["en"]), required=False)
+        detected[code] = (target_idx, alt_idx)
+    return detected
+
+
+def _read_multilingual_glossary_rows(
+    path: Path,
+    sheet: str | None = None,
+    term_key_column: str | None = None,
+    source_column: str | None = None,
+    category_column: str | None = None,
+    note_column: str | None = None,
+    limit: int | None = 100,
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return [], {}, []
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
+        headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        normalized = _normalized_header_indices(headers)
+        term_key_idx = _column_index(normalized, term_key_column, ["id", "key", "编号", "序号"], required=False)
+        source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "term", "原文", "中文", "术语"])
+        category_idx = _column_index(normalized, category_column, ["category", "type", "分类", "类别", "类型"], required=False)
+        note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
+        reserved = {index for index in (term_key_idx, source_idx, category_idx, note_idx) if index is not None}
+        language_indices = _auto_language_indices(headers, reserved)
+        if not language_indices:
+            return [], {}, []
+        rows: list[dict[str, Any]] = []
+        source_rows = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            source = _value_at(row, source_idx)
+            if not source:
+                continue
+            source_rows += 1
+            if limit is not None and source_rows > limit:
+                break
+            for code, (target_idx, alt_idx) in language_indices.items():
+                target = _value_at(row, target_idx)
+                target_alt = _value_at(row, alt_idx) if code == "en" else ""
+                if not target and not target_alt:
+                    continue
+                rows.append(
+                    {
+                        "term_key": _value_at(row, term_key_idx) if term_key_idx is not None else "",
+                        "source": source,
+                        "target": target,
+                        "target_alt": target_alt,
+                        "language": code,
+                        "category": _value_at(row, category_idx) if category_idx is not None else "",
+                        "note": _value_at(row, note_idx) if note_idx is not None else "",
+                    }
+                )
+        return rows, {
+            "term_key": headers[term_key_idx] if term_key_idx is not None else "",
+            "source": headers[source_idx],
+            "languages": {code: {"target": headers[target_idx], "target_alt": headers[alt_idx] if alt_idx is not None else ""} for code, (target_idx, alt_idx) in language_indices.items()},
+            "category": headers[category_idx] if category_idx is not None else "",
+            "note": headers[note_idx] if note_idx is not None else "",
+        }, [code for code in LANGUAGE_ORDER if code in language_indices and any(row.get("language") == code for row in rows)]
+    finally:
+        wb.close()
+
+
+def _read_multilingual_translation_rows(
+    path: Path,
+    sheet: str | None = None,
+    id_column: str | None = None,
+    source_column: str | None = None,
+    note_column: str | None = None,
+    source_artifact_id: str = "",
+    source_type: str = "imported",
+) -> list[dict[str, Any]]:
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return []
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
+        headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        normalized = _normalized_header_indices(headers)
+        id_idx = _column_index(normalized, id_column, ["id", "key", "编号", "序号"], required=False)
+        source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "原文", "中文"])
+        note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
+        reserved = {index for index in (id_idx, source_idx, note_idx) if index is not None}
+        language_indices = _auto_language_indices(headers, reserved)
+        if not language_indices:
+            return []
+        rows: list[dict[str, Any]] = []
+        for row_index, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            source = _value_at(row, source_idx)
+            if not source:
+                continue
+            for code, (target_idx, alt_idx) in language_indices.items():
+                target = _value_at(row, target_idx)
+                target_alt = _value_at(row, alt_idx) if code == "en" else ""
+                if not target and not target_alt:
+                    continue
+                rows.append(
+                    {
+                        "entry_key": _value_at(row, id_idx) if id_idx is not None else "",
+                        "source": source,
+                        "target": target,
+                        "target_alt": target_alt,
+                        "language": code,
+                        "sheet": ws.title,
+                        "row_number": row_index,
+                        "note": _value_at(row, note_idx) if note_idx is not None else "",
+                        "source_type": source_type,
+                        "source_artifact_id": source_artifact_id,
+                    }
+                )
+        return rows
+    finally:
+        wb.close()
 
 
 def _read_translation_rows(
@@ -1121,25 +3888,17 @@ def _read_translation_rows(
     source_artifact_id: str = "",
     source_type: str = "imported",
 ) -> list[dict[str, Any]]:
+    language = require_supported_language(language)
     if path.suffix.lower() == ".json":
         payload = json.loads(path.read_text(encoding="utf-8"))
         raw_rows = payload.get("entries") if isinstance(payload, dict) else payload
-        return [
-            {
-                "entry_key": str(row.get("entry_key") or row.get("id") or "").strip(),
-                "source": str(row.get("source") or row.get("cn") or "").strip(),
-                "target": str(row.get("target") or row.get("en") or row.get("translation") or "").strip(),
-                "target_alt": str(row.get("target_alt") or row.get("en2") or "").strip(),
-                "language": str(row.get("language") or language or "en").lower(),
-                "sheet": str(row.get("sheet") or "").strip(),
-                "row_number": int(row.get("row_number") or 0),
-                "note": str(row.get("note") or "").strip(),
-                "source_type": source_type,
-                "source_artifact_id": source_artifact_id,
-            }
-            for row in (raw_rows or [])
-            if isinstance(row, dict)
-        ]
+        rows = []
+        for row in (raw_rows or []):
+            if not isinstance(row, dict):
+                continue
+            normalized = {str(key or "").strip().lower(): value for key, value in row.items()}
+            rows.append(_translation_row_from_mapping(normalized, int(row.get("row_number") or 0), str(row.get("sheet") or "").strip(), language, source_artifact_id, source_type))
+        return rows
     if path.suffix.lower() == ".csv":
         with path.open("r", encoding="utf-8-sig", newline="") as fh:
             reader = csv.DictReader(fh)
@@ -1156,8 +3915,8 @@ def _read_translation_rows(
         normalized = {header.lower(): index for index, header in enumerate(headers) if header}
         id_idx = _column_index(normalized, id_column, ["id", "key", "编号", "序号"], required=False)
         source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "原文", "中文"])
-        target_idx = _column_index(normalized, target_column, ["target", "translation", "en", "english", "译文", "英文"])
-        target_alt_idx = _column_index(normalized, target_alt_column, ["en2", "en 2", "alt", "alternate", "variant"], required=False)
+        target_idx = _column_index(normalized, target_column, target_aliases(language))
+        target_alt_idx = _column_index(normalized, target_alt_column, alt_aliases(language), required=False)
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
         rows = []
         for row_index, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
@@ -1171,7 +3930,7 @@ def _read_translation_rows(
                     "source": source,
                     "target": target,
                     "target_alt": _value_at(row, target_alt_idx) if target_alt_idx is not None else "",
-                    "language": language.lower(),
+                    "language": language,
                     "sheet": ws.title,
                     "row_number": row_index,
                     "note": _value_at(row, note_idx) if note_idx is not None else "",
@@ -1192,6 +3951,7 @@ def _translation_row_from_mapping(
     source_artifact_id: str,
     source_type: str,
 ) -> dict[str, Any]:
+    language = require_supported_language(language)
     def pick(*names: str) -> str:
         for name in names:
             value = row.get(name.lower())
@@ -1202,9 +3962,9 @@ def _translation_row_from_mapping(
     return {
         "entry_key": pick("id", "key", "entry_key", "编号", "序号"),
         "source": pick("cn", "source", "original", "原文", "中文"),
-        "target": pick("en", "target", "translation", "译文", "英文"),
-        "target_alt": pick("en2", "target_alt", "alt"),
-        "language": language.lower(),
+        "target": pick("target", *target_aliases(language)),
+        "target_alt": pick("target_alt", *alt_aliases(language)),
+        "language": language,
         "sheet": sheet,
         "row_number": row_number,
         "note": pick("note", "notes", "comment", "备注"),
@@ -1219,18 +3979,36 @@ def _translation_export_payload(entry: dict[str, Any]) -> dict[str, Any]:
         "source": entry.get("source", ""),
         "target": entry.get("target", ""),
         "target_alt": entry.get("target_alt", ""),
+        "language": entry.get("language", "en"),
         "note": entry.get("note", ""),
     }
 
 
-def _translation_export_row(entry: dict[str, Any]) -> list[Any]:
-    return [
+def _translation_export_row(entry: dict[str, Any], *, include_alt: bool = True) -> list[Any]:
+    row = [
         entry.get("entry_key", ""),
         entry.get("source", ""),
         entry.get("target", ""),
-        entry.get("target_alt", ""),
-        entry.get("note", ""),
     ]
+    if include_alt:
+        row.append(entry.get("target_alt", ""))
+    row.append(entry.get("note", ""))
+    return row
+
+
+def _translation_wide_export_rows(wide: dict[str, Any], languages: list[str]) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    for row in wide["rows"]:
+        translations = row.get("translations") or {}
+        values = [row.get("entry_key", ""), row.get("source", "")]
+        for code in languages:
+            entry = translations.get(code) or {}
+            values.append(entry.get("target", ""))
+            if code == "en":
+                values.append(entry.get("target_alt", ""))
+        values.append(row.get("note", ""))
+        rows.append(values)
+    return rows
 
 
 def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
@@ -1266,6 +4044,7 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     output_dir.mkdir(parents=True, exist_ok=True)
     final_path, changes_path = _delivery_output_paths(project, run)
     shutil.copy2(final_source["path"], final_path)
+    _normalize_delivery_workbook_headers(final_path, run.get("language") or "en")
     if changes_source and Path(changes_source["path"]).exists():
         shutil.copy2(changes_source["path"], changes_path)
     else:
@@ -1295,7 +4074,7 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
         "task_id": _short_run_id(task_run_id),
         "task_label": f"{task_code}-{_short_run_id(task_run_id)}",
         "task_type": _task_type_label(task_code),
-        "language": (run.get("language") or "en").upper(),
+        "language": _visible_language_code(run.get("language") or "en"),
         "created_at": run.get("created_at", ""),
         "updated_at": run.get("updated_at", ""),
         "status": run.get("status", ""),
@@ -1362,9 +4141,30 @@ def _delivery_output_paths(project: dict[str, Any], run: dict[str, Any]) -> tupl
     output_dir.mkdir(parents=True, exist_ok=True)
     task_code, task_run_id = _effective_task_identity(run)
     timestamp = _delivery_timestamp(run.get("created_at", ""))
-    language = str(run.get("language") or "en").upper()
+    language = _visible_language_code(run.get("language") or "en")
     prefix = f"{_safe_delivery_name(project['name'])}_{language}_{timestamp}_{task_code}-{_short_run_id(task_run_id)}"
     return output_dir / f"{prefix}_final.xlsx", output_dir / f"{prefix}_changes.xlsx"
+
+
+def _normalize_delivery_workbook_headers(path: Path, language: Any) -> None:
+    code = require_supported_language(language or "en")
+    target = _visible_language_code(code)
+    aliases = {alias.strip().lower() for alias in target_aliases(code)}
+    if not aliases:
+        return
+    wb = load_workbook(path)
+    changed = False
+    try:
+        for ws in wb.worksheets:
+            for cell in ws[1]:
+                value = str(cell.value or "").strip()
+                if value and value.lower() in aliases and value != target:
+                    cell.value = target
+                    changed = True
+        if changed:
+            wb.save(path)
+    finally:
+        wb.close()
 
 
 def _delivery_timestamp(value: str) -> str:
@@ -1395,7 +4195,7 @@ def _input_artifact_label(metadata: dict[str, Any], project_id: str) -> str:
         try:
             artifact = db.get_artifact(str(artifact_id))
             if artifact["project_id"] == project_id:
-                return artifact["label"]
+                return _artifact_display_label(artifact)
         except KeyError:
             continue
     return "-"
@@ -1455,9 +4255,7 @@ def _deliverable_provider_model(metadata: dict[str, Any], quality_summary: dict[
 
 
 def _safe_delivery_name(name: str) -> str:
-    cleaned = "".join(ch if ch not in '<>:"/\\|?*' else " " for ch in name)
-    cleaned = " ".join(cleaned.split()).strip(" .")
-    return cleaned or "project"
+    return safe_delivery_name(name)
 
 
 def _delivery_file(kind: str, path: Path) -> dict[str, str]:
@@ -1494,8 +4292,10 @@ def _read_glossary_rows(
     target_alt_column: str | None = None,
     category_column: str | None = None,
     note_column: str | None = None,
+    language: str = "en",
     limit: int | None = 100,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    language = require_supported_language(language)
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
@@ -1503,8 +4303,8 @@ def _read_glossary_rows(
         normalized = {header.lower(): index for index, header in enumerate(headers) if header}
         term_key_idx = _column_index(normalized, term_key_column, ["id", "key", "编号", "序号"], required=False)
         source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "term", "原文", "中文", "术语"])
-        target_idx = _column_index(normalized, target_column, ["target", "translation", "en", "english", "译文", "英文"])
-        target_alt_idx = _column_index(normalized, target_alt_column, ["en2", "en 2", "alt", "alternate", "variant", "备用英文"], required=False)
+        target_idx = _column_index(normalized, target_column, target_aliases(language))
+        target_alt_idx = _column_index(normalized, target_alt_column, alt_aliases(language), required=False)
         category_idx = _column_index(normalized, category_column, ["category", "type", "分类", "类别", "类型"], required=False)
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
         rows = []
@@ -1560,7 +4360,8 @@ def _value_at(row: tuple[Any, ...], index: int | None) -> str:
     return "" if value is None else str(value).strip()
 
 
-def run_project_harness_qa(final_workbook: Path, harness: dict[str, Any]) -> dict[str, Any]:
+def run_project_harness_qa(final_workbook: Path, harness: dict[str, Any], language: str = "en") -> dict[str, Any]:
+    language = require_supported_language(language)
     issues: list[dict[str, Any]] = []
     if not final_workbook.exists():
         return {
@@ -1580,7 +4381,7 @@ def run_project_harness_qa(final_workbook: Path, harness: dict[str, Any]) -> dic
         for ws in wb.worksheets:
             headers = _header_map(ws)
             source_col = _first_col(headers, ["cn", "source", "original", "原文", "中文"])
-            target_col = _first_col(headers, ["en", "translation", "target", "译文", "英文"])
+            target_col = _first_col(headers, target_aliases(language))
             if target_col is None:
                 continue
             for row_index in range(2, ws.max_row + 1):
@@ -1915,8 +4716,10 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
 
     output_dir = run_dir(run_id) / "qa"
     output_dir.mkdir(parents=True, exist_ok=True)
-    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, output_dir / "snapshots")
-    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, output_dir / "snapshots")
+    language = require_supported_language(run.get("language") or "en")
+    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, output_dir / "snapshots", language=language)
+    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, output_dir / "snapshots", language=language)
+    reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), output_dir / "snapshots")
     qa_result = run_localization_qa(
         project=project,
         run_id=run_id,
@@ -1927,6 +4730,7 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
         workbook_artifact=workbook_artifact,
         run_metadata=metadata,
         manual_fixes=metadata.get("manual_fixes") or [],
+        language=language,
     )
     input_artifacts = {
         "translation_workbook": workbook_artifact["id"],
@@ -1934,6 +4738,8 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
         "prompt_snapshot": snapshots["prompt_artifact"]["id"],
         "harness_snapshot": snapshots["harness_artifact"]["id"],
     }
+    if reference_snapshot:
+        input_artifacts["quick_reference_snapshot"] = reference_snapshot["artifact"]["id"]
     if qa_result.get("qa_final_artifact"):
         input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
     status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
@@ -1972,7 +4778,9 @@ def run_localization_qa(
     workbook_artifact: dict[str, Any] | None = None,
     run_metadata: dict[str, Any] | None = None,
     manual_fixes: list[dict[str, Any]] | None = None,
+    language: str = "en",
 ) -> dict[str, Any]:
+    language = require_supported_language(language)
     output_dir.mkdir(parents=True, exist_ok=True)
     machine_dir = output_dir / "machine_review"
     machine_dir.mkdir(parents=True, exist_ok=True)
@@ -1982,7 +4790,7 @@ def run_localization_qa(
         "--input",
         str(workbook_path),
         "--lang",
-        "en",
+        language,
         "--output-dir",
         str(machine_dir),
         "--auto-fix",
@@ -1990,22 +4798,25 @@ def run_localization_qa(
         glossary_snapshot["path"],
     ]
     run_subprocess(review_args, LOCALIZATION_ROOT, run_id)
-    qa_workbook = machine_dir / "result_en.xlsx"
-    qa_report = machine_dir / "report_en.xlsx"
+    qa_workbook = machine_dir / f"result_{language}.xlsx"
+    qa_report = machine_dir / f"report_{language}.xlsx"
     _normalize_review_workbook_sheet_names(qa_workbook, workbook_path)
     quality_args = [
         sys.executable,
         str(LOCALIZATION_ROOT / "scripts" / "run_quality_harness.py"),
-        str(LOCALIZATION_ROOT / "fixtures" / "quality_regression.json"),
         "--workbook",
         str(qa_workbook),
         "--term-base",
         glossary_snapshot["path"],
+        "--lang",
+        language,
         "--json",
     ]
+    if language == "en":
+        quality_args.insert(2, str(LOCALIZATION_ROOT / "fixtures" / "quality_regression.json"))
     quality = _run_quality_json(quality_args, run_id)
-    project_harness_quality = run_project_harness_qa(qa_workbook, harness_snapshot["project_harness"])
-    semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality)
+    project_harness_quality = run_project_harness_qa(qa_workbook, harness_snapshot["project_harness"], language=language)
+    semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality, language=language)
     hard_errors = _hard_error_count(quality) + int(project_harness_quality.get("hard_errors", 0)) + int(semantic_qa.get("hard_errors", 0))
     passed = hard_errors == 0
     summary = {
@@ -2072,7 +4883,7 @@ def run_localization_qa(
             run_id=run_id,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             origin="generated",
-            metadata={"language": "en", "source_workbook": str(workbook_path), "glossary_snapshot": glossary_snapshot["id"]},
+            metadata={"language": language, "source_workbook": str(workbook_path), "glossary_snapshot": glossary_snapshot["id"]},
         )
         artifacts.append(qa_final_artifact)
     return {
@@ -2151,7 +4962,10 @@ def run_semantic_qa_report(
     workbook_path: Path,
     quality: dict[str, Any],
     project_quality: dict[str, Any],
+    language: str = "en",
 ) -> dict[str, Any]:
+    language = require_supported_language(language)
+    spec = language_spec(language)
     settings = load_settings()
     provider = str(settings.get("provider") or "mock")
     model = str(settings.get("model") or "")
@@ -2165,7 +4979,7 @@ def run_semantic_qa_report(
         "source": "semantic_qa",
         "provider": provider,
         "model": model,
-        "prompt_context": {"run_id": run_id, "project_id": project_id, **issue_context},
+        "prompt_context": {"run_id": run_id, "project_id": project_id, "language": language, **issue_context},
         "issues": [],
         "soft_warnings": 0,
     }
@@ -2173,7 +4987,7 @@ def run_semantic_qa_report(
         return {**base, "status": "skipped_no_key", "passed": True, "hard_errors": 0}
 
     prompt = (
-        "You are doing semantic QA for a game localization workbook. "
+        f"You are doing semantic QA for a {spec.prompt_name} game localization workbook. "
         "Review the machine QA context and return strict JSON only: "
         "{\"passed\": boolean, \"issues\": [{\"severity\":\"hard|soft\", \"message\":\"...\", \"sheet\":\"\", \"row\":0}]}.\n"
         f"Workbook: {workbook_path.name}\n"
@@ -2203,40 +5017,7 @@ def run_semantic_qa_report(
 
 
 def _call_semantic_provider(settings: dict[str, Any], prompt: str) -> str:
-    import httpx
-
-    provider = str(settings.get("provider") or "openai")
-    base_url = str(settings.get("base_url") or ("https://api.anthropic.com" if provider == "anthropic" else "https://api.openai.com")).rstrip("/")
-    api_key = str(settings.get("api_key") or "")
-    model = str(settings.get("model") or ("claude-opus-4-7" if provider == "anthropic" else "gpt-5.5"))
-    if provider == "anthropic":
-        response = httpx.post(
-            f"{base_url}/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-            json={"model": model, "max_tokens": 4096, "system": "Return strict JSON only.", "messages": [{"role": "user", "content": prompt}]},
-            timeout=120,
-        )
-        response.raise_for_status()
-        chunks = [str(item.get("text", "")) for item in response.json().get("content", []) if item.get("type") == "text"]
-        return "\n".join(chunks)
-    if str(settings.get("protocol") or "chat-completions") == "responses":
-        response = httpx.post(
-            f"{base_url}/v1/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "input": prompt, "reasoning": {"effort": settings.get("reasoning_effort") or "medium"}},
-            timeout=120,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return str(payload.get("output_text") or "")
-    response = httpx.post(
-        f"{base_url}/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model, "temperature": 0.1, "messages": [{"role": "system", "content": "Return strict JSON only."}, {"role": "user", "content": prompt}]},
-        timeout=120,
-    )
-    response.raise_for_status()
-    return str(response.json()["choices"][0]["message"]["content"])
+    return call_text(settings, prompt, system="Return strict JSON only.")
 
 
 def _parse_semantic_qa_payload(text: str) -> dict[str, Any]:
@@ -2381,7 +5162,7 @@ def _workbook_artifact_for_quality_run(run: dict[str, Any]) -> dict[str, Any]:
     input_artifact_id = metadata.get("input_artifacts", {}).get("translation_workbook") or metadata.get("input_artifact_id")
     if input_artifact_id:
         artifact = db.get_artifact(input_artifact_id)
-        if artifact["role"] in {"translation_workbook", "translation_draft", "language_source"}:
+        if artifact["role"] in {"translation_workbook", "translation_draft", "language_source", "quick_input"}:
             return artifact
     artifacts = db.list_artifacts(run_id=run["id"], role="translation_workbook") or db.list_artifacts(run_id=run["id"], role="language_source")
     if artifacts:
@@ -2422,7 +5203,10 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
 
 
 def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-    prompt = str(project.get("prompt_text") or "").strip()
+    language = require_supported_language(run.get("language") or "en")
+    profile = project.get("profile") or {}
+    prompt = str((profile.get("prompts_by_language") or {}).get(language) or project.get("prompt_text") or "").strip()
+    prompt = _manage_project_prompt_context(prompt, load_settings())
     harness = read_project_harness(project["id"])
     return (
         "你是游戏本地化 QA 修复模型。请根据项目提示词、项目规则、术语要求和 QA 问题，"
@@ -2581,7 +5365,7 @@ def _completed_batch_rows(path: Path, batch: list[dict[str, Any]]) -> list[dict[
     actual_ids = [_normalize_translation_id(row.get("id")) for row in rows if "id" in row]
     if actual_ids != expected_ids:
         return None
-    if any("translation" not in row for row in rows):
+    if any("translation" not in row or not str(row.get("translation") or "").strip() for row in rows):
         return None
     return rows
 
@@ -2639,11 +5423,290 @@ def _update_translation_progress(run_id: str, progress: dict[str, Any], status: 
     db.update_run(run_id, status=status, metadata={**current.get("metadata", {}), "translation_progress": progress})
 
 
-async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
+def _translation_cancel_path(work_dir: Path) -> Path:
+    return work_dir / "cancel.requested"
+
+
+def _cancel_requested(run_id: str, work_dir: Path, cancel_event: Any | None = None) -> bool:
+    if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+        return True
+    if _translation_cancel_path(work_dir).exists():
+        return True
+    try:
+        return db.get_run(run_id).get("status") == "canceled"
+    except KeyError:
+        return True
+
+
+def _structural_tokens(text: str) -> list[str]:
+    patterns = [
+        r"\{[^{}]+\}",
+        r"%[sdif]",
+        r"##\d+",
+        r"\[(?!/?color\b)(?:[A-Za-z]+\d+|\d+)\]",
+        r"\[[a-zA-Z]+[^\]]*\]",
+        r"\[/[a-zA-Z]+\]",
+        r"<[^>]+>",
+        r"&[A-Za-z][A-Za-z0-9]+;",
+    ]
+    hits: list[str] = []
+    for pattern in patterns:
+        hits.extend(re.findall(pattern, str(text or "")))
+    return hits
+
+
+def _validate_translated_batch(batch: list[dict[str, Any]], rows: list[dict[str, Any]], language: str) -> list[dict[str, Any]]:
+    expected_ids = [_normalize_translation_id(row.get("id")) for row in batch]
+    actual_ids = [_normalize_translation_id(row.get("id")) for row in rows if "id" in row]
+    if actual_ids != expected_ids:
+        raise ValueError(f"response IDs mismatch: expected={expected_ids[:8]}, actual={actual_ids[:8]}")
+    if len(set(map(str, actual_ids))) != len(actual_ids):
+        raise ValueError("response contains duplicate IDs")
+    validated: list[dict[str, Any]] = []
+    for source_row, row in zip(batch, rows):
+        translation = str(row.get("translation") or "")
+        if not translation.strip():
+            raise ValueError(f"row {source_row.get('id')} returned empty translation")
+        source = str(source_row.get("source") or "")
+        missing_tokens = [token for token in _structural_tokens(source) if token not in translation]
+        if missing_tokens:
+            raise ValueError(f"row {source_row.get('id')} lost structural token(s): {missing_tokens[:5]}")
+        if source.count("\n") != translation.count("\n"):
+            raise ValueError(f"row {source_row.get('id')} changed actual newline count")
+        if source.count("\\n") != translation.count("\\n"):
+            raise ValueError(f"row {source_row.get('id')} changed escaped newline count")
+        if language in {"en", "ko"} and _looks_like_untranslated_seed(translation, language):
+            raise ValueError(f"row {source_row.get('id')} still contains obvious Chinese text")
+        validated.append({"id": _normalize_translation_id(row.get("id")), "translation": translation})
+    return validated
+
+
+def _manifest_progress(
+    manifest: dict[str, Any],
+    *,
+    batch_size: int,
+    started_at: float,
+    current_batch: int | None = None,
+    failed_batch: int | None = None,
+    rate_limit_wait_seconds: float | None = None,
+) -> dict[str, Any]:
+    batches = manifest.get("batches") or []
+    completed_batches = [batch for batch in batches if batch.get("status") == "passed"]
+    completed_rows = sum(int(batch.get("row_count") or 0) for batch in completed_batches)
+    progress = _translation_progress(
+        total_rows=int(manifest.get("total_rows") or 0),
+        total_batches=len(batches),
+        completed_batches=len(completed_batches),
+        completed_rows=completed_rows,
+        batch_size=batch_size,
+        started_at=started_at,
+        current_batch=current_batch,
+        failed_batch=failed_batch,
+    )
+    progress.update(
+        {
+            "max_concurrent_batches": int(manifest.get("max_concurrent_batches") or 1),
+            "estimated_total_input_tokens": int(manifest.get("estimated_total_input_tokens") or 0),
+            "rate_limit_wait_seconds": round(rate_limit_wait_seconds, 2) if rate_limit_wait_seconds else 0,
+            "fingerprint": str(manifest.get("input_fingerprint") or ""),
+            "lease_status": (db.get_job_lease("long_text") or {}).get("status", ""),
+            "invalidated_reason": str(manifest.get("invalidated_reason") or ""),
+        }
+    )
+    return progress
+
+
+async def _translate_rows_with_orchestration(
+    *,
+    run_id: str,
+    rows: list[dict[str, Any]],
+    settings: dict[str, Any],
+    project_prompt: str,
+    work_dir: Path,
+    batch_size: int,
+    language: str,
+    cancel_event: Any | None = None,
+    confirm_api_budget: bool = False,
+) -> list[dict[str, Any]]:
+    batch_size = max(1, min(int(batch_size or settings.get("batch_size") or 90), 200))
+    provider_prompt = _manage_project_prompt_context(project_prompt, settings)
+    context_summary = _project_context_summary(project_prompt, settings)
+    cancel_path = _translation_cancel_path(work_dir)
+    if not (cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)()) and cancel_path.exists():
+        cancel_path.unlink()
+    manifest_path = work_dir / "batch_manifest.json"
+    batches_dir = work_dir / f"batches_{batch_size}"
+    manifest = _load_or_create_batch_manifest(manifest_path, rows, project_prompt, settings, batch_size, language)
+    batches_dir.mkdir(parents=True, exist_ok=True)
+    manifest["project_context"] = context_summary
+    manifest["max_concurrent_batches"] = max(1, min(int(settings.get("max_concurrent_batches") or 2), 4))
+    manifest["updated_at"] = db.now_iso()
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    if context_summary.get("trimmed"):
+        db.add_event(
+            run_id,
+            "project context trimmed before provider call: "
+            f"{context_summary.get('original_estimated_tokens')} -> {context_summary.get('managed_estimated_tokens')} estimated tokens",
+            level="warning",
+        )
+
+    budget_warning_tokens = int(settings.get("api_budget_warning_tokens") or 1000000)
+    estimated_total = int(manifest.get("estimated_total_input_tokens") or 0)
+    if estimated_total > budget_warning_tokens and not confirm_api_budget:
+        current = db.get_run(run_id)
+        db.update_run(
+            run_id,
+            status="needs_input",
+            metadata={
+                **current.get("metadata", {}),
+                "reason": "api_budget_confirmation_required",
+                "api_budget_estimate": {
+                    "estimated_input_tokens": estimated_total,
+                    "warning_tokens": budget_warning_tokens,
+                    "estimated_batches": len(manifest.get("batches") or []),
+                },
+                "translation_progress": _manifest_progress(manifest, batch_size=batch_size, started_at=time.monotonic()),
+            },
+        )
+        db.add_event(run_id, f"translation paused for API budget confirmation: estimated_input_tokens={estimated_total}, warning={budget_warning_tokens}", level="warning")
+        return []
+
+    started_at = time.monotonic()
+    limiter = _AsyncTokenRateLimiter(
+        int(settings.get("max_requests_per_minute") or 12),
+        int(settings.get("max_estimated_tokens_per_minute") or 120000),
+    )
+    max_attempts = max(1, min(int(settings.get("max_batch_attempts") or 3), 5))
+    concurrency = max(1, min(int(settings.get("max_concurrent_batches") or 2), 4))
+    manifest_lock = asyncio.Lock()
+    failure: Exception | None = None
+
+    def batch_rows(batch_meta: dict[str, Any]) -> list[dict[str, Any]]:
+        start = int(batch_meta.get("start") or 0)
+        count = int(batch_meta.get("row_count") or 0)
+        return rows[start : start + count]
+
+    async def persist_manifest(current_batch: int | None = None, failed_batch: int | None = None, status: str = "running", rate_wait: float | None = None) -> None:
+        async with manifest_lock:
+            manifest["updated_at"] = db.now_iso()
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            _update_translation_progress(
+                run_id,
+                _manifest_progress(manifest, batch_size=batch_size, started_at=started_at, current_batch=current_batch, failed_batch=failed_batch, rate_limit_wait_seconds=rate_wait),
+                status=status,
+            )
+
+    async def process_batch(batch_meta: dict[str, Any]) -> None:
+        nonlocal failure
+        if failure is not None:
+            return
+        batch_index = int(batch_meta["batch_index"])
+        batch = batch_rows(batch_meta)
+        batch_path = batches_dir / f"batch_{batch_index:05d}.jsonl"
+        request_path = batches_dir / f"batch_{batch_index:05d}.request.jsonl"
+        raw_response_path = batches_dir / f"batch_{batch_index:05d}.raw_response.jsonl"
+        error_path = batches_dir / f"batch_{batch_index:05d}.error.json"
+        if not request_path.exists():
+            write_jsonl(request_path, batch)
+        batch_meta["request_path"] = str(request_path)
+        completed = _completed_batch_rows(batch_path, batch)
+        if completed is not None:
+            batch_meta.update({"status": "passed", "response_path": str(batch_path), "error_path": "", "updated_at": db.now_iso()})
+            db.add_event(run_id, f"resume: batch {batch_index}/{len(manifest.get('batches') or [])} already completed; rows={len(completed)}")
+            await persist_manifest(current_batch=batch_index)
+            return
+        for attempt in range(int(batch_meta.get("attempts") or 0) + 1, max_attempts + 1):
+            if _cancel_requested(run_id, work_dir, cancel_event):
+                batch_meta.update({"status": "canceled", "attempts": attempt - 1, "updated_at": db.now_iso()})
+                await persist_manifest(current_batch=batch_index, status="canceled")
+                raise RuntimeError("translation canceled")
+            batch_meta.update({"status": "running", "attempts": attempt, "updated_at": db.now_iso()})
+            await persist_manifest(current_batch=batch_index)
+            wait_seconds = await limiter.acquire(int(batch_meta.get("estimated_input_tokens") or 1))
+            if wait_seconds:
+                db.add_event(run_id, f"rate limit wait before batch {batch_index}: {round(wait_seconds, 2)}s")
+                await persist_manifest(current_batch=batch_index, rate_wait=wait_seconds)
+            db.add_event(run_id, f"translating batch {batch_index}/{len(manifest.get('batches') or [])}: rows={len(batch)}, attempt={attempt}/{max_attempts}")
+            try:
+                prompt = provider_prompt
+                if attempt > 1:
+                    prompt = f"{provider_prompt}\n\nRepair request: previous output for this batch failed local validation. Return the full corrected batch only, preserving IDs, order, placeholders, tags, entities, and newlines."
+                items = await translate_batch(batch, settings, prompt)
+                batch_output = [{"id": item.id, "translation": item.translation} for item in items]
+                write_jsonl(raw_response_path, batch_output)
+                batch_meta["raw_response_path"] = str(raw_response_path)
+                validated = _validate_translated_batch(batch, batch_output, language)
+                write_jsonl(batch_path, validated)
+                if error_path.exists():
+                    error_path.unlink()
+                batch_meta.update({"status": "passed", "response_path": str(batch_path), "error_path": "", "updated_at": db.now_iso()})
+                db.add_event(run_id, f"batch {batch_index}/{len(manifest.get('batches') or [])} completed and persisted: rows={len(validated)}")
+                await persist_manifest(current_batch=batch_index)
+                return
+            except Exception as exc:
+                _write_batch_error(error_path, batch_index, attempt, exc)
+                batch_meta.update({"status": "failed", "error_path": str(error_path), "updated_at": db.now_iso()})
+                db.add_event(run_id, f"batch {batch_index}/{len(manifest.get('batches') or [])} failed attempt {attempt}/{max_attempts}: {exc}", level="warning")
+                await persist_manifest(current_batch=batch_index, failed_batch=batch_index, status="running" if attempt < max_attempts else "failed")
+                if attempt >= max_attempts:
+                    failure = exc
+                    raise
+                delay = _provider_retry_delay_seconds(exc, attempt)
+                db.add_event(run_id, f"batch {batch_index}/{len(manifest.get('batches') or [])} retry backoff: {round(delay, 2)}s")
+                await asyncio.sleep(delay)
+
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    for item in manifest.get("batches") or []:
+        completed = _completed_batch_rows(Path(item.get("response_path") or ""), batch_rows(item)) if item.get("status") == "passed" else None
+        if completed is not None:
+            db.add_event(run_id, f"resume: batch {int(item.get('batch_index') or 0)}/{len(manifest.get('batches') or [])} already completed; rows={len(completed)}")
+            continue
+        item["status"] = "pending"
+        await queue.put(item)
+
+    if queue.empty():
+        await persist_manifest(status="running")
+    else:
+        await persist_manifest()
+
+    async def worker() -> None:
+        nonlocal failure
+        while failure is None:
+            if _cancel_requested(run_id, work_dir, cancel_event):
+                failure = RuntimeError("translation canceled")
+                return
+            try:
+                item = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                await process_batch(item)
+            finally:
+                queue.task_done()
+
+    workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
+    try:
+        await asyncio.gather(*workers)
+    finally:
+        for worker_task in workers:
+            if not worker_task.done():
+                worker_task.cancel()
+    if failure is not None:
+        if str(failure) == "translation canceled":
+            db.add_event(run_id, "translation canceled")
+            _update_translation_progress(run_id, _manifest_progress(manifest, batch_size=batch_size, started_at=started_at), status="canceled")
+        raise failure
+
+    translated_rows: list[dict[str, Any]] = []
+    for item in sorted(manifest.get("batches") or [], key=lambda value: int(value.get("batch_index") or 0)):
+        translated_rows.extend(read_jsonl(Path(item["response_path"])))
+    await persist_manifest(status="running")
+    return translated_rows
+
+
+async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
     run = db.get_run(run_id)
-    if run["language"] != "en":
-        db.update_run(run_id, status="needs_input", metadata={**run.get("metadata", {}), "reason": "v1 supports EN translation only"})
-        return {"run": db.get_run(run_id), "artifacts": []}
+    language = require_supported_language(run.get("language") or "en")
     project = db.get_project(run["project_id"])
     metadata = run.get("metadata", {})
     input_artifact = db.get_artifact(metadata["input_artifact_id"])
@@ -2656,7 +5719,7 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         settings["preset"] = request.preset
     batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
     batch_size = max(1, min(batch_size, 200))
-    readiness = inspect_translation_readiness(input_artifact["id"], batch_size=batch_size)
+    readiness = inspect_translation_readiness(input_artifact["id"], batch_size=batch_size, language=language)
     if readiness.get("reason") == "invalid_id_rows":
         reason = "language table ID column must be present and non-empty before translation or QA"
         db.update_run(
@@ -2709,12 +5772,36 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
     work_dir = run_dir(run_id) / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir = work_dir / "snapshots"
-    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir)
-    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir)
+    language = require_supported_language(run.get("language") or "en")
+    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir, language=language)
+    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir, language=language)
+    reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
     prompt = snapshots["prompt"]
     prompt_snapshot = snapshots["prompt_artifact"]
     harness_snapshot_artifact = snapshots["harness_artifact"]
     harness_snapshot = snapshots["harness_snapshot"]
+    prompt_path = snapshots["prompt_path"]
+    if reference_snapshot and reference_snapshot.get("context"):
+        raw_prompt = f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}"
+        settings = load_settings()
+        prompt = _manage_project_prompt_context(raw_prompt, settings)
+        prompt_path = snapshot_dir / "compiled_project_harness_prompt_with_quick_refs.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_snapshot = db.add_artifact(
+            project["id"],
+            "Prompt snapshot with quick references",
+            prompt_path,
+            "prompt_snapshot",
+            run_id=run_id,
+            mime="text/plain",
+            origin="generated",
+            metadata={
+                "source": "project_prompt_harness_and_quick_references",
+                "language": language,
+                "reference_artifact_ids": metadata.get("reference_artifact_ids") or [],
+                "context_budget": _project_context_summary(raw_prompt, settings),
+            },
+        )
 
     prepare_args = [
         sys.executable,
@@ -2722,11 +5809,11 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         "--input",
         input_artifact["path"],
         "--lang",
-        "en",
+        language,
         "--output-dir",
         str(work_dir),
         "--style-hint-file",
-        str(snapshots["prompt_path"]),
+        str(prompt_path),
         "--term-base",
         glossary_snapshot["path"],
     ]
@@ -2735,88 +5822,21 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
         run_subprocess(prepare_args, LOCALIZATION_ROOT, run_id)
         workpack_path = work_dir / "translation_workpack.jsonl"
         rows = read_jsonl(workpack_path)
-        total_batches = math.ceil(len(rows) / batch_size) if rows else 0
-        db.add_event(run_id, f"workpack prepared: rows={len(rows)}, batch_size={batch_size}, batches={total_batches}")
-        started_at = time.monotonic()
-        batches_dir = work_dir / f"batches_{batch_size}"
-        batches_dir.mkdir(parents=True, exist_ok=True)
-        translated_rows: list[dict[str, Any]] = []
-        completed_batches = 0
-        completed_rows = 0
-        max_attempts = 3
-        for start in range(0, len(rows), batch_size):
-            batch_index = start // batch_size + 1
-            batch = rows[start : start + batch_size]
-            batch_path = batches_dir / f"batch_{batch_index:05d}.jsonl"
-            error_path = batches_dir / f"batch_{batch_index:05d}.error.json"
-            completed = _completed_batch_rows(batch_path, batch)
-            if completed is not None:
-                translated_rows.extend(completed)
-                completed_batches += 1
-                completed_rows += len(completed)
-                db.add_event(run_id, f"resume: batch {batch_index}/{total_batches} already completed; rows={len(completed)}")
-                _update_translation_progress(
-                    run_id,
-                    _translation_progress(
-                        total_rows=len(rows),
-                        total_batches=total_batches,
-                        completed_batches=completed_batches,
-                        completed_rows=completed_rows,
-                        batch_size=batch_size,
-                        started_at=started_at,
-                        current_batch=batch_index,
-                    ),
-                )
-                continue
-
-            batch_rows: list[dict[str, Any]] | None = None
-            for attempt in range(1, max_attempts + 1):
-                db.add_event(run_id, f"translating batch {batch_index}/{total_batches}: rows={len(batch)}, attempt={attempt}/{max_attempts}")
-                try:
-                    items = await translate_batch(batch, settings, prompt, provider_override=request.provider, protocol_override=request.protocol)
-                    batch_rows = [{"id": item.id, "translation": item.translation} for item in items]
-                    expected_ids = [_normalize_translation_id(row.get("id")) for row in batch]
-                    actual_ids = [_normalize_translation_id(row.get("id")) for row in batch_rows]
-                    if actual_ids != expected_ids:
-                        raise ValueError(f"batch {batch_index} response IDs mismatch: expected={expected_ids[:5]}..., actual={actual_ids[:5]}...")
-                    write_jsonl(batch_path, batch_rows)
-                    if error_path.exists():
-                        error_path.unlink()
-                    db.add_event(run_id, f"batch {batch_index}/{total_batches} completed and persisted: rows={len(batch_rows)}")
-                    break
-                except Exception as exc:
-                    _write_batch_error(error_path, batch_index, attempt, exc)
-                    db.add_event(run_id, f"batch {batch_index}/{total_batches} failed attempt {attempt}/{max_attempts}: {exc}", level="warning")
-                    if attempt >= max_attempts:
-                        progress = _translation_progress(
-                            total_rows=len(rows),
-                            total_batches=total_batches,
-                            completed_batches=completed_batches,
-                            completed_rows=completed_rows,
-                            batch_size=batch_size,
-                            started_at=started_at,
-                            current_batch=batch_index,
-                            failed_batch=batch_index,
-                        )
-                        _update_translation_progress(run_id, progress, status="failed")
-                        raise
-            if batch_rows is None:
-                raise RuntimeError(f"batch {batch_index} produced no rows")
-            translated_rows.extend(batch_rows)
-            completed_batches += 1
-            completed_rows += len(batch_rows)
-            _update_translation_progress(
-                run_id,
-                _translation_progress(
-                    total_rows=len(rows),
-                    total_batches=total_batches,
-                    completed_batches=completed_batches,
-                    completed_rows=completed_rows,
-                    batch_size=batch_size,
-                    started_at=started_at,
-                    current_batch=batch_index,
-                ),
-            )
+        manifest_preview = _load_or_create_batch_manifest(work_dir / "batch_manifest.json", rows, prompt, settings, batch_size, language)
+        db.add_event(run_id, f"workpack prepared: rows={len(rows)}, dynamic_batches={len(manifest_preview.get('batches') or [])}, concurrency={settings.get('max_concurrent_batches')}")
+        translated_rows = await _translate_rows_with_orchestration(
+            run_id=run_id,
+            rows=rows,
+            settings=settings,
+            project_prompt=prompt,
+            work_dir=work_dir,
+            batch_size=batch_size,
+            language=language,
+            cancel_event=cancel_event,
+            confirm_api_budget=bool(getattr(request, "confirm_api_budget", False)),
+        )
+        if not translated_rows and db.get_run(run_id).get("status") == "needs_input":
+            return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
         response_path = work_dir / "translation_response.jsonl"
         write_jsonl(response_path, translated_rows)
         db.add_artifact(project["id"], "Translation response JSONL", response_path, "translation_response", run_id=run_id, mime="application/jsonl")
@@ -2828,7 +5848,7 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
             "--input",
             input_artifact["path"],
             "--lang",
-            "en",
+            language,
             "--output-dir",
             str(work_dir),
             "--response",
@@ -2847,7 +5867,7 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
             run_id=run_id,
             origin="generated",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            metadata={"language": "en", "source_workbook": input_artifact["id"]},
+            metadata={"language": language, "source_workbook": input_artifact["id"]},
         )
         db.add_event(run_id, "running localization QA gate after translation")
         qa_result = run_localization_qa(
@@ -2859,6 +5879,7 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
             harness_snapshot=harness_snapshot,
             workbook_artifact=raw_artifact,
             run_metadata=metadata,
+            language=language,
         )
         status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
         artifacts = [
@@ -2877,6 +5898,8 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
             "prompt_snapshot": prompt_snapshot["id"],
             "harness_snapshot": harness_snapshot_artifact["id"],
         }
+        if reference_snapshot:
+            input_artifacts["quick_reference_snapshot"] = reference_snapshot["artifact"]["id"]
         if qa_result.get("qa_final_artifact"):
             input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
             input_artifacts["translation_workbook"] = qa_result["qa_final_artifact"]["id"]
@@ -2925,9 +5948,84 @@ async def translate_run(run_id: str, request: Any) -> dict[str, Any]:
     except Exception as exc:
         db.add_event(run_id, str(exc), level="error")
         failed_metadata = db.get_run(run_id).get("metadata", {})
-        db.update_run(run_id, status="failed", metadata={**failed_metadata, "error": str(exc)})
+        status = "canceled" if str(exc) == "translation canceled" else "failed"
+        db.update_run(run_id, status=status, metadata={**failed_metadata, "error": str(exc)})
         raise
 
 
-def run_translate_sync(run_id: str, request: Any) -> dict[str, Any]:
-    return asyncio.run(translate_run(run_id, request))
+def run_translate_sync(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+    return asyncio.run(translate_run(run_id, request, cancel_event=cancel_event))
+
+
+def cancel_translation_run(run_id: str) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    work_dir = run_dir(run_id) / "translation"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    _translation_cancel_path(work_dir).write_text(db.now_iso(), encoding="utf-8")
+    db.cancel_job_lease("long_text", run_id)
+    metadata = run.get("metadata", {})
+    db.update_run(run_id, status="canceled", metadata={**metadata, "cancel_requested_at": db.now_iso()})
+    db.add_event(run_id, "translation cancel requested")
+    return db.get_run(run_id)
+
+
+def translation_run_progress(run_id: str) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    metadata = run.get("metadata", {})
+    return {
+        "run": run,
+        "progress": metadata.get("translation_progress"),
+        "api_budget_estimate": metadata.get("api_budget_estimate"),
+        "reason": metadata.get("reason"),
+    }
+
+
+def translation_batch_file(run_id: str, batch_index: int, kind: str) -> Path:
+    if batch_index < 1:
+        raise ValueError("batch_index must be positive")
+    if kind not in {"request", "response", "raw-response", "error"}:
+        raise ValueError("batch file kind must be request, response, raw-response, or error")
+    run = db.get_run(run_id)
+    metadata = run.get("metadata") or {}
+    progress = metadata.get("translation_progress") or {}
+    batch_size = int(progress.get("batch_size") or metadata.get("batch_size") or 90)
+    suffix = {"request": ".request.jsonl", "response": ".jsonl", "raw-response": ".raw_response.jsonl", "error": ".error.json"}[kind]
+    path = run_dir(run_id) / "translation" / f"batches_{batch_size}" / f"batch_{batch_index:05d}{suffix}"
+    if not path.exists():
+        raise KeyError(str(path))
+    return path
+
+
+def reconcile_interrupted_background_jobs() -> dict[str, int]:
+    db.mark_running_job_leases_interrupted()
+    translation_runs = 0
+    announcement_tasks = 0
+    for run in db.list_runs():
+        if run.get("kind") == "translation" and run.get("status") in {"queued", "running"}:
+            metadata = dict(run.get("metadata") or {})
+            metadata["reason"] = "background_job_interrupted"
+            metadata["interrupted_at"] = db.now_iso()
+            db.update_run(run["id"], status="needs_input", metadata=metadata)
+            db.add_event(run["id"], "background translation job was interrupted; resume from saved batches")
+            translation_runs += 1
+    for project in db.list_projects():
+        for task in db.list_announcement_tasks(project["id"]):
+            if task.get("status") in {"queued", "running"}:
+                metadata = dict(task.get("metadata") or {})
+                metadata["reason"] = "background_job_interrupted"
+                metadata["interrupted_at"] = db.now_iso()
+                db.update_announcement_task(task["id"], status="needs_input", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)
+                for item in task.get("languages") or []:
+                    if item.get("status") in {"queued", "running"}:
+                        lang_meta = dict(item.get("metadata") or {})
+                        lang_meta["reason"] = "background_job_interrupted"
+                        db.upsert_announcement_task_language(
+                            task["id"],
+                            task["project_id"],
+                            str(item["language"]),
+                            status="prepared",
+                            current_step=ANNOUNCEMENT_STEP["translate"],
+                            metadata=lang_meta,
+                        )
+                announcement_tasks += 1
+    return {"translation_runs": translation_runs, "announcement_tasks": announcement_tasks}
