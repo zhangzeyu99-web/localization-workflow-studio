@@ -190,7 +190,6 @@ class AnnouncementTaskTranslateRequest(BaseModel):
     provider: str | None = None
     protocol: str | None = None
     batch_size: int | None = None
-    allow_mock: bool = False
     confirm_api_budget: bool = False
 
 
@@ -298,7 +297,6 @@ class TranslateRequest(BaseModel):
     protocol: str | None = None
     preset: str | None = None
     batch_size: int | None = None
-    allow_mock: bool = False
     confirm_api_budget: bool = False
 
 

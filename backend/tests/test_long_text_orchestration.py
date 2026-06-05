@@ -50,7 +50,7 @@ def test_orchestrator_caps_concurrency_and_resumes_completed_batches(tmp_path: P
     rows = [{"id": index, "source": f"按钮 {index} {{count}}"} for index in range(12)]
     settings = {
         **DEFAULT_SETTINGS,
-        "provider": "mock",
+        "provider": "test-fake",
         "batch_size": 2,
         "max_concurrent_batches": 2,
         "max_requests_per_minute": 120,
@@ -107,7 +107,7 @@ def test_orchestrator_pauses_before_api_when_budget_requires_confirmation(tmp_pa
     project = db.insert_project("E2E Budget", "QA", "", "🎮")
     run = db.insert_run(project["id"], "translation", "en", metadata={})
     rows = [{"id": index, "source": "很长的公告正文" * 20} for index in range(5)]
-    settings = {**DEFAULT_SETTINGS, "provider": "mock", "api_budget_warning_tokens": 10}
+    settings = {**DEFAULT_SETTINGS, "provider": "test-fake", "api_budget_warning_tokens": 10}
 
     async def fail_if_called(batch, provider_settings, project_prompt):
         _ = batch, provider_settings, project_prompt
@@ -176,7 +176,7 @@ def test_translate_start_returns_immediately_and_background_job_finishes(tmp_pat
             "/api/runs",
             json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": artifact["id"], "batch_size": 2},
         ).json()
-        started = client.post(f"/api/runs/{run['id']}/translate/start", json={"provider": "mock", "allow_mock": True, "batch_size": 2})
+        started = client.post(f"/api/runs/{run['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
         assert started.status_code == 200, started.text
         assert started.json()["status"] in {"queued", "running"}
 
@@ -200,7 +200,7 @@ def test_failed_batch_keeps_request_raw_response_and_error(tmp_path: Path, monke
     project = db.insert_project("E2E Failed Batch", "QA", "", "🎮")
     run = db.insert_run(project["id"], "translation", "en", metadata={})
     rows = [{"id": 1, "source": "领取 {count}"}]
-    settings = {**DEFAULT_SETTINGS, "provider": "mock", "max_batch_attempts": 1, "api_budget_warning_tokens": 20_000_000}
+    settings = {**DEFAULT_SETTINGS, "provider": "test-fake", "max_batch_attempts": 1, "api_budget_warning_tokens": 20_000_000}
 
     async def bad_translate_batch(batch, provider_settings, project_prompt):
         _ = batch, provider_settings, project_prompt

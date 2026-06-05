@@ -15,10 +15,10 @@ test.use({ acceptDownloads: true })
 test('user can complete the EN localization workflow from project tabs', async ({ page, request }) => {
   await request.patch(`${baseURL}/api/settings`, {
     data: {
-      provider: 'mock',
+      provider: 'test-fake',
       protocol: 'chat-completions',
       api_key: '',
-      model: 'mock-localization',
+      model: 'test-fake-localization',
       batch_size: 24,
     },
   })
@@ -104,13 +104,13 @@ test('user can complete the EN localization workflow from project tabs', async (
   await expect(page.getByText(new RegExp(`${projectName}_EN_\\d{12}_T-[0-9a-f]{6}_changes\\.xlsx`))).toBeVisible()
 })
 
-test('real project formal translation is blocked while provider is mock', async ({ page, request }) => {
+test('real project formal translation is blocked without configured API key', async ({ page, request }) => {
   await request.patch(`${baseURL}/api/settings`, {
-    data: { provider: 'mock', protocol: 'chat-completions', api_key: '', model: 'mock-localization', batch_size: 24 },
+    data: { provider: 'openai', protocol: 'responses', api_key: '', model: 'gpt-5.5', batch_size: 24 },
   })
   const projectName = `小小战机 UI 阻断 ${Date.now()}`
   await request.post(`${baseURL}/api/projects`, {
-    data: { name: projectName, type: '飞行射击', description: '真实项目不能用 mock 交付。' },
+    data: { name: projectName, type: '????', description: '??????? API key ??????????' },
   })
 
   await page.goto(baseURL)
@@ -119,7 +119,7 @@ test('real project formal translation is blocked while provider is mock', async 
   await page.locator('label.upload-box', { hasText: '上传待翻译 workbook' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
   await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeDisabled()
-  await expect(page.getByText('真实项目禁止用 mock 假装完成')).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: 'API' })).toBeVisible()
 })
 
 test('new translation task exposes the full supported language set', async ({ page, request }) => {

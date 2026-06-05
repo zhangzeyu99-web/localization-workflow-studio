@@ -154,7 +154,7 @@ export function AnnouncementWizard({
   const activeMeta = (activeTask?.metadata || {}) as Record<string, unknown>
   const detectedLanguages = normalizeLanguageArray(activeMeta.detected_languages)
   const effectiveLanguages = selectedLanguages
-  const providerReady = settings?.provider && settings.provider !== 'mock' && settings.api_key === 'configured'
+  const providerReady = Boolean(settings && ((['openai', 'openai-chat', 'anthropic'].includes(String(settings.provider)) && settings.api_key === 'configured') || settings.provider === 'test-fake'))
   const showLanguageSubflows = Boolean(activeTask && step >= 6)
 
   useEffect(() => {
@@ -361,7 +361,7 @@ export function AnnouncementWizard({
               {activeTask?.metadata?.reason === 'background_job_interrupted' ? <div className="warn-line">后台翻译曾中断；可点击“调用已配置 AI 翻译”继续，已完成批次不会重跑。</div> : null}
               {activeTask?.metadata?.reason === 'api_budget_confirmation_required' ? <div className="warn-line">预计 API token 超过提醒阈值；请确认预算后再继续后台翻译。</div> : null}
               <div className="workflow-note-grid">
-                <div><strong>AI provider</strong><span>{providerReady ? `${settings?.provider} 已配置` : '未配置或为 mock，建议上传 AI response'}</span></div>
+                <div><strong>AI provider</strong><span>{providerReady ? `${settings?.provider} 已配置` : '未配置真实 API，建议上传 AI response'}</span></div>
                 <div><strong>目标语言</strong><span>{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
                 <div><strong>上传 response</strong><span>{responseArtifactIds.length} 个</span></div>
               </div>

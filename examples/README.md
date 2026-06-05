@@ -8,5 +8,5 @@ Columns:
 - `cn`
 - `en`
 
-The English column is intentionally blank so the Studio can exercise the EN full-translation workflow with the mock provider.
+The English column is intentionally blank so the Studio can exercise the EN full-translation workflow with the hidden test-fake provider in automated tests.
 

@@ -23,6 +23,7 @@ const managedWebServers = process.env.E2E_BASE_URL
           ...process.env,
           LWS_DATA_ROOT: dataRoot,
           PYTHONPATH: path.join(repoRoot, 'backend'),
+          LWS_ENABLE_TEST_PROVIDER: '1',
         },
       },
       {

@@ -9,7 +9,7 @@ Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web �
 
 - 工作台是本地桌面 Web 应用：后端默认只应绑定本机地址，公网或局域网共享前需要额外认证和网络隔离。
 - 长文本翻译由后端编排器负责拆批、限流、断点续跑、取消和失败恢复；Codex/Agent 不是运行依赖。
-- 正式模型路径只支持 OpenAI Responses、Anthropic Messages 和测试 mock；mock 不得作为真实项目交付。
+- 正式模型路径只支持 OpenAI/GPT、GPT 中转站与 Claude；测试环境使用隐藏 test-fake，不作为产品 provider。
 - API key 写入私有 `settings.local.json`，不要提交到仓库；前端设置页只保留 provider、preset 和 key。
 - 项目明确禁止 Google Translate、`deep_translator`、`googletrans`、浏览器机翻和在线机翻聚合器。
 - 上传文件默认上限 200 MiB，可用 `LWS_MAX_UPLOAD_MB` 调整；超限会返回 413。
@@ -30,8 +30,8 @@ Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web �
 - 前端：React + Vite。
 - 后端：FastAPI + SQLite。
 - 正式语言：语言包工作流和公告外文本工作流共用同一组语言配置：EN / KR / JP / FR / DE / RU / IT / ES / PT / TR / IDN / TH / AR。
-- Provider：正式入口支持 OpenAI/GPT 与 Claude；mock 仅用于 CI、本地 E2E 和无 key 链路验证。
-- 真实项目翻译：当 provider 是 mock 或 API key 缺失时必须阻断，不能把 mock 结果当正式交付。
+- Provider：正式入口支持 OpenAI/GPT、GPT 中转站与 Claude；测试环境使用隐藏 test-fake，不作为产品 provider。
+- ???????????? provider ? API key ??????????????????????
 - 长文本翻译：由后端任务编排器拆批、限流、断点续跑和失败恢复；不依赖 Codex/Agent 才能运行。
 - 公告翻译：项目内 9 步外文本工作流，支持公告资料、约束来源、目标语言、术语提取、译文反查、翻译准备、AI 翻译/导入、校对回填和交付。
 - 禁止路径：不使用 Google Translate、`deep_translator`、`googletrans` 或浏览器机翻。

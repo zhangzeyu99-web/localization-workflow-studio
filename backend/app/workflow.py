@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from openpyxl import Workbook, load_workbook
 
 from . import db
-from .config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, load_settings
+from .config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, REAL_PROVIDERS, load_settings, normalize_provider_name
 from .delivery_naming import safe_delivery_name, source_stem
 from .languages import ANNOUNCEMENT_LANGUAGE_ORDER, PROJECT_LANGUAGE_ORDER, alt_aliases, language_spec, normalize_language, require_supported_language, target_aliases, visible_language_code
 from .providers import call_text, translate_batch
@@ -306,8 +306,8 @@ def _project_analysis_provider_prompt(project: dict[str, Any], intro: str, asset
 
 def _apply_project_analysis_provider(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings()
-    provider = str(settings.get("provider") or "mock")
-    if provider not in {"openai", "anthropic"} or not settings.get("api_key"):
+    provider = normalize_provider_name(settings.get("provider"))
+    if provider not in REAL_PROVIDERS or not settings.get("api_key"):
         return profile
     prompt = _cap_context_text(_project_analysis_provider_prompt(project, intro, asset_notes, profile), 6000, "project analysis")
     payload = _parse_semantic_qa_payload(_call_semantic_provider(settings, prompt))
@@ -1324,16 +1324,12 @@ async def _translate_announcement_task(task_id: str, request: Any, cancel_event:
     if not metadata.get("translation_workbook_artifact_id") or not metadata.get("workpack_artifact_ids"):
         raise ValueError("prepare announcement translation before AI translation")
     settings = load_settings()
-    provider = str(getattr(request, "provider", None) or settings.get("provider") or "mock")
+    provider = normalize_provider_name(getattr(request, "provider", None) or settings.get("provider"))
     if getattr(request, "provider", None):
-        settings["provider"] = request.provider
+        settings["provider"] = provider
     if getattr(request, "protocol", None):
         settings["protocol"] = request.protocol
-    if provider == "mock" and not bool(getattr(request, "allow_mock", False)):
-        for language in languages:
-            db.upsert_announcement_task_language(task_id, task["project_id"], language, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"])
-        return {"task": _hydrate_announcement_task(db.update_announcement_task(task_id, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)), "summary": {"status": "awaiting_ai_response", "reason": "mock provider disabled for announcement translation"}, "artifacts": []}
-    if provider in {"openai", "anthropic"} and not settings.get("api_key"):
+    if provider in REAL_PROVIDERS and not settings.get("api_key"):
         for language in languages:
             db.upsert_announcement_task_language(task_id, task["project_id"], language, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"])
         return {"task": _hydrate_announcement_task(db.update_announcement_task(task_id, status="awaiting_ai_response", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)), "summary": {"status": "awaiting_ai_response", "reason": f"{provider} api_key is required; upload AI response instead"}, "artifacts": []}
@@ -2155,8 +2151,8 @@ def _apply_announcement_ai_supplement(
         response = {"supplement_terms": []}
     else:
         settings = load_settings()
-        configured_provider = str(settings.get("provider") or "mock")
-        if configured_provider in {"openai", "anthropic"} and settings.get("api_key"):
+        configured_provider = normalize_provider_name(settings.get("provider"))
+        if configured_provider in REAL_PROVIDERS and settings.get("api_key"):
             provider = configured_provider
             try:
                 response = _call_ai_supplement_provider(settings, packet)
@@ -3271,10 +3267,8 @@ async def translate_missing_glossary_candidates(project_id: str, batch_id: str) 
         raise KeyError(batch_id)
     language = require_supported_language(batch.get("language") or "en")
     settings = load_settings()
-    provider = str(settings.get("provider") or "mock")
-    if provider == "mock":
-        raise ValueError("mock provider cannot translate glossary candidates for a real project")
-    if provider in {"openai", "anthropic"} and not settings.get("api_key"):
+    provider = normalize_provider_name(settings.get("provider"))
+    if provider in REAL_PROVIDERS and not settings.get("api_key"):
         raise ValueError(f"{provider} api_key is required to translate glossary candidates")
 
     pending = db.list_glossary_candidates(project_id, batch_id=batch_id, status="pending", language=language)
@@ -4594,9 +4588,9 @@ def apply_model_fixes(run_id: str, request: Any) -> dict[str, Any]:
     run = db.get_run(run_id)
     project = db.get_project(run["project_id"])
     settings = load_settings()
-    provider = str(settings.get("provider") or "mock")
-    if provider == "mock" or not settings.get("api_key"):
-        raise ValueError("模型修复需要配置 GPT 或 Claude API key；mock 只用于链路测试，不能生成可交付修复。")
+    provider = normalize_provider_name(settings.get("provider"))
+    if provider not in REAL_PROVIDERS or not settings.get("api_key"):
+        raise ValueError("模型修复需要配置 GPT / Claude / GPT 中转站 API key，不能在未配置真实 API 时生成可交付修复。")
 
     max_issues = max(1, min(int(getattr(request, "max_issues", 80) or 80), 200))
     issue_payload = list_quality_issues(run_id)
@@ -4967,7 +4961,7 @@ def run_semantic_qa_report(
     language = require_supported_language(language)
     spec = language_spec(language)
     settings = load_settings()
-    provider = str(settings.get("provider") or "mock")
+    provider = normalize_provider_name(settings.get("provider"))
     model = str(settings.get("model") or "")
     issue_context = {
         "global_issue_count": len(quality.get("issues", [])),
@@ -4983,7 +4977,7 @@ def run_semantic_qa_report(
         "issues": [],
         "soft_warnings": 0,
     }
-    if provider == "mock" or not settings.get("api_key"):
+    if provider not in REAL_PROVIDERS or not settings.get("api_key"):
         return {**base, "status": "skipped_no_key", "passed": True, "hard_errors": 0}
 
     prompt = (
@@ -5763,7 +5757,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
     input_artifact = db.get_artifact(metadata["input_artifact_id"])
     settings = load_settings()
     if request.provider:
-        settings["provider"] = request.provider
+        settings["provider"] = normalize_provider_name(request.provider)
     if request.protocol:
         settings["protocol"] = request.protocol
     if getattr(request, "preset", None):
@@ -5796,16 +5790,8 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         )
         db.add_event(run_id, "translation skipped: input already contains target translations; run QA instead")
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
-    effective_provider = str(settings.get("provider") or "mock")
-    allow_mock = bool(getattr(request, "allow_mock", False)) or str(project.get("name", "")).startswith("E2E ")
-    if effective_provider == "mock" and not allow_mock:
-        db.update_run(
-            run_id,
-            status="needs_input",
-            metadata={**metadata, "reason": "mock provider is blocked for real project translation"},
-        )
-        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
-    if effective_provider in {"openai", "anthropic"} and not settings.get("api_key"):
+    effective_provider = normalize_provider_name(settings.get("provider"))
+    if effective_provider in REAL_PROVIDERS and not settings.get("api_key"):
         db.update_run(
             run_id,
             status="needs_input",

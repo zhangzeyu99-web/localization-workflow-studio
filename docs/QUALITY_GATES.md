@@ -23,6 +23,6 @@ Required artifacts:
 
 Uploaded translated workbooks can be checked directly. These runs produce QA evidence, but they do not prove that Studio performed the translation. UI and delivery surfaces should label these runs as imported-workbook QA.
 
-## Mock Provider Boundary
+## Test Fake Provider Boundary
 
-The mock provider is only for CI and no-key workflow regression. Real project translation is blocked when `mock` is active unless a test explicitly opts into mock mode.
+The hidden test-fake provider is only for CI and no-key workflow regression. Product settings do not expose it; real project translation is blocked when a formal provider API key is missing.

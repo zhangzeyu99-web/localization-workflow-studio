@@ -140,7 +140,7 @@ export function providerName(settings: AppSettings | null): string {
   if (!settings) return '未加载'
   if (settings.provider === 'openai') return 'GPT'
   if (settings.provider === 'anthropic') return 'Claude'
-  if (settings.provider === 'mock') return 'Mock（仅测试）'
+  if (settings.provider === 'test-fake') return 'Test Fake'
   return settings.provider || '未配置'
 }
 
@@ -149,9 +149,8 @@ export function formalTranslationBlockReason(settings: AppSettings | null, sourc
   if (!settings) return '模型配置尚未加载。'
   const readinessBlock = translationReadinessBlockReason(readiness)
   if (readinessBlock) return readinessBlock
-  if (settings.provider === 'mock' && project?.name.startsWith('E2E ')) return ''
-  if (settings.provider === 'mock') return '当前是 mock provider。真实项目禁止用 mock 假装完成，请先配置 GPT API key。'
-  if ((settings.provider === 'openai' || settings.provider === 'anthropic') && !settings.api_key) return `${providerName(settings)} API key 未配置，正式翻译已阻断。`
+  if (!['openai', 'openai-chat', 'anthropic', 'test-fake'].includes(String(settings.provider))) return '请先在设置里选择 GPT、GPT 中转站或 Claude。'
+  if (settings.provider !== 'test-fake' && !settings.api_key) return `${providerName(settings)} API key 未配置，正式翻译已阻断。`
   return ''
 }
 
@@ -646,7 +645,7 @@ export function StepTranslate({
         : { label: '需要翻译', tone: 'todo' }
   const showTranslateStatus = busy
     || Boolean(progress)
-    || /翻译|provider|API|mock|workpack|批|QA/i.test(status)
+    || /provider|API|workpack|batch|QA|\u7ffb\u8bd1|\u6821\u5bf9/i.test(status)
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 7</span>{lang.short} 模型翻译</div>

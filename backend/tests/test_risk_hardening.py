@@ -35,7 +35,7 @@ def reset_test_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_manifest_invalidates_when_source_language_prompt_or_settings_change() -> None:
     rows = [{"id": 1, "source": "开始游戏"}]
-    base_settings = {**DEFAULT_SETTINGS, "provider": "mock", "preset": "balanced", "batch_size": 1, "max_batch_input_tokens": 12000}
+    base_settings = {**DEFAULT_SETTINGS, "provider": "test-fake", "preset": "balanced", "batch_size": 1, "max_batch_input_tokens": 12000}
     manifest = workflow._build_batch_manifest(rows, "Prompt A", base_settings, batch_size=1, language="en")
 
     assert workflow._manifest_matches_rows(manifest, rows, "Prompt A", base_settings, 1, "en")
@@ -50,7 +50,7 @@ def test_context_cap_keeps_project_prompt_under_batch_budget() -> None:
     long_prompt = "项目规则开始\n" + ("超长项目背景 " * 2000) + "\n输出协议：只返回 JSONL"
     settings = {
         **DEFAULT_SETTINGS,
-        "provider": "mock",
+        "provider": "test-fake",
         "batch_size": 1,
         "max_batch_input_tokens": 1000,
         "max_project_context_tokens": 240,
@@ -72,7 +72,7 @@ def test_orchestrator_passes_managed_project_context_to_provider(tmp_path: Path,
     long_prompt = "项目规则开始\n" + ("超长项目背景 " * 2000) + "\n输出协议：只返回 JSONL"
     settings = {
         **DEFAULT_SETTINGS,
-        "provider": "mock",
+        "provider": "test-fake",
         "batch_size": 1,
         "max_batch_input_tokens": 1000,
         "max_project_context_tokens": 240,
@@ -109,7 +109,7 @@ def test_manifest_fingerprint_mismatch_does_not_reuse_completed_batch(tmp_path: 
     project = db.insert_project("Fingerprint", "QA", "", "🎮")
     run = db.insert_run(project["id"], "translation", "en", metadata={})
     rows = [{"id": 1, "source": "开始 {count}"}]
-    settings = {**DEFAULT_SETTINGS, "provider": "mock", "batch_size": 1, "api_budget_warning_tokens": 20_000_000}
+    settings = {**DEFAULT_SETTINGS, "provider": "test-fake", "batch_size": 1, "api_budget_warning_tokens": 20_000_000}
     state = {"calls": 0}
 
     async def fake_translate_batch(batch: list[dict[str, Any]], provider_settings: dict[str, Any], project_prompt: str) -> list[TranslationItem]:

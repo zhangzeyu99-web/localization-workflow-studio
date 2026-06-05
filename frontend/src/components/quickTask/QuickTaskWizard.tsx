@@ -187,7 +187,7 @@ export function QuickTaskWizard({
               </div>
             </div>
             {readiness && canSkipModelTranslation(readiness) ? <div className="warn-line">这份表已有可校对译文，系统已建议切换为校对。</div> : null}
-            {settings?.provider === 'mock' && objective === 'translate' && !project.name.startsWith('E2E ') ? <div className="warn-line">当前是 mock provider，真实项目会阻断翻译；请先配置 GPT / Claude API key。</div> : null}
+            {objective === 'translate' && ((settings?.provider !== 'test-fake' && !settings?.api_key) || !['openai', 'openai-chat', 'anthropic', 'test-fake'].includes(String(settings?.provider))) ? <div className="warn-line">请先配置 GPT / GPT 中转站 / Claude API key，快速翻译才会启动正式模型。</div> : null}
             <div className="row-actions">
               <button className="btn btn-ghost" onClick={() => setQuickStep(2)}>← 上一步</button>
               <button className="btn btn-primary" data-testid="quick-task-start" disabled={!canStart} onClick={start}>{objective === 'qa' ? `开始 ${lang.short} 校对` : `开始 ${lang.short} 翻译`}</button>

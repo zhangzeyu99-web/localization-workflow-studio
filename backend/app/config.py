@@ -15,6 +15,29 @@ SETTINGS_EXAMPLE_PATH = REPO_ROOT / "settings.example.json"
 DB_PATH = DATA_ROOT / "studio.sqlite3"
 
 
+REAL_PROVIDERS = {"openai", "openai-chat", "anthropic"}
+TEST_FAKE_PROVIDER = "test-fake"
+LEGACY_TEST_PROVIDER_NAMES = {TEST_FAKE_PROVIDER}
+
+
+def test_provider_enabled() -> bool:
+    return str(os.environ.get("LWS_ENABLE_TEST_PROVIDER") or "").lower() in {"1", "true", "yes"}
+
+
+def normalize_provider_name(value: Any, *, allow_test_provider: bool | None = None) -> str:
+    provider = str(value or DEFAULT_SETTINGS["provider"]).strip()
+    if provider == "openai-compatible":
+        provider = "openai"
+    if provider == "codex-relay":
+        provider = "openai-chat"
+    allow_test = test_provider_enabled() if allow_test_provider is None else allow_test_provider
+    if provider in LEGACY_TEST_PROVIDER_NAMES and allow_test:
+        return TEST_FAKE_PROVIDER
+    if provider in REAL_PROVIDERS:
+        return provider
+    return str(DEFAULT_SETTINGS["provider"])
+
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "provider": "openai",
     "preset": "balanced",
@@ -92,22 +115,22 @@ LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
 
 PROVIDER_PRESETS: dict[str, dict[str, dict[str, str | int | None]]] = {
     "openai": {
-        "fast": {"label": "??", "model": "gpt-5.4-mini", "reasoning_effort": "low", "base_url": "https://api.openai.com", "max_output_tokens": 8192},
-        "balanced": {"label": "??", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "https://api.openai.com", "max_output_tokens": 8192},
-        "deep": {"label": "??", "model": "gpt-5.5-pro", "reasoning_effort": "high", "base_url": "https://api.openai.com", "max_output_tokens": 16384},
-        "critical": {"label": "????", "model": "gpt-5.5-pro", "reasoning_effort": "xhigh", "base_url": "https://api.openai.com", "max_output_tokens": 16384},
+        "fast": {"label": "快速", "model": "gpt-5.4-mini", "reasoning_effort": "low", "base_url": "https://api.openai.com", "max_output_tokens": 8192},
+        "balanced": {"label": "平衡", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "https://api.openai.com", "max_output_tokens": 8192},
+        "deep": {"label": "深度", "model": "gpt-5.5-pro", "reasoning_effort": "high", "base_url": "https://api.openai.com", "max_output_tokens": 16384},
+        "critical": {"label": "关键校对", "model": "gpt-5.5-pro", "reasoning_effort": "xhigh", "base_url": "https://api.openai.com", "max_output_tokens": 16384},
     },
     "openai-chat": {
-        "fast": {"label": "??", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "", "max_output_tokens": 8192},
-        "balanced": {"label": "??", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "", "max_output_tokens": 8192},
-        "deep": {"label": "??", "model": "gpt-5.5", "reasoning_effort": "high", "base_url": "", "max_output_tokens": 16384},
-        "critical": {"label": "????", "model": "gpt-5.5", "reasoning_effort": "xhigh", "base_url": "", "max_output_tokens": 16384},
+        "fast": {"label": "快速", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "", "max_output_tokens": 8192},
+        "balanced": {"label": "平衡", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "", "max_output_tokens": 8192},
+        "deep": {"label": "深度", "model": "gpt-5.5", "reasoning_effort": "high", "base_url": "", "max_output_tokens": 16384},
+        "critical": {"label": "关键校对", "model": "gpt-5.5", "reasoning_effort": "xhigh", "base_url": "", "max_output_tokens": 16384},
     },
     "anthropic": {
-        "fast": {"label": "??", "model": "claude-haiku-4-5-20251001", "reasoning_effort": "none", "base_url": "https://api.anthropic.com", "max_output_tokens": 8192},
-        "balanced": {"label": "??", "model": "claude-sonnet-4-6", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 8192},
-        "deep": {"label": "??", "model": "claude-opus-4-7", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 16384},
-        "critical": {"label": "????", "model": "claude-opus-4-7", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 16384},
+        "fast": {"label": "快速", "model": "claude-haiku-4-5-20251001", "reasoning_effort": "none", "base_url": "https://api.anthropic.com", "max_output_tokens": 8192},
+        "balanced": {"label": "平衡", "model": "claude-sonnet-4-6", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 8192},
+        "deep": {"label": "深度", "model": "claude-opus-4-7", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 16384},
+        "critical": {"label": "关键校对", "model": "claude-opus-4-7", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 16384},
     },
 }
 
@@ -150,19 +173,13 @@ def public_settings(settings: dict[str, Any] | None = None) -> dict[str, Any]:
 
 def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     payload = dict(settings)
-    provider = str(payload.get("provider") or DEFAULT_SETTINGS["provider"])
-    if provider == "openai-compatible":
-        provider = "openai"
-    if provider in {"openai-compatible", "codex-relay"}:
-        provider = "openai-chat"
-    if provider not in {"openai", "openai-chat", "anthropic", "mock"}:
-        provider = str(DEFAULT_SETTINGS["provider"])
+    provider = normalize_provider_name(payload.get("provider"))
     payload["provider"] = provider
-    if provider == "mock":
+    if provider == TEST_FAKE_PROVIDER:
         payload["preset"] = payload.get("preset") or "balanced"
-        payload["model"] = payload.get("model") or "mock-localization"
+        payload["model"] = payload.get("model") or "test-fake-localization"
         payload["reasoning_effort"] = "none"
-        payload["protocol"] = "mock"
+        payload["protocol"] = TEST_FAKE_PROVIDER
         _normalize_long_text_settings(payload)
         return payload
 

@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from .config import TEST_FAKE_PROVIDER, normalize_provider_name, test_provider_enabled
 from .translation_batches import manage_project_prompt_context
 
 
@@ -55,7 +56,7 @@ def _newline_suffix(source: str) -> str:
     return ("\n" * actual) + ("\\n" * escaped)
 
 
-def _mock_translate_row(row: dict[str, Any]) -> str:
+def _test_fake_translate_row(row: dict[str, Any]) -> str:
     row_id = _normalize_translation_id(row["id"])
     term_hits = row.get("term_hits") or []
     term_text = ""
@@ -66,13 +67,18 @@ def _mock_translate_row(row: dict[str, Any]) -> str:
     placeholders = " ".join(_extract_placeholders(str(row.get("source", ""))))
     placeholder_text = f" {placeholders}" if placeholders else ""
     display_id = str(row_id) if isinstance(row_id, int) else "row"
-    base = f"Mock {display_id}{term_text}{placeholder_text}".strip()
+    base = f"TestFake {display_id}{term_text}{placeholder_text}".strip()
     return base + _newline_suffix(str(row.get("source", "")))
 
 
-def mock_translate_batch(rows: list[dict[str, Any]], settings: dict[str, Any]) -> list[TranslationItem]:
-    return [TranslationItem(id=_normalize_translation_id(row["id"]), translation=_mock_translate_row(row)) for row in rows]
+def test_fake_translate_batch(rows: list[dict[str, Any]], settings: dict[str, Any]) -> list[TranslationItem]:
+    if not test_provider_enabled():
+        raise ProviderError("test fake provider is disabled")
+    return [TranslationItem(id=_normalize_translation_id(row["id"]), translation=_test_fake_translate_row(row)) for row in rows]
 
+
+
+test_fake_translate_batch.__test__ = False
 
 def build_prompt(rows: list[dict[str, Any]], project_prompt: str, *, ascii_escape: bool = False) -> str:
     payload = "\n".join(json.dumps(row, ensure_ascii=ascii_escape) for row in rows)
@@ -302,15 +308,15 @@ def anthropic_messages_text(settings: dict[str, Any], prompt: str, *, system: st
 
 
 def call_text(settings: dict[str, Any], prompt: str, *, provider_override: str | None = None, system: str = "Return strict JSON only.") -> str:
-    provider = provider_override or settings.get("provider", "mock")
+    provider = normalize_provider_name(provider_override or settings.get("provider"))
     if provider == "openai":
         return openai_responses_text(settings, prompt, system=system)
     if provider == "openai-chat":
         return openai_chat_text(settings, prompt, system=system)
     if provider == "anthropic":
         return anthropic_messages_text(settings, prompt, system=system)
-    if provider == "mock":
-        raise ProviderError("mock provider cannot run semantic text generation")
+    if provider == TEST_FAKE_PROVIDER:
+        raise ProviderError("test fake provider cannot run semantic text generation")
     raise ProviderError(f"unsupported provider: {provider}")
 
 
@@ -336,11 +342,11 @@ async def translate_batch(
     provider_override: str | None = None,
     protocol_override: str | None = None,
 ) -> list[TranslationItem]:
-    provider = provider_override or settings.get("provider", "mock")
+    provider = normalize_provider_name(provider_override or settings.get("provider"))
     _ = protocol_override
     project_prompt = manage_project_prompt_context(project_prompt, settings)
-    if provider == "mock":
-        return mock_translate_batch(rows, settings)
+    if provider == TEST_FAKE_PROVIDER:
+        return test_fake_translate_batch(rows, settings)
     if provider == "anthropic":
         return await anthropic_messages_translate_batch(rows, settings, project_prompt)
     if provider == "openai-chat":

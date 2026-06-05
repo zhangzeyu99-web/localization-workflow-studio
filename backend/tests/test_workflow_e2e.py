@@ -19,7 +19,7 @@ import app.db as db
 import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
-from app.providers import TranslationItem, mock_translate_batch
+from app.providers import TranslationItem, test_fake_translate_batch
 from app.workflow import backfill_project_glossary_from_final
 
 
@@ -158,8 +158,8 @@ def _project_harness_failed_workbook(path: Path) -> None:
     wb.close()
 
 
-def test_mock_provider_preserves_numeric_square_placeholders() -> None:
-    result = mock_translate_batch(
+def test_fake_provider_preserves_numeric_square_placeholders() -> None:
+    result = test_fake_translate_batch(
         [{"id": 236, "source": "审批文号：新广出审[2016]2751号\\n出版物号:ISBN"}],
         {},
     )
@@ -730,7 +730,7 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
             qa_wb.close()
 
 
-def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
+def test_fake_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
     workbook = tmp_path / "sample-language.xlsx"
     _sample_workbook(workbook)
 
@@ -775,7 +775,7 @@ def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert run_response.status_code == 200
         run = run_response.json()
 
-        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake"})
         assert translate_response.status_code == 200, translate_response.text
         result = translate_response.json()
         assert result["run"]["status"] == "passed"
@@ -817,7 +817,7 @@ def test_mock_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert project_detail_response.json()["stats"]["translation_runs"] == 1
         assert project_detail_response.json()["stats"]["qa_runs"] == 0
         assert project_detail_response.json()["stats"]["langs"] == 1
-        resume_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True, "batch_size": 3})
+        resume_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 3})
         assert resume_response.status_code == 200, resume_response.text
         resume_events = client.get(f"/api/runs/{run['id']}/events").json()
         assert any("resume: batch 1/2 already completed" in event["message"] for event in resume_events)
@@ -833,7 +833,7 @@ def test_translation_batch_retry_persists_after_transient_failure(tmp_path: Path
         calls["count"] += 1
         if calls["count"] == 1:
             raise RuntimeError("transient provider failure")
-        return mock_translate_batch(batch, settings)
+        return test_fake_translate_batch(batch, settings)
 
     monkeypatch.setattr(workflow, "translate_batch", flaky_translate_batch)
 
@@ -848,7 +848,7 @@ def test_translation_batch_retry_persists_after_transient_failure(tmp_path: Path
             "/api/runs",
             json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": source_artifact["id"], "batch_size": 3},
         ).json()
-        response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True, "batch_size": 3})
+        response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 3})
         assert response.status_code == 200, response.text
         events = client.get(f"/api/runs/{run['id']}/events").json()
         assert any("failed attempt 1/3" in event["message"] for event in events)
@@ -858,7 +858,7 @@ def test_translation_batch_retry_persists_after_transient_failure(tmp_path: Path
         assert not (batch_dir / "batch_00001.error.json").exists()
 
 
-def test_mock_provider_is_blocked_for_real_project_without_explicit_allow(tmp_path: Path) -> None:
+def test_formal_translation_is_blocked_without_configured_api_key(tmp_path: Path) -> None:
     workbook = tmp_path / "sample-language.xlsx"
     _sample_workbook(workbook)
 
@@ -875,11 +875,11 @@ def test_mock_provider_is_blocked_for_real_project_without_explicit_allow(tmp_pa
             json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": source_artifact["id"]},
         ).json()
 
-        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock"})
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "openai"})
         assert translate_response.status_code == 200
         result = translate_response.json()
         assert result["run"]["status"] == "needs_input"
-        assert result["run"]["metadata"]["reason"] == "mock provider is blocked for real project translation"
+        assert "api_key is required" in result["run"]["metadata"]["reason"]
         assert result["artifacts"] == []
 
 
@@ -1050,7 +1050,7 @@ def test_translation_readiness_skips_filled_translation_workbook(tmp_path: Path)
             "/api/runs",
             json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": artifact["id"]},
         ).json()
-        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake"})
         assert translate_response.status_code == 200
         result = translate_response.json()
         assert result["run"]["status"] == "needs_input"
@@ -1086,7 +1086,7 @@ def test_string_ids_run_through_translation_and_qa(tmp_path: Path) -> None:
             "/api/runs",
             json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": artifact["id"]},
         ).json()
-        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake"})
         assert translate_response.status_code == 200
         result = translate_response.json()
         assert result["run"]["status"] == "passed"
@@ -1142,7 +1142,7 @@ def test_glossary_and_translation_archive_are_language_scoped(tmp_path: Path) ->
         assert [entry["target"] for entry in ko_entries] == ["보상 받기"]
 
 
-def test_korean_mock_translation_workflow_end_to_end(tmp_path: Path) -> None:
+def test_korean_fake_translation_workflow_end_to_end(tmp_path: Path) -> None:
     workbook = tmp_path / "ko-language.xlsx"
     _target_language_workbook(workbook, "KO")
 
@@ -1167,7 +1167,7 @@ def test_korean_mock_translation_workflow_end_to_end(tmp_path: Path) -> None:
         )
         assert run_response.status_code == 200, run_response.text
         run = run_response.json()
-        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake"})
         assert translate_response.status_code == 200, translate_response.text
         result = translate_response.json()
 
@@ -1538,7 +1538,7 @@ def test_glossary_candidate_missing_translation_endpoint_blocks_without_real_pro
     wb.close()
 
     settings = DEFAULT_SETTINGS.copy()
-    settings["provider"] = "mock"
+    settings["provider"] = "openai"
     settings["api_key"] = ""
     save_settings(settings)
 
@@ -1550,7 +1550,7 @@ def test_glossary_candidate_missing_translation_endpoint_blocks_without_real_pro
         response = client.post(f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/translate-missing")
 
         assert response.status_code == 400
-        assert "mock" in response.json()["detail"]
+        assert "api_key" in response.json()["detail"]
         unchanged = client.get(f"/api/projects/{project['id']}/glossary/batches").json()["candidates"][0]
         assert unchanged["target"] == ""
         assert unchanged["translation_status"] == "needs_translation"
@@ -2193,7 +2193,7 @@ def test_model_fix_requires_configured_provider(tmp_path: Path) -> None:
     _project_harness_failed_workbook(workbook)
 
     with TestClient(app) as client:
-        client.patch("/api/settings", json={"provider": "mock", "api_key": ""})
+        client.patch("/api/settings", json={"provider": "openai", "api_key": ""})
         project = client.post("/api/projects", json={"name": "Model Fix Needs Key", "type": "QA"}).json()
         client.patch(f"/api/projects/{project['id']}/harness", json={"forbidden_translations": ["Forbidden Brand"]})
         with workbook.open("rb") as fh:
@@ -2266,15 +2266,15 @@ def test_project_harness_is_project_scoped_and_affects_only_its_run(tmp_path: Pa
             json={
                 "style_guidance": "Use tactical aviation wording for this project only.",
                 "target_audience": "Core strategy players",
-                "forbidden_translations": ["Mock 1"],
-                "hard_rules": [{"label": "No raw mock marker", "description": "Mock marker must not ship."}],
+                "forbidden_translations": ["TestFake 1"],
+                "hard_rules": [{"label": "No raw fake marker", "description": "Test fake marker must not ship."}],
             },
         )
         assert harness_response.status_code == 200
         assert harness_response.json()["project_harness"]["style_guidance"].startswith("Use tactical")
 
-        first_result = _run_mock_translation(client, first["id"], workbook)
-        second_result = _run_mock_translation(client, second["id"], workbook)
+        first_result = _run_fake_translation(client, first["id"], workbook)
+        second_result = _run_fake_translation(client, second["id"], workbook)
 
         assert first_result["run"]["status"] == "failed"
         assert first_result["project_harness_quality"]["hard_errors"] == 1
@@ -2300,9 +2300,9 @@ def test_improvement_review_writes_suggestions_without_auto_merge(tmp_path: Path
         ).json()
         client.patch(
             f"/api/projects/{project['id']}/harness",
-            json={"forbidden_translations": ["Mock 1"]},
+            json={"forbidden_translations": ["TestFake 1"]},
         )
-        result = _run_mock_translation(client, project["id"], workbook)
+        result = _run_fake_translation(client, project["id"], workbook)
 
         review_response = client.post(f"/api/runs/{result['run']['id']}/improvement-review")
         assert review_response.status_code == 200
@@ -2574,7 +2574,7 @@ def test_announcement_lookup_generates_empty_pack_when_no_hits() -> None:
         assert any(artifact["kind"] == "announcement_lookup_prompt_context" for artifact in result["artifacts"])
 
 
-def _run_mock_translation(client: TestClient, project_id: str, workbook: Path) -> dict:
+def _run_fake_translation(client: TestClient, project_id: str, workbook: Path) -> dict:
     with workbook.open("rb") as fh:
         upload_response = client.post(
             f"/api/projects/{project_id}/files?kind=language_table",
@@ -2594,6 +2594,6 @@ def _run_mock_translation(client: TestClient, project_id: str, workbook: Path) -
     )
     assert run_response.status_code == 200
     run = run_response.json()
-    translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "mock", "allow_mock": True})
+    translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake"})
     assert translate_response.status_code == 200, translate_response.text
     return translate_response.json()

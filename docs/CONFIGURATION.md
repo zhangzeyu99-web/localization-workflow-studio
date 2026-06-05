@@ -68,9 +68,9 @@ http://127.0.0.1:5173
 |---|---|---|
 | GPT | `openai` | `responses` |
 | Claude | `anthropic` | `messages` |
-| Mock | `mock` | `mock` |
+| Test Fake | `test-fake` | `test-fake` |
 
-当前只保留 GPT 和 Claude 作为正式 provider。`mock` 只用于 CI、E2E 和无 key 回归测试。
+当前只保留 GPT 和 Claude 作为正式 provider。`test-fake` 只用于 CI、E2E 和无 key 回归测试。
 
 ## 预设模型
 
@@ -146,23 +146,23 @@ Claude 深度思考档：
 
 失败重跑时只应重跑失败批次或失败行，不应默认重跑整个项目。
 
-## Mock 边界
+## Test Fake ??
 
-真实项目正式翻译禁止使用 `mock` 假装完成。
+真实项目正式翻译禁止使用 `test-fake` 假装完成。
 
 阻断规则：
 
-- `provider = mock` 且项目名不是 `E2E ...`：正式翻译会进入 `needs_input`
+- `provider = test-fake` 且项目名不是 `E2E ...`：正式翻译会进入 `needs_input`
 - `provider = openai` 或 `anthropic` 但没有 API key：正式翻译会进入 `needs_input`
 
-允许使用 mock 的场景：
+允许使用 test-fake 的场景：
 
 - CI
 - Playwright E2E
 - 本地无 key 的链路回归
 - 名称以 `E2E ` 开头的隔离测试项目
 
-mock 输出不得进入真实项目交付验收。
+test-fake 输出不得进入真实项目交付验收。
 
 ## 多模态配置
 
@@ -254,7 +254,7 @@ Invoke-RestMethod -Method Patch `
 
 检查：
 
-- Provider 是否为 `mock`
+- Provider 是否为 `test-fake`
 - GPT / Claude API key 是否为空
 - 是否上传了语言表
 - 目标语言是否为 EN
