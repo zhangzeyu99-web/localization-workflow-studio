@@ -198,23 +198,25 @@ def test_openai_provider_does_not_fallback_to_chat_completions(monkeypatch: pyte
     assert result == [TranslationItem(id=1, translation="OK")]
 
 
-def test_openai_chat_relay_settings_preserve_custom_endpoint_model_and_reasoning() -> None:
-    settings = normalize_settings(
-        {
-            **DEFAULT_SETTINGS,
-            "provider": "openai-chat",
-            "preset": "deep",
-            "base_url": "https://relay.example.com/api",
-            "model": "gpt-5.5",
-            "reasoning_effort": "xhigh",
-        }
-    )
+def test_openai_chat_relay_presets_map_to_expected_reasoning_levels() -> None:
+    expected = {"balanced": "medium", "deep": "high", "critical": "xhigh"}
+    for preset, reasoning in expected.items():
+        settings = normalize_settings(
+            {
+                **DEFAULT_SETTINGS,
+                "provider": "openai-chat",
+                "preset": preset,
+                "base_url": "https://relay.example.com/api",
+                "model": "gpt-5.5",
+                "reasoning_effort": "",
+            }
+        )
 
-    assert settings["provider"] == "openai-chat"
-    assert settings["protocol"] == "chat-completions"
-    assert settings["base_url"] == "https://relay.example.com/api"
-    assert settings["model"] == "gpt-5.5"
-    assert settings["reasoning_effort"] == "xhigh"
+        assert settings["provider"] == "openai-chat"
+        assert settings["protocol"] == "chat-completions"
+        assert settings["base_url"] == "https://relay.example.com/api"
+        assert settings["model"] == "gpt-5.5"
+        assert settings["reasoning_effort"] == reasoning
 
 
 def test_openai_chat_relay_uses_chat_completions_body(monkeypatch: pytest.MonkeyPatch) -> None:

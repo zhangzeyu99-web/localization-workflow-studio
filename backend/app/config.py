@@ -76,77 +76,38 @@ LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
         "max_batch_attempts": 3,
         "provider_timeout_seconds": 180,
     },
+    "critical": {
+        "batch_size": 40,
+        "max_concurrent_batches": 1,
+        "max_requests_per_minute": 6,
+        "max_estimated_tokens_per_minute": 70000,
+        "max_batch_input_tokens": 16000,
+        "max_project_context_tokens": 8000,
+        "api_budget_warning_tokens": 2000000,
+        "max_batch_attempts": 3,
+        "provider_timeout_seconds": 240,
+    },
 }
+
 
 PROVIDER_PRESETS: dict[str, dict[str, dict[str, str | int | None]]] = {
     "openai": {
-        "fast": {
-            "label": "??",
-            "model": "gpt-5.4-mini",
-            "reasoning_effort": "low",
-            "base_url": "https://api.openai.com",
-            "max_output_tokens": 8192,
-        },
-        "balanced": {
-            "label": "??",
-            "model": "gpt-5.5",
-            "reasoning_effort": "medium",
-            "base_url": "https://api.openai.com",
-            "max_output_tokens": 8192,
-        },
-        "deep": {
-            "label": "??",
-            "model": "gpt-5.5-pro",
-            "reasoning_effort": "high",
-            "base_url": "https://api.openai.com",
-            "max_output_tokens": 16384,
-        },
+        "fast": {"label": "??", "model": "gpt-5.4-mini", "reasoning_effort": "low", "base_url": "https://api.openai.com", "max_output_tokens": 8192},
+        "balanced": {"label": "??", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "https://api.openai.com", "max_output_tokens": 8192},
+        "deep": {"label": "??", "model": "gpt-5.5-pro", "reasoning_effort": "high", "base_url": "https://api.openai.com", "max_output_tokens": 16384},
+        "critical": {"label": "????", "model": "gpt-5.5-pro", "reasoning_effort": "xhigh", "base_url": "https://api.openai.com", "max_output_tokens": 16384},
     },
     "openai-chat": {
-        "fast": {
-            "label": "??",
-            "model": "gpt-5.5",
-            "reasoning_effort": "medium",
-            "base_url": "",
-            "max_output_tokens": 8192,
-        },
-        "balanced": {
-            "label": "??",
-            "model": "gpt-5.5",
-            "reasoning_effort": "high",
-            "base_url": "",
-            "max_output_tokens": 8192,
-        },
-        "deep": {
-            "label": "??",
-            "model": "gpt-5.5",
-            "reasoning_effort": "xhigh",
-            "base_url": "",
-            "max_output_tokens": 16384,
-        },
+        "fast": {"label": "??", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "", "max_output_tokens": 8192},
+        "balanced": {"label": "??", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "", "max_output_tokens": 8192},
+        "deep": {"label": "??", "model": "gpt-5.5", "reasoning_effort": "high", "base_url": "", "max_output_tokens": 16384},
+        "critical": {"label": "????", "model": "gpt-5.5", "reasoning_effort": "xhigh", "base_url": "", "max_output_tokens": 16384},
     },
     "anthropic": {
-        "fast": {
-            "label": "??",
-            "model": "claude-haiku-4-5-20251001",
-            "reasoning_effort": "none",
-            "base_url": "https://api.anthropic.com",
-            "max_output_tokens": 8192,
-        },
-        "balanced": {
-            "label": "??",
-            "model": "claude-sonnet-4-6",
-            "reasoning_effort": "adaptive",
-            "base_url": "https://api.anthropic.com",
-            "max_output_tokens": 8192,
-        },
-        "deep": {
-            "label": "??",
-            "model": "claude-opus-4-7",
-            "reasoning_effort": "adaptive",
-            "base_url": "https://api.anthropic.com",
-            "max_output_tokens": 16384,
-        },
+        "fast": {"label": "??", "model": "claude-haiku-4-5-20251001", "reasoning_effort": "none", "base_url": "https://api.anthropic.com", "max_output_tokens": 8192},
+        "balanced": {"label": "??", "model": "claude-sonnet-4-6", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 8192},
+        "deep": {"label": "??", "model": "claude-opus-4-7", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 16384},
+        "critical": {"label": "????", "model": "claude-opus-4-7", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 16384},
     },
 }
 

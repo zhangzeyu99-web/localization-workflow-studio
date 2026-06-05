@@ -15,10 +15,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     api<Record<string, unknown>>('/api/settings').then((loaded) => {
       setSettings(loaded)
       setProvider(['openai', 'openai-chat', 'anthropic'].includes(String(loaded.provider)) ? String(loaded.provider) : 'openai')
-      setPreset(['fast', 'balanced', 'deep'].includes(String(loaded.preset)) ? String(loaded.preset) : 'balanced')
+      setPreset(['fast', 'balanced', 'deep', 'critical'].includes(String(loaded.preset)) ? String(loaded.preset) : 'balanced')
       setBaseUrl(String(loaded.base_url || ''))
       setModel(String(loaded.model || ''))
-      setReasoningEffort(String(loaded.reasoning_effort || ''))
+      setReasoningEffort('')
     })
   }, [])
 
@@ -61,6 +61,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               <option value="fast">快速</option>
               <option value="balanced">平衡</option>
               <option value="deep">深度</option>
+              <option value="critical">关键校对</option>
             </select>
           </label>
           <label className="settings-wide">
@@ -75,6 +76,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             <span>Reasoning</span>
             <select name="reasoning_effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>
               <option value="">跟随预设</option>
+              <option value="low">low</option>
               <option value="medium">medium</option>
               <option value="high">high</option>
               <option value="xhigh">xhigh</option>
