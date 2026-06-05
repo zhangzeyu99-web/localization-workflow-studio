@@ -83,6 +83,18 @@ function errorText(error: unknown): string {
   return String(error)
 }
 
+function eventStatusText(message: unknown): string {
+  if (!message) return '处理中...'
+  if (typeof message === 'string') return message
+  if (typeof message === 'object') {
+    const payload = message as Record<string, unknown>
+    if (payload.passed === true) return 'QA 已完成，正在归档产物。'
+    if (payload.status) return String(payload.status)
+    if (payload.summary) return String(payload.summary)
+  }
+  return '处理中...'
+}
+
 
 
 
@@ -240,7 +252,7 @@ function App() {
         if (updated.kind === 'translation' && updated.status === 'passed') {
           setStatus(`${languageSpec(normalizeLanguageCode(updated.language) || selectedLanguage).short} 翻译和 QA 已通过，最终产物已归档。`)
         } else if (latestEvent?.message) {
-          setStatus(`后台任务${updated.status}：${latestEvent.message}`)
+          setStatus(`后台任务${updated.status}：${eventStatusText(latestEvent.message)}`)
         }
         if (!['queued', 'running'].includes(updated.status)) {
           await refreshCurrent()
