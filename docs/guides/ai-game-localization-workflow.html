@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Game Localization Workflow for Excel, Glossary QA, and Delivery Gates</title>
+  <meta name="description" content="A practical AI game localization workflow for Excel language tables, glossary QA, placeholder checks, workpacks, model output review, and final delivery gates." />
+  <link rel="canonical" href="https://zhangzeyu99-web.github.io/localization-workflow-studio/guides/ai-game-localization-workflow.html" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="AI Game Localization Workflow for Excel Delivery" />
+  <meta property="og:description" content="How to combine AI translation, Excel language tables, glossary QA, placeholder checks, and local-first delivery gates." />
+  <meta property="og:url" content="https://zhangzeyu99-web.github.io/localization-workflow-studio/guides/ai-game-localization-workflow.html" />
+  <meta property="og:image" content="https://zhangzeyu99-web.github.io/localization-workflow-studio/assets/social-preview.jpg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "AI Game Localization Workflow for Excel Delivery",
+    "description": "A practical workflow for AI-assisted game localization with Excel language tables, glossary QA, placeholder checks, and final delivery gates.",
+    "author": {
+      "@type": "Person",
+      "name": "zhangzeyu99-web"
+    },
+    "datePublished": "2026-06-03",
+    "dateModified": "2026-06-03",
+    "mainEntityOfPage": "https://zhangzeyu99-web.github.io/localization-workflow-studio/guides/ai-game-localization-workflow.html"
+  }
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --panel-2: #eef2f7;
+      --text: #172033;
+      --muted: #5f6b7d;
+      --line: #d9e1ec;
+      --accent: #4f46e5;
+      --accent-2: #0f9f8f;
+      --warn: #9a620f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+    }
+    a { color: #2459c5; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header {
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(135deg, #ffffff 0%, #e8edff 56%, #e6f7f4 100%);
+    }
+    .wrap {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+    .hero { padding: 48px 0 42px; }
+    .eyebrow {
+      display: inline-block;
+      color: #d7defc;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 13px;
+      background: rgba(79,70,229,.08);
+      color: #33405c;
+    }
+    h1 {
+      max-width: 900px;
+      margin: 18px 0 12px;
+      font-size: clamp(34px, 6vw, 62px);
+      line-height: 1.04;
+      letter-spacing: 0;
+    }
+    .lead {
+      max-width: 820px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 24px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 9px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.65);
+      color: var(--text);
+      font-weight: 650;
+    }
+    .btn.primary {
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+    }
+    main { padding: 34px 0 56px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 28px;
+      align-items: start;
+    }
+    article, aside {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+    }
+    article { padding: 28px; }
+    aside {
+      position: sticky;
+      top: 18px;
+      padding: 20px;
+    }
+    h2 {
+      margin: 30px 0 10px;
+      font-size: 26px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+    h2:first-child { margin-top: 0; }
+    h3 { margin: 22px 0 8px; font-size: 19px; }
+    p { margin: 0 0 14px; }
+    ul, ol { padding-left: 22px; margin: 0 0 16px; }
+    li { margin: 7px 0; }
+    code {
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 1px 5px;
+      background: rgba(0,0,0,.22);
+      color: #dce6ff;
+    }
+    .callout {
+      margin: 18px 0;
+      padding: 14px 16px;
+      border: 1px solid rgba(47,183,167,.45);
+      border-radius: 8px;
+      background: rgba(47,183,167,.08);
+    }
+    .warning {
+      border-color: rgba(240,184,77,.55);
+      background: rgba(240,184,77,.13);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 22px;
+      overflow: hidden;
+      border-radius: 8px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th { background: var(--panel-2); }
+    .toc-title {
+      margin: 0 0 10px;
+      font-size: 14px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .toc a {
+      display: block;
+      padding: 7px 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 22px 0;
+      color: var(--muted);
+      background: #ffffff;
+    }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      aside { position: static; }
+      article { padding: 20px; }
+      .wrap { width: min(100% - 28px, 1120px); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap hero">
+      <span class="eyebrow">Localization Workflow Studio guide</span>
+      <h1>AI game localization workflow for Excel delivery</h1>
+      <p class="lead">A practical way to use AI translation without losing control of glossary decisions, placeholders, IDs, QA evidence, and final Excel workbooks.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/zhangzeyu99-web/localization-workflow-studio">Star on GitHub</a>
+        <a class="btn" href="../index.html">Open demo</a>
+        <a class="btn" href="excel-translation-qa.html">Excel QA guide</a>
+        <a class="btn" href="https://github.com/zhangzeyu99-web/localization-workflow-studio/blob/master/docs/GETTING_STARTED.md">Setup guide</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="wrap grid">
+      <article>
+        <h2 id="problem">The problem this workflow solves</h2>
+        <p>AI translation is useful for game localization, but raw model output is not a delivery artifact. Most game teams still ship language tables in Excel, and those tables contain IDs, UI strings, placeholders, tags, line breaks, naming conventions, and product-specific terminology.</p>
+        <p>The risk is not just a bad sentence. The bigger risk is losing traceability: nobody can prove which prompt, glossary, source row, provider output, or QA check produced the final workbook.</p>
+
+        <div class="callout">
+          <strong>Core rule:</strong> treat AI as a worker. The source workbook, glossary, workpack IDs, QA gates, and reviewer decisions remain the source of truth.
+        </div>
+
+        <h2 id="workflow">Recommended workflow</h2>
+        <ol>
+          <li><strong>Define the project profile.</strong> Capture genre, audience, tone, text types, target language, forbidden translations, and UI constraints.</li>
+          <li><strong>Normalize the glossary.</strong> Keep canonical terms, acceptable alternatives, categories, and reviewer notes in a structured table.</li>
+          <li><strong>Import the Excel language table.</strong> Preserve stable row IDs, source text, target columns, placeholders, tags, and line-break shape.</li>
+          <li><strong>Generate a workpack.</strong> Convert workbook rows into batchable JSONL input with fingerprints and context snapshots.</li>
+          <li><strong>Translate with a provider.</strong> Ask GPT or Claude for strict line protocol output, not free-form prose.</li>
+          <li><strong>Apply output defensively.</strong> Reject missing IDs, duplicate IDs, reordered rows, placeholder drift, tag drift, and stale input fingerprints.</li>
+          <li><strong>Run localization QA.</strong> Check terminology, placeholders, line breaks, readability, UI length hints, and project-specific rules.</li>
+          <li><strong>Review and archive.</strong> Store reviewed translations only after QA passes, then produce final workbook artifacts.</li>
+        </ol>
+
+        <h2 id="workpack">What should be in a workpack</h2>
+        <p>A workpack is the bridge between an Excel workbook and an AI provider. It should be strict enough that model output can be verified before anything touches the delivery workbook.</p>
+        <table>
+          <thead>
+            <tr><th>Field</th><th>Why it matters</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>id</code></td><td>Stable row identity. Output must match the requested ID set exactly.</td></tr>
+            <tr><td><code>source</code></td><td>Original text for translation and review.</td></tr>
+            <tr><td><code>text_type</code></td><td>UI button, item name, tooltip, system message, quest text, or marketing copy.</td></tr>
+            <tr><td><code>placeholders</code></td><td>Tokens such as <code>{count}</code>, <code>%s</code>, or player-name variables that must survive translation.</td></tr>
+            <tr><td><code>tags</code></td><td>Rich text or markup that cannot be broken.</td></tr>
+            <tr><td><code>glossary_hits</code></td><td>Terms the provider and reviewer must respect.</td></tr>
+            <tr><td><code>line_break_shape</code></td><td>Whether newlines are intentional and must be preserved.</td></tr>
+            <tr><td><code>input_fingerprint</code></td><td>Prevents stale model output from being applied after the source row changes.</td></tr>
+          </tbody>
+        </table>
+
+        <h2 id="qa">QA gates that should block delivery</h2>
+        <p>Localization QA should run before final workbook export. The checks below are small, but they catch the failures that make AI-assisted translation unsafe for production.</p>
+        <ul>
+          <li>Placeholder mismatch: missing, duplicated, or changed runtime variables.</li>
+          <li>Tag mismatch: broken markup, missing closing tags, or reordered UI tags.</li>
+          <li>Line-break drift: model output collapses or adds line breaks in UI-sensitive text.</li>
+          <li>Glossary conflict: canonical game terms are ignored or translated inconsistently.</li>
+          <li>Length risk: UI labels are too long for buttons, menus, skill cards, or shop items.</li>
+          <li>Mock output: test providers or missing-provider fallbacks are blocked from real delivery.</li>
+          <li>Fingerprint mismatch: output was generated from an older source row.</li>
+        </ul>
+
+        <div class="callout warning">
+          <strong>Do not archive unreviewed model output.</strong> A translation memory should store reviewed decisions, not raw provider responses.
+        </div>
+
+        <h2 id="studio">How Localization Workflow Studio maps to this</h2>
+        <p>Localization Workflow Studio is built around this exact workflow:</p>
+        <ul>
+          <li>Project profile and prompt snapshots for repeatable context.</li>
+          <li>Glossary extraction and review tables for term consistency.</li>
+          <li>Excel workpack generation with IDs, placeholders, tags, line breaks, glossary hits, and fingerprints.</li>
+          <li>Provider adapters for GPT and Claude, with mock output blocked from delivery.</li>
+          <li>Rule-based QA for workbook safety before final export.</li>
+          <li>Translation archive and delivery artifacts after review.</li>
+        </ul>
+
+        <h2 id="start">Start with the public sample</h2>
+        <p>The public demo is static and read-only, but it shows the intended product surface. Full workflow execution runs locally with the FastAPI backend.</p>
+        <ol>
+          <li>Open the <a href="../index.html">public demo</a>.</li>
+          <li>Read the <a href="excel-translation-qa.html">Excel translation QA guide</a>.</li>
+          <li>Clone the repository and follow the <a href="https://github.com/zhangzeyu99-web/localization-workflow-studio/blob/master/docs/GETTING_STARTED.md">setup guide</a>.</li>
+          <li>Use <code>examples/synthetic-language.xlsx</code> before trying private project workbooks.</li>
+        </ol>
+      </article>
+      <aside class="toc">
+        <p class="toc-title">On this page</p>
+        <a href="#problem">Problem</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#workpack">Workpack fields</a>
+        <a href="#qa">QA gates</a>
+        <a href="#studio">Studio mapping</a>
+        <a href="#start">Start</a>
+      </aside>
+    </div>
+  </main>
+  <footer>
+    <div class="wrap">
+      <span>Localization Workflow Studio</span>
+      <span> · </span>
+      <a href="https://github.com/zhangzeyu99-web/localization-workflow-studio">GitHub repository</a>
+    </div>
+  </footer>
+</body>
+</html>

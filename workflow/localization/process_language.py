@@ -24,7 +24,7 @@ from utils.variable_checker import check_all as check_variables
 from utils.term_checker import check_term_hit, check_chinese_residue, merge_builtin_name_terms
 from utils.pattern_detector import detect_patterns
 from utils.ui_detector import is_ui_text
-from utils.ai_checker import prepare_all_batches, apply_corrections
+from utils.ai_checker import prepare_all_batches
 from utils.text_normalize import repair_translation_surface
 from utils.ui_length_checker import assess_ui_length, check_ui_length
 from utils.readability_checker import check_readability
@@ -779,27 +779,27 @@ def run_machine_review(
     if skipped:
         print(f"       (跳过 {skipped} 行缺少有效 ID)")
 
-    print(f"[2/9] 加载术语库")
+    print("[2/9] 加载术语库")
     term_lookup = _load_term_base(term_base_path, lang=lang)
     print(f"       {len(term_lookup)} 条术语" if term_lookup else "       (无术语库)")
 
-    print(f"[3/9] 变量 & 标签检查")
+    print("[3/9] 变量 & 标签检查")
     _run_surface_fixes(states, auto_fix, lang)
     _run_variable_checks(states, auto_fix)
 
-    print(f"[4/9] 术语检查")
+    print("[4/9] 术语检查")
     _run_term_checks(states, term_lookup, auto_fix, lang)
 
-    print(f"[5/9] 句式一致性检查")
+    print("[5/9] 句式一致性检查")
     groups = _run_pattern_checks(states, auto_fix)
 
-    print(f"[6/9] 中文残留检查")
+    print("[6/9] 中文残留检查")
     _run_chinese_residue_checks(states, lang)
 
-    print(f"[7/9] UI文本识别")
+    print("[7/9] UI文本识别")
     _run_ui_detection(states)
 
-    print(f"[8/9] UI长度预算检查")
+    print("[8/9] UI长度预算检查")
     _run_ui_length_checks(states, lang)
 
     print("[9/9] 可读缩写/截断词检查")

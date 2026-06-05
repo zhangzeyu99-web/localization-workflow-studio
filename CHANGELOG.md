@@ -11,6 +11,14 @@ All notable changes are tracked here. The project uses semantic versioning while
 - Hardened repository/runtime operations with streaming upload limits, SQLite foreign keys/indexes/dedupe, unified delivery naming helpers, frontend module extraction, and guardrail tests.
 - Verified with backend tests, workflow harness tests, Ruff, frontend build, Playwright E2E, restart smoke, and forbidden-machine-translation scanning.
 
+## 0.5.0 - 2026-06-03
+
+- Reworked the public README around external-user value, live demo access, screenshots, quick start, safety boundaries, and quality gates.
+- Added Chinese README, getting-started guide, showcase, roadmap, contribution guide, security policy, and code of conduct.
+- Added GitHub Pages SEO metadata, canonical URL, Open Graph/Twitter metadata, JSON-LD, robots.txt, sitemap.xml, social preview image, and an Excel translation QA guide.
+- Reduced Dependabot public PR noise with grouped minor/patch updates, lower open PR limits, and ignored semver-major version updates for routine automation.
+- Merged low-risk successful dependency refreshes for frontend minor/patch packages, backend pydantic/uvicorn/openpyxl, workflow openpyxl, workflow pytest, and workflow pandas.
+
 ## 0.4.9 - 2026-05-21
 
 - Reworked the GitHub Pages workbench entry to match the local product navigation: starting a new translation task now replaces the main project overview with the 9-step workflow view instead of opening a modal.

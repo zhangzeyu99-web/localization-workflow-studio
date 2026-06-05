@@ -4,7 +4,6 @@ import unittest
 from pathlib import Path
 
 from workspace_runner import (
-    WorkspaceTask,
     discover_workspace_tasks,
     merge_term_files,
 )

@@ -2,62 +2,95 @@
 
 ![Localization Workflow Studio use-case map](assets/use-case-map.svg)
 
-## 1. Mock EN Regression
+This page uses only public synthetic data. It is meant to show how the Studio should be evaluated without exposing private workbooks, customer strings, provider keys, local file paths, SQLite databases, or run logs.
 
-Use this before every workflow integration change.
+## 1. Static Product Review
 
-```powershell
-cd D:\codex\localization-workflow-studio\frontend
-$env:E2E_BASE_URL = "http://127.0.0.1:5173"
-npm run e2e
-```
-
-Expected result:
-
-- Project is created from the web UI.
-- Manual glossary term is saved.
-- Project prompt is generated.
-- Workbook is uploaded.
-- Glossary extraction completes.
-- Mock translation run passes.
-- QA gate passes.
-- Final workbook download is available.
-
-## 2. Recent Real Project Replay
-
-Use this to verify the integration with a completed local task while keeping provider cost at zero.
-
-```powershell
-cd D:\codex\localization-workflow-studio\frontend
-$root = "C:\Users\Administrator\Desktop\本地化处理\明日2_5.15"
-$env:E2E_BASE_URL = "http://127.0.0.1:5173"
-$env:E2E_SOURCE_WORKBOOK = Join-Path $root "2.0欧美翻译需求0515NT全语.xlsx"
-$env:E2E_TERM_WORKBOOK = Join-Path $root "明日2术语表.xlsx"
-npm run e2e
-```
-
-Expected result:
-
-- Source workbook and term workbook are copied into the external data directory.
-- Glossary outputs are archived.
-- Mock final workbook, QA report, QA result, manifest, and response JSONL are archived.
-- Web project history shows both glossary and translation runs.
-
-## 3. Real Provider Smoke
-
-Use this only after `settings.local.json` contains a valid provider key.
-
-```powershell
-cd D:\codex\localization-workflow-studio
-python backend\app\main.py
-```
-
-Then open `http://127.0.0.1:5173`, set provider to `GPT` or `Claude`, choose one of the three presets, and run the same EN workflow with a small workbook first.
-
-## Image-Gen Prompt
-
-The use-case map is maintained as a static repository asset. When regenerating it with image-gen, use this prompt:
+Use this when you want to understand the product surface without installing anything.
 
 ```text
-Create a clean product documentation illustration for a local web app named Localization Workflow Studio. Show three user paths as connected panels: Mock EN Regression, Recent Real Project Replay, and Real Provider Smoke. Include visual motifs for React/Vite frontend, FastAPI backend, SQLite external data directory, workbook upload, glossary extraction, JSONL translation, QA gate, and artifact download. Style: crisp technical product diagram, dark navy background, cyan and violet accents, readable labels, no logos, 16:9.
+https://zhangzeyu99-web.github.io/localization-workflow-studio/
 ```
+
+Expected result:
+
+- The product positioning is visible in the first viewport.
+- Public links point to the workflow guide, Excel QA guide, setup guide, sample case, and GitHub repository.
+- The demo shows project metadata, glossary review, AI translation workflow, QA feedback, archive, and delivery areas.
+- No file upload, provider call, or private data persistence happens in the hosted demo.
+
+## 2. Local Mock Workflow
+
+Use this before every workflow integration change and before trying a real provider.
+
+```powershell
+git clone https://github.com/zhangzeyu99-web/localization-workflow-studio.git
+cd localization-workflow-studio
+
+python -m pip install -r backend\requirements.txt
+
+cd frontend
+npm ci
+npm run build
+```
+
+Then follow:
+
+```text
+docs/GETTING_STARTED.md
+```
+
+Expected result:
+
+- The backend runs on `http://127.0.0.1:8000`.
+- The frontend runs on `http://127.0.0.1:5173`.
+- The public synthetic workbook can be used for a smoke test.
+- Mock output is allowed only for local validation, CI, and E2E checks.
+- Mock output is not treated as real production translation.
+
+## 3. Excel Translation QA Review
+
+Use this when a translated workbook already exists and you want a local QA pass.
+
+Input:
+
+```text
+examples/synthetic-language.xlsx
+```
+
+Expected result:
+
+- Workbook rows keep stable IDs.
+- Glossary terms are checked for consistency.
+- Placeholder, tag, line-break, and UI-length risks are reported.
+- QA output can be reviewed before any workbook is considered delivery-ready.
+
+## 4. Real Provider Smoke
+
+Use this only after local provider configuration is ready.
+
+Requirements:
+
+- `settings.local.json` is stored outside the repository.
+- A valid GPT or Claude provider key is available locally.
+- A small synthetic workbook is used first.
+
+Expected result:
+
+- Provider output follows the strict JSONL line protocol.
+- Apply checks reject missing IDs, duplicate IDs, placeholder drift, tag drift, line-break drift, and stale input fingerprints.
+- Final workbook generation is allowed only after QA gates pass.
+
+## What Not To Publish
+
+Do not publish:
+
+- real customer workbooks,
+- unreleased game strings,
+- private screenshots,
+- provider API keys,
+- SQLite runtime databases,
+- local absolute file paths,
+- generated delivery artifacts from private projects.
+
+Public examples should use synthetic or explicitly approved data only.

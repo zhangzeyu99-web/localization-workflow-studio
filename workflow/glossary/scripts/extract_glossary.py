@@ -2928,7 +2928,7 @@ def build_ai_supplement_report_markdown(
     lines = [
         "# AI Supplement Report",
         "",
-        f"status: ok",
+        "status: ok",
         f"packet: {packet_path or 'disabled'}",
         f"response: {response_path or 'not provided'}",
         f"output: {output_path}",
@@ -3043,7 +3043,7 @@ def build_announcement_validation_markdown(
     lines = [
         "# Announcement Glossary Validation",
         "",
-        f"status: ok",
+        "status: ok",
         f"term_count: {len(rows)}",
         f"languages: {', '.join(language_headers) if language_headers else 'none'}",
         f"duplicate_cn: {duplicate_cn}",
