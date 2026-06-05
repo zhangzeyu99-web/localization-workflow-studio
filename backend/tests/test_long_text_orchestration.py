@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -18,16 +17,17 @@ import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
 from app.providers import TranslationItem
+from conftest import reset_data_root, wait_for_background_jobs
 
 
 @pytest.fixture(autouse=True)
 def reset_test_state() -> None:
     data_root = Path(os.environ["LWS_DATA_ROOT"])
-    if data_root.exists():
-        shutil.rmtree(data_root)
+    reset_data_root(data_root)
     db.init_db()
     save_settings(DEFAULT_SETTINGS)
     yield
+    wait_for_background_jobs()
     save_settings(DEFAULT_SETTINGS)
 
 

@@ -575,16 +575,16 @@ export function TranslationArchiveImportModal({
 
   return (
     <div className="modal-mask show">
-      <div className="modal">
+      <div className="modal archive-import-modal">
         <div className="settings-head">
           <h3>导入译文归档</h3>
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy || importing} onClick={onClose}>关闭</button>
         </div>
-        <p>上传已翻译 workbook / csv，系统会自动识别 EN/EN2、KR、JP 等语言列并写入归档。</p>
+        <p>上传已翻译 workbook / csv，系统自动识别语言列并写入归档。</p>
         <FileBox label="上传译文 workbook/csv" onFile={uploadAndImport} />
-        <div className="workflow-note-grid compact-grid gap-top">
-          <div><strong>当前文件</strong><span>{selectedArtifact ? artifactPickerLabel(selectedArtifact) : '未上传'}</span></div>
-          <div><strong>导入方式</strong><span>自动识别多语言列</span></div>
+        <div className="archive-import-summary">
+          <span>当前文件</span>
+          <strong>{selectedArtifact ? artifactPickerLabel(selectedArtifact) : '未上传'}</strong>
         </div>
         <div className={importing ? 'inline-status busy' : 'inline-status'}>{message}</div>
       </div>

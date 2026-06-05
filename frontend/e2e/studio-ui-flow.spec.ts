@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:15173'
+const baseURL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${process.env.LWS_E2E_FRONTEND_PORT ?? '15173'}`
 const sourceWorkbook = process.env.E2E_SOURCE_WORKBOOK ?? path.resolve('..', 'examples', 'synthetic-language.xlsx')
 const fileName = (value: string) => path.basename(value.replace(/\\/g, '/'))
 const fileStem = (value: string) => fileName(value).replace(/\.[^.]+$/, '')
@@ -37,8 +37,9 @@ test('user can complete the EN localization workflow from project tabs', async (
   await page.getByRole('button', { name: '创建' }).click()
 
   await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 15000 })
-  await expect(page.getByText('累计任务')).toBeVisible()
-  await expect(page.getByText('CN 归档源文')).toBeVisible()
+  await expect(page.locator('.stat-grid')).toContainText('语言包任务')
+  await expect(page.locator('.stat-grid')).toContainText('公告任务')
+  await expect(page.locator('.stat-grid')).toContainText('已归档文本')
   await expect(page.getByRole('button', { name: projectName })).toBeVisible()
 
   await page.getByText('编辑项目元信息 / 重新生成输入').click()
@@ -96,12 +97,13 @@ test('user can complete the EN localization workflow from project tabs', async (
 
   await page.getByRole('button', { name: '📥 交付' }).click()
   await expect(page.locator('.card-title .left', { hasText: '最终交付' })).toBeVisible()
-  await expect(page.locator('.delivery-head strong', { hasText: /T-[0-9a-f]{6}/ }).first()).toBeVisible({ timeout: 30000 })
-  await expect(page.getByText('处理条数')).toBeVisible()
-  await page.getByRole('button', { name: '生成/刷新最终交付文件' }).click()
+  await expect(page.locator('.delivery-card').first()).toBeVisible({ timeout: 30000 })
+  await expect(page.getByText('任务进度')).toBeVisible()
+  await expect(page.getByText('交付结果')).toBeVisible()
+  await page.getByRole('button', { name: '生成交付文件' }).click()
   await expect(inlineStatus(page, '最终交付已生成：2 个文件')).toBeVisible({ timeout: 30000 })
-  await expect(page.getByText(new RegExp(`${projectName}_EN_\\d{12}_T-[0-9a-f]{6}_final\\.xlsx`))).toBeVisible()
-  await expect(page.getByText(new RegExp(`${projectName}_EN_\\d{12}_T-[0-9a-f]{6}_changes\\.xlsx`))).toBeVisible()
+  await expect(page.getByRole('link', { name: '下载最终译文' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '下载修改记录' })).toBeVisible()
 })
 
 test('real project formal translation is blocked without configured API key', async ({ page, request }) => {
@@ -110,7 +112,7 @@ test('real project formal translation is blocked without configured API key', as
   })
   const projectName = `小小战机 UI 阻断 ${Date.now()}`
   await request.post(`${baseURL}/api/projects`, {
-    data: { name: projectName, type: '????', description: '??????? API key ??????????' },
+    data: { name: projectName, type: 'QA', description: '真实项目缺少 API key 时必须阻断正式翻译。' },
   })
 
   await page.goto(baseURL)
@@ -258,8 +260,7 @@ test('project tabs show multilingual wide glossary and archive assets', async ({
   await page.getByRole('button', { name: projectName }).click()
   await expect(page.locator('.proj-head')).not.toContainText('当前目标语言')
   await expect(page.locator('.proj-head .compact-lang-grid')).toHaveCount(0)
-  await expect(page.locator('.stat-grid')).toContainText('CN 术语概念')
-  await expect(page.locator('.stat-grid')).toContainText('EN 1 / KR 1 / +1')
+  await expect(page.locator('.stat-grid')).toContainText('已归档文本')
 
   await page.locator('.view-tabs .view-tab').nth(1).click()
   await expect(page.locator('.glossary-wide-table thead')).toContainText('EN')
@@ -493,10 +494,10 @@ wb.close()
   await page.getByRole('button', { name: '\u751f\u6210\u7ffb\u8bd1\u51c6\u5907\u5305' }).click()
   await expect(page.locator('.panel-title', { hasText: 'AI \u7ffb\u8bd1 / \u5bfc\u5165' })).toBeVisible({ timeout: 30000 })
   await expect(page.locator('.panel-desc', { hasText: '\u4e0d\u4f1a\u4f7f\u7528\u8c37\u6b4c\u673a\u7ffb' })).toBeVisible()
-  const processArtifacts = page.locator('.announcement-artifacts details.asset-list')
-  await processArtifacts.locator('summary', { hasText: '\u8fc7\u7a0b\u4ea7\u7269 / \u5ba1\u8ba1\u4ea7\u7269' }).click()
-  await expect(processArtifacts.getByRole('link', { name: /\u516c\u544a Workpack.*EN/ })).toBeVisible()
-  await expect(processArtifacts.getByRole('link', { name: /\u516c\u544a\u7ffb\u8bd1\u4e2d\u8f6c\u8868/ })).toBeVisible()
+  await expect(page.locator('.announcement-artifacts')).toHaveCount(0)
+  const processArtifacts = page.locator('.asset-list', { hasText: '\u53ef\u4e0b\u8f7d\u51c6\u5907\u4ea7\u7269' })
+  await expect(processArtifacts.getByText(/\u516c\u544a Workpack.*EN/)).toBeVisible()
+  await expect(processArtifacts.getByText(/\u516c\u544a\u7ffb\u8bd1\u4e2d\u8f6c\u8868/)).toBeVisible()
 
   const taskResponse = await request.get(`${baseURL}/api/projects/${project.id}/announcement-tasks`)
   const tasks = await taskResponse.json()
@@ -520,10 +521,11 @@ wb.close()
   await expect(page.locator('.panel-title', { hasText: '\u6821\u5bf9\u56de\u586b' })).toBeVisible({ timeout: 20000 })
   await page.getByRole('button', { name: 'QA \u5e76\u56de\u586b\u540c\u683c\u5f0f\u6587\u4ef6' }).click()
   await expect(page.locator('.panel-title', { hasText: '\u4ea4\u4ed8' })).toBeVisible({ timeout: 30000 })
-  await expect(page.getByRole('link', { name: /\u516c\u544a\u6210\u54c1.*EN/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: '下载 EN 成品' })).toBeVisible()
   await page.getByRole('button', { name: '\u751f\u6210\u4ea4\u4ed8\u603b\u5305' }).click()
-  await expect(page.getByRole('link', { name: /\u516c\u544a\u4ea4\u4ed8 ZIP/ })).toBeVisible({ timeout: 30000 })
-  await expect(page.locator('.announcement-subflow-card', { hasText: 'EN' })).toContainText('delivered')
+  await expect(page.getByRole('link', { name: '下载公告交付包' })).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  await expect(page.locator('.announcement-artifacts')).toContainText('\u53ef\u4ea4\u4ed8')
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await expect(page.locator('.announcement-project-panel .mini-lang')).toHaveCount(0)
@@ -569,10 +571,10 @@ wb.close()
   await expect(page.getByText('最近校对任务')).toBeVisible()
   await expect(page.locator('.tag-done', { hasText: 'passed' }).first()).toBeVisible()
   await page.getByRole('button', { name: '📥 交付' }).click()
-  await expect(page.locator('.delivery-head strong', { hasText: /QA-[0-9a-f]{6}/ }).first()).toBeVisible({ timeout: 30000 })
-  await page.getByRole('button', { name: '生成/刷新最终交付文件' }).click()
-  await expect(inlineStatus(page, '最终交付已生成：2 个文件')).toBeVisible({ timeout: 30000 })
-  await expect(page.getByText(new RegExp(`${projectName}_EN_\\d{12}_QA-[0-9a-f]{6}_final\\.xlsx`))).toBeVisible()
+  await expect(page.locator('.delivery-head span', { hasText: /QA-[0-9a-f]{6}/ }).first()).toBeVisible({ timeout: 30000 })
+  await page.getByRole('button', { name: '\u751f\u6210\u4ea4\u4ed8\u6587\u4ef6' }).click()
+  await expect(inlineStatus(page, '\u6700\u7ec8\u4ea4\u4ed8\u5df2\u751f\u6210\uff1a2 \u4e2a\u6587\u4ef6')).toBeVisible({ timeout: 30000 })
+  await expect(page.getByRole('link', { name: '\u4e0b\u8f7d\u6700\u7ec8\u8bd1\u6587' })).toBeVisible()
 
   await page.getByRole('button', { name: '🗄️ 译文归档' }).click()
   await expect(page.getByText('项目译文归档')).toBeVisible()

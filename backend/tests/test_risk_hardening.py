@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -19,17 +18,18 @@ import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, normalize_settings, save_settings
 from app.main import app
 from app.providers import TranslationItem, call_text, openai_responses_translate_batch, translate_batch
+from conftest import reset_data_root, wait_for_background_jobs
 
 
 @pytest.fixture(autouse=True)
 def reset_test_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LWS_MAX_UPLOAD_MB", "1")
     data_root = Path(os.environ["LWS_DATA_ROOT"])
-    if data_root.exists():
-        shutil.rmtree(data_root)
+    reset_data_root(data_root)
     db.init_db()
     save_settings(DEFAULT_SETTINGS)
     yield
+    wait_for_background_jobs()
     save_settings(DEFAULT_SETTINGS)
 
 

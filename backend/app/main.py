@@ -1278,8 +1278,19 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     archive_metrics = _translation_archive_metrics(translation_entries)
     translation_runs = len([run for run in runs if run["kind"] == "translation"])
     qa_runs = len([run for run in runs if run["kind"] == "qa"])
+    language_tasks = _language_business_task_count(runs)
+    deliverable_count = len([
+        run for run in runs
+        if run["kind"] in {"translation", "qa"}
+        and run["status"] == "passed"
+        and any(artifact["run_id"] == run["id"] and artifact["kind"] == "qa_final_workbook" for artifact in artifacts)
+    ])
+    business_tasks = language_tasks + len(announcement_tasks)
     project["stats"] = {
-        "tasks": len(runs),
+        "tasks": business_tasks,
+        "execution_runs": len(runs),
+        "language_tasks": language_tasks,
+        "deliverables": deliverable_count,
         "announcement_tasks": len(announcement_tasks),
         "translation_runs": translation_runs,
         "qa_runs": qa_runs,
@@ -1296,6 +1307,34 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
         project["announcement_tasks"] = announcement_tasks
         project["harness"] = read_project_harness(project["id"])
     return project
+
+
+def _language_business_task_count(runs: list[dict[str, Any]]) -> int:
+    runs_by_id = {str(run["id"]): run for run in runs}
+    business_ids: set[str] = set()
+    for run in runs:
+        if run["kind"] not in {"translation", "qa"}:
+            continue
+        metadata = run.get("metadata") or {}
+        if metadata.get("announcement_task_id") or metadata.get("task_id"):
+            continue
+        business_ids.add(_language_business_root_id(run, runs_by_id))
+    return len(business_ids)
+
+
+def _language_business_root_id(run: dict[str, Any], runs_by_id: dict[str, dict[str, Any]], seen: set[str] | None = None) -> str:
+    seen = seen or set()
+    run_id = str(run["id"])
+    if run_id in seen:
+        return run_id
+    seen.add(run_id)
+    metadata = run.get("metadata") or {}
+    for key in ("source_run_id", "manual_fix_source_run_id", "model_fix_source_run_id"):
+        source_id = str(metadata.get(key) or "")
+        source_run = runs_by_id.get(source_id)
+        if source_run and source_run.get("kind") in {"translation", "qa"}:
+            return _language_business_root_id(source_run, runs_by_id, seen)
+    return run_id
 
 
 def _translation_archive_metrics(entries: list[dict[str, Any]]) -> dict[str, Any]:

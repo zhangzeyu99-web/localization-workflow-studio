@@ -47,7 +47,15 @@ export function AssetSelect({
   onChange: (artifact: Artifact | null) => void
   allowEmpty?: boolean
 }) {
-  const assets = pickerArtifacts(artifactsByRoles(project, role))
+  const pickedAssets = pickerArtifacts(artifactsByRoles(project, role))
+  const seenLabels = new Set<string>()
+  const assets = pickedAssets.filter((artifact) => {
+    const labelKey = artifactPickerLabel(artifact)
+    if (value?.id === artifact.id) return true
+    if (seenLabels.has(labelKey)) return false
+    seenLabels.add(labelKey)
+    return true
+  })
   return (
     <label className="asset-select">
       <span>{label}</span>

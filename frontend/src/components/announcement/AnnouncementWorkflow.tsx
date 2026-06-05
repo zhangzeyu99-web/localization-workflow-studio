@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { allLanguageOptions, announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, type LanguageCode } from '../../languages'
-import { artifactFileName, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
+import { artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
 import { ActionStatus, ArtifactNote, FileBox, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
 
@@ -155,7 +155,7 @@ export function AnnouncementWizard({
   const detectedLanguages = normalizeLanguageArray(activeMeta.detected_languages)
   const effectiveLanguages = selectedLanguages
   const providerReady = Boolean(settings && ((['openai', 'openai-chat', 'anthropic'].includes(String(settings.provider)) && settings.api_key === 'configured') || settings.provider === 'test-fake'))
-  const showLanguageSubflows = Boolean(activeTask && step >= 6)
+  const showLanguageSubflows = Boolean(activeTask && step >= 6 && step <= 8)
 
   useEffect(() => {
     if (initialTaskId && tasks.some((task) => task.id === initialTaskId)) {
@@ -247,17 +247,17 @@ export function AnnouncementWizard({
           </button>
         ))}
       </div>
-      <ActionStatus status={status} busy={busy} />
+      {busy || (status && status !== '准备就绪') ? <ActionStatus status={status} busy={busy} /> : null}
       {activeTask ? (
         <div
           className={`announcement-current-task ${announcementCancelHoldTaskId === activeTask.id ? 'cancel-hold' : ''}`}
-          onPointerDown={(event) => { if (event.button === 0) onBeginAnnouncementCancelHold(activeTask) }}
+          onPointerDown={(event) => { if (event.button === 0 && announcementTaskCanCancel(activeTask)) onBeginAnnouncementCancelHold(activeTask) }}
           onPointerUp={onCancelAnnouncementHold}
           onPointerLeave={onCancelAnnouncementHold}
           onPointerCancel={onCancelAnnouncementHold}
         >
           <span>当前公告任务：{activeTask.title || activeTask.id}</span>
-          <em>STEP {activeTask.current_step || 1}/9 · {announcementStatusLabel(activeTask.status)} · 长按取消</em>
+          <em>STEP {activeTask.current_step || 1}/9 · {announcementStatusLabel(activeTask.status)}{announcementTaskCanCancel(activeTask) ? ' · 长按取消' : ''}</em>
         </div>
       ) : null}
 
@@ -389,10 +389,14 @@ export function AnnouncementWizard({
           ) : step === 8 ? (
             <AnnouncementActionStep title="校对回填" step={8} desc="按语言校验 ID、顺序、变量、标签、术语、中文残留和格式指纹；hard blocker 未清零不生成最终交付包。" activeTask={activeTask} busy={busy} actionLabel="QA 并回填同格式文件" onAction={() => run('apply', 9)} />
           ) : (
-            <AnnouncementActionStep title="交付" step={9} desc="生成公告交付总包：只包含按语言分目录的成品和 QA 摘要；中转表、manifest、workpack 留在过程产物区。" activeTask={activeTask} busy={busy} actionLabel="生成交付总包" onAction={() => run('deliver', 9, { date_stamp: new Date().toISOString().slice(0, 10).replace(/-/g, '') })} />
+            <AnnouncementDeliveryStep
+              activeTask={activeTask}
+              busy={busy}
+              onDeliver={(force = false) => run('deliver', 9, { date_stamp: new Date().toISOString().slice(0, 10).replace(/-/g, ''), force })}
+            />
           )}
 
-          {activeTask ? <AnnouncementTaskArtifacts task={activeTask} /> : null}
+          {activeTask && step === 9 ? <AnnouncementTaskArtifacts task={activeTask} /> : null}
         </section>
       </div>
     </div>
@@ -590,6 +594,41 @@ export function announcementTermLanguages(task: AnnouncementTask | null, effecti
   return allLanguageOptions.map((language) => language.code).filter((code) => found.has(code))
 }
 
+export function announcementTaskCanCancel(task: AnnouncementTask): boolean {
+  return !['delivered', 'canceled'].includes(task.status || '')
+}
+
+export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { activeTask: AnnouncementTask | null; busy: boolean; onDeliver: (force?: boolean) => void }) {
+  const deliveryArtifacts = (activeTask?.artifacts || []).filter((artifact) => ['announcement_delivery_package', 'announcement_docx_delivery_package'].includes(artifact.kind))
+  const delivered = Boolean(activeTask?.status === 'delivered' && deliveryArtifacts.length)
+  return (
+    <>
+      <div className="panel-title"><span className="badge">STEP 9</span>交付</div>
+      <div className="panel-desc">生成公告交付总包：只包含按语言分目录的成品和 QA 摘要；中转表、manifest、workpack 留在过程产物区。</div>
+      {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
+      <AnnouncementTaskSnapshot task={activeTask} />
+      {delivered ? <div className="ok-line">已生成公告交付包，可在下方下载；不会重复生成新交付。</div> : null}
+      <div className="row-actions">
+        {!delivered ? <button className="btn btn-primary" disabled={!activeTask || busy} onClick={() => onDeliver(false)}>生成交付总包</button> : null}
+      </div>
+      {delivered ? (
+        <details className="delivery-advanced">
+          <summary>更多</summary>
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={busy}
+            onClick={() => {
+              if (window.confirm('已存在公告交付包。确认重新生成会新增一版交付记录。是否继续？')) onDeliver(true)
+            }}
+          >
+            重新生成交付总包
+          </button>
+        </details>
+      ) : null}
+    </>
+  )
+}
+
 export function AnnouncementActionStep({ title, step, desc, activeTask, busy, actionLabel, onAction }: { title: string; step: number; desc: string; activeTask: AnnouncementTask | null; busy: boolean; actionLabel: string; onAction: () => void }) {
   return (
     <>
@@ -621,7 +660,7 @@ export function AnnouncementLanguageSubflows({
         {announcementLanguages.map((lang) => {
           const child = task.languages?.find((item) => item.language === lang.code)
           const selected = effectiveLanguages.includes(lang.code)
-          if (!selected && !child && !detectedLanguages.includes(lang.code)) return null
+          if (!selected && !child) return null
           return (
             <button key={lang.code} className={`announcement-subflow-card ${selected ? 'selected' : ''} ${child ? child.status : 'is-empty'}`} onClick={() => onToggleLanguage(lang.code)}>
               <strong>{lang.label}</strong>
@@ -658,28 +697,31 @@ export function AnnouncementTaskArtifacts({ task }: { task: AnnouncementTask }) 
   const finalArtifacts = pickerArtifacts(artifacts.filter((artifact) => finalKinds.has(artifact.kind)))
   const qaArtifacts = pickerArtifacts(artifacts.filter((artifact) => qaKinds.has(artifact.kind)))
   const processArtifacts = pickerArtifacts(artifacts.filter((artifact) => !finalKinds.has(artifact.kind) && !qaKinds.has(artifact.kind)))
+  const hasDelivery = finalArtifacts.length > 0
+  const languages = normalizeLanguageArray(task.selected_languages || []).map((lang) => languageSpec(lang).short).join(' / ') || '-'
   return (
     <div className="card tight announcement-artifacts">
-      <div className="card-title"><div className="left">任务产物</div></div>
-      {finalArtifacts.length ? (
-        <div className="asset-list">
-          <div className="ai-header">最终交付</div>
-          <div className="row-actions wrap">
-            {finalArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-primary btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>)}
+      <div className="card-title"><div className="left">公告交付</div></div>
+      <div className="delivery-card compact-delivery">
+        <div className="delivery-head">
+          <div>
+            <strong>{task.title || '公告任务'}</strong>
+            <span>{languages}</span>
           </div>
+          <span className={`tag ${task.status === 'delivered' ? 'tag-done' : 'tag-doing'}`}>{task.status === 'delivered' ? '可交付' : announcementStatusLabel(task.status)}</span>
         </div>
-      ) : null}
-      {qaArtifacts.length ? (
-        <div className="asset-list">
-          <div className="ai-header">成品与 QA</div>
-          <div className="row-actions wrap">
-            {qaArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>)}
-          </div>
+        <div className="delivery-brief">
+          <div><span>任务进度</span><strong>STEP {task.current_step || 1}/9 · {announcementStatusLabel(task.status)}</strong></div>
+          <div><span>交付结果</span><strong>{hasDelivery ? '已生成公告交付包' : '待生成'}</strong></div>
         </div>
-      ) : null}
+        <div className="delivery-actions">
+          {finalArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-primary btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载公告交付包</a>)}
+          {qaArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{announcementDownloadLabel(artifact)}</a>)}
+        </div>
+      </div>
       {processArtifacts.length ? (
-        <details className="asset-list">
-          <summary className="ai-header">过程产物 / 审计产物（{processArtifacts.length}）</summary>
+        <details className="asset-list delivery-advanced">
+          <summary className="ai-header">高级：过程文件（{processArtifacts.length}）</summary>
           <div className="row-actions wrap">
             {processArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>)}
           </div>
@@ -693,15 +735,24 @@ export function announcementArtifactTypeLabel(artifact: Artifact): string {
   if (artifact.kind.includes('delivery_package')) return '公告交付 ZIP'
   if (artifact.kind.includes('qa_summary')) return 'QA 摘要'
   if (artifact.kind.includes('output')) return '公告成品'
-  if (artifact.kind.includes('workpack')) return '过程产物 / 审计产物'
-  if (artifact.kind.includes('manifest')) return '过程产物 / 审计产物'
-  if (artifact.kind.includes('prompt')) return '过程产物 / 审计产物'
+  if (artifact.kind.includes('workpack')) return '过程文件'
+  if (artifact.kind.includes('manifest')) return '过程文件'
+  if (artifact.kind.includes('prompt')) return '过程文件'
   if (artifact.kind.includes('ai_supplement_packet')) return 'AI 补充包'
   if (artifact.kind.includes('ai_supplement_response')) return 'AI 补充响应'
   if (artifact.kind.includes('ai_supplement_report')) return 'AI 补充报告'
   if (artifact.kind.includes('translation_workbook')) return '中转表'
   if (artifact.kind.includes('terms')) return '公告术语表'
-  return '过程产物 / 审计产物'
+  return '过程文件'
+}
+
+export function announcementDownloadLabel(artifact: Artifact): string {
+  if (artifact.kind.includes('qa_summary')) return '下载 QA 摘要'
+  if (artifact.kind.includes('output')) {
+    const language = artifactLanguageLabel(artifact)
+    return `下载${language ? ` ${language} ` : ' '}成品`
+  }
+  return `下载${announcementArtifactTypeLabel(artifact)}`
 }
 
 export function ArtifactLinks({ artifacts, kinds }: { artifacts: Artifact[]; kinds: string[] }) {

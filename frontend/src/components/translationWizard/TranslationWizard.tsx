@@ -94,46 +94,70 @@ export function DeliveryTab({
     <div className="card">
       <div className="card-title">
         <div className="left">最终交付</div>
+        {deliverables.length ? <span className="muted-inline">共 {deliverables.length} 个可交付任务</span> : null}
       </div>
       {!deliverables.length ? <div className="warn-line">暂无最终交付，需先完成翻译/校对并通过 QA。</div> : null}
-      <ActionStatus status={status} busy={busy} />
-      <div className="delivery-list">
+      {busy || (status && status !== '准备就绪') ? <ActionStatus status={status} busy={busy} /> : null}
+      <div className="delivery-list delivery-list-compact">
         {deliverables.map((task) => {
           const finalFile = task.files.final
           const changesFile = task.files.changes
+          const hasDelivery = Boolean(finalFile?.download_url && changesFile?.download_url)
           return (
-            <div key={task.run_id} className="delivery-card">
+            <div key={task.run_id} className="delivery-card delivery-line">
               <div className="delivery-head">
                 <div>
-                  <strong>{project.name} · {task.language} · {task.task_label}</strong>
-                  <span>{task.task_type} / {task.input_label || '-'}</span>
+                  <strong>{deliveryTaskTitle(task)}</strong>
+                  <span>{deliveryTaskSubtitle(task)}</span>
                 </div>
-                <span className="tag tag-done">{task.qa_status || task.status}</span>
+                <span className={`tag ${task.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{deliveryStatusLabel(task)}</span>
               </div>
-              <div className="delivery-meta">
-                <div><strong>任务时间</strong><span>{formatDateTime(task.created_at)}</span></div>
-                <div><strong>任务类型</strong><span>{task.task_type}</span></div>
-                <div><strong>处理条数</strong><span>{task.processed_rows || 0}</span></div>
-                <div><strong>完成状态</strong><span>{task.status}</span></div>
-                <div><strong>模型/来源</strong><span>{[task.provider, task.model].filter((item) => item && item !== '-').join(' / ') || '-'}</span></div>
-                <div><strong>QA 结果</strong><span>必须修复 {task.qa_hard_errors ?? 0} / 建议修复 {task.qa_soft_warnings ?? 0}</span></div>
+              <div className="delivery-line-info">
+                <div><span>任务进度</span><strong>{deliveryProgressLabel(task)}</strong></div>
+                <div><span>交付结果</span><strong>{hasDelivery ? '已生成 2 个 Excel' : '待生成'}</strong></div>
               </div>
-              <div className="row-actions">
-                <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成/刷新最终交付文件</button>
-                {finalFile?.download_url ? <a className="btn btn-ghost btn-sm" href={finalFile.download_url}>最终译文 Excel</a> : <span className="muted-inline">最终译文 Excel 未生成</span>}
-                {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>修改记录 Excel</a> : <span className="muted-inline">修改记录 Excel 未生成</span>}
-              </div>
-              <div className="delivery-files">
-                <span>{finalFile?.filename || '-'}</span>
-                <span>{changesFile?.filename || '-'}</span>
+              <div className="delivery-actions">
+                {finalFile?.download_url ? <a className="btn btn-primary btn-sm" href={finalFile.download_url}>下载最终译文</a> : null}
+                {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>下载修改记录</a> : null}
+                {!hasDelivery ? <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成交付文件</button> : null}
               </div>
             </div>
           )
         })}
       </div>
-      <div className="muted-left">语言包最终交付固定为最终译文 Excel + 修改记录 Excel；术语、提示词、workpack 等过程产物不放入最终交付。</div>
     </div>
   )
+}
+
+export function deliveryTaskTitle(task: DeliverableTask): string {
+  const input = compactDeliveryInputLabel(task.input_label)
+  return input ? `${input} · ${task.language}` : `${task.task_type} · ${task.language}`
+}
+
+export function deliveryTaskSubtitle(task: DeliverableTask): string {
+  return `${task.task_type} · ${formatDateTime(task.created_at)} · ${task.task_label}`
+}
+
+export function compactDeliveryInputLabel(value?: string): string {
+  const label = String(value || '').trim()
+  if (!label || label === '-') return ''
+  const parts = label.split('｜').map((part) => part.trim()).filter(Boolean)
+  if (parts.length >= 4) return parts.slice(1, 3).join(' · ')
+  if (parts.length >= 2) return parts.slice(1).join(' · ')
+  return label
+}
+
+export function deliveryStatusLabel(task: DeliverableTask): string {
+  if (task.status === 'passed' && Number(task.qa_hard_errors || 0) === 0) return '可交付'
+  if (task.status === 'failed') return '未通过'
+  return task.status || '处理中'
+}
+
+export function deliveryProgressLabel(task: DeliverableTask): string {
+  const total = Number(task.source_rows || task.processed_rows || 0)
+  const done = Number(task.processed_rows || task.translated_rows || 0)
+  const qa = `QA 必修 ${task.qa_hard_errors ?? 0} / 建议 ${task.qa_soft_warnings ?? 0}`
+  return total > 0 ? `${done}/${total} 行 · ${qa}` : qa
 }
 
 export function providerName(settings: AppSettings | null): string {
@@ -627,9 +651,10 @@ export function StepTranslate({
   const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project, readiness)
   const alreadyTranslated = canSkipModelTranslation(readiness)
   const estimatedBatches = estimateBatches(readiness?.source_rows, batchSize)
-  const progress = getTranslationProgress(latestRun)
-  const activeTranslation = Boolean(latestRun?.kind === 'translation' && ['queued', 'running'].includes(latestRun.status) && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
-  const resumable = Boolean(latestRun?.kind === 'translation' && ['failed', 'needs_input', 'canceled'].includes(latestRun.status) && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id)
+  const currentTranslationRun = latestRun?.kind === 'translation' && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id ? latestRun : null
+  const progress = getTranslationProgress(currentTranslationRun)
+  const activeTranslation = Boolean(currentTranslationRun && ['queued', 'running'].includes(currentTranslationRun.status))
+  const resumable = Boolean(currentTranslationRun && ['failed', 'needs_input', 'canceled'].includes(currentTranslationRun.status))
   const invalidIdText = readiness?.invalid_id_rows ? ` / 空 ID ${readiness.invalid_id_rows}` : ''
   const readinessText = readiness
     ? `${readiness.source_rows} 行原文 / ${readiness.translated_rows} 行已有译文 / 空译文 ${readiness.empty_target_rows} / 中文残留 ${readiness.cjk_target_rows}${invalidIdText} / 预计 ${readiness.estimated_batches} 批`
@@ -684,20 +709,20 @@ export function StepTranslate({
         </div>
         {showTranslateStatus ? <ActionStatus status={status} busy={busy} /> : null}
         {progress ? <TranslationProgressBar progress={progress} /> : null}
-        {latestRun?.metadata?.reason === 'api_budget_confirmation_required' ? (
+        {currentTranslationRun?.metadata?.reason === 'api_budget_confirmation_required' ? (
           <div className="warn-line">预计 API token 超过提醒阈值；点击“继续后台翻译”会二次确认预算，并从已完成批次继续。</div>
         ) : null}
-        {latestRun?.metadata?.reason === 'background_job_interrupted' ? (
+        {currentTranslationRun?.metadata?.reason === 'background_job_interrupted' ? (
           <div className="warn-line">上次后台任务被中断；点击“继续后台翻译”可从已落盘批次恢复。</div>
         ) : null}
-        {progress?.failed_batch && latestRun ? <BatchDebugLinks runId={latestRun.id} batchIndex={progress.failed_batch} /> : null}
+        {progress?.failed_batch && currentTranslationRun ? <BatchDebugLinks runId={currentTranslationRun.id} batchIndex={progress.failed_batch} /> : null}
       </div>
       <div className="translation-guard-strip">
         <span>项目术语库 <strong>{glossaryCount} 条</strong></span>
         <span>{lang.short} 提示词 <strong>{projectPromptForLanguage(project, selectedLanguage) ? '已生成' : '未生成'}</strong></span>
         <span>校对门槛 <strong>QA 通过后交付</strong></span>
       </div>
-      {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} issues={qualityIssues} /> : null}
+      {currentTranslationRun ? <TaskRunSummary run={currentTranslationRun} issues={qualityIssues} /> : null}
     </>
   )
 }

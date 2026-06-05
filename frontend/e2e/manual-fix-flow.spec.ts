@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:15173'
+const baseURL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${process.env.LWS_E2E_FRONTEND_PORT ?? '15173'}`
 const inlineStatus = (page: any, text: string) => page.locator('.inline-status', { hasText: text })
 
 test('user can repair failed QA rows and rerun QA from the web UI', async ({ page, request }) => {

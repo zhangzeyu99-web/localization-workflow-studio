@@ -1440,13 +1440,32 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     if int(metadata.get("hard_blockers") or 0) > 0:
         raise ValueError("hard blockers must be fixed before delivery")
     languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+    force = bool(getattr(request, "force", False))
+    stamp = str(getattr(request, "date_stamp", "") or datetime.now().strftime("%Y%m%d"))
+    existing_artifact = _find_existing_announcement_delivery(task, languages, stamp)
+    if existing_artifact and not force:
+        existing_run = None
+        if existing_artifact.get("run_id"):
+            try:
+                existing_run = db.get_run(str(existing_artifact["run_id"]))
+            except KeyError:
+                existing_run = None
+        existing_languages = _normalize_announcement_languages((existing_artifact.get("metadata") or {}).get("languages") or [], fallback=languages)
+        metadata["delivery_artifact_id"] = existing_artifact["id"]
+        task = db.update_announcement_task(task_id, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
+        return {
+            "task": _hydrate_announcement_task(task),
+            "run": existing_run,
+            "summary": {"languages": existing_languages or languages, "delivery_artifact_id": existing_artifact["id"], "reused": True, "date_stamp": stamp},
+            "artifacts": [existing_artifact],
+        }
+    superseded_artifacts = _matching_announcement_delivery_artifacts(task, languages, stamp) if force else []
     output_artifact_ids = metadata.get("output_artifact_ids") or {}
     if not output_artifact_ids:
         raise ValueError("apply announcement translations before delivery")
     run = db.insert_run(task["project_id"], kind="announcement_deliver", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages})
     output = run_dir(run["id"]) / "announcement_delivery"
     output.mkdir(parents=True, exist_ok=True)
-    stamp = str(getattr(request, "date_stamp", "") or datetime.now().strftime("%Y%m%d"))
     zip_path = output / f"{_announcement_delivery_base_name(task)}_announcement_delivery_{stamp}.zip"
     qa_artifact_id = metadata.get("qa_summary_artifact_id")
     with ZipFile(zip_path, "w") as archive:
@@ -1459,13 +1478,54 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
         if qa_artifact_id:
             qa_artifact = db.get_artifact(qa_artifact_id)
             archive.write(qa_artifact["path"], "QA摘要.xlsx")
-    artifact = db.add_artifact(task["project_id"], "公告交付总包", zip_path, "announcement_delivery_package", run_id=run["id"], mime="application/zip", metadata={"task_id": task_id, "languages": languages})
+    artifact = db.add_artifact(task["project_id"], "公告交付总包", zip_path, "announcement_delivery_package", run_id=run["id"], mime="application/zip", metadata={"task_id": task_id, "languages": languages, "date_stamp": stamp})
+    for old_artifact in superseded_artifacts:
+        if old_artifact["id"] == artifact["id"]:
+            continue
+        db.update_artifact(old_artifact["id"], {"metadata": {**(old_artifact.get("metadata") or {}), "superseded": True, "superseded_by": artifact["id"], "superseded_at": datetime.now().isoformat(timespec="seconds")}})
     metadata["delivery_artifact_id"] = artifact["id"]
     task = db.update_announcement_task(task_id, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
     for language in languages:
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"])
     db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "delivery_artifact_id": artifact["id"]})
-    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"]}, "artifacts": [artifact]}
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"], "date_stamp": stamp}, "artifacts": [artifact]}
+
+
+def _find_existing_announcement_delivery(task: dict[str, Any], languages: list[str], date_stamp: str) -> dict[str, Any] | None:
+    for artifact in _matching_announcement_delivery_artifacts(task, languages, date_stamp):
+        if (artifact.get("metadata") or {}).get("superseded"):
+            continue
+        return artifact
+    return None
+
+
+def _matching_announcement_delivery_artifacts(task: dict[str, Any], languages: list[str], date_stamp: str) -> list[dict[str, Any]]:
+    task_id = str(task.get("id") or "")
+    expected_languages = set(_normalize_announcement_languages(languages, fallback=[]))
+    matches: list[dict[str, Any]] = []
+    for artifact in db.list_artifacts(project_id=task["project_id"], role="delivery", include_superseded=True):
+        if artifact["kind"] not in {"announcement_delivery_package", "announcement_docx_delivery_package"}:
+            continue
+        metadata = artifact.get("metadata") or {}
+        if str(metadata.get("task_id") or "") != task_id:
+            continue
+        artifact_languages = set(_normalize_announcement_languages(metadata.get("languages") or [], fallback=[]))
+        if expected_languages and artifact_languages and artifact_languages != expected_languages:
+            continue
+        if _announcement_delivery_artifact_date(artifact) != date_stamp:
+            continue
+        if not Path(artifact["path"]).exists():
+            continue
+        matches.append(artifact)
+    return matches
+
+
+def _announcement_delivery_artifact_date(artifact: dict[str, Any]) -> str:
+    metadata = artifact.get("metadata") or {}
+    if metadata.get("date_stamp"):
+        return str(metadata["date_stamp"])
+    match = re.search(r"_announcement_delivery_(\d{8})\.zip$", Path(str(artifact.get("path") or "")).name)
+    return match.group(1) if match else ""
 
 
 def generate_announcement_terms_package(project_id: str, request: Any) -> dict[str, Any]:

@@ -207,6 +207,7 @@ class AnnouncementTaskApplyRequest(BaseModel):
 class AnnouncementTaskDeliverRequest(BaseModel):
     languages: list[str] = Field(default_factory=list)
     date_stamp: str | None = None
+    force: bool = False
 
 
 class AnnouncementTermsRequest(BaseModel):

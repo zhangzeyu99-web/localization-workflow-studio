@@ -12,6 +12,10 @@ export type Project = {
   profile?: Record<string, unknown>
   stats: {
     tasks: number
+    execution_runs?: number
+    language_tasks?: number
+    deliverables?: number
+    announcement_tasks?: number
     translation_runs?: number
     qa_runs?: number
     words: string

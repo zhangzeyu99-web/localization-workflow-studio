@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import json
 import re
-import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -21,16 +20,17 @@ from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
 from app.providers import TranslationItem, test_fake_translate_batch
 from app.workflow import backfill_project_glossary_from_final
+from conftest import reset_data_root, wait_for_background_jobs
 
 
 @pytest.fixture(autouse=True)
 def reset_test_state() -> None:
     data_root = Path(os.environ["LWS_DATA_ROOT"])
-    if data_root.exists():
-        shutil.rmtree(data_root)
+    reset_data_root(data_root)
     db.init_db()
     save_settings(DEFAULT_SETTINGS)
     yield
+    wait_for_background_jobs()
     save_settings(DEFAULT_SETTINGS)
 
 
@@ -217,6 +217,36 @@ def test_announcement_task_can_be_canceled_without_deleting_audit() -> None:
         fetched = client.get(f"/api/announcement-tasks/{task['id']}").json()
         assert fetched["status"] == "canceled"
         assert fetched["source_artifact_id"] == task["source_artifact_id"]
+
+
+def test_project_stats_count_business_tasks_not_execution_runs() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Stats Scope", "type": "QA"}).json()
+        source_run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en"},
+        ).json()
+        client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "source_run_id": source_run["id"]},
+        )
+        db.insert_run(
+            project["id"],
+            kind="qa",
+            language="en",
+            metadata={"manual_fix_source_run_id": source_run["id"]},
+        )
+        db.insert_run(
+            project["id"],
+            kind="qa",
+            language="en",
+            metadata={"model_fix_source_run_id": source_run["id"]},
+        )
+
+        stats = client.get(f"/api/projects/{project['id']}").json()["stats"]
+        assert stats["language_tasks"] == 1
+        assert stats["tasks"] == 1
+        assert stats["execution_runs"] == 4
 
 
 def test_announcement_terms_endpoint_generates_multilingual_terms_with_alias_headers(tmp_path: Path) -> None:
@@ -714,6 +744,28 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
             names = sorted(archive.namelist())
         assert names == ["KR/notice_KR.txt", "QA摘要.xlsx"]
         assert not any(name.endswith(".json") or name.endswith(".jsonl") or "manifest" in name.lower() or "workpack" in name.lower() for name in names)
+        repeated = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526"})
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["summary"]["reused"] is True
+        assert repeated.json()["summary"]["delivery_artifact_id"] == package["id"]
+
+        forced = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526", "force": True})
+        assert forced.status_code == 200, forced.text
+        forced_package = next(artifact for artifact in forced.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
+        assert forced_package["id"] != package["id"]
+        superseded_package = db.get_artifact(package["id"])
+        assert superseded_package["metadata"]["superseded"] is True
+        assert superseded_package["metadata"]["superseded_by"] == forced_package["id"]
+        visible_packages = [
+            artifact for artifact in db.list_artifacts(project_id=project["id"], role="delivery")
+            if artifact["kind"] == "announcement_delivery_package" and (artifact.get("metadata") or {}).get("task_id") == task_id
+        ]
+        assert [artifact["id"] for artifact in visible_packages] == [forced_package["id"]]
+        project_detail = client.get(f"/api/projects/{project['id']}").json()
+        assert project_detail["stats"]["tasks"] == 1
+        assert project_detail["stats"]["announcement_tasks"] == 1
+        assert project_detail["stats"]["language_tasks"] == 0
+        assert project_detail["stats"]["execution_runs"] > project_detail["stats"]["tasks"]
 
         qa_artifact = next(artifact for artifact in applied.json()["artifacts"] if artifact["kind"] == "announcement_qa_summary")
         qa_wb = load_workbook(qa_artifact["path"], read_only=True, data_only=True)

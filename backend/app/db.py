@@ -770,6 +770,7 @@ def list_artifacts(
     run_id: str | None = None,
     role: str | None = None,
     origin: str | None = None,
+    include_superseded: bool = False,
 ) -> list[dict[str, Any]]:
     query = "SELECT * FROM artifacts"
     clauses: list[str] = []
@@ -801,6 +802,8 @@ def list_artifacts(
             artifacts = [artifact for artifact in artifacts if artifact["role"] == role]
         if origin:
             artifacts = [artifact for artifact in artifacts if artifact["origin"] == origin]
+        if not include_superseded:
+            artifacts = [artifact for artifact in artifacts if not (artifact.get("metadata") or {}).get("superseded")]
         return artifacts
 
 

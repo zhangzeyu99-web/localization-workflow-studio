@@ -7,14 +7,14 @@ import { allLanguageOptions, announcementLanguages, refreshLanguageOptions, supp
 import { SettingsModal } from './SettingsModal'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from './components/shared/WorkflowPrimitives'
 import { GlossaryTab, TranslationArchiveTab } from './components/assets/ProjectAssetTabs'
-import { QuickTaskRecent, QuickTaskWizard } from './components/quickTask/QuickTaskWizard'
+import { QuickTaskWizard } from './components/quickTask/QuickTaskWizard'
 import { AnnouncementProjectPanel, AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
 import { MetaTab } from './components/project/ProjectMeta'
 import { DeliveryTab, StepQA, TranslationTab, Wizard, formalTranslationBlockReason } from './components/translationWizard/TranslationWizard'
 import { artifactFileName, artifactKindLabel, artifactPickerLabel, artifactRole, artifactsByRole, artifactsByRoles, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, newestArtifact, pickerArtifacts, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { compactSummary, formatDate, formatDateTime, shortRunId } from './domain/format'
 import { clampBatchSize, effectiveBatchSize, estimateBatches, getTranslationProgress, canSkipModelTranslation, latestRunOfKind } from './domain/translationFlow'
-import { altColumnVisible, archiveCoverage, availableLookupLanguages, coverageSummary, displayLanguagesForWideRows, fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, glossaryCoverage, glossaryWideRowMatches, glossaryWideRows, languageFromValue, linesToFixedTerms, linesToList, linesToRules, listToLines, normalizeGlossaryNote, projectPromptForLanguage, profileText, rowRecords, ruleSummary, rulesToLines, scopeProjectToLanguage, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from './domain/projectAssets'
+import { altColumnVisible, availableLookupLanguages, displayLanguagesForWideRows, fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, glossaryWideRowMatches, glossaryWideRows, languageFromValue, linesToFixedTerms, linesToList, linesToRules, listToLines, normalizeGlossaryNote, projectPromptForLanguage, profileText, rowRecords, ruleSummary, rulesToLines, scopeProjectToLanguage, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from './domain/projectAssets'
 
 declare global {
   interface Window {
@@ -1191,7 +1191,7 @@ function App() {
                   onClick={(event) => selectProject(project, event)}
                 >
                   <span className="pname">{project.icon ? `${project.icon} ` : ''}{project.name}</span>
-                  <span className="pmeta">{project.stats.tasks} 个任务 · {project.stats.archived_rows || 0} 条归档</span>
+                  <span className="pmeta">语言包 {project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))} · 公告 {project.stats.announcement_tasks || 0} · 归档 {project.stats.archived_rows || 0}</span>
                   {project.type ? <span className="ptag">{project.type}</span> : null}
                 </button>
               ))}
@@ -1206,7 +1206,6 @@ function App() {
               <span className="pname">⚡ 快速任务</span>
               <span className="pmeta">三步完成翻译或校对</span>
             </button>
-            {current ? <QuickTaskRecent project={current} /> : null}
           </aside>
 
           <main className="main">
@@ -1472,8 +1471,14 @@ function ProjectOverview({
 }) {
   const glossaryRows = glossaryWideRows(project)
   const archiveRows = translationWideRows(project)
-  const termCoverage = glossaryCoverage(project)
-  const translationCoverage = archiveCoverage(project)
+  const languageTaskCount = project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))
+  const announcementTaskCount = project.stats.announcement_tasks || 0
+  const fallbackDeliverableCount = (project.runs || []).filter((run) =>
+    ['translation', 'qa'].includes(run.kind)
+    && run.status === 'passed'
+    && (project.artifacts || []).some((artifact) => artifact.run_id === run.id && artifact.kind === 'qa_final_workbook')
+  ).length
+  const deliverableCount = project.stats.deliverables ?? fallbackDeliverableCount
   return (
     <>
       <div className="proj-head">
@@ -1486,10 +1491,18 @@ function ProjectOverview({
         </div>
       </div>
       <div className="stat-grid">
-        <div className="stat-card"><div className="num">{project.stats.tasks}</div><div className="lbl">累计任务</div></div>
-        <div className="stat-card"><div className="num">{glossaryRows.length}</div><div className="lbl">CN 术语概念 · {coverageSummary(termCoverage)}</div></div>
-        <div className="stat-card"><div className="num">{archiveRows.length}</div><div className="lbl">CN 归档源文 · {coverageSummary(translationCoverage)}</div></div>
-        <div className="stat-card"><div className="num">{project.stats.words}</div><div className="lbl">归档译文字数</div></div>
+        <button type="button" className="stat-card stat-action" onClick={() => setTab('translation')} title="进入语言包翻译任务">
+          <div className="num">{languageTaskCount}</div><div className="lbl">语言包任务</div><div className="stat-hint">进入翻译</div>
+        </button>
+        <button type="button" className="stat-card stat-action" onClick={onStartAnnouncement} title="进入公告翻译任务">
+          <div className="num">{announcementTaskCount}</div><div className="lbl">公告任务</div><div className="stat-hint">进入公告</div>
+        </button>
+        <button type="button" className="stat-card stat-action" onClick={() => setTab('delivery')} title="查看可交付文件">
+          <div className="num">{deliverableCount}</div><div className="lbl">可交付</div><div className="stat-hint">查看下载</div>
+        </button>
+        <button type="button" className="stat-card stat-action" onClick={() => setTab('archive')} title="查看译文归档">
+          <div className="num">{archiveRows.length}</div><div className="lbl">已归档文本</div><div className="stat-hint">查看归档</div>
+        </button>
       </div>
       <AnnouncementProjectPanel
         tasks={project.announcement_tasks || []}
