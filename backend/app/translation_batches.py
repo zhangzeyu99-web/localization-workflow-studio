@@ -245,6 +245,7 @@ def manifest_matches_rows(
 
 
 def load_or_create_batch_manifest(manifest_path: Path, rows: list[dict[str, Any]], project_prompt: str, settings: dict[str, Any], batch_size: int, language: str) -> dict[str, Any]:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     invalidated_reason = ""
     if manifest_path.exists():
         try:

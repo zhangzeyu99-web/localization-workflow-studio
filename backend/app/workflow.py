@@ -5025,7 +5025,20 @@ def _parse_semantic_qa_payload(text: str) -> dict[str, Any]:
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
-    return json.loads(cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        start = cleaned.find("{")
+        while start != -1:
+            try:
+                payload, _ = decoder.raw_decode(cleaned[start:])
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                start = cleaned.find("{", start + 1)
+                continue
+        raise
 
 
 def _collect_workbook_translation_changes(before_path: Path, after_path: Path) -> list[dict[str, Any]]:
@@ -5174,7 +5187,11 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         sheet_name = str(issue.get("sheet") or wb.sheetnames[0])
-        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
+        requested_ws = wb[sheet_name] if sheet_name in wb.sheetnames else None
+        issue_record_id = issue.get("id") or issue.get("record_id") or ""
+        row_index = int(issue.get("row") or 0)
+        resolved = _resolve_workbook_row_for_issue(wb, requested_ws, row_index, issue_record_id)
+        ws, row_index = resolved if resolved else (requested_ws or wb[wb.sheetnames[0]], row_index)
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
         headers = {
             str(value).strip().lower(): index
@@ -5184,7 +5201,6 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
         source_col = _first_col(headers, ["cn", "source", "original", "原文", "中文"])
         target_col = _first_col(headers, ["en", "target", "translation", "译文", "英文"])
         id_col = _first_col(headers, ["id", "key", "编号", "序号"])
-        row_index = int(issue.get("row") or 0)
         row_values = next(ws.iter_rows(min_row=row_index, max_row=row_index, values_only=True), ())
         return {
             "issue_id": issue.get("id", ""),
@@ -5202,6 +5218,29 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
         wb.close()
 
 
+def _resolve_workbook_row_for_issue(wb: Any, requested_ws: Any | None, row_index: int, record_id: Any) -> tuple[Any, int] | None:
+    normalized_record_id = _normalize_translation_id(record_id)
+    if requested_ws is not None and row_index >= 2:
+        headers = _header_map(requested_ws)
+        id_col = _first_col(headers, ["id", "key", "编号", "序号"])
+        if id_col is None or normalized_record_id is None:
+            return requested_ws, row_index
+        current_id = _normalize_translation_id(requested_ws.cell(row_index, id_col).value)
+        if current_id == normalized_record_id:
+            return requested_ws, row_index
+    if normalized_record_id is None:
+        return (requested_ws, row_index) if requested_ws is not None and row_index >= 2 else None
+    for ws in wb.worksheets:
+        headers = _header_map(ws)
+        id_col = _first_col(headers, ["id", "key", "编号", "序号"])
+        if id_col is None:
+            continue
+        for candidate_row in range(2, ws.max_row + 1):
+            if _normalize_translation_id(ws.cell(candidate_row, id_col).value) == normalized_record_id:
+                return ws, candidate_row
+    return (requested_ws, row_index) if requested_ws is not None and row_index >= 2 else None
+
+
 def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     language = require_supported_language(run.get("language") or "en")
     profile = project.get("profile") or {}
@@ -5212,7 +5251,8 @@ def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[d
         "你是游戏本地化 QA 修复模型。请根据项目提示词、项目规则、术语要求和 QA 问题，"
         "只修复译文，不改原文，不解释过程。必须保留变量、数字、HTML/BBCode 标签、换行和占位符。"
         "如果无法确定，保留原译文并在 note 写明需要人工确认。\n\n"
-        "返回严格 JSON：{\"fixes\":[{\"issue_id\":\"...\",\"sheet\":\"...\",\"row\":2,\"translation\":\"...\",\"note\":\"...\"}]}。\n"
+        "返回严格 JSON：{\"fixes\":[{\"issue_id\":\"...\",\"record_id\":\"...\",\"sheet\":\"...\",\"row\":2,\"translation\":\"...\",\"note\":\"...\"}]}。"
+        "必须优先沿用待修复行里的 issue_id 和 record_id；sheet/row 仅作辅助定位。\n"
         f"项目：{project.get('name','')}\n"
         f"任务：{run.get('id','')}\n"
         f"项目提示词：\n{prompt}\n\n"
@@ -5245,6 +5285,8 @@ def _normalize_model_fixes(payload: dict[str, Any], rows: list[dict[str, Any]]) 
                 "issue_id": source["issue_id"],
                 "sheet": source["sheet"],
                 "row": source["row"],
+                "record_id": source.get("record_id", ""),
+                "source_text": source.get("source_text", ""),
                 "translation": translation,
                 "note": str(item.get("note") or f"model_fix:{source['check_type']}").strip(),
                 "rule_source": "model_fix",
@@ -5263,8 +5305,17 @@ def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id
                 raise ValueError(f"invalid workbook row: {row_index}")
             sheet_name = str(fix.get("sheet") or wb.sheetnames[0]).strip()
             if sheet_name not in wb.sheetnames:
-                raise KeyError(f"sheet not found: {sheet_name}")
-            ws = wb[sheet_name]
+                resolved = _resolve_workbook_row_for_issue(wb, None, row_index, fix.get("record_id"))
+                if not resolved:
+                    raise KeyError(f"sheet not found: {sheet_name}")
+                ws, row_index = resolved
+                sheet_name = ws.title
+            else:
+                ws = wb[sheet_name]
+                resolved = _resolve_workbook_row_for_issue(wb, ws, row_index, fix.get("record_id"))
+                if resolved:
+                    ws, row_index = resolved
+                    sheet_name = ws.title
             target_col = _first_col(_header_map(ws), ["en", "translation", "target", "译文", "英文"])
             if target_col is None:
                 raise KeyError(f"target column not found in sheet: {sheet_name}")

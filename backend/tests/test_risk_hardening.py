@@ -12,6 +12,7 @@ os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook, load_workbook
 
 import app.db as db
 import app.workflow as workflow
@@ -289,6 +290,46 @@ def test_semantic_text_provider_uses_openai_responses(monkeypatch: pytest.Monkey
     assert captured["url"].endswith("/v1/responses")
     assert captured["body"]["max_output_tokens"] == 2222
     assert ("chat" + "/completions") not in captured["url"]
+
+
+def test_semantic_qa_payload_parser_accepts_wrapped_json() -> None:
+    parsed = workflow._parse_semantic_qa_payload('说明：{"passed":true,"issues":[]}\\n{"ignored":true}')
+
+    assert parsed == {"passed": True, "issues": []}
+
+
+def test_model_fix_resolves_generated_confirmation_sheet_by_record_id(tmp_path: Path) -> None:
+    workbook = tmp_path / "language.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["ID", "CN", "EN"])
+    for row_id in range(8381, 8389):
+        ws.append([row_id, f"source {row_id}", f"old {row_id}"])
+    wb.save(workbook)
+    wb.close()
+
+    issue = {"id": 8387, "sheet": "需确认", "row": 3, "severity": "hard", "check_type": "ui_length_overflow"}
+    context = workflow._model_fix_row_context(workbook, issue)
+
+    assert context["sheet"] == "Sheet1"
+    assert context["row"] == 8
+    assert context["record_id"] == "8387"
+
+    applied = workflow._apply_workbook_fixes(
+        workbook,
+        [{"issue_id": "issue-1", "sheet": "需确认", "row": 3, "record_id": 8387, "translation": "short fixed"}],
+        "run_test",
+    )
+    fixed = load_workbook(workbook, read_only=True, data_only=True)
+    try:
+        fixed_ws = fixed["Sheet1"]
+        assert fixed_ws.cell(8, 3).value == "short fixed"
+        assert fixed_ws.cell(3, 3).value == "old 8382"
+        assert applied[0]["row"] == 8
+        assert applied[0]["sheet"] == "Sheet1"
+    finally:
+        fixed.close()
 
 
 def test_language_api_uses_visible_kr_jp_and_aliases() -> None:

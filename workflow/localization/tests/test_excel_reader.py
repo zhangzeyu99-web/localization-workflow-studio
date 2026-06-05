@@ -38,6 +38,23 @@ class ExcelReaderColumnDetectionTests(unittest.TestCase):
         self.assertEqual(col_map["languages"][0]["translation_col"], "EN")
         self.assertEqual(col_map["languages"][0]["note_col"], "EN2")
 
+    def test_metadata_column_before_lowercase_en_does_not_shift_translation(self):
+        df = pd.DataFrame(
+            [
+                [17162, "每日宝箱", 0, ""],
+                [17163, "今日", 0, ""],
+            ],
+            columns=["ID", "Cn", "Type", "en"],
+        )
+
+        col_map = detect_columns(df)
+        pairs = get_text_pairs(df, col_map)
+
+        self.assertEqual(col_map["id_col"], "ID")
+        self.assertEqual(col_map["original_col"], "Cn")
+        self.assertEqual(col_map["languages"][0]["translation_col"], "en")
+        self.assertEqual(pairs.loc[0, "translation"], "")
+
     def test_detects_ja_and_ko_target_columns_by_language_code(self):
         df = pd.DataFrame(
             [

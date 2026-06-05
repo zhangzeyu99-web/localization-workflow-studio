@@ -67,8 +67,11 @@ def detect_columns(df: pd.DataFrame) -> dict:
         else:
             unmatched.append((col, role))
 
-    # Build language pairs from remaining columns
+    # Build language pairs from remaining columns.
+    # Prefer explicit target-language headers. Metadata columns such as "Type"
+    # must not become the first target column when a later "en"/"EN" column exists.
     current_lang = {}
+    has_explicit_translation = any(role == 'translation' for _, role in unmatched)
     for col, role in unmatched:
         if role == 'translation':
             if current_lang.get('translation_col'):
@@ -76,9 +79,16 @@ def detect_columns(df: pd.DataFrame) -> dict:
                 current_lang = {}
             current_lang['translation_col'] = col
         elif role == 'note':
-            current_lang['note_col'] = col
+            if current_lang.get('translation_col'):
+                current_lang['note_col'] = col
         else:
-            # Unknown column — treat as translation if no current, else as note
+            if has_explicit_translation:
+                # Unknown columns before an explicit language target are metadata.
+                # Unknown columns after a target are the optional note/alt column.
+                if current_lang.get('translation_col') and not current_lang.get('note_col'):
+                    current_lang['note_col'] = col
+                continue
+            # Fallback for legacy sheets without explicit target headers.
             if not current_lang.get('translation_col'):
                 current_lang['translation_col'] = col
             else:
