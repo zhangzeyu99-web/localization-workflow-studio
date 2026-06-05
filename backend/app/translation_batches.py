@@ -41,6 +41,77 @@ def estimate_row_tokens(row: dict[str, Any]) -> int:
     return estimate_text_tokens(json.dumps(row, ensure_ascii=False, sort_keys=True)) + 12
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def project_context_token_budget(settings: dict[str, Any]) -> int:
+    max_batch_tokens = max(1000, _positive_int(settings.get("max_batch_input_tokens"), 12000))
+    configured = _positive_int(settings.get("max_project_context_tokens"), 6000)
+    return max(200, min(configured, max_batch_tokens // 2))
+
+
+def cap_context_text(text: Any, max_tokens: int, label: str = "context") -> str:
+    value = str(text or "")
+    if estimate_text_tokens(value) <= max_tokens:
+        return value
+    original_tokens = estimate_text_tokens(value)
+    marker = f"\n[context trimmed: {label}; original_estimated_tokens={original_tokens}; max_tokens={max_tokens}]\n"
+    marker_tokens = estimate_text_tokens(marker)
+    remaining = max(20, max_tokens - marker_tokens)
+
+    def take_prefix(source: str, budget: int) -> str:
+        low, high = 0, len(source)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if estimate_text_tokens(source[:mid]) <= budget:
+                low = mid
+            else:
+                high = mid - 1
+        return source[:low].rstrip()
+
+    def take_suffix(source: str, budget: int) -> str:
+        low, high = 0, len(source)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if estimate_text_tokens(source[len(source) - mid :]) <= budget:
+                low = mid
+            else:
+                high = mid - 1
+        return source[len(source) - low :].lstrip()
+
+    result = ""
+    while remaining >= 20:
+        head_budget = max(10, int(remaining * 0.65))
+        tail_budget = max(10, remaining - head_budget)
+        result = f"{take_prefix(value, head_budget)}{marker}{take_suffix(value, tail_budget)}"
+        if estimate_text_tokens(result) <= max_tokens:
+            return result
+        remaining -= 20
+    return marker.strip()
+
+
+def manage_project_prompt_context(project_prompt: Any, settings: dict[str, Any]) -> str:
+    return cap_context_text(project_prompt, project_context_token_budget(settings), "project context")
+
+
+def project_context_summary(project_prompt: Any, settings: dict[str, Any]) -> dict[str, Any]:
+    original = str(project_prompt or "")
+    managed = manage_project_prompt_context(original, settings)
+    original_tokens = estimate_text_tokens(original)
+    managed_tokens = estimate_text_tokens(managed)
+    return {
+        "original_estimated_tokens": original_tokens,
+        "managed_estimated_tokens": managed_tokens,
+        "max_project_context_tokens": project_context_token_budget(settings),
+        "trimmed": managed_tokens < original_tokens,
+    }
+
+
 def batch_input_fingerprint(
     rows: list[dict[str, Any]],
     project_prompt: str,
@@ -63,13 +134,16 @@ def batch_input_fingerprint(
             "max_batch_input_tokens",
             "max_batch_attempts",
             "max_output_tokens",
+            "max_project_context_tokens",
         )
         if key in settings
     }
+    managed_prompt = manage_project_prompt_context(project_prompt, settings)
     payload = {
         "language": language,
         "batch_size": batch_size,
-        "project_prompt": project_prompt,
+        "project_prompt": managed_prompt,
+        "project_prompt_sha256": hashlib.sha256(str(project_prompt or "").encode("utf-8")).hexdigest(),
         "settings": safe_settings,
         "rows": [
             {
@@ -89,7 +163,9 @@ def build_batch_manifest(rows: list[dict[str, Any]], project_prompt: str, settin
     max_rows = max(1, min(int(batch_size or settings.get("batch_size") or 90), 200))
     max_tokens = max(1000, int(settings.get("max_batch_input_tokens") or 12000))
     fingerprint = batch_input_fingerprint(rows, project_prompt, settings, max_rows, language)
-    prompt_tokens = estimate_text_tokens(project_prompt) + 120
+    managed_prompt = manage_project_prompt_context(project_prompt, settings)
+    context_summary = project_context_summary(project_prompt, settings)
+    prompt_tokens = estimate_text_tokens(managed_prompt) + 120
     batches: list[dict[str, Any]] = []
     current_rows: list[dict[str, Any]] = []
     current_tokens = prompt_tokens
@@ -135,6 +211,7 @@ def build_batch_manifest(rows: list[dict[str, Any]], project_prompt: str, settin
         "input_fingerprint": fingerprint,
         "batch_size": max_rows,
         "max_batch_input_tokens": max_tokens,
+        "project_context": context_summary,
         "total_rows": len(rows),
         "estimated_total_input_tokens": sum(int(batch["estimated_input_tokens"]) for batch in batches),
         "batches": batches,
