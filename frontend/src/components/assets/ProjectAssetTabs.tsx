@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { WIDE_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
+import { artifactPickerLabel } from '../../domain/artifacts'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
 import { ActionStatus, AssetSelect, FileBox, GlossaryPreview, LanguageSelector } from '../shared/WorkflowPrimitives'
 import { altColumnVisible, displayLanguagesForWideRows, glossaryWideRowMatches, glossaryWideRows, languageFromValue, normalizeGlossaryNote, rowRecords, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from '../../domain/projectAssets'
@@ -410,7 +411,6 @@ export function WideGlossaryTermRow({
 export function TranslationArchiveTab({
   project,
   archiveArtifact,
-  setArchiveArtifact,
   busy,
   status,
   onUploadArchive,
@@ -426,15 +426,17 @@ export function TranslationArchiveTab({
   setArchiveArtifact: (artifact: Artifact | null) => void
   busy: boolean
   status: string
-  onUploadArchive: (file: File) => void
-  onImportArchive: () => void
+  onUploadArchive: (file: File) => Promise<Artifact | null>
+  onImportArchive: (artifact?: Artifact | null) => Promise<boolean>
   onAddTranslation: (form: FormData) => void
   onUpdateTranslation: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
   onDeleteTranslation: (entry: TranslationEntry) => Promise<void>
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
 }) {
-  const [toolsOpen, setToolsOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportLanguage, setExportLanguage] = useState<LanguageCode | 'all'>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [displayLanguages, setDisplayLanguages] = useState<LanguageCode[]>([])
   const [page, setPage] = useState(1)
@@ -460,7 +462,10 @@ export function TranslationArchiveTab({
     <div className="card">
       <div className="card-title">
         <div className="left">项目译文归档（{rows.length} 个 CN 源文）</div>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 导出'}</button>
+        <div className="card-actions">
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setExportOpen((value) => !value)}>{exportOpen ? '收起导出' : '导出'}</button>
+        </div>
       </div>
       <WideTableSearchBar
         testId="archive-search"
@@ -470,26 +475,17 @@ export function TranslationArchiveTab({
         filteredRows={filteredRows.length}
         placeholder="强匹配搜索 ID / CN / 译文 / 备注"
       />
-      {toolsOpen ? (
-        <div className="glossary-tools-panel">
-          <div className="action-card">
-            <AssetSelect label="使用已有译文资产" project={project} role={['translation_workbook', 'language_source']} value={archiveArtifact} onChange={setArchiveArtifact} allowEmpty />
-            <FileBox label="上传译文 workbook/csv/json" onFile={onUploadArchive} />
-            <div className="language-inline-select">
-              <span>单语言兜底：</span>
-              <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
-            </div>
-            <div className="row-actions">
-              <button type="button" className="btn btn-primary" disabled={!archiveArtifact || busy} onClick={onImportArchive}>自动导入多语言归档</button>
-              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=xlsx`}>导出全部 XLSX</a>
-              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=csv`}>导出全部 CSV</a>
-              <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=json`}>导出全部 JSON</a>
-            </div>
-            <div className="muted-left">自动导入会识别 EN/EN2、KR/KO、JP/JA；KR/JP 默认不使用第二译名列。</div>
-          </div>
-        </div>
-      ) : null}
+      {exportOpen ? <TranslationArchiveExportPanel project={project} exportLanguage={exportLanguage} setExportLanguage={setExportLanguage} /> : null}
       <ActionStatus status={status} busy={busy} />
+      {importOpen ? (
+        <TranslationArchiveImportModal
+          archiveArtifact={archiveArtifact}
+          busy={busy}
+          onClose={() => setImportOpen(false)}
+          onUploadArchive={onUploadArchive}
+          onImportArchive={onImportArchive}
+        />
+      ) : null}
       <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTranslation(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
         <input name="entry_key" placeholder="ID" />
         <input name="source" placeholder="CN" required />
@@ -538,6 +534,92 @@ export function TranslationArchiveTab({
         </table>
       </div>
       <WideTablePager testIdPrefix="archive" page={currentPage} totalRows={filteredRows.length} onPageChange={setPage} />
+    </div>
+  )
+}
+
+export function TranslationArchiveImportModal({
+  archiveArtifact,
+  busy,
+  onClose,
+  onUploadArchive,
+  onImportArchive
+}: {
+  archiveArtifact: Artifact | null
+  busy: boolean
+  onClose: () => void
+  onUploadArchive: (file: File) => Promise<Artifact | null>
+  onImportArchive: (artifact?: Artifact | null) => Promise<boolean>
+}) {
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(archiveArtifact)
+  const [message, setMessage] = useState('上传译文表后会立即自动导入多语言归档。')
+  const [importing, setImporting] = useState(false)
+
+  async function uploadAndImport(file: File) {
+    setImporting(true)
+    setMessage(`正在上传：${file.name}`)
+    try {
+      const artifact = await onUploadArchive(file)
+      if (!artifact) {
+        setMessage('上传失败，未执行导入。')
+        return
+      }
+      setSelectedArtifact(artifact)
+      setMessage('上传完成，正在自动导入多语言归档...')
+      const imported = await onImportArchive(artifact)
+      setMessage(imported ? '导入完成。' : '导入失败，具体原因见顶部状态。')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  return (
+    <div className="modal-mask show">
+      <div className="modal">
+        <div className="settings-head">
+          <h3>导入译文归档</h3>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy || importing} onClick={onClose}>关闭</button>
+        </div>
+        <p>上传已翻译 workbook / csv，系统会自动识别 EN/EN2、KR、JP 等语言列并写入归档。</p>
+        <FileBox label="上传译文 workbook/csv" onFile={uploadAndImport} />
+        <div className="workflow-note-grid compact-grid gap-top">
+          <div><strong>当前文件</strong><span>{selectedArtifact ? artifactPickerLabel(selectedArtifact) : '未上传'}</span></div>
+          <div><strong>导入方式</strong><span>自动识别多语言列</span></div>
+        </div>
+        <div className={importing ? 'inline-status busy' : 'inline-status'}>{message}</div>
+      </div>
+    </div>
+  )
+}
+
+export function TranslationArchiveExportPanel({
+  project,
+  exportLanguage,
+  setExportLanguage
+}: {
+  project: Project
+  exportLanguage: LanguageCode | 'all'
+  setExportLanguage: (language: LanguageCode | 'all') => void
+}) {
+  const suffix = exportLanguage === 'all' ? '' : `&language=${exportLanguage}`
+  const label = exportLanguage === 'all' ? '全部语言' : languageSpec(exportLanguage).short
+  return (
+    <div className="glossary-tools-panel">
+      <div className="action-card">
+        <div className="inline-form">
+          <label>
+            <span>导出范围</span>
+            <select value={exportLanguage} onChange={(event) => setExportLanguage(event.target.value as LanguageCode | 'all')}>
+              <option value="all">全部语言</option>
+              {supportedLanguages.map((language) => <option key={language.code} value={language.code}>{language.short}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="row-actions">
+          <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=xlsx${suffix}`}>导出 {label} XLSX</a>
+          <a className="btn btn-ghost" href={`/api/projects/${project.id}/translations/export?format=csv${suffix}`}>导出 {label} CSV</a>
+        </div>
+      </div>
     </div>
   )
 }

@@ -1087,23 +1087,27 @@ function App() {
   async function uploadArchiveWorkbook(file: File) {
     const artifact = await upload(file, 'final_workbook')
     if (artifact) setArchiveArtifact(artifact)
+    return artifact
   }
 
-  async function importTranslationArchive() {
-    if (!current || !archiveArtifact) return
+  async function importTranslationArchive(artifactOverride?: Artifact | null): Promise<boolean> {
+    const targetArtifact = artifactOverride || archiveArtifact
+    if (!current || !targetArtifact) return false
     setBusy(true)
     setStatus('正在导入译文归档...')
     try {
       const result = await api<{ imported_count: number; languages?: LanguageCode[] }>(`/api/projects/${current.id}/translations/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ artifact_id: archiveArtifact.id, language: selectedLanguage })
+        body: JSON.stringify({ artifact_id: targetArtifact.id, auto_languages: true, language: selectedLanguage })
       })
       await refreshCurrent()
-      const languageText = result.languages?.length ? `（${result.languages.map((item) => item.toUpperCase()).join('/')}）` : ''
+      const languageText = result.languages?.length ? `（${result.languages.map((item) => languageSpec(item).short).join('/')}）` : ''
       setStatus(`译文归档已导入：${result.imported_count} 条${languageText}`)
+      return true
     } catch (error) {
       setStatus(`译文归档导入失败：${errorText(error)}`)
+      return false
     } finally {
       setBusy(false)
     }
@@ -1448,8 +1452,8 @@ function ProjectOverview({
   onAddTranslation: (form: FormData) => void
   onUpdateTranslation: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
   onDeleteTranslation: (entry: TranslationEntry) => Promise<void>
-  onUploadArchive: (file: File) => void
-  onImportArchive: () => void
+  onUploadArchive: (file: File) => Promise<Artifact | null>
+  onImportArchive: (artifact?: Artifact | null) => Promise<boolean>
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onTranslate: () => void
   onDirectQA: () => void
