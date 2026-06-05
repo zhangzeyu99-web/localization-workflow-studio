@@ -196,6 +196,7 @@ export type AppSettings = {
   provider?: string
   preset?: string
   api_key?: string
+  base_url?: string
   model?: string
   reasoning_effort?: string
   batch_size?: number

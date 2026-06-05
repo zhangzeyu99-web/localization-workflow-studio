@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 
 import { api } from './apiClient'
 
@@ -6,14 +6,22 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null)
   const [provider, setProvider] = useState('openai')
   const [preset, setPreset] = useState('balanced')
-  const apiKeyPlaceholder = settings?.api_key === 'configured' ? '已配置；留空不修改' : '写入私有 settings.local.json'
+  const [baseUrl, setBaseUrl] = useState('')
+  const [model, setModel] = useState('')
+  const [reasoningEffort, setReasoningEffort] = useState('')
+  const apiKeyPlaceholder = settings?.api_key === 'configured' ? '已配置；留空不修改' : '写入本机 settings.local.json'
+
   useEffect(() => {
     api<Record<string, unknown>>('/api/settings').then((loaded) => {
       setSettings(loaded)
-      setProvider(String(loaded.provider) === 'anthropic' ? 'anthropic' : 'openai')
+      setProvider(['openai', 'openai-chat', 'anthropic'].includes(String(loaded.provider)) ? String(loaded.provider) : 'openai')
       setPreset(['fast', 'balanced', 'deep'].includes(String(loaded.preset)) ? String(loaded.preset) : 'balanced')
+      setBaseUrl(String(loaded.base_url || ''))
+      setModel(String(loaded.model || ''))
+      setReasoningEffort(String(loaded.reasoning_effort || ''))
     })
   }, [])
+
   async function submit(form: FormData) {
     const saved = await api<Record<string, unknown>>('/api/settings', {
       method: 'PATCH',
@@ -21,12 +29,16 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
       body: JSON.stringify({
         provider: form.get('provider'),
         preset: form.get('preset'),
-        api_key: form.get('api_key')
+        api_key: form.get('api_key'),
+        base_url: form.get('base_url'),
+        model: form.get('model'),
+        reasoning_effort: form.get('reasoning_effort')
       })
     })
     setSettings(saved)
     onClose()
   }
+
   return (
     <div className="modal-mask show">
       <form className="modal settings-modal" onSubmit={(event) => { event.preventDefault(); submit(new FormData(event.currentTarget)) }}>
@@ -39,25 +51,44 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             <span>Provider</span>
             <select name="provider" value={provider} onChange={(event) => setProvider(event.target.value)}>
               <option value="openai">GPT</option>
+              <option value="openai-chat">GPT 中转站</option>
               <option value="anthropic">Claude</option>
             </select>
           </label>
           <label>
             <span>预设</span>
             <select name="preset" value={preset} onChange={(event) => setPreset(event.target.value)}>
-              <option value="fast">快速响应</option>
+              <option value="fast">快速</option>
               <option value="balanced">平衡</option>
-              <option value="deep">深度思考</option>
+              <option value="deep">深度</option>
+            </select>
+          </label>
+          <label className="settings-wide">
+            <span>Base URL</span>
+            <input name="base_url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder={provider === 'openai-chat' ? 'https://your-relay.example.com/api' : '使用官方默认地址'} />
+          </label>
+          <label>
+            <span>模型</span>
+            <input name="model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-5.5" />
+          </label>
+          <label>
+            <span>Reasoning</span>
+            <select name="reasoning_effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>
+              <option value="">跟随预设</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
             </select>
           </label>
           <label className="settings-wide">
             <span>API key</span>
             <input name="api_key" type="password" placeholder={apiKeyPlaceholder} />
           </label>
-          <p className="settings-wide settings-note">长文本拆批、限流、重试和预算提醒由系统按预设自动管理。</p>
+          <p className="settings-wide settings-note">只填 Provider、预设和 API key 即可；中转站需要额外填写 Base URL。长文本拆批、限流、重试和预算提醒由系统按预设自动管理。</p>
         </div>
         <div className="settings-actions"><button className="btn btn-primary">保存设置</button></div>
       </form>
     </div>
   )
 }
+

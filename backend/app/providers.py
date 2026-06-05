@@ -74,14 +74,18 @@ def mock_translate_batch(rows: list[dict[str, Any]], settings: dict[str, Any]) -
     return [TranslationItem(id=_normalize_translation_id(row["id"]), translation=_mock_translate_row(row)) for row in rows]
 
 
-def build_prompt(rows: list[dict[str, Any]], project_prompt: str) -> str:
-    payload = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
+def build_prompt(rows: list[dict[str, Any]], project_prompt: str, *, ascii_escape: bool = False) -> str:
+    payload = "\n".join(json.dumps(row, ensure_ascii=ascii_escape) for row in rows)
+    guidance = json.dumps(project_prompt, ensure_ascii=True) if ascii_escape else project_prompt
+    guidance_label = "Project guidance JSON string; decode Unicode escapes before applying it:" if ascii_escape else "Project guidance:"
+    escape_note = "Chinese text may be represented as Unicode escapes; decode and translate it normally. " if ascii_escape else ""
     return (
         "You are translating a game localization workpack. "
+        f"{escape_note}"
         "Return JSONL only. Each line must be {\"id\": number|string, \"translation\": string}. "
         "Preserve placeholders, tags, escaped newlines, actual newlines, and row order exactly. "
         "Do not add explanations.\n\n"
-        f"Project guidance:\n{project_prompt}\n\n"
+        f"{guidance_label}\n{guidance}\n\n"
         f"Rows:\n{payload}"
     )
 
@@ -116,6 +120,39 @@ async def openai_responses_translate_batch(
     payload = response.json()
     text = payload.get("output_text") or _collect_response_text(payload)
     return parse_jsonl_items(text)
+
+
+async def openai_chat_translate_batch(
+    rows: list[dict[str, Any]],
+    settings: dict[str, Any],
+    project_prompt: str,
+) -> list[TranslationItem]:
+    api_key = settings.get("api_key")
+    if not api_key:
+        raise ProviderError("api_key is required for OpenAI chat-compatible provider")
+    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
+    model = settings.get("model") or "gpt-5.5"
+    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Return strict JSONL only. Do not include prose, markdown fences, or explanations."},
+            {"role": "user", "content": build_prompt(rows, project_prompt, ascii_escape=True)},
+        ],
+        "max_tokens": int(settings.get("max_output_tokens") or 8192),
+    }
+    reasoning_effort = str(settings.get("reasoning_effort") or "").strip()
+    if reasoning_effort and reasoning_effort not in {"none", "adaptive"}:
+        body["reasoning"] = {"effort": reasoning_effort}
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        response = await client.post(
+            f"{base_url}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=body,
+        )
+    if response.status_code >= 400:
+        raise ProviderError(f"openai chat-compatible provider failed: {response.status_code} {response.text[:500]}")
+    return parse_jsonl_items(_collect_openai_chat_text(response.json()))
 
 
 async def anthropic_messages_translate_batch(
@@ -165,6 +202,15 @@ def _collect_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(chunks)
 
 
+def _collect_openai_chat_text(payload: dict[str, Any]) -> str:
+    chunks: list[str] = []
+    for choice in payload.get("choices", []):
+        message = choice.get("message") or {}
+        if "content" in message:
+            chunks.append(str(message["content"]))
+    return "\n".join(chunks)
+
+
 def _collect_anthropic_text(payload: dict[str, Any]) -> str:
     chunks: list[str] = []
     for content in payload.get("content", []):
@@ -198,6 +244,36 @@ def openai_responses_text(settings: dict[str, Any], prompt: str, *, system: str 
     return str(payload.get("output_text") or _collect_response_text(payload))
 
 
+def openai_chat_text(settings: dict[str, Any], prompt: str, *, system: str = "Return strict JSON only.") -> str:
+    api_key = settings.get("api_key")
+    if not api_key:
+        raise ProviderError("api_key is required for OpenAI chat-compatible provider")
+    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
+    model = settings.get("model") or "gpt-5.5"
+    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    prompt_content = "Read this task from a JSON string. Decode Unicode escapes before following it.\nPrompt JSON string:\n" + json.dumps(prompt, ensure_ascii=True)
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt_content},
+        ],
+        "max_tokens": int(settings.get("max_output_tokens") or 4096),
+    }
+    reasoning_effort = str(settings.get("reasoning_effort") or "").strip()
+    if reasoning_effort and reasoning_effort not in {"none", "adaptive"}:
+        body["reasoning"] = {"effort": reasoning_effort}
+    response = httpx.post(
+        f"{base_url}/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=timeout_seconds,
+    )
+    if response.status_code >= 400:
+        raise ProviderError(f"openai chat-compatible provider failed: {response.status_code} {response.text[:500]}")
+    return _collect_openai_chat_text(response.json())
+
+
 def anthropic_messages_text(settings: dict[str, Any], prompt: str, *, system: str = "Return strict JSON only.") -> str:
     api_key = settings.get("api_key")
     if not api_key:
@@ -229,6 +305,8 @@ def call_text(settings: dict[str, Any], prompt: str, *, provider_override: str |
     provider = provider_override or settings.get("provider", "mock")
     if provider == "openai":
         return openai_responses_text(settings, prompt, system=system)
+    if provider == "openai-chat":
+        return openai_chat_text(settings, prompt, system=system)
     if provider == "anthropic":
         return anthropic_messages_text(settings, prompt, system=system)
     if provider == "mock":
@@ -265,6 +343,8 @@ async def translate_batch(
         return mock_translate_batch(rows, settings)
     if provider == "anthropic":
         return await anthropic_messages_translate_batch(rows, settings, project_prompt)
+    if provider == "openai-chat":
+        return await openai_chat_translate_batch(rows, settings, project_prompt)
     if provider == "openai":
         return await openai_responses_translate_batch(rows, settings, project_prompt)
     raise ProviderError(f"unsupported provider: {provider}")

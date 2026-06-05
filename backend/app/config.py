@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -23,6 +23,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "api_key": "",
     "model": "gpt-5.5",
     "reasoning_effort": "medium",
+    "max_output_tokens": 8192,
     "batch_size": 90,
     "max_concurrent_batches": 2,
     "max_requests_per_minute": 12,
@@ -80,44 +81,67 @@ LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
 PROVIDER_PRESETS: dict[str, dict[str, dict[str, str | int | None]]] = {
     "openai": {
         "fast": {
-            "label": "快速响应",
+            "label": "??",
             "model": "gpt-5.4-mini",
             "reasoning_effort": "low",
             "base_url": "https://api.openai.com",
             "max_output_tokens": 8192,
         },
         "balanced": {
-            "label": "平衡",
+            "label": "??",
             "model": "gpt-5.5",
             "reasoning_effort": "medium",
             "base_url": "https://api.openai.com",
             "max_output_tokens": 8192,
         },
         "deep": {
-            "label": "深度思考",
+            "label": "??",
             "model": "gpt-5.5-pro",
             "reasoning_effort": "high",
             "base_url": "https://api.openai.com",
             "max_output_tokens": 16384,
         },
     },
+    "openai-chat": {
+        "fast": {
+            "label": "??",
+            "model": "gpt-5.5",
+            "reasoning_effort": "medium",
+            "base_url": "",
+            "max_output_tokens": 8192,
+        },
+        "balanced": {
+            "label": "??",
+            "model": "gpt-5.5",
+            "reasoning_effort": "high",
+            "base_url": "",
+            "max_output_tokens": 8192,
+        },
+        "deep": {
+            "label": "??",
+            "model": "gpt-5.5",
+            "reasoning_effort": "xhigh",
+            "base_url": "",
+            "max_output_tokens": 16384,
+        },
+    },
     "anthropic": {
         "fast": {
-            "label": "快速响应",
+            "label": "??",
             "model": "claude-haiku-4-5-20251001",
             "reasoning_effort": "none",
             "base_url": "https://api.anthropic.com",
             "max_output_tokens": 8192,
         },
         "balanced": {
-            "label": "平衡",
+            "label": "??",
             "model": "claude-sonnet-4-6",
             "reasoning_effort": "adaptive",
             "base_url": "https://api.anthropic.com",
             "max_output_tokens": 8192,
         },
         "deep": {
-            "label": "深度思考",
+            "label": "??",
             "model": "claude-opus-4-7",
             "reasoning_effort": "adaptive",
             "base_url": "https://api.anthropic.com",
@@ -168,7 +192,9 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     provider = str(payload.get("provider") or DEFAULT_SETTINGS["provider"])
     if provider == "openai-compatible":
         provider = "openai"
-    if provider not in {"openai", "anthropic", "mock"}:
+    if provider in {"openai-compatible", "codex-relay"}:
+        provider = "openai-chat"
+    if provider not in {"openai", "openai-chat", "anthropic", "mock"}:
         provider = str(DEFAULT_SETTINGS["provider"])
     payload["provider"] = provider
     if provider == "mock":
@@ -184,11 +210,17 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         preset = str(DEFAULT_SETTINGS["preset"])
     selected = PROVIDER_PRESETS[provider][preset]
     payload["preset"] = preset
-    payload["model"] = selected["model"]
-    payload["reasoning_effort"] = selected["reasoning_effort"]
-    payload["base_url"] = selected["base_url"]
-    payload["max_output_tokens"] = selected["max_output_tokens"]
-    payload["protocol"] = "responses" if provider == "openai" else "messages"
+    if provider == "openai-chat":
+        payload["model"] = str(payload.get("model") or selected["model"]).strip()
+        payload["reasoning_effort"] = str(payload.get("reasoning_effort") or selected["reasoning_effort"]).strip()
+        payload["base_url"] = str(payload.get("base_url") or selected["base_url"]).rstrip("/")
+        payload["max_output_tokens"] = int(selected["max_output_tokens"] or 8192)
+    else:
+        payload["model"] = selected["model"]
+        payload["reasoning_effort"] = selected["reasoning_effort"]
+        payload["base_url"] = selected["base_url"]
+        payload["max_output_tokens"] = selected["max_output_tokens"]
+    payload["protocol"] = "chat-completions" if provider == "openai-chat" else ("responses" if provider == "openai" else "messages")
     _normalize_long_text_settings(payload)
     return payload
 
@@ -198,3 +230,4 @@ def _normalize_long_text_settings(payload: dict[str, Any]) -> None:
     profile = LONG_TEXT_PRESET_DEFAULTS.get(preset, LONG_TEXT_PRESET_DEFAULTS["balanced"])
     for key, value in profile.items():
         payload[key] = value
+

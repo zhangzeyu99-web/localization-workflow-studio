@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 import app.db as db
 import app.workflow as workflow
-from app.config import DEFAULT_SETTINGS, save_settings
+from app.config import DEFAULT_SETTINGS, normalize_settings, save_settings
 from app.main import app
 from app.providers import TranslationItem, call_text, openai_responses_translate_batch, translate_batch
 
@@ -196,6 +196,74 @@ def test_openai_provider_does_not_fallback_to_chat_completions(monkeypatch: pyte
         )
     )
     assert result == [TranslationItem(id=1, translation="OK")]
+
+
+def test_openai_chat_relay_settings_preserve_custom_endpoint_model_and_reasoning() -> None:
+    settings = normalize_settings(
+        {
+            **DEFAULT_SETTINGS,
+            "provider": "openai-chat",
+            "preset": "deep",
+            "base_url": "https://relay.example.com/api",
+            "model": "gpt-5.5",
+            "reasoning_effort": "xhigh",
+        }
+    )
+
+    assert settings["provider"] == "openai-chat"
+    assert settings["protocol"] == "chat-completions"
+    assert settings["base_url"] == "https://relay.example.com/api"
+    assert settings["model"] == "gpt-5.5"
+    assert settings["reasoning_effort"] == "xhigh"
+
+
+def test_openai_chat_relay_uses_chat_completions_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: Any) -> None:
+            captured["timeout"] = timeout
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        async def post(self, url: str, headers: dict[str, str], json: dict[str, Any]) -> httpx.Response:
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["body"] = json
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"id":1,"translation":"Start"}'}}]})
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(
+        translate_batch(
+            [{"id": 1, "source": "开始"}],
+            {
+                **DEFAULT_SETTINGS,
+                "provider": "openai-chat",
+                "api_key": "sk-test",
+                "base_url": "https://relay.example.com/api",
+                "model": "gpt-5.5",
+                "reasoning_effort": "xhigh",
+                "max_output_tokens": 1234,
+                "provider_timeout_seconds": 77,
+            },
+            "Prompt",
+        )
+    )
+
+    assert result == [TranslationItem(id=1, translation="Start")]
+    assert captured["url"].endswith("/v1/" + "chat/completions")
+    assert captured["body"]["model"] == "gpt-5.5"
+    assert captured["body"]["reasoning"] == {"effort": "xhigh"}
+    assert captured["body"]["max_tokens"] == 1234
+    user_content = captured["body"]["messages"][1]["content"]
+    assert "\\u5f00\\u59cb" in user_content
+    assert "开始" not in user_content
+    assert captured["timeout"] == 77
 
 
 def test_semantic_text_provider_uses_openai_responses(monkeypatch: pytest.MonkeyPatch) -> None:
