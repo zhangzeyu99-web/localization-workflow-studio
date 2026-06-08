@@ -115,6 +115,27 @@ def _announcement_docx(path: Path, text: str = "英雄觉醒 2026/5/20") -> None
     doc.save(path)
 
 
+
+def test_canceled_announcement_tasks_do_not_count_as_active_project_tasks() -> None:
+    client = TestClient(app)
+    project = client.post(
+        "/api/projects",
+        json={"name": "Announcement count smoke", "type": "QA", "description": "count active announcement tasks only"},
+    ).json()
+
+    task = client.post(
+        f"/api/projects/{project['id']}/announcement-tasks",
+        json={"title": "notice.txt", "text": "New event announcement."},
+    ).json()
+    detail = client.get(f"/api/projects/{project['id']}").json()
+    assert detail["stats"]["announcement_tasks"] == 1
+
+    client.post(f"/api/announcement-tasks/{task['id']}/cancel")
+    detail = client.get(f"/api/projects/{project['id']}").json()
+
+    assert detail["stats"]["announcement_tasks"] == 0
+    assert detail["stats"]["tasks"] == detail["stats"]["language_tasks"]
+
 def _announcement_ko_terms(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -805,6 +826,11 @@ def test_fake_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         )
         assert analysis_response.status_code == 200
         assert "只返回 JSONL" in analysis_response.json()["prompt"]
+        analyzed_project = analysis_response.json()["project"]
+        display_prompt = analyzed_project["profile"]["display_prompts_by_language"]["en"]
+        assert "\u7ffb\u8bd1\u76ee\u6807" in display_prompt
+        assert "????" not in display_prompt
+        assert "JSONL" not in display_prompt
 
         with workbook.open("rb") as fh:
             upload_response = client.post(
@@ -2649,3 +2675,28 @@ def _run_fake_translation(client: TestClient, project_id: str, workbook: Path) -
     translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake"})
     assert translate_response.status_code == 200, translate_response.text
     return translate_response.json()
+
+
+def test_project_prompt_patch_mirrors_display_and_execution_prompts() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Prompt Mirror", "type": "QA"}).json()
+        manual_prompt = "\u4eba\u5de5\u4fee\u8ba2\u9879\u76ee\u63d0\u793a\u8bcd\uff1a\u672f\u8bed\u4f18\u5148\uff0cUI \u8868\u8fbe\u7b80\u6d01\u3002"
+        response = client.patch(
+            f"/api/projects/{project['id']}",
+            json={"prompt_text": manual_prompt},
+        )
+        assert response.status_code == 200, response.text
+        updated = response.json()
+        assert updated["prompt_text"] == manual_prompt
+        assert updated["profile"]["prompts_by_language"]["en"] == manual_prompt
+        assert updated["profile"]["display_prompts_by_language"]["en"] == manual_prompt
+
+        jp_prompt = "\u65e5\u8bed\u5c55\u793a\u63d0\u793a\u8bcd\uff1a\u4fdd\u6301\u9879\u76ee\u672f\u8bed\u4e00\u81f4\u3002"
+        profile = dict(updated["profile"])
+        profile["prompts_by_language"] = {**profile["prompts_by_language"], "ja": jp_prompt}
+        profile["display_prompts_by_language"] = {**profile["display_prompts_by_language"], "ja": jp_prompt}
+        response = client.patch(f"/api/projects/{project['id']}", json={"profile": profile})
+        assert response.status_code == 200, response.text
+        updated = response.json()
+        assert updated["profile"]["prompts_by_language"]["ja"] == jp_prompt
+        assert updated["profile"]["display_prompts_by_language"]["ja"] == jp_prompt

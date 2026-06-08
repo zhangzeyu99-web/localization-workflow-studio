@@ -3,17 +3,17 @@ import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { API, api, apiErrorText } from './apiClient'
 import { WIDE_TABLE_PAGE_SIZE, pagedRows } from './assetTableState'
-import { allLanguageOptions, announcementLanguages, refreshLanguageOptions, supportedLanguages, unsupportedLanguages, languageSpec, languageChipTitle, languageQuery, normalizeLanguageCode, normalizeLanguageArray, type LanguageCode, type LanguageOption } from './languages'
+import { announcementLanguages, refreshLanguageOptions, supportedLanguages, unsupportedLanguages, languageSpec, languageChipTitle, languageQuery, normalizeLanguageCode, normalizeLanguageArray, type LanguageCode, type LanguageOption } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from './components/shared/WorkflowPrimitives'
 import { GlossaryTab, TranslationArchiveTab } from './components/assets/ProjectAssetTabs'
 import { QuickTaskWizard } from './components/quickTask/QuickTaskWizard'
-import { AnnouncementProjectPanel, AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
+import { activeAnnouncementTasks, AnnouncementProjectPanel, AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
 import { MetaTab } from './components/project/ProjectMeta'
 import { DeliveryTab, StepQA, TranslationTab, Wizard, formalTranslationBlockReason } from './components/translationWizard/TranslationWizard'
 import { artifactFileName, artifactKindLabel, artifactPickerLabel, artifactRole, artifactsByRole, artifactsByRoles, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, newestArtifact, pickerArtifacts, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { compactSummary, formatDate, formatDateTime, shortRunId } from './domain/format'
-import { clampBatchSize, effectiveBatchSize, estimateBatches, getTranslationProgress, canSkipModelTranslation, latestRunOfKind } from './domain/translationFlow'
+import { clampBatchSize, effectiveBatchSize, estimateBatches, getTranslationProgress, canSkipModelTranslation, latestRunOfKind, findResumableTranslationRun, isTranslationRunResumable, matchesTranslationRun } from './domain/translationFlow'
 import { altColumnVisible, availableLookupLanguages, displayLanguagesForWideRows, fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, glossaryWideRowMatches, glossaryWideRows, languageFromValue, linesToFixedTerms, linesToList, linesToRules, listToLines, normalizeGlossaryNote, projectPromptForLanguage, profileText, rowRecords, ruleSummary, rulesToLines, scopeProjectToLanguage, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from './domain/projectAssets'
 
 declare global {
@@ -93,6 +93,53 @@ function eventStatusText(message: unknown): string {
     if (payload.summary) return String(payload.summary)
   }
   return '处理中...'
+}
+
+function humanTaskStatus(status: string): string {
+  const value = String(status || '').toLowerCase()
+  if (value === 'queued') return '排队中'
+  if (value === 'running') return '处理中'
+  if (value === 'passed') return '已完成'
+  if (value === 'failed') return '失败'
+  if (value === 'needs_input') return '已暂停，等待继续'
+  if (value === 'canceled') return '已取消'
+  return status || '处理中'
+}
+
+function humanBackendEvent(message: unknown): string {
+  if (!message) return '处理中...'
+  if (typeof message !== 'string') return eventStatusText(message)
+  const text = message.trim()
+  if (text.startsWith('{')) {
+    try {
+      const payload = JSON.parse(text) as { passed?: boolean; total_cases?: number; issues?: unknown[]; issue_counts?: Record<string, unknown> }
+      if (payload.passed === false) {
+        const issueCount = Array.isArray(payload.issues) ? payload.issues.length : Object.values(payload.issue_counts || {}).reduce((sum: number, value) => sum + Number(value || 0), 0)
+        return `QA 未通过：发现 ${issueCount || payload.total_cases || 0} 个问题，请进入校对步骤处理。`
+      }
+      if (payload.passed === true) return 'QA 已通过，正在整理交付文件。'
+    } catch {
+      // Fall through to the normal message mapping.
+    }
+  }
+  let match = text.match(/^translating batch (\d+)\/(\d+): rows=(\d+), attempt=(\d+)\/(\d+)/i)
+  if (match) return `正在翻译：第 ${match[1]}/${match[2]} 批，本批 ${match[3]} 行，第 ${match[4]} 次尝试。`
+  match = text.match(/^translation preflight: source_rows=(\d+), translated_rows=(\d+), empty_target_rows=(\d+), .*estimated_batches=(\d+)/i)
+  if (match) return `\u7ffb\u8bd1\u524d\u68c0\u67e5\u5b8c\u6210\uff1a${match[1]} \u884c\u6e90\u6587\uff0c\u7a7a\u8bd1\u6587 ${match[3]} \u884c\uff0c\u9884\u8ba1 ${match[4]} \u6279\u3002`
+  match = text.match(/^batch (\d+)\/(\d+) completed and persisted: rows=(\d+)/i)
+  if (match) return `已完成第 ${match[1]}/${match[2]} 批，已保存 ${match[3]} 行。`
+  match = text.match(/^resume: batch (\d+)\/(\d+) already completed; rows=(\d+)/i)
+  if (match) return `正在续跑：已跳过第 ${match[1]}/${match[2]} 批，之前已保存 ${match[3]} 行。`
+  match = text.match(/^rate limit wait before batch (\d+): ([\d.]+)s/i)
+  if (match) return `接口限流等待中：约 ${Math.ceil(Number(match[2]))} 秒后继续第 ${match[1]} 批。`
+  if (/background translation job was interrupted/i.test(text)) return '后台翻译被中断，已保留进度，可点击继续翻译。'
+  if (/translation run finished: status=failed/i.test(text)) return '翻译已完成，但 QA 未通过，需要进入校对修复。'
+  if (/translation run finished: status=passed/i.test(text)) return '翻译和 QA 已通过，正在归档产物。'
+  if (/running localization QA gate/i.test(text)) return '正在运行本地 QA 检查。'
+  if (/applying translation response/i.test(text)) return '正在回填译文并校验格式。'
+  if (/^running:\s/i.test(text)) return '正在执行本地校验流程。'
+  if (/^final_workbook=/i.test(text)) return '译文已回填，正在进入 QA。'
+  return eventStatusText(text)
 }
 
 
@@ -252,7 +299,7 @@ function App() {
         if (updated.kind === 'translation' && updated.status === 'passed') {
           setStatus(`${languageSpec(normalizeLanguageCode(updated.language) || selectedLanguage).short} 翻译和 QA 已通过，最终产物已归档。`)
         } else if (latestEvent?.message) {
-          setStatus(`后台任务${updated.status}：${eventStatusText(latestEvent.message)}`)
+          setStatus(`后台任务${humanTaskStatus(updated.status)}：${humanBackendEvent(latestEvent.message)}`)
         }
         if (!['queued', 'running'].includes(updated.status)) {
           await refreshCurrent()
@@ -635,29 +682,36 @@ function App() {
         setStatus(`无法开始快速翻译：${blockReason}`)
         return null
       }
-      const run = await api<Run>('/api/runs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: current.id,
-          kind: 'translation',
-          language,
-          input_artifact_id: inputArtifact.id,
-          term_artifact_id: termArtifact?.id || null,
-          reference_artifact_ids: referenceArtifactIds,
-          batch_size: batchSize,
-          task_origin: 'quick_task',
-          task_code: 'T'
+      const resumableRun = (current.runs || []).find((run) =>
+        matchesTranslationRun(run, language, inputArtifact.id, 'quick_task')
+        && isTranslationRunResumable(run)
+      ) || null
+      const run = resumableRun || await api<Run>('/api/runs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_id: current.id,
+            kind: 'translation',
+            language,
+            input_artifact_id: inputArtifact.id,
+            term_artifact_id: termArtifact?.id || null,
+            reference_artifact_ids: referenceArtifactIds,
+            batch_size: batchSize,
+            task_origin: 'quick_task',
+            task_code: 'T'
+          })
         })
-      })
       setLatestRun(run)
-      const started = await api<Run>(`/api/runs/${run.id}/translate/start`, {
+      const endpoint = resumableRun ? 'resume' : 'start'
+      const started = await api<Run>(`/api/runs/${run.id}/translate/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ batch_size: batchSize })
       })
       setLatestRun(started)
-      setStatus(`快速翻译已进入后台：${languageSpec(language).short} · ${readiness.source_rows} 行 · 预计 ${readiness.estimated_batches || '-'} 批。`)
+      setStatus(resumableRun
+        ? `快速翻译已继续：${languageSpec(language).short} · 会从已保存批次接着跑。`
+        : `快速翻译已进入后台：${languageSpec(language).short} · ${readiness.source_rows} 行 · 预计 ${readiness.estimated_batches || '-'} 批。`)
       return started
     } catch (error) {
       setStatus(`快速任务失败：${errorText(error)}`)
@@ -688,12 +742,12 @@ function App() {
     setStatus(`${currentLang.short} 翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
     try {
       const batchSize = selectedBatchSize
-      const resumableRun = latestRun?.kind === 'translation'
-        && ['failed', 'needs_input', 'canceled'].includes(latestRun.status)
-        && latestRun.language === selectedLanguage
-        && latestRun.metadata?.input_artifact_id === sourceArtifact.id
+      const latestRunMatches = latestRun && matchesTranslationRun(latestRun, selectedLanguage, sourceArtifact.id, 'translation_run')
         ? latestRun
         : null
+      const resumableRun = latestRunMatches && isTranslationRunResumable(latestRunMatches)
+        ? latestRunMatches
+        : findResumableTranslationRun(current, selectedLanguage, sourceArtifact.id, 'translation_run')
       const run = resumableRun || await api<Run>('/api/runs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1191,7 +1245,7 @@ function App() {
                   onClick={(event) => selectProject(project, event)}
                 >
                   <span className="pname">{project.icon ? `${project.icon} ` : ''}{project.name}</span>
-                  <span className="pmeta">语言包 {project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))} · 公告 {project.stats.announcement_tasks || 0} · 归档 {project.stats.archived_rows || 0}</span>
+                  <span className="pmeta">语言包 {project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))} · 公告 {visibleAnnouncementTaskCount(project)} · 归档 {project.stats.archived_rows || 0}</span>
                   {project.type ? <span className="ptag">{project.type}</span> : null}
                 </button>
               ))}
@@ -1364,6 +1418,10 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   return <div className="empty"><h2>还没有项目</h2><p>先创建一个本地化项目，再进入完整工作流。</p><button className="btn btn-primary" onClick={onCreate}>新建项目</button></div>
 }
 
+function visibleAnnouncementTaskCount(project: Project): number {
+  return project.announcement_tasks ? activeAnnouncementTasks(project.announcement_tasks).length : (project.stats.announcement_tasks || 0)
+}
+
 function ProjectOverview({
   project,
   tab,
@@ -1472,7 +1530,7 @@ function ProjectOverview({
   const glossaryRows = glossaryWideRows(project)
   const archiveRows = translationWideRows(project)
   const languageTaskCount = project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))
-  const announcementTaskCount = project.stats.announcement_tasks || 0
+  const announcementTaskCount = visibleAnnouncementTaskCount(project)
   const fallbackDeliverableCount = (project.runs || []).filter((run) =>
     ['translation', 'qa'].includes(run.kind)
     && run.status === 'passed'
@@ -1593,9 +1651,21 @@ function ProjectOverview({
           onDeleteTranslation={onDeleteTranslation}
           selectedLanguage={selectedLanguage}
           setSelectedLanguage={setSelectedLanguage}
+          onGoQA={() => setTab('qa')}
         />
       ) : null}
-      {tab === 'delivery' ? <DeliveryTab project={project} deliverables={deliverables} busy={busy} status={status} onCreateDelivery={onCreateDelivery} /> : null}
+      {tab === 'delivery' ? (
+        <DeliveryTab
+          project={project}
+          deliverables={deliverables}
+          busy={busy}
+          status={status}
+          onCreateDelivery={onCreateDelivery}
+          onGoTranslate={() => setTab('translation')}
+          onGoQA={() => setTab('qa')}
+          onGoArchive={() => setTab('archive')}
+        />
+      ) : null}
     </>
   )
 }
@@ -1726,17 +1796,34 @@ function CancelAnnouncementTaskModal({ task, busy, onClose, onCancelTask }: { ta
   )
 }
 
-function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate: (form: FormData) => void }) {
+function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate: (form: FormData) => Promise<void> }) {
   const [typeMode, setTypeMode] = useState('科幻 SLG')
+  const [customType, setCustomType] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await onCreate(new FormData(event.currentTarget))
+    } catch (err) {
+      setError(`创建失败：${errorText(err)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="modal-mask show">
-      <form className="modal" onSubmit={(event) => { event.preventDefault(); onCreate(new FormData(event.currentTarget)) }}>
+      <form className="modal" onSubmit={submit}>
         <h3>🆕 新建本地化项目</h3>
         <p>填写基本信息即可创建，后续可在项目里完善提示词和术语表。</p>
         <label className="field-label">项目名称</label>
-        <input name="name" placeholder="例如：星际边境 / 机甲纪元" required />
+        <input name="name" placeholder="例如：星际边境 / 机甲纪元" required disabled={busy} />
         <label className="field-label">项目类型</label>
-        <select value={typeMode} onChange={(event) => setTypeMode(event.target.value)}>
+        <select value={typeMode} disabled={busy} onChange={(event) => setTypeMode(event.target.value)}>
           <option>科幻 SLG</option>
           <option>女性向恋爱</option>
           <option>休闲合成</option>
@@ -1744,15 +1831,16 @@ function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate:
           <option>其他</option>
         </select>
         {typeMode === '其他' ? (
-          <input name="type" placeholder="手动填写项目类型 / 标签" required autoFocus />
+          <input key="custom-type" name="type" value={customType} onChange={(event) => setCustomType(event.target.value)} placeholder="手动填写项目类型 / 标签" required autoFocus disabled={busy} />
         ) : (
-          <input name="type" type="hidden" value={typeMode} />
+          <input key="preset-type" name="type" type="hidden" value={typeMode} />
         )}
         <label className="field-label">图标</label>
-        <input name="icon" placeholder="🎮" />
+        <input name="icon" placeholder="🎮" disabled={busy} />
         <label className="field-label">描述</label>
-        <input name="description" placeholder="目标用户、题材、语气要求" />
-        <div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={onClose}>取消</button><button className="btn btn-primary">创建</button></div>
+        <input name="description" placeholder="目标用户、题材、语气要求" disabled={busy} />
+        {error ? <div className="inline-status error" data-testid="new-project-error">{error}</div> : null}
+        <div className="modal-foot"><button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button><button className="btn btn-primary" disabled={busy}>{busy ? '创建中...' : '创建'}</button></div>
       </form>
     </div>
   )

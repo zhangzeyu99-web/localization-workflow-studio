@@ -292,7 +292,23 @@ def get_project(project_id: str) -> dict[str, Any]:
 @app.patch("/api/projects/{project_id}")
 def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
     try:
+        current = db.get_project(project_id)
         updates = payload.model_dump(exclude_none=True)
+        if "profile" in updates or "prompt_text" in updates:
+            profile = dict(current.get("profile") or {})
+            incoming_profile = updates.get("profile")
+            if isinstance(incoming_profile, dict):
+                profile.update(incoming_profile)
+            if "prompt_text" in updates:
+                prompts = dict(profile.get("prompts_by_language") or {})
+                display_prompts = dict(profile.get("display_prompts_by_language") or {})
+                prompts["en"] = updates["prompt_text"]
+                display_prompts["en"] = updates["prompt_text"]
+                profile["prompts_by_language"] = prompts
+                profile["display_prompts_by_language"] = display_prompts
+            elif isinstance(profile.get("prompts_by_language"), dict) and str(profile["prompts_by_language"].get("en") or "").strip():
+                updates["prompt_text"] = str(profile["prompts_by_language"].get("en") or "")
+            updates["profile"] = profile
         return _with_project_stats(db.update_project(project_id, updates), include_details=True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
@@ -1275,6 +1291,7 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     terms = db.list_glossary_terms(project["id"])
     translation_entries = db.list_translation_entries(project["id"])
     announcement_tasks = list_announcement_tasks(project["id"])
+    active_announcement_tasks = [task for task in announcement_tasks if task.get("status") != "canceled"]
     archive_metrics = _translation_archive_metrics(translation_entries)
     translation_runs = len([run for run in runs if run["kind"] == "translation"])
     qa_runs = len([run for run in runs if run["kind"] == "qa"])
@@ -1285,13 +1302,13 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
         and run["status"] == "passed"
         and any(artifact["run_id"] == run["id"] and artifact["kind"] == "qa_final_workbook" for artifact in artifacts)
     ])
-    business_tasks = language_tasks + len(announcement_tasks)
+    business_tasks = language_tasks + len(active_announcement_tasks)
     project["stats"] = {
         "tasks": business_tasks,
         "execution_runs": len(runs),
         "language_tasks": language_tasks,
         "deliverables": deliverable_count,
-        "announcement_tasks": len(announcement_tasks),
+        "announcement_tasks": len(active_announcement_tasks),
         "translation_runs": translation_runs,
         "qa_runs": qa_runs,
         "words": str(archive_metrics["source_chars"]),

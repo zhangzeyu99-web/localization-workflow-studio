@@ -32,9 +32,12 @@ const defaultLanguages: LanguageOption[] = [
   { code: 'ar', label: 'AR 阿拉伯语', short: 'AR', targetHeader: 'AR', altHeader: '' }
 ]
 
-export const supportedLanguages: LanguageOption[] = [...defaultLanguages]
+const hiddenUiLanguages = new Set<LanguageCode>(['ar'])
+const visibleLanguages = (languages: LanguageOption[]) => languages.filter((language) => !hiddenUiLanguages.has(language.code))
+
+export const allLanguageOptions: LanguageOption[] = [...defaultLanguages]
+export const supportedLanguages: LanguageOption[] = visibleLanguages(defaultLanguages)
 export const announcementLanguages = supportedLanguages
-export const allLanguageOptions = supportedLanguages
 export const unsupportedLanguages: string[] = []
 
 export async function refreshLanguageOptions(apiBase = ''): Promise<LanguageOption[]> {
@@ -56,7 +59,8 @@ export async function refreshLanguageOptions(apiBase = ''): Promise<LanguageOpti
     })
     .filter((item): item is LanguageOption => Boolean(item))
   if (next.length) {
-    supportedLanguages.splice(0, supportedLanguages.length, ...next)
+    allLanguageOptions.splice(0, allLanguageOptions.length, ...next)
+    supportedLanguages.splice(0, supportedLanguages.length, ...visibleLanguages(next))
   }
   return supportedLanguages
 }

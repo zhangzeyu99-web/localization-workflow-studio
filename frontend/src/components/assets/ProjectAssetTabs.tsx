@@ -200,27 +200,30 @@ export function GlossaryTab({
         ) : null}
         <ActionStatus status={status} busy={busy} />
         {toolsOpen && glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} selectedLanguage={selectedLanguage} /> : null}
-        <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTerm(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
-          <input name="term_key" placeholder="ID" />
-          <input name="source" placeholder="CN" required />
-          <input name="target" placeholder={lang.targetHeader} />
-          {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
-          <input name="category" placeholder="分类" />
-          <input name="note" placeholder="备注" />
-          <input name="language" type="hidden" value={selectedLanguage} />
-          <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
-        </form>
-        <div className="language-inline-select">
-          <span>新增 / 生成语言：</span>
-          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
-        </div>
+        <details className="manual-maintenance" data-testid="manual-glossary-tools">
+          <summary>手动新增 / 多语言维护</summary>
+          <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTerm(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
+            <input name="term_key" placeholder="ID" />
+            <input name="source" placeholder="CN" required />
+            <input name="target" placeholder={lang.targetHeader} />
+            {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
+            <input name="category" placeholder="分类" />
+            <input name="note" placeholder="备注" />
+            <input name="language" type="hidden" value={selectedLanguage} />
+            <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
+          </form>
+          <div className="language-inline-select">
+            <span>新增 / 生成语言：</span>
+            <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+          </div>
+        </details>
         <WideTableLanguageControls
           testIdPrefix="glossary"
           availableLanguages={availableDisplayLanguages}
           selectedLanguages={displayLanguages}
           onToggle={toggleDisplayLanguage}
         />
-        <div className="table-scroll">
+        <div className="table-scroll asset-table-scroll">
           <table className="glossary-table glossary-wide-table">
             <thead>
               <tr>
@@ -419,7 +422,8 @@ export function TranslationArchiveTab({
   onUpdateTranslation,
   onDeleteTranslation,
   selectedLanguage,
-  setSelectedLanguage
+  setSelectedLanguage,
+  onGoQA
 }: {
   project: Project
   archiveArtifact: Artifact | null
@@ -433,6 +437,7 @@ export function TranslationArchiveTab({
   onDeleteTranslation: (entry: TranslationEntry) => Promise<void>
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  onGoQA?: () => void
 }) {
   const [importOpen, setImportOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
@@ -486,54 +491,72 @@ export function TranslationArchiveTab({
           onImportArchive={onImportArchive}
         />
       ) : null}
-      <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTranslation(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
-        <input name="entry_key" placeholder="ID" />
-        <input name="source" placeholder="CN" required />
-        <input name="target" placeholder={lang.targetHeader} />
-        {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
-        <input name="note" placeholder="备注" />
-        <input name="language" type="hidden" value={selectedLanguage} />
-        <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
-      </form>
-      <div className="language-inline-select">
-        <span>新增语言：</span>
-        <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
-      </div>
-      <WideTableLanguageControls
-        testIdPrefix="archive"
-        availableLanguages={availableDisplayLanguages}
-        selectedLanguages={displayLanguages}
-        onToggle={toggleDisplayLanguage}
-      />
-      <div className="table-scroll">
-        <table className="glossary-table translation-archive-table translation-wide-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>CN</th>
-              {visibleLanguages.map((code) => {
-                const spec = languageSpec(code)
-                return (
-                  <React.Fragment key={code}>
-                    <th>{spec.targetHeader}</th>
-                    {altColumnVisible(code) ? <th>{spec.altHeader}</th> : null}
-                  </React.Fragment>
-                )
-              })}
-              <th>备注</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {currentRows.map((row) => (
-              <WideTranslationEntryRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
-            ))}
-            {!rows.length ? <tr><td colSpan={colSpan} className="muted">暂无译文归档。QA 通过后会自动写入，也可以从已有译文表导入。</td></tr> : null}
-            {rows.length && !filteredRows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
-          </tbody>
-        </table>
-      </div>
-      <WideTablePager testIdPrefix="archive" page={currentPage} totalRows={filteredRows.length} onPageChange={setPage} />
+      {!rows.length ? (
+        <div className="empty-action-card asset-empty-state" data-testid="archive-empty-state">
+          <div>
+            <strong>还没有译文归档</strong>
+            <span>优先导入已翻译表，或先去校对已有译文；QA 通过后也会自动写入这里。</span>
+          </div>
+          <div className="row-actions compact-actions">
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button>
+            {onGoQA ? <button type="button" className="btn btn-ghost btn-sm" onClick={onGoQA}>去校对</button> : null}
+          </div>
+        </div>
+      ) : null}
+      <details className="manual-maintenance" data-testid="manual-archive-tools">
+        <summary>手动维护归档</summary>
+        <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTranslation(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
+          <input name="entry_key" placeholder="ID" />
+          <input name="source" placeholder="CN" required />
+          <input name="target" placeholder={lang.targetHeader} />
+          {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
+          <input name="note" placeholder="备注" />
+          <input name="language" type="hidden" value={selectedLanguage} />
+          <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
+        </form>
+        <div className="language-inline-select">
+          <span>新增语言：</span>
+          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+        </div>
+      </details>
+      {rows.length ? (
+        <>
+          <WideTableLanguageControls
+            testIdPrefix="archive"
+            availableLanguages={availableDisplayLanguages}
+            selectedLanguages={displayLanguages}
+            onToggle={toggleDisplayLanguage}
+          />
+          <div className="table-scroll asset-table-scroll">
+            <table className="glossary-table translation-archive-table translation-wide-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>CN</th>
+                  {visibleLanguages.map((code) => {
+                    const spec = languageSpec(code)
+                    return (
+                      <React.Fragment key={code}>
+                        <th>{spec.targetHeader}</th>
+                        {altColumnVisible(code) ? <th>{spec.altHeader}</th> : null}
+                      </React.Fragment>
+                    )
+                  })}
+                  <th>备注</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentRows.map((row) => (
+                  <WideTranslationEntryRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
+                ))}
+                {!filteredRows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
+              </tbody>
+            </table>
+          </div>
+          <WideTablePager testIdPrefix="archive" page={currentPage} totalRows={filteredRows.length} onPageChange={setPage} />
+        </>
+      ) : null}
     </div>
   )
 }

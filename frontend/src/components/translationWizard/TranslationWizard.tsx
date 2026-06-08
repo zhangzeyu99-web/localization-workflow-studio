@@ -3,7 +3,7 @@ import { API } from '../../apiClient'
 import { artifactKindLabel, artifactPickerLabel, artifactRole, newestArtifact, pickerArtifacts, runArtifacts } from '../../domain/artifacts'
 import { formatDate, formatDateTime, shortRunId } from '../../domain/format'
 import { normalizeGlossaryNote, projectPromptForLanguage } from '../../domain/projectAssets'
-import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, getTranslationProgress, latestRunOfKind } from '../../domain/translationFlow'
+import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, latestRunOfKind, matchesTranslationRun } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, normalizeLanguageCode, type LanguageCode } from '../../languages'
 import { ProjectMetaTable } from '../project/ProjectMeta'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from '../shared/WorkflowPrimitives'
@@ -82,13 +82,19 @@ export function DeliveryTab({
   deliverables,
   busy,
   status,
-  onCreateDelivery
+  onCreateDelivery,
+  onGoTranslate,
+  onGoQA,
+  onGoArchive
 }: {
   project: Project
   deliverables: DeliverableTask[]
   busy: boolean
   status: string
   onCreateDelivery: (runId: string) => void
+  onGoTranslate: () => void
+  onGoQA: () => void
+  onGoArchive: () => void
 }) {
   return (
     <div className="card">
@@ -96,7 +102,19 @@ export function DeliveryTab({
         <div className="left">最终交付</div>
         {deliverables.length ? <span className="muted-inline">共 {deliverables.length} 个可交付任务</span> : null}
       </div>
-      {!deliverables.length ? <div className="warn-line">暂无最终交付，需先完成翻译/校对并通过 QA。</div> : null}
+      {!deliverables.length ? (
+        <div className="delivery-empty" data-testid="delivery-empty">
+          <div>
+            <strong>还没有可下载的交付文件</strong>
+            <span>先完成翻译或校对并通过 QA；通过后这里会显示最终译文和修改记录。</span>
+          </div>
+          <div className="row-actions">
+            <button className="btn btn-primary btn-sm" data-testid="delivery-empty-translate" onClick={onGoTranslate}>去翻译</button>
+            <button className="btn btn-ghost btn-sm" data-testid="delivery-empty-qa" onClick={onGoQA}>去校对</button>
+            <button className="btn btn-ghost btn-sm" data-testid="delivery-empty-archive" onClick={onGoArchive}>看归档</button>
+          </div>
+        </div>
+      ) : null}
       {busy || (status && status !== '准备就绪') ? <ActionStatus status={status} busy={busy} /> : null}
       <div className="delivery-list delivery-list-compact">
         {deliverables.map((task) => {
@@ -651,10 +669,11 @@ export function StepTranslate({
   const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project, readiness)
   const alreadyTranslated = canSkipModelTranslation(readiness)
   const estimatedBatches = estimateBatches(readiness?.source_rows, batchSize)
-  const currentTranslationRun = latestRun?.kind === 'translation' && latestRun.language === selectedLanguage && latestRun.metadata?.input_artifact_id === sourceArtifact?.id ? latestRun : null
+  const latestMatchingRun = latestRun && matchesTranslationRun(latestRun, selectedLanguage, sourceArtifact?.id, 'translation_run') ? latestRun : null
+  const currentTranslationRun = latestMatchingRun || findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run')
   const progress = getTranslationProgress(currentTranslationRun)
   const activeTranslation = Boolean(currentTranslationRun && ['queued', 'running'].includes(currentTranslationRun.status))
-  const resumable = Boolean(currentTranslationRun && ['failed', 'needs_input', 'canceled'].includes(currentTranslationRun.status))
+  const resumable = Boolean(currentTranslationRun && isTranslationRunResumable(currentTranslationRun))
   const invalidIdText = readiness?.invalid_id_rows ? ` / 空 ID ${readiness.invalid_id_rows}` : ''
   const readinessText = readiness
     ? `${readiness.source_rows} 行原文 / ${readiness.translated_rows} 行已有译文 / 空译文 ${readiness.empty_target_rows} / 中文残留 ${readiness.cjk_target_rows}${invalidIdText} / 预计 ${readiness.estimated_batches} 批`

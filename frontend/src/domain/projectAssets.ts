@@ -1,5 +1,5 @@
 import { wideRowMatches } from '../assetTableState'
-import { allLanguageOptions, supportedLanguages, normalizeLanguageCode, isLanguageCode, type LanguageCode } from '../languages'
+import { supportedLanguages, normalizeLanguageCode, isLanguageCode, languageSpec, type LanguageCode } from '../languages'
 import type { GlossaryTerm, Project, ProjectHarness, TranslationEntry, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow } from '../types'
 
 export function getProjectHarness(project: Project): ProjectHarness {
@@ -191,7 +191,58 @@ export function availableLookupLanguages(project: Project): LanguageCode[] {
   return supportedLanguages.map((lang) => lang.code).filter((code) => found.has(code))
 }
 
+function recordValue(record: unknown, key: string): unknown {
+  return record && typeof record === 'object' ? (record as Record<string, unknown>)[key] : undefined
+}
+
+function profileForLanguage(project: Project, code: LanguageCode): Record<string, unknown> {
+  const profile = project.profile || {}
+  const profiles = recordValue(profile, 'profiles_by_language')
+  const scoped = recordValue(profiles, code)
+  return scoped && typeof scoped === 'object' ? scoped as Record<string, unknown> : profile
+}
+
+function textField(record: Record<string, unknown>, key: string, fallback = ''): string {
+  const value = record[key]
+  return String(value === undefined || value === null || value === '' ? fallback : value)
+}
+
+function generatedChinesePrompt(project: Project, code: LanguageCode): string {
+  const profile = profileForLanguage(project, code)
+  const lang = languageSpec(code)
+  const projectName = textField(profile, 'project_name', project.name || '\u5f53\u524d\u9879\u76ee')
+  const termRule = lang.altHeader
+    ? `\u9879\u76ee\u672f\u8bed\u4ee5\u672f\u8bed\u8868\u4e3a\u51c6\uff1a${lang.targetHeader} \u662f\u6807\u51c6\u8bd1\u6cd5\uff0c${lang.altHeader} \u662f\u7a33\u5b9a\u51fa\u73b0\u7684\u624b\u52a8\u9002\u914d\u8bd1\u6cd5\u3002`
+    : `\u9879\u76ee\u672f\u8bed\u4ee5\u672f\u8bed\u8868\u4e3a\u51c6\uff1a${lang.targetHeader} \u662f\u6807\u51c6\u8bd1\u6cd5\u3002`
+  return [
+    `\u4f60\u6b63\u5728\u5904\u7406\u300a${projectName}\u300b\u7684\u6e38\u620f\u672c\u5730\u5316\uff0c\u76ee\u6807\u8bed\u8a00\uff1a${lang.label}\u3002`,
+    '\u7ffb\u8bd1\u76ee\u6807\uff1a\u51c6\u786e\u3001\u81ea\u7136\u3001\u9002\u5408\u6e38\u620f UI\u3001\u5267\u60c5\u3001\u4efb\u52a1\u3001\u9053\u5177\u3001\u5956\u52b1\u548c\u7cfb\u7edf\u8bf4\u660e\u3002',
+    '\u9879\u76ee\u8d44\u6599\uff1a\u4ee5\u540e\u7aef\u4fdd\u5b58\u7684\u9879\u76ee\u5206\u6790\u3001\u672f\u8bed\u8868\u3001\u8bd1\u6587\u5f52\u6863\u548c\u672c\u6b21\u4e0a\u4f20\u6750\u6599\u4e3a\u51c6\u3002',
+    '\u98ce\u683c\u8981\u6c42\uff1a\u81ea\u7136\u3001\u51c6\u786e\u3001\u7b80\u6d01\uff1bUI \u6587\u6848\u4f18\u5148\u77ed\u53e5\uff0c\u5267\u60c5\u6587\u672c\u4fdd\u7559\u8bed\u6c14\u548c\u60c5\u7eea\u3002',
+    termRule,
+    `\u5df2\u6709${lang.label}\u8bd1\u6587\u4ee3\u8868\u9879\u76ee\u5386\u53f2\u7528\u6cd5\uff1b\u5982\u9700\u4f18\u5316\uff0c\u4e0d\u80fd\u7834\u574f\u5df2\u56fa\u5b9a\u7684\u7cfb\u7edf\u672f\u8bed\u3002`,
+    '\u5fc5\u987b\u4fdd\u7559\u53d8\u91cf\u3001\u6570\u5b57\u3001\u6362\u884c\u3001\u989c\u8272\u6807\u7b7e\u3001HTML/\u5bcc\u6587\u672c\u6807\u7b7e\u548c\u5360\u4f4d\u7b26\uff0c\u4f8b\u5982 {0}\u3001%s\u3001<color>\u3002',
+    '\u65e0\u6cd5\u786e\u8ba4\u7684\u4e13\u6709\u540d\u8bcd\u6216\u4fe1\u606f\u7f3a\u53e3\u7528 [TBD] \u6807\u8bb0\uff0c\u4e0d\u8981\u81ea\u884c\u7f16\u9020\u8bbe\u5b9a\u3002',
+  ].join('\n')
+}
+
+function looksLikeExecutionPrompt(value: string): boolean {
+  if (!value.trim()) return false
+  if (/JSONL|Project Harness|Translate into|Translate accurately|output protocol/i.test(value)) return true
+  const latinLetters = (value.match(/[A-Za-z]/g) || []).length
+  const cjkChars = (value.match(/[\u4e00-\u9fff]/g) || []).length
+  return latinLetters > Math.max(80, cjkChars * 0.6)
+}
+
 export function projectPromptForLanguage(project: Project, code: LanguageCode): string {
+  const displayPrompts = project.profile?.display_prompts_by_language
+  if (displayPrompts && typeof displayPrompts === 'object' && code in displayPrompts) {
+    const displayPrompt = String((displayPrompts as Record<string, unknown>)[code] || '')
+    return looksLikeExecutionPrompt(displayPrompt) ? generatedChinesePrompt(project, code) : displayPrompt
+  }
+  if (project.profile && (recordValue(project.profile, 'profiles_by_language') || recordValue(project.profile, 'project_name'))) {
+    return generatedChinesePrompt(project, code)
+  }
   const prompts = project.profile?.prompts_by_language
   if (prompts && typeof prompts === 'object' && code in prompts) {
     return String((prompts as Record<string, unknown>)[code] || '')

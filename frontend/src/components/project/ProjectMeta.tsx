@@ -48,8 +48,11 @@ export function MetaTab({
   async function savePrompt() {
     const profile = { ...(project.profile || {}) }
     const prompts = { ...((profile.prompts_by_language as Record<string, unknown> | undefined) || {}) }
+    const displayPrompts = { ...((profile.display_prompts_by_language as Record<string, unknown> | undefined) || {}) }
     prompts[selectedLanguage] = promptDraft
+    displayPrompts[selectedLanguage] = promptDraft
     profile.prompts_by_language = prompts
+    profile.display_prompts_by_language = displayPrompts
     await onSaveMeta(selectedLanguage === 'en' ? { prompt_text: promptDraft, profile } : { profile })
     setEditingPrompt(false)
   }

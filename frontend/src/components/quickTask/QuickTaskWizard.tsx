@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../apiClient'
 import { artifactPickerLabel, uniqueArtifactsByContent } from '../../domain/artifacts'
-import { canSkipModelTranslation, effectiveBatchSize } from '../../domain/translationFlow'
-import { allLanguageOptions, languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, type LanguageCode } from '../../languages'
+import { canSkipModelTranslation, effectiveBatchSize, isTranslationRunResumable, matchesTranslationRun } from '../../domain/translationFlow'
+import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { ActionStatus, ArtifactNote, FileBox } from '../shared/WorkflowPrimitives'
 import type { AppSettings, Artifact, Project, QuickObjective, Run, TranslationReadiness, TranslationTargets } from '../../types'
 
@@ -111,6 +111,29 @@ export function QuickTaskWizard({
     ? `${readiness.source_rows} 行源文 / 已译 ${readiness.translated_rows} / 空译文 ${readiness.empty_target_rows} / 预计 ${readiness.estimated_batches || '-'} 批`
     : '上传后自动检查'
   const canStart = Boolean(inputArtifact && !busy)
+  const resumableQuickRun = inputArtifact ? quickTaskRuns(project).find((run) =>
+    matchesTranslationRun(run, language, inputArtifact.id, 'quick_task')
+    && isTranslationRunResumable(run)
+  ) : null
+  const launchLabel = objective === 'qa'
+    ? `\u5f00\u59cb ${lang.short} \u6821\u5bf9`
+    : resumableQuickRun
+      ? `\u7ee7\u7eed ${lang.short} \u7ffb\u8bd1`
+      : `\u5f00\u59cb ${lang.short} \u7ffb\u8bd1`
+  const quickStatusLabel = (value: string) => {
+    if (value === 'queued') return '\u6392\u961f\u4e2d'
+    if (value === 'running') return '\u5904\u7406\u4e2d'
+    if (value === 'needs_input') return '\u53ef\u7ee7\u7eed'
+    if (value === 'passed') return '\u5df2\u5b8c\u6210'
+    if (value === 'failed') return '\u5931\u8d25'
+    if (value === 'canceled') return '\u5df2\u53d6\u6d88'
+    return value
+  }
+  const quickRunStatusLabel = (run: Run) => {
+    const quality = run.metadata?.quality as { passed?: boolean } | undefined
+    if (run.kind === 'translation' && run.status === 'failed' && quality?.passed === false) return '\u9700\u6821\u5bf9'
+    return quickStatusLabel(run.status)
+  }
   return (
     <>
       <div className="proj-head">
@@ -176,7 +199,7 @@ export function QuickTaskWizard({
               <label className="quick-block">
                 <span>目标语言</span>
                 <select value={language} onChange={(event) => setLanguage(normalizeLanguageCode(event.target.value) || 'en')}>
-                  {allLanguageOptions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+                  {supportedLanguages.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
                 </select>
                 <em>{detected.length ? `已识别：${detected.map((item) => languageSpec(item).short).join(' / ')}` : '未识别语言，可手动选择'}</em>
               </label>
@@ -190,10 +213,10 @@ export function QuickTaskWizard({
             {objective === 'translate' && ((settings?.provider !== 'test-fake' && !settings?.api_key) || !['openai', 'openai-chat', 'anthropic', 'test-fake'].includes(String(settings?.provider))) ? <div className="warn-line">请先配置 GPT / GPT 中转站 / Claude API key，快速翻译才会启动正式模型。</div> : null}
             <div className="row-actions">
               <button className="btn btn-ghost" onClick={() => setQuickStep(2)}>← 上一步</button>
-              <button className="btn btn-primary" data-testid="quick-task-start" disabled={!canStart} onClick={start}>{objective === 'qa' ? `开始 ${lang.short} 校对` : `开始 ${lang.short} 翻译`}</button>
+              <button className="btn btn-primary" data-testid="quick-task-start" disabled={!canStart} onClick={start}>{launchLabel}</button>
               <button className="btn btn-ghost" disabled={!startedRun && !latestRun} onClick={() => onViewResult(startedRun || latestRun)}>查看结果</button>
             </div>
-            {startedRun ? <div className="scan-explain"><strong>{quickTaskName(startedRun)} 已创建</strong><span>{languageSpec(normalizeLanguageCode(startedRun.language) || language).short} · {startedRun.status} · {startedRun.id}</span></div> : null}
+            {startedRun ? <div className="scan-explain"><strong>{quickTaskName(startedRun)} 已创建</strong><span>{languageSpec(normalizeLanguageCode(startedRun.language) || language).short} · {quickRunStatusLabel(startedRun)} · {startedRun.id}</span></div> : null}
           </>
         ) : null}
       </div>
@@ -204,7 +227,7 @@ export function QuickTaskWizard({
             <thead><tr><th>类型</th><th>语言</th><th>状态</th><th>创建时间</th></tr></thead>
             <tbody>
               {quickRuns.map((run) => (
-                <tr key={run.id}><td>{quickTaskName(run)}</td><td>{languageSpec(normalizeLanguageCode(run.language) || 'en').short}</td><td>{run.status}</td><td>{new Date(run.created_at).toLocaleString()}</td></tr>
+                <tr key={run.id}><td>{quickTaskName(run)}</td><td>{languageSpec(normalizeLanguageCode(run.language) || 'en').short}</td><td>{quickRunStatusLabel(run)}</td><td>{new Date(run.created_at).toLocaleString()}</td></tr>
               ))}
             </tbody>
           </table>

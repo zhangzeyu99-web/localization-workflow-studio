@@ -51,9 +51,21 @@ test('user can complete the EN localization workflow from project tabs', async (
   await page.getByPlaceholder('补充本次分析需要的上下文；留空时使用项目描述。').fill('小小战机：飞行射击项目，资源、战机、任务、奖励术语需统一。')
   await page.getByRole('button', { name: '🔄 重新生成' }).click()
   await expect(page.getByText('项目提示词已生成')).toBeVisible({ timeout: 20000 })
-  await expect(page.getByText('只返回 JSONL')).toBeVisible()
+  const promptView = page.locator('.reference-card pre').first()
+  await expect(promptView).toContainText('\u7ffb\u8bd1\u76ee\u6807')
+  await expect(promptView).not.toContainText('JSONL')
+  await page.locator('.reference-card .card-actions button').nth(1).click()
+  const manualPrompt = '\u4eba\u5de5\u4fee\u8ba2\u9879\u76ee\u63d0\u793a\u8bcd\uff1a\u4fdd\u6301 UI \u7b80\u6d01\uff0c\u672f\u8bed\u4e25\u683c\u6309\u9879\u76ee\u8868\u6267\u884c\u3002'
+  await page.locator('textarea.prompt-editor').fill(manualPrompt)
+  await page.locator('.reference-card .row-actions .btn-primary').click()
+  const promptProjects = await request.get(`${baseURL}/api/projects`).then((response) => response.json())
+  const promptSavedProject = promptProjects.find((item: { name: string }) => item.name === projectName)
+  expect(promptSavedProject.prompt_text).toBe(manualPrompt)
+  expect(promptSavedProject.profile.prompts_by_language.en).toBe(manualPrompt)
+  expect(promptSavedProject.profile.display_prompts_by_language.en).toBe(manualPrompt)
 
   await page.getByRole('button', { name: '📚 术语表' }).click()
+  await page.getByTestId('manual-glossary-tools').locator('summary').click()
   await page.locator('input[name="term_key"]').fill('T-1')
   await page.locator('input[name="source"]').fill('战机')
   await page.locator('input[name="target"]').fill('Warplane')
@@ -148,11 +160,120 @@ test('new translation task exposes the full supported language set', async ({ pa
     'TR 土耳其语',
     'ID 印尼语',
     'TH 泰语',
-    'AR 阿拉伯语',
   ]) {
     await expect(page.getByRole('button', { name: label })).toBeVisible()
   }
+  await expect(page.getByRole('button', { name: 'AR 阿拉伯语' })).toHaveCount(0)
   await expect(page.getByText('其他语言未开放')).toHaveCount(0)
+})
+
+
+
+test('delivery empty state routes to next actions', async ({ page, request }) => {
+  const projectName = `E2E Empty Delivery ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'delivery-empty', description: 'Delivery empty state smoke.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.view-tab').nth(5).click()
+  await expect(page.getByTestId('delivery-empty')).toBeVisible()
+
+  await page.getByTestId('delivery-empty-translate').click()
+  await expect(page.locator('.view-tab').nth(2)).toHaveClass(/active/)
+  await page.locator('.view-tab').nth(5).click()
+  await page.getByTestId('delivery-empty-qa').click()
+  await expect(page.locator('.view-tab').nth(3)).toHaveClass(/active/)
+  await page.locator('.view-tab').nth(5).click()
+  await page.getByTestId('delivery-empty-archive').click()
+  await expect(page.locator('.view-tab').nth(4)).toHaveClass(/active/)
+  await expect(page.getByTestId('archive-empty-state')).toBeVisible()
+  await expect(page.getByTestId('manual-archive-tools')).toBeVisible()
+})
+
+test('new project modal shows API failure instead of silently staying stuck', async ({ page }) => {
+  await page.route('**/api/projects', async (route) => {
+    if (route.request().method() === 'POST') {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'backend unavailable' }),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: '+ 新建项目' }).click()
+  await page.locator('input[name="name"]').fill(`E2E Create Fail ${Date.now()}`)
+  await page.getByRole('button', { name: '创建' }).click()
+  await expect(page.getByTestId('new-project-error')).toContainText('backend unavailable')
+  await expect(page.getByRole('heading', { name: '🆕 新建本地化项目' })).toBeVisible()
+})
+
+
+test('interrupted translation run resumes instead of creating a new run', async ({ page, request }) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-resume-'))
+  const workbook = path.join(root, 'resume-language.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "CN", "EN"])
+ws.append(["btn.resume", "\\u7ee7\\u7eed\\u4efb\\u52a1", ""])
+ws.append(["msg.resume", "\\u4ece\\u65ad\\u70b9\\u7ee7\\u7eed", ""])
+wb.save(r"${workbook.replace(/\\/g, '\\\\')}")
+wb.close()
+`])
+  await request.patch(`${baseURL}/api/settings`, {
+    data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 2 },
+  })
+  const projectName = `E2E Resume ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'resume', description: 'Resume regression.' },
+  }).then((response) => response.json())
+  const upload = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'resume-language.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(workbook),
+      },
+    },
+  }).then((response) => response.json())
+  const run = await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: upload.id, batch_size: 2, task_code: 'T' },
+  }).then((response) => response.json())
+  await request.post(`${baseURL}/api/runs/${run.id}/translate/cancel`)
+
+  let resumeCalled = 0
+  let startCalled = 0
+  await page.route(`**/api/runs/${run.id}/translate/resume`, async (route) => {
+    resumeCalled += 1
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...run, status: 'queued', metadata: { ...run.metadata, input_artifact_id: upload.id } }),
+    })
+  })
+  await page.route(`**/api/runs/${run.id}/translate/start`, async (route) => {
+    startCalled += 1
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'start should not be called for resumable run' }) })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.quick-entry').first().click()
+  await page.getByTestId('step-4').click()
+  await page.locator('.asset-select select').selectOption(upload.id)
+  await page.getByTestId('step-7').click()
+  await expect(page.locator('.translation-actions .btn-primary')).toBeVisible({ timeout: 15000 })
+  await page.locator('.translation-actions .btn-primary').click()
+  await expect.poll(() => resumeCalled, { timeout: 10000 }).toBe(1)
+  expect(startCalled).toBe(0)
 })
 
 test('quick task creates a project-scoped QA run without nine step workflow', async ({ page, request }) => {
@@ -442,6 +563,9 @@ wb.close()
   await expect(page.locator('.panel-title', { hasText: '\u516c\u544a\u8d44\u6599' })).toBeVisible()
   await expect(page.locator('.announcement-side')).toHaveCount(0)
   await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
+  await page.locator('.announcement-steps .step-item').nth(1).click()
+  await expect(page.getByTestId('announcement-task-required')).toBeVisible()
+  await page.getByRole('button', { name: '\u56de\u5230\u516c\u544a\u8d44\u6599' }).click()
   await page.locator('.check-row', { hasText: 'announcement_notice.txt' }).locator('input').check()
   await page.getByRole('button', { name: '\u521b\u5efa\u516c\u544a\u4efb\u52a1' }).click()
   await expect(page.locator('.panel-title', { hasText: '\u7ea6\u675f\u6765\u6e90' })).toBeVisible({ timeout: 20000 })
@@ -453,7 +577,7 @@ wb.close()
   await expect(page.locator('.panel-title', { hasText: '\u76ee\u6807\u8bed\u8a00' })).toBeVisible({ timeout: 20000 })
   await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
   await expect(page.locator('.announcement-panel .announcement-lang-card')).toHaveCount(0)
-  await expect(page.locator('.announcement-panel .announcement-language-chip')).toHaveCount(13)
+  await expect(page.locator('.announcement-panel .announcement-language-chip')).toHaveCount(12)
   await expect(page.locator('.announcement-panel')).not.toContainText('\u517c\u5bb9')
   await expect(page.locator('.announcement-panel')).not.toContainText('KO')
   await expect(page.locator('.announcement-panel')).not.toContainText('JA')

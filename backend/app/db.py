@@ -1200,6 +1200,96 @@ def upsert_glossary_term(project_id: str, payload: dict[str, Any]) -> dict[str, 
         return get_glossary_term(canonical["id"])
 
 
+def upsert_glossary_terms_bulk(project_id: str, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Import glossary rows in one transaction.
+
+    The single-row upsert path intentionally runs a dedupe pass after manual
+    edits. Importing a large workbook through that path makes each row scan and
+    dedupe the full project glossary, which turns a normal upload into an
+    O(n^2) operation. This bulk path keeps the same "same CN + same language is
+    one concept" behavior, but builds the lookup maps once and dedupes once.
+    """
+    if not payloads:
+        return []
+    normalized_payloads: list[dict[str, Any]] = []
+    languages: set[str] = set()
+    for payload in payloads:
+        language = normalize_language(payload.get("language") or "en")
+        normalized = {**payload, "language": language}
+        normalized_payloads.append(normalized)
+        languages.add(language)
+
+    imported: list[dict[str, Any]] = []
+    placeholders = ",".join("?" for _ in languages)
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM glossary_terms WHERE project_id = ? AND language IN ({placeholders})",
+            [project_id, *sorted(languages)],
+        ).fetchall()
+        by_source: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        by_term_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            item = dict(row)
+            language = normalize_language(item.get("language") or "en")
+            source_key = _glossary_source_key(item.get("source"))
+            if source_key:
+                by_source.setdefault((language, source_key), []).append(item)
+            term_key = str(item.get("term_key") or "").strip()
+            if term_key and (language, term_key) not in by_term_key:
+                by_term_key[(language, term_key)] = item
+
+        for payload in normalized_payloads:
+            source_key = _glossary_source_key(payload.get("source"))
+            term_key = str(payload.get("term_key") or "").strip()
+            language = normalize_language(payload.get("language") or "en")
+            existing_rows = by_source.get((language, source_key), []) if source_key else []
+            if not existing_rows and term_key:
+                existing = by_term_key.get((language, term_key))
+                if existing:
+                    existing_rows = [existing]
+
+            if not existing_rows:
+                term = insert_glossary_term(project_id, payload, conn=conn)
+                imported.append(term)
+                inserted_source_key = _glossary_source_key(term.get("source"))
+                inserted_term_key = str(term.get("term_key") or "").strip()
+                if inserted_source_key:
+                    by_source.setdefault((language, inserted_source_key), []).append(term)
+                if inserted_term_key:
+                    by_term_key[(language, inserted_term_key)] = term
+                continue
+
+            canonical = _choose_glossary_canonical(existing_rows)
+            updates: dict[str, Any] = {}
+            for field in ("term_key", "source", "target", "target_alt", "language", "category", "note"):
+                value = payload.get(field)
+                if value is not None and str(value).strip():
+                    updates[field] = value
+            if payload.get("source_type"):
+                updates["source_type"] = payload["source_type"]
+            if "confirmed" in payload:
+                updates["confirmed"] = bool(payload.get("confirmed"))
+            term = update_glossary_term(canonical["id"], updates, conn=conn) if updates else get_glossary_term(canonical["id"], conn=conn)
+            imported.append(term)
+
+            updated_source_key = _glossary_source_key(term.get("source"))
+            updated_term_key = str(term.get("term_key") or "").strip()
+            if updated_source_key:
+                bucket = by_source.setdefault((language, updated_source_key), [])
+                for index, item in enumerate(bucket):
+                    if item["id"] == term["id"]:
+                        bucket[index] = term
+                        break
+                else:
+                    bucket.append(term)
+            if updated_term_key:
+                by_term_key[(language, updated_term_key)] = term
+
+    for language in sorted(languages):
+        dedupe_project_glossary_terms(project_id, language=language)
+    return imported
+
+
 def get_glossary_term(term_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     own = conn is None
     ctx = connect() if own else None
@@ -1441,6 +1531,66 @@ def upsert_translation_entry(project_id: str, payload: dict[str, Any], conn: sql
     finally:
         if ctx:
             ctx.__exit__(None, None, None)
+
+
+def upsert_translation_entries_bulk(project_id: str, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Import translation archive rows in one transaction with cached lookups."""
+    if not payloads:
+        return []
+    normalized_payloads: list[dict[str, Any]] = []
+    languages: set[str] = set()
+    for payload in payloads:
+        language = normalize_language(payload.get("language") or "en")
+        normalized = {**payload, "language": language}
+        normalized_payloads.append(normalized)
+        languages.add(language)
+
+    imported: list[dict[str, Any]] = []
+    placeholders = ",".join("?" for _ in languages)
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM translation_entries WHERE project_id = ? AND language IN ({placeholders})",
+            [project_id, *sorted(languages)],
+        ).fetchall()
+        by_entry_key: dict[tuple[str, str], dict[str, Any]] = {}
+        by_source: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            item = dict(row)
+            language = normalize_language(item.get("language") or "en")
+            entry_key = str(item.get("entry_key") or "").strip()
+            if entry_key and (language, entry_key) not in by_entry_key:
+                by_entry_key[(language, entry_key)] = item
+            source_key = _translation_source_key(item.get("source"))
+            if source_key and (language, source_key) not in by_source:
+                by_source[(language, source_key)] = item
+
+        for payload in normalized_payloads:
+            language = normalize_language(payload.get("language") or "en")
+            entry_key = str(payload.get("entry_key") or "").strip()
+            source_key = _translation_source_key(payload.get("source"))
+            existing = by_entry_key.get((language, entry_key)) if entry_key else None
+            if existing is None and source_key:
+                existing = by_source.get((language, source_key))
+
+            if existing is None:
+                entry = insert_translation_entry(project_id, payload, conn=conn)
+            else:
+                updates = {
+                    key: payload.get(key)
+                    for key in ("entry_key", "source", "target", "target_alt", "language", "sheet", "row_number", "note", "source_type", "source_artifact_id")
+                    if payload.get(key) not in (None, "")
+                }
+                entry = update_translation_entry(existing["id"], updates, conn=conn)
+
+            imported.append(entry)
+            updated_key = str(entry.get("entry_key") or "").strip()
+            updated_source_key = _translation_source_key(entry.get("source"))
+            if updated_key:
+                by_entry_key[(language, updated_key)] = entry
+            if updated_source_key:
+                by_source[(language, updated_source_key)] = entry
+
+    return imported
 
 
 def _find_translation_entry(conn: sqlite3.Connection, project_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:

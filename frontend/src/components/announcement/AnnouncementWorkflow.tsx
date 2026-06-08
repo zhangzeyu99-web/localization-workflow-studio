@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { allLanguageOptions, announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, type LanguageCode } from '../../languages'
+import { announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
 import { ActionStatus, ArtifactNote, FileBox, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
@@ -89,6 +89,22 @@ export function announcementLanguageSummary(task: AnnouncementTask): string {
 export function getAnnouncementTranslationProgress(task: AnnouncementTask | null): TranslationProgress | null {
   const progress = task?.metadata?.translation_progress as TranslationProgress | undefined
   return progress?.total_rows ? progress : null
+}
+
+export function isAnnouncementTranslationResumable(task: AnnouncementTask | null): boolean {
+  if (!task) return false
+  const progress = getAnnouncementTranslationProgress(task)
+  const reason = String(task.metadata?.reason || '')
+  if (['needs_input', 'canceled'].includes(task.status)) return true
+  if (task.status === 'failed') return true
+  if (task.status === 'prepared' && ['announcement_translation_canceled', 'background_job_interrupted', 'api_budget_confirmation_required'].includes(reason)) return true
+  if (progress && progress.completed_rows < progress.total_rows) return true
+  if (progress?.failed_batch) return true
+  return false
+}
+
+export function announcementTranslateEndpoint(task: AnnouncementTask | null): 'translate/start' | 'translate/resume' {
+  return isAnnouncementTranslationResumable(task) ? 'translate/resume' : 'translate/start'
 }
 
 export function AnnouncementWizard({
@@ -271,7 +287,9 @@ export function AnnouncementWizard({
               onToggleLanguage={toggleLanguage}
             />
           ) : null}
-          {step === 1 ? (
+          {!activeTask && step > 1 ? (
+            <AnnouncementTaskRequiredState step={step} title={announcementSteps[step - 1]} onBackToStart={() => setStep(1)} />
+          ) : step === 1 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 1</span>公告资料</div>
               <div className="panel-desc">上传一个待翻译公告文档。v1 支持 DOCX / TXT / XLSX；默认交付同格式，同时保留 Excel 中转表和 QA 摘要。</div>
@@ -296,25 +314,34 @@ export function AnnouncementWizard({
           ) : step === 2 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 2</span>约束来源</div>
-              <div className="panel-desc">选择完整语言表 / 完整术语交付表，用它从公告原文里反查并生成本任务公告术语表；已生成的公告术语表请在 STEP 4 导入，不放在这里。</div>
-              <div className="upload-row">
-                <FileBox label="上传语言表 / 术语交付表（XLSX）" onFile={async (file) => { const artifact = await onUploadConstraint(file); if (artifact) setConstraintArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
-                <div className="asset-list">
-                  <div className="ai-header">约束文件</div>
-                  {!constraintCandidates.length ? <div className="warn-line">没有约束文件；仍可只用项目 QA 归档或生成缺约束提示。</div> : null}
-                  {hiddenAnnouncementTermsArtifacts.length ? <div className="warn-line">已隐藏 {hiddenAnnouncementTermsArtifacts.length} 个已生成公告术语表；如需复用，请到 STEP 4 导入。</div> : null}
-                  {constraintCandidates.map((artifact) => (
-                    <label key={artifact.id} className="check-row">
-                      <input type="checkbox" checked={constraintArtifactIds.includes(artifact.id)} onChange={() => toggleConstraint(artifact.id)} />
-                      <span>{artifactPickerLabel(artifact)}<em>{artifactFileName(artifact)}</em></span>
-                    </label>
-                  ))}
+              <div className="panel-desc">本步只选择二次翻译的约束来源：项目 QA 归档默认参与；如有完整语言表，再上传或勾选它用于反查生成公告术语表。</div>
+              <div className="constraint-source-grid">
+                <div className="constraint-source-panel is-primary">
+                  <div className="constraint-source-title">项目 QA 归档</div>
+                  <p>默认使用当前项目里已经 QA 通过的译文和项目术语。冲突时优先级高于上传语言表。</p>
+                  <span className="tag tag-done">自动参与</span>
+                </div>
+                <div className="constraint-source-panel">
+                  <div className="constraint-source-title">完整语言表 / 术语交付表</div>
+                  <p>可选。用于从公告原文反查已有翻译，生成本任务公告术语表；已生成的公告术语表请到 STEP 4 导入。</p>
+                  <FileBox label="上传完整语言表（XLSX）" onFile={async (file) => { const artifact = await onUploadConstraint(file); if (artifact) setConstraintArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
                 </div>
               </div>
+              <div className="asset-list compact-list">
+                <div className="ai-header">可选语言表</div>
+                {!constraintCandidates.length ? <div className="muted-left">当前没有可选完整语言表；可以只用项目 QA 归档继续。</div> : null}
+                {hiddenAnnouncementTermsArtifacts.length ? <div className="muted-left">已隐藏 {hiddenAnnouncementTermsArtifacts.length} 个已生成公告术语表；如需复用，请到 STEP 4 导入。</div> : null}
+                {constraintCandidates.map((artifact) => (
+                  <label key={artifact.id} className="check-row">
+                    <input type="checkbox" checked={constraintArtifactIds.includes(artifact.id)} onChange={() => toggleConstraint(artifact.id)} />
+                    <span>{artifactPickerLabel(artifact)}<em>{artifactFileName(artifact)}</em></span>
+                  </label>
+                ))}
+              </div>
               <div className="workflow-note-grid">
-                <div><strong>项目 QA 归档</strong><span>默认参与，且优先级高于语言表</span></div>
-                <div><strong>已选约束文件</strong><span>{activeConstraintArtifactIds.length} 个</span></div>
-                <div><strong>当前任务</strong><span>{activeTask ? activeTask.id : '请先创建任务'}</span></div>
+                <div><strong>约束优先级</strong><span>项目 QA 归档 &gt; 完整语言表</span></div>
+                <div><strong>已选语言表</strong><span>{activeConstraintArtifactIds.length} 个</span></div>
+                <div><strong>当前任务</strong><span>{activeTask ? activeTask.title || activeTask.id : '-'}</span></div>
               </div>
               <div className="row-actions"><button className="btn btn-primary" disabled={!activeTask || busy} onClick={() => run('inspect-constraints', 3)}>识别语言与约束</button></div>
             </>
@@ -377,7 +404,7 @@ export function AnnouncementWizard({
                     const needsBudgetConfirm = activeTask?.metadata?.reason === 'api_budget_confirmation_required'
                     const confirmed = needsBudgetConfirm ? window.confirm('该公告翻译预计 API token 用量超过提醒阈值。确认后会从已完成批次继续。是否继续？') : false
                     if (needsBudgetConfirm && !confirmed) return
-                    run('translate/start', undefined, { confirm_api_budget: confirmed })
+                    run(announcementTranslateEndpoint(activeTask), undefined, { confirm_api_budget: confirmed })
                   }}
                 >
                   {activeTask?.status === 'needs_input' ? '确认后继续 AI 翻译' : '调用已配置 AI 翻译'}
@@ -402,6 +429,22 @@ export function AnnouncementWizard({
     </div>
   )
 }
+
+export function AnnouncementTaskRequiredState({ step, title, onBackToStart }: { step: number; title: string; onBackToStart: () => void }) {
+  return (
+    <>
+      <div className="panel-title"><span className="badge">STEP {step}</span>{title}</div>
+      <div className="empty-action-card" data-testid="announcement-task-required">
+        <div>
+          <strong>先创建公告任务</strong>
+          <span>公告翻译按单个源文档推进。请先在 STEP 1 上传公告源文档并创建任务，后续步骤才会保存约束、语言、术语和交付产物。</span>
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={onBackToStart}>回到公告资料</button>
+      </div>
+    </>
+  )
+}
+
 
 export function AnnouncementTermsStep({
   activeTask,
@@ -591,7 +634,7 @@ export function announcementTermLanguages(task: AnnouncementTask | null, effecti
       if (code) found.add(code)
     })
   }
-  return allLanguageOptions.map((language) => language.code).filter((code) => found.has(code))
+  return supportedLanguages.map((language) => language.code).filter((code) => found.has(code))
 }
 
 export function announcementTaskCanCancel(task: AnnouncementTask): boolean {
