@@ -1203,11 +1203,19 @@ def patch_artifact(artifact_id: str, payload: ArtifactUpdate) -> dict[str, Any]:
 
 def _attach_delivery_downloads(project_id: str, deliverable: dict[str, Any]) -> None:
     files = deliverable.get("files") if isinstance(deliverable.get("files"), dict) else {}
-    for item in files.values():
-        if item.get("path"):
-            item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
-        else:
-            item["download_url"] = ""
+    for value in files.values():
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("download_url"):
+                continue
+            if item.get("artifact_id"):
+                item["download_url"] = f"/api/artifacts/{item['artifact_id']}/download"
+            elif item.get("path"):
+                item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
+            else:
+                item["download_url"] = ""
 
 
 def _resolve_task_code(payload: RunCreate) -> str:
@@ -1402,12 +1410,16 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
         and run["status"] == "passed"
         and any(artifact["run_id"] == run["id"] and artifact["kind"] == "qa_final_workbook" for artifact in artifacts)
     ])
+    announcement_deliverable_count = len([
+        task for task in active_announcement_tasks
+        if task.get("status") == "delivered" and (task.get("metadata") or {}).get("delivery_artifact_id")
+    ])
     business_tasks = language_tasks + len(active_announcement_tasks)
     project["stats"] = {
         "tasks": business_tasks,
         "execution_runs": len(runs),
         "language_tasks": language_tasks,
-        "deliverables": deliverable_count,
+        "deliverables": deliverable_count + announcement_deliverable_count,
         "announcement_tasks": len(active_announcement_tasks),
         "translation_runs": translation_runs,
         "qa_runs": qa_runs,

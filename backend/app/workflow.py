@@ -4409,7 +4409,86 @@ def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
         if not final_artifact or not Path(final_artifact["path"]).exists():
             continue
         deliverables.append(_deliverable_summary(project, run, final_artifact))
+    deliverables.extend(_announcement_deliverable_summaries(project))
     return deliverables
+
+
+def _announcement_deliverable_summaries(project: dict[str, Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for task in db.list_announcement_tasks(project["id"]):
+        if task.get("status") != "delivered":
+            continue
+        metadata = task.get("metadata") or {}
+        delivery_artifact_id = str(metadata.get("delivery_artifact_id") or "")
+        if not delivery_artifact_id:
+            continue
+        try:
+            package_artifact = db.get_artifact(delivery_artifact_id)
+        except KeyError:
+            continue
+        if (package_artifact.get("metadata") or {}).get("superseded"):
+            continue
+        if not Path(package_artifact["path"]).exists():
+            continue
+        languages = _normalize_announcement_languages(task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+        output_files = []
+        output_artifact_ids = metadata.get("output_artifact_ids") if isinstance(metadata.get("output_artifact_ids"), dict) else {}
+        for language in languages:
+            artifact_id = str(output_artifact_ids.get(language) or "")
+            if not artifact_id:
+                continue
+            try:
+                artifact = db.get_artifact(artifact_id)
+            except KeyError:
+                continue
+            if Path(artifact["path"]).exists():
+                output_files.append(_artifact_delivery_file(f"output_{_visible_language_code(language)}", artifact))
+        qa_file = None
+        qa_artifact_id = str(metadata.get("qa_summary_artifact_id") or "")
+        if qa_artifact_id:
+            try:
+                qa_artifact = db.get_artifact(qa_artifact_id)
+                if Path(qa_artifact["path"]).exists():
+                    qa_file = _artifact_delivery_file("qa_summary", qa_artifact)
+            except KeyError:
+                qa_file = None
+        package_file = _artifact_delivery_file("package", package_artifact)
+        language_label = " / ".join(_visible_language_code(language) for language in languages) or "-"
+        source_rows = int(metadata.get("segment_count") or metadata.get("terms_count") or metadata.get("term_count") or 0)
+        return_label = task.get("title") or _announcement_task_source_stem(task)
+        summaries.append(
+            {
+                "run_id": package_artifact.get("run_id") or task["id"],
+                "task_code": "ANN",
+                "task_id": _short_run_id(task["id"]),
+                "task_label": f"ANN-{_short_run_id(task['id'])}",
+                "task_type": "公告任务",
+                "language": language_label,
+                "created_at": task.get("created_at", ""),
+                "updated_at": task.get("updated_at", ""),
+                "status": "delivered",
+                "processed_rows": source_rows,
+                "source_rows": source_rows,
+                "translated_rows": source_rows,
+                "provider": "-",
+                "model": "-",
+                "input_label": return_label,
+                "qa_status": "passed",
+                "qa_hard_errors": int(metadata.get("hard_blockers") or 0),
+                "qa_soft_warnings": 0,
+                "files": {
+                    "package": package_file,
+                    "qa_summary": qa_file,
+                    "outputs": output_files,
+                },
+                "source_artifacts": {
+                    "announcement_delivery_package": package_artifact["id"],
+                    "announcement_outputs": [item.get("artifact_id") for item in output_files if item.get("artifact_id")],
+                    "announcement_qa_summary": qa_artifact_id,
+                },
+            }
+        )
+    return summaries
 
 
 def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[str, Any]:
@@ -4677,6 +4756,17 @@ def _safe_delivery_name(name: str) -> str:
 
 def _delivery_file(kind: str, path: Path) -> dict[str, str]:
     return {"kind": kind, "filename": path.name, "path": str(path)}
+
+
+def _artifact_delivery_file(kind: str, artifact: dict[str, Any]) -> dict[str, str]:
+    path = Path(str(artifact.get("path") or ""))
+    return {
+        "kind": kind,
+        "filename": path.name,
+        "path": str(path),
+        "artifact_id": str(artifact.get("id") or ""),
+        "download_url": f"/api/artifacts/{artifact['id']}/download",
+    }
 
 
 def _expected_delivery_file(kind: str, path: Path) -> dict[str, str]:

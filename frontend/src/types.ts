@@ -262,6 +262,7 @@ export type DeliveryFile = {
   filename: string
   path: string
   download_url?: string
+  artifact_id?: string
 }
 
 export type AnnouncementLookupSummary = {
@@ -352,6 +353,9 @@ export type DeliverableTask = {
   files: {
     final?: DeliveryFile
     changes?: DeliveryFile
+    package?: DeliveryFile
+    qa_summary?: DeliveryFile | null
+    outputs?: DeliveryFile[]
   }
 }
 

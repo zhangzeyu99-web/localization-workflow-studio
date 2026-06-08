@@ -120,10 +120,14 @@ export function DeliveryTab({
         {deliverables.map((task) => {
           const finalFile = task.files.final
           const changesFile = task.files.changes
+          const packageFile = task.files.package
+          const qaSummaryFile = task.files.qa_summary || null
+          const outputFiles = task.files.outputs || []
           const hasFinal = Boolean(finalFile?.download_url)
           const hasChanges = Boolean(changesFile?.download_url)
-          const hasDelivery = hasFinal
-          const resultLabel = hasDelivery ? (hasChanges ? '\u5df2\u751f\u6210\u6700\u7ec8\u8bd1\u6587 + \u4fee\u6539\u8bb0\u5f55' : '\u5df2\u751f\u6210\u6700\u7ec8\u8bd1\u6587') : '\u5f85\u751f\u6210'
+          const hasPackage = Boolean(packageFile?.download_url)
+          const hasDelivery = hasFinal || hasPackage
+          const resultLabel = hasPackage ? '已生成公告交付包' : hasDelivery ? (hasChanges ? '已生成最终译文 + 修改记录' : '已生成最终译文') : '待生成'
           return (
             <div key={task.run_id} className="delivery-card delivery-line">
               <div className="delivery-head">
@@ -135,9 +139,12 @@ export function DeliveryTab({
               </div>
               <div className="delivery-line-info">
                 <div><span>任务进度</span><strong>{deliveryProgressLabel(task)}</strong></div>
-                <div><span>交付结果</span><strong>{hasDelivery ? '已生成 2 个 Excel' : '待生成'}</strong></div>
+                <div><span>交付结果</span><strong>{resultLabel}</strong></div>
               </div>
               <div className="delivery-actions">
+                {packageFile?.download_url ? <a className="btn btn-primary btn-sm" href={packageFile.download_url}>下载交付包</a> : null}
+                {outputFiles.map((file) => file.download_url ? <a key={`${task.run_id}-${file.kind}-${file.filename}`} className="btn btn-ghost btn-sm" href={file.download_url}>下载成品</a> : null)}
+                {qaSummaryFile?.download_url ? <a className="btn btn-ghost btn-sm" href={qaSummaryFile.download_url}>下载 QA 摘要</a> : null}
                 {finalFile?.download_url ? <a className="btn btn-primary btn-sm" href={finalFile.download_url}>下载最终译文</a> : null}
                 {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>下载修改记录</a> : null}
                 {!hasDelivery ? <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成交付文件</button> : null}
@@ -169,12 +176,14 @@ export function compactDeliveryInputLabel(value?: string): string {
 }
 
 export function deliveryStatusLabel(task: DeliverableTask): string {
+  if (task.status === 'delivered') return '可交付'
   if (task.status === 'passed' && Number(task.qa_hard_errors || 0) === 0) return '可交付'
   if (task.status === 'failed') return '未通过'
   return task.status || '处理中'
 }
 
 export function deliveryProgressLabel(task: DeliverableTask): string {
+  if (task.task_code === 'ANN' || task.status === 'delivered') return 'STEP 9/9 · 已交付'
   const total = Number(task.source_rows || task.processed_rows || 0)
   const done = Number(task.processed_rows || task.translated_rows || 0)
   const qa = `QA 必修 ${task.qa_hard_errors ?? 0} / 建议 ${task.qa_soft_warnings ?? 0}`

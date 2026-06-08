@@ -10,6 +10,10 @@ export function activeAnnouncementTasks(tasks: AnnouncementTask[]): Announcement
   return tasks.filter((task) => task.status !== 'canceled')
 }
 
+export function unfinishedAnnouncementTasks(tasks: AnnouncementTask[]): AnnouncementTask[] {
+  return activeAnnouncementTasks(tasks).filter((task) => task.status !== 'delivered')
+}
+
 export function AnnouncementProjectPanel({
   tasks,
   holdTaskId,
@@ -148,10 +152,11 @@ export function AnnouncementWizard({
   initialTaskId: string
   onBack: () => void
 }) {
-  const tasks = activeAnnouncementTasks(project.announcement_tasks || [])
+  const allTasks = activeAnnouncementTasks(project.announcement_tasks || [])
+  const tasks = initialTaskId ? allTasks : unfinishedAnnouncementTasks(allTasks)
   const [step, setStep] = useState(1)
   const [taskId, setTaskId] = useState(initialTaskId || tasks[0]?.id || '')
-  const activeTask = tasks.find((task) => task.id === taskId) || null
+  const activeTask = allTasks.find((task) => task.id === taskId) || null
   const [sourceArtifactId, setSourceArtifactId] = useState(activeTask?.source_artifact_id || '')
   const [constraintArtifactIds, setConstraintArtifactIds] = useState<string[]>(announcementTaskConstraintIds(activeTask))
   const [selectedLanguages, setSelectedLanguages] = useState<LanguageCode[]>(activeTask?.selected_languages?.length ? activeTask.selected_languages : [])
@@ -174,16 +179,16 @@ export function AnnouncementWizard({
   const showLanguageSubflows = Boolean(activeTask && step >= 6 && step <= 8)
 
   useEffect(() => {
-    if (initialTaskId && tasks.some((task) => task.id === initialTaskId)) {
+    if (initialTaskId && allTasks.some((task) => task.id === initialTaskId)) {
       setTaskId(initialTaskId)
       return
     }
-    if (taskId && !tasks.some((task) => task.id === taskId)) {
+    if (taskId && !allTasks.some((task) => task.id === taskId)) {
       setTaskId(tasks[0]?.id || '')
       return
     }
     if (!taskId && tasks[0]) setTaskId(tasks[0].id)
-  }, [initialTaskId, tasks.length, taskId])
+  }, [initialTaskId, allTasks.length, tasks.length, taskId, activeTask?.status])
 
   useEffect(() => {
     if (!activeTask) return
@@ -195,6 +200,16 @@ export function AnnouncementWizard({
     setAiSupplement(aiMeta?.enabled !== false)
     setAiSupplementResponseArtifactId(String(aiMeta?.response_artifact_id || ''))
   }, [activeTask?.id, activeTask?.updated_at])
+
+  useEffect(() => {
+    if (activeTask || taskId) return
+    setStep(1)
+    setSourceArtifactId('')
+    setConstraintArtifactIds([])
+    setSelectedLanguages([])
+    setResponseArtifactIds([])
+    setAiSupplementResponseArtifactId('')
+  }, [activeTask?.id, taskId])
 
   function toggleConstraint(id: string) {
     setConstraintArtifactIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id])

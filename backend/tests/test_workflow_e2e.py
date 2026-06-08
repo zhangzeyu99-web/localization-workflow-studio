@@ -982,6 +982,15 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         assert repeated.json()["summary"]["reused"] is True
         assert repeated.json()["summary"]["delivery_artifact_id"] == package["id"]
 
+        deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
+        announcement_deliverable = next(item for item in deliverables if item["task_code"] == "ANN")
+        assert announcement_deliverable["status"] == "delivered"
+        assert announcement_deliverable["task_type"] == "公告任务"
+        assert announcement_deliverable["language"] == "KR"
+        assert announcement_deliverable["files"]["package"]["download_url"].startswith("/api/artifacts/")
+        assert announcement_deliverable["files"]["qa_summary"]["download_url"].startswith("/api/artifacts/")
+        assert announcement_deliverable["files"]["outputs"][0]["download_url"].startswith("/api/artifacts/")
+
         forced = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526", "force": True})
         assert forced.status_code == 200, forced.text
         forced_package = next(artifact for artifact in forced.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
@@ -998,6 +1007,7 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         assert project_detail["stats"]["tasks"] == 1
         assert project_detail["stats"]["announcement_tasks"] == 1
         assert project_detail["stats"]["language_tasks"] == 0
+        assert project_detail["stats"]["deliverables"] == 1
         assert project_detail["stats"]["execution_runs"] > project_detail["stats"]["tasks"]
 
         qa_artifact = next(artifact for artifact in applied.json()["artifacts"] if artifact["kind"] == "announcement_qa_summary")

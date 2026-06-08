@@ -1207,7 +1207,7 @@ function App() {
     }
     try {
       const result = await api<{ deliverables: DeliverableTask[] }>(`/api/projects/${current.id}/deliverables`)
-      setDeliverables((result.deliverables || []).filter((task) => normalizeLanguageCode(task.language) === selectedLanguage))
+      setDeliverables(result.deliverables || [])
     } catch {
       setDeliverables([])
     }
