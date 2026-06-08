@@ -87,6 +87,7 @@ if __package__ is None or __package__ == "":
         extract_announcement_terms,
         generate_announcement_terms_package,
         get_announcement_task,
+        fix_announcement_hard_blockers,
         import_announcement_ai_response,
         import_announcement_terms,
         inspect_announcement_constraints,
@@ -182,6 +183,7 @@ else:
         extract_announcement_terms,
         generate_announcement_terms_package,
         get_announcement_task,
+        fix_announcement_hard_blockers,
         import_announcement_ai_response,
         import_announcement_terms,
         inspect_announcement_constraints,
@@ -906,6 +908,18 @@ def import_project_announcement_ai(task_id: str, payload: AnnouncementTaskImport
 def apply_project_announcement(task_id: str, payload: AnnouncementTaskApplyRequest) -> dict[str, Any]:
     try:
         return apply_announcement_task(task_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
+
+
+@app.post("/api/announcement-tasks/{task_id}/fix-hard-blockers")
+def fix_project_announcement_hard_blockers(task_id: str, payload: AnnouncementTaskApplyRequest) -> dict[str, Any]:
+    try:
+        return fix_announcement_hard_blockers(task_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:

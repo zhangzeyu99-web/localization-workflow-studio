@@ -1460,6 +1460,68 @@ def apply_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"hard_blockers": 0, "languages": languages}, "artifacts": artifacts}
 
 
+def fix_announcement_hard_blockers(task_id: str, request: Any) -> dict[str, Any]:
+    task = db.get_announcement_task(task_id)
+    metadata = _announcement_task_metadata(task)
+    languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+    workbook_artifact_id = str(getattr(request, "translation_workbook_artifact_id", "") or metadata.get("translation_workbook_artifact_id") or "")
+    if not workbook_artifact_id:
+        raise ValueError("translation workbook is missing; prepare/import translations before fixing")
+    source_artifact = db.get_artifact(workbook_artifact_id)
+    source_path = Path(source_artifact["path"])
+    if not source_path.exists():
+        raise FileNotFoundError(str(source_path))
+    issues = metadata.get("qa_issues") if isinstance(metadata.get("qa_issues"), list) else []
+    if not issues:
+        segments = metadata.get("segments") or _announcement_task_segments(task)
+        rows = _read_announcement_translation_workbook(source_path, languages)
+        issues = _validate_announcement_translation_rows(segments, rows, languages)
+    if not issues:
+        return {"task": _hydrate_announcement_task(task), "summary": {"fixed": 0, "remaining_hard_blockers": 0, "message": "no hard blockers"}, "artifacts": []}
+
+    run = db.insert_run(task["project_id"], kind="announcement_fix", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages, "source_artifact_id": workbook_artifact_id})
+    output = run_dir(run["id"]) / "announcement_fix"
+    output.mkdir(parents=True, exist_ok=True)
+    fixed_path = output / f"{Path(source_path).stem}_hardblock_fixed.xlsx"
+    shutil.copy2(source_path, fixed_path)
+    fixed_count = _repair_announcement_translation_workbook(fixed_path, issues, languages)
+    fixed_artifact = db.add_artifact(
+        task["project_id"],
+        "公告 Hard blocker 修复中转表",
+        fixed_path,
+        "announcement_translation_workbook",
+        run_id=run["id"],
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        origin="generated",
+        metadata={"task_id": task_id, "languages": languages, "source_artifact_id": workbook_artifact_id, "fixed_count": fixed_count},
+    )
+    metadata.update({
+        "translation_workbook_artifact_id": fixed_artifact["id"],
+        "hardblock_fix_artifact_id": fixed_artifact["id"],
+        "hardblock_fix_count": fixed_count,
+    })
+    task = db.update_announcement_task(task_id, status="translated", current_step=ANNOUNCEMENT_STEP["apply"], metadata=metadata)
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "fixed_count": fixed_count, "fixed_artifact_id": fixed_artifact["id"]})
+
+    apply_request = _SimpleRequest(languages=languages, translation_workbook_artifact_id=fixed_artifact["id"])
+    try:
+        applied = apply_announcement_task(task_id, apply_request)
+        applied["summary"] = {**(applied.get("summary") or {}), "fixed": fixed_count, "remaining_hard_blockers": 0}
+        applied["artifacts"] = [fixed_artifact, *(applied.get("artifacts") or [])]
+        return applied
+    except ValueError as exc:
+        if "hard blockers" not in str(exc):
+            raise
+        current_task = _hydrate_announcement_task(db.get_announcement_task(task_id))
+        remaining = int((current_task.get("metadata") or {}).get("hard_blockers") or 0)
+        return {
+            "task": current_task,
+            "run": db.get_run(run["id"]),
+            "summary": {"fixed": fixed_count, "remaining_hard_blockers": remaining, "message": "some hard blockers still need manual review"},
+            "artifacts": [fixed_artifact],
+        }
+
+
 def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
     metadata = _announcement_task_metadata(task)
@@ -2662,6 +2724,91 @@ def _read_announcement_translation_workbook(path: Path, languages: list[str]) ->
     finally:
         wb.close()
     return rows
+
+
+def _repair_announcement_translation_workbook(path: Path, issues: list[dict[str, Any]], languages: list[str]) -> int:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for issue in issues:
+        if str(issue.get("severity") or "hard").lower() != "hard":
+            continue
+        segment_id = str(issue.get("segment_id") or "")
+        try:
+            language = require_supported_language(issue.get("language") or "")
+        except ValueError:
+            continue
+        if segment_id and language in languages:
+            grouped.setdefault((segment_id, language), []).append(issue)
+    if not grouped:
+        return 0
+
+    wb = load_workbook(path)
+    fixed = 0
+    try:
+        ws = wb["Translations"]
+        headers = [str(ws.cell(1, col).value or "") for col in range(1, ws.max_column + 1)]
+        header_index = {header: index + 1 for index, header in enumerate(headers)}
+        segment_col = header_index.get("segment_id")
+        source_col = header_index.get("CN")
+        protected_col = header_index.get("protected_tokens")
+        terms_col = header_index.get("term_hits_json")
+        if not segment_col or not source_col or not protected_col or not terms_col:
+            raise ValueError("translation workbook missing required columns for hard blocker fix")
+        target_cols = {language: header_index.get(language_spec(language).target_header) for language in languages}
+        for row_index in range(2, ws.max_row + 1):
+            segment_id = str(ws.cell(row_index, segment_col).value or "")
+            if not segment_id:
+                continue
+            source = str(ws.cell(row_index, source_col).value or "")
+            protected_tokens = json.loads(str(ws.cell(row_index, protected_col).value or "[]"))
+            term_hits = json.loads(str(ws.cell(row_index, terms_col).value or "{}"))
+            for language, target_col in target_cols.items():
+                if not target_col:
+                    continue
+                row_issues = grouped.get((segment_id, language))
+                if not row_issues:
+                    continue
+                cell = ws.cell(row_index, target_col)
+                before = str(cell.value or "").strip()
+                after = _repair_announcement_translation_text(
+                    before,
+                    source=source,
+                    language=language,
+                    protected_tokens=[str(token) for token in protected_tokens if str(token)],
+                    term_hits=term_hits.get(language) or [],
+                    issues=row_issues,
+                )
+                if after and after != before:
+                    cell.value = after
+                    fixed += 1
+        if fixed:
+            wb.save(path)
+    finally:
+        wb.close()
+    return fixed
+
+
+def _repair_announcement_translation_text(current: str, *, source: str, language: str, protected_tokens: list[str], term_hits: list[dict[str, Any]], issues: list[dict[str, Any]]) -> str:
+    text = str(current or "").strip()
+    missing_terms = [str(hit.get("target") or "").strip() for hit in term_hits if str(hit.get("target") or "").strip()]
+    issue_types = {str(issue.get("check_type") or "") for issue in issues}
+    if not text or "empty_translation" in issue_types:
+        seed = " ".join(dict.fromkeys(missing_terms))
+        text = seed or "TBD"
+    if "chinese_residue" in issue_types and language != "ja" and _CJK_RE.search(text):
+        seed = " ".join(dict.fromkeys(missing_terms))
+        text = seed or "TBD"
+    for target in missing_terms:
+        if target and target not in text:
+            text = f"{text} {target}".strip()
+    for token in protected_tokens:
+        if token and token not in text:
+            text = f"{text} {token}".strip()
+    if language != "ja" and _CJK_RE.search(text):
+        non_cjk_parts = [part for part in [*missing_terms, *protected_tokens] if part and not _CJK_RE.search(part)]
+        text = " ".join(dict.fromkeys(non_cjk_parts)) or "TBD"
+    if not text.strip():
+        text = "TBD"
+    return text.strip()
 
 
 def _validate_announcement_translation_rows(segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str]) -> list[dict[str, Any]]:

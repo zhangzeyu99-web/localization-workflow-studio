@@ -156,6 +156,7 @@ function announcementActionLabel(endpoint: string): string {
     'translate/resume': '\u7ee7\u7eed AI \u7ffb\u8bd1',
     'import-ai': '\u5bfc\u5165 AI response',
     apply: '\u6821\u5bf9\u56de\u586b',
+    'fix-hard-blockers': 'Hard blocker \u81ea\u52a8\u4fee\u590d',
     deliver: '\u4ea4\u4ed8'
   }
   return labels[endpoint] || endpoint

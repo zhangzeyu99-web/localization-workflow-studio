@@ -423,7 +423,17 @@ export function AnnouncementWizard({
               </details>
             </>
           ) : step === 8 ? (
-            <AnnouncementActionStep title="校对回填" step={8} desc="按语言校验 ID、顺序、变量、标签、术语、中文残留和格式指纹；hard blocker 未清零不生成最终交付包。" activeTask={activeTask} busy={busy} actionLabel="QA 并回填同格式文件" onAction={() => run('apply', 9)} />
+            <AnnouncementActionStep
+              title="校对回填"
+              step={8}
+              desc="按语言校验 ID、顺序、变量、标签、术语、中文残留和格式指纹；hard blocker 未清零不生成最终交付包。"
+              activeTask={activeTask}
+              busy={busy}
+              actionLabel="QA 并回填同格式文件"
+              onAction={() => run('apply', 9)}
+              fixActionLabel="自动修复 Hard blocker"
+              onFixAction={() => run('fix-hard-blockers', 8)}
+            />
           ) : (
             <AnnouncementDeliveryStep
               activeTask={activeTask}
@@ -704,7 +714,27 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
   )
 }
 
-export function AnnouncementActionStep({ title, step, desc, activeTask, busy, actionLabel, onAction }: { title: string; step: number; desc: string; activeTask: AnnouncementTask | null; busy: boolean; actionLabel: string; onAction: () => void }) {
+export function AnnouncementActionStep({
+  title,
+  step,
+  desc,
+  activeTask,
+  busy,
+  actionLabel,
+  onAction,
+  fixActionLabel,
+  onFixAction,
+}: {
+  title: string
+  step: number
+  desc: string
+  activeTask: AnnouncementTask | null
+  busy: boolean
+  actionLabel: string
+  onAction: () => void
+  fixActionLabel?: string
+  onFixAction?: () => void
+}) {
   const hardBlockers = Number(activeTask?.metadata?.hard_blockers || 0)
   const qaSummaryArtifacts = pickerArtifacts((activeTask?.artifacts || []).filter((artifact) => ['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind)))
   return (
@@ -721,7 +751,10 @@ export function AnnouncementActionStep({ title, step, desc, activeTask, busy, ac
           {qaSummaryArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载 QA 摘要</a>)}
         </div>
       ) : null}
-      <div className="row-actions"><button className="btn btn-primary" disabled={!activeTask || busy} onClick={onAction}>{actionLabel}</button></div>
+      <div className="row-actions">
+        <button className="btn btn-primary" disabled={!activeTask || busy} onClick={onAction}>{actionLabel}</button>
+        {hardBlockers > 0 && onFixAction ? <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={onFixAction}>{fixActionLabel || '自动修复 Hard blocker'}</button> : null}
+      </div>
     </>
   )
 }
