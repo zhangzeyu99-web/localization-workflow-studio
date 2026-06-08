@@ -3800,6 +3800,10 @@ COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE = (
     "到 STEP5「高频词扫描 / 从完整语言表扫描高频术语候选」生成候选术语；"
     "候选经人工确认后才会进入项目术语库。"
 )
+COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE = (
+    "这个文件看起来是完整语言表，请上传到 STEP4「语言表」。"
+    "它不会作为项目资料参与术语提取。"
+)
 _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD = 1000
 
 
@@ -3836,6 +3840,11 @@ def is_complete_language_table_for_glossary_import(path: Path, sheet: str | None
 def guard_complete_language_table_for_glossary_import(path: Path, sheet: str | None = None) -> None:
     if is_complete_language_table_for_glossary_import(path, sheet=sheet):
         raise ValueError(COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE)
+
+
+def guard_complete_language_table_for_project_material(path: Path, sheet: str | None = None) -> None:
+    if is_complete_language_table_for_glossary_import(path, sheet=sheet):
+        raise ValueError(COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE)
 
 
 def preview_glossary_import(project_id: str, request: Any, import_all: bool = False) -> dict[str, Any]:

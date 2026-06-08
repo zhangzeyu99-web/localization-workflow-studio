@@ -69,6 +69,7 @@ if __package__ is None or __package__ == "":
         export_translation_archive,
         extract_glossary,
         guard_complete_language_table_for_glossary_import,
+        guard_complete_language_table_for_project_material,
         harness_overview,
         import_glossary,
         import_translation_archive,
@@ -167,6 +168,7 @@ else:
         export_translation_archive,
         extract_glossary,
         guard_complete_language_table_for_glossary_import,
+        guard_complete_language_table_for_project_material,
         harness_overview,
         import_glossary,
         import_translation_archive,
@@ -386,7 +388,7 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
 
 
 @app.post("/api/projects/{project_id}/files")
-def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str = "upload") -> dict[str, Any]:
+def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str = "upload", purpose: str = "") -> dict[str, Any]:
     try:
         db.get_project(project_id)
     except KeyError as exc:
@@ -400,7 +402,8 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
         digest, _ = stream_upload(file.file, temp_path)
     except UploadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=user_facing_error(exc)) from exc
-    if kind == "asset":
+    project_material_upload = kind == "asset" and purpose == "project_material"
+    if kind == "asset" and not project_material_upload:
         duplicate = _find_duplicate_project_upload(project_id, kind, digest)
         if duplicate:
             temp_path.unlink(missing_ok=True)
@@ -408,6 +411,17 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
             return duplicate
     destination = _unique_path(upload_root / safe_name)
     temp_path.replace(destination)
+    if project_material_upload:
+        try:
+            guard_complete_language_table_for_project_material(destination)
+        except ValueError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+        duplicate = _find_duplicate_project_upload(project_id, kind, digest)
+        if duplicate:
+            destination.unlink(missing_ok=True)
+            duplicate["duplicate"] = True
+            return duplicate
     if kind in {"term_base", "glossary_final"}:
         try:
             guard_complete_language_table_for_glossary_import(destination)
@@ -422,7 +436,7 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
         kind,
         mime=mime,
         origin="uploaded",
-        metadata={"sha256": digest, "original_filename": safe_name},
+        metadata={"sha256": digest, "original_filename": safe_name, **({"purpose": purpose} if purpose else {})},
     )
     artifact["duplicate"] = False
     return artifact

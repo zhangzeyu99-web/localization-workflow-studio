@@ -484,14 +484,16 @@ function App() {
     setStatus(created.duplicate ? `项目“${created.name}”已存在，已切换到已有项目。` : `项目“${created.name}”已创建。`)
   }
 
-  async function upload(file: File, kind: string) {
+  async function upload(file: File, kind: string, purpose = '') {
     if (!current) return null
     setBusy(true)
     setStatus(`正在上传：${file.name}`)
     try {
       const data = new FormData()
       data.append('file', file)
-      const artifact = await api<Artifact>(`/api/projects/${current.id}/files?kind=${kind}`, {
+      const query = new URLSearchParams({ kind })
+      if (purpose) query.set('purpose', purpose)
+      const artifact = await api<Artifact>(`/api/projects/${current.id}/files?${query.toString()}`, {
         method: 'POST',
         body: data
       })
@@ -630,6 +632,13 @@ function App() {
     } catch {
       setTranslationReadiness(null)
       return null
+    }
+  }
+
+  function selectQaArtifact(artifact: Artifact | null) {
+    setQaArtifact(artifact)
+    if (artifact && artifactRole(artifact) === 'language_source') {
+      void refreshTranslationReadiness(artifact.id)
     }
   }
 
@@ -923,6 +932,15 @@ function App() {
     return artifact
   }
 
+  async function uploadProjectMaterial(file: File) {
+    const artifact = await upload(file, 'asset', 'project_material')
+    if (artifact) {
+      setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
+      setStatus(artifact.duplicate ? `参考素材已存在，已复用：${artifactPickerLabel(artifact)}` : `参考素材已归档：${artifactPickerLabel(artifact)}`)
+    }
+    return artifact
+  }
+
   async function uploadAnnouncementResponse(file: File) {
     const artifact = await upload(file, 'asset')
     if (artifact) {
@@ -1181,6 +1199,19 @@ function App() {
     }
   }
 
+  async function skipQAArchive(artifactOverride?: Artifact | null) {
+    const targetArtifact = artifactOverride || qaArtifact
+    if (!current || !targetArtifact) {
+      setStatus('请选择已有译文语言表后再跳过 QA。')
+      return
+    }
+    const imported = await importTranslationArchive(targetArtifact)
+    if (imported) {
+      setStatus('已跳过 QA 并导入译文归档；建议后续补跑 QA。')
+      await refreshCurrent()
+    }
+  }
+
   async function saveHarness(updates: Partial<ProjectHarness>) {
     if (!current) return
     await api(`/api/projects/${current.id}/harness`, {
@@ -1298,7 +1329,7 @@ function App() {
                 deliverables={deliverables}
                 setSourceArtifact={setSourceArtifact}
                 setTermArtifact={setTermArtifact}
-                setQaArtifact={setQaArtifact}
+                setQaArtifact={selectQaArtifact}
                 setArchiveArtifact={setArchiveArtifact}
                 onSaveMeta={saveProjectMeta}
                 onAnalyze={runAnalysis}
@@ -1318,6 +1349,7 @@ function App() {
                 onSaveHarness={saveHarness}
                 onTranslate={() => runTranslate('T')}
                 onDirectQA={() => runDirectQA('QA')}
+                onSkipQAArchive={skipQAArchive}
                 onManualFixes={applyManualFixes}
                 onModelFixes={applyModelFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
@@ -1389,14 +1421,14 @@ function App() {
                 setSelectedLanguage={setSelectedLanguage}
                 setSourceArtifact={setSourceArtifact}
                 setTermArtifact={setTermArtifact}
-                setQaArtifact={setQaArtifact}
+                setQaArtifact={selectQaArtifact}
                 glossaryPreview={glossaryPreview}
                 settings={settings}
                 status={status}
                 onBack={() => setView('overview')}
                 onUploadSource={async (file) => setSourceArtifact(await upload(file, 'language_table'))}
                 onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
-                onUploadAsset={uploadAsset}
+                onUploadAsset={uploadProjectMaterial}
                 onAnalyze={runAnalysis}
                 onGlossaryExtract={runGlossaryExtract}
                 onGlossaryPreview={previewGlossaryImport}
@@ -1404,6 +1436,8 @@ function App() {
                 onTranslate={() => runTranslate('A')}
                 onCancelTranslate={cancelTranslateRun}
                 onDirectQA={() => runDirectQA('QA')}
+                onSkipQAArchive={skipQAArchive}
+                allowSkipQAArchive
                 onManualFixes={applyManualFixes}
                 onModelFixes={applyModelFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
@@ -1476,6 +1510,7 @@ function ProjectOverview({
   onSaveHarness,
   onTranslate,
   onDirectQA,
+  onSkipQAArchive,
   onManualFixes,
   onModelFixes,
   onUploadTranslation,
@@ -1528,6 +1563,7 @@ function ProjectOverview({
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onTranslate: () => void
   onDirectQA: () => void
+  onSkipQAArchive: (artifact?: Artifact | null) => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
@@ -1642,6 +1678,7 @@ function ProjectOverview({
           qaArtifact={qaArtifact}
           setQaArtifact={setQaArtifact}
           onDirectQA={onDirectQA}
+          onSkipQAArchive={onSkipQAArchive}
           onManualFixes={onManualFixes}
           onModelFixes={onModelFixes}
           onUploadTranslation={onUploadTranslation}

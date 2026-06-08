@@ -355,6 +355,43 @@ wb.close()
   ]))
 })
 
+test('translation workflow rejects full language table as project material but accepts it in language table step', async ({ page, request }) => {
+  const languageTable = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-project-material-guard-')), 'full-language-table.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "CN", "KR"])
+for i in range(1, 1003):
+    ws.append([i, f"完整语言表源文 {i}", f"완성 번역 {i}"])
+wb.save(sys.argv[1])
+wb.close()
+`, languageTable])
+
+  const projectName = `E2E Material Guard ${Date.now()}`
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Project material upload guard.' },
+  })
+  const project = await createResponse.json()
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '🚀 启动新翻译任务' }).click()
+
+  await page.locator('label.upload-box', { hasText: '上传 Markdown' }).locator('input[type="file"]').setInputFiles(languageTable)
+  await expect(inlineStatus(page, '这个文件看起来是完整语言表，请上传到 STEP4「语言表」')).toBeVisible({ timeout: 20000 })
+  const assetsAfterRejectedMaterial = await request.get(`${baseURL}/api/projects/${project.id}/assets`).then((response) => response.json())
+  expect(assetsAfterRejectedMaterial.filter((artifact: { kind: string }) => artifact.kind === 'asset')).toHaveLength(0)
+
+  await page.getByRole('button', { name: '4 语言表' }).click()
+  await page.locator('label.upload-box', { hasText: '上传 language.xlsx' }).locator('input[type="file"]').setInputFiles(languageTable)
+  await expect(inlineStatus(page, `已上传：上传语言表｜${fileStem(languageTable)}`)).toBeVisible({ timeout: 20000 })
+  const assetsAfterLanguageUpload = await request.get(`${baseURL}/api/projects/${project.id}/assets?role=language_source`).then((response) => response.json())
+  expect(assetsAfterLanguageUpload.some((artifact: { kind: string }) => artifact.kind === 'language_table')).toBeTruthy()
+})
+
 test('project tabs show multilingual wide glossary and archive assets', async ({ page, request }) => {
   const projectName = `E2E Wide Assets ${Date.now()}`
   const createResponse = await request.post(`${baseURL}/api/projects`, {
@@ -715,3 +752,115 @@ wb.close()
   await expect(page.getByText('项目译文归档')).toBeVisible()
   await expect(page.locator('.translation-archive-table')).toContainText('Claim rewards')
 })
+
+
+test('user can explicitly skip QA and archive an existing translated language table', async ({ page, request }) => {
+  const translatedWorkbook = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-skip-qa-')), 'translated-skip-qa.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "cn", "en"])
+ws.append([1, "\u9886\u53d6\u5956\u52b1", "Claim rewards"])
+ws.append([2, "\u5f00\u59cb\u6e38\u620f", "Start game"])
+wb.save(sys.argv[1])
+wb.close()
+`, translatedWorkbook])
+
+  const projectName = `E2E Skip QA Archive ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Skip QA archive e2e' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '\ud83d\ude80 \u542f\u52a8\u65b0\u7ffb\u8bd1\u4efb\u52a1' }).click()
+  await page.getByRole('button', { name: '4 \u8bed\u8a00\u8868' }).click()
+  await page.locator('label.upload-box', { hasText: '\u4e0a\u4f20 language.xlsx' }).locator('input[type="file"]').setInputFiles(translatedWorkbook)
+  await expect(page.locator('.ai-card', { hasText: fileName(translatedWorkbook) }).last()).toBeVisible({ timeout: 15000 })
+
+  await page.getByRole('button', { name: '7 \u6a21\u578b\u7ffb\u8bd1' }).click()
+  await expect(page.getByRole('button', { name: '\u8df3\u5230\u6821\u5bf9' })).toBeVisible({ timeout: 15000 })
+  await page.getByRole('button', { name: '\u8df3\u5230\u6821\u5bf9' }).click()
+
+  const skipPanel = page.locator('details', { hasText: '\u4e34\u65f6\u8df3\u8fc7 QA \u76f4\u63a5\u5f52\u6863' })
+  await expect(skipPanel).toBeVisible()
+  await skipPanel.locator('summary').click()
+  page.once('dialog', (dialog) => dialog.accept())
+  await skipPanel.getByRole('button', { name: '\u786e\u8ba4\u8df3\u8fc7 QA \u5e76\u5f52\u6863' }).click()
+  await expect(inlineStatus(page, '\u5df2\u8df3\u8fc7 QA \u5e76\u5bfc\u5165\u8bd1\u6587\u5f52\u6863').first()).toBeVisible({ timeout: 30000 })
+
+  await page.getByRole('button', { name: /\u8fd4\u56de\u9879\u76ee\u6982\u89c8/ }).click()
+  await page.getByRole('button', { name: /\u8bd1\u6587\u5f52\u6863/ }).click()
+  await expect(page.getByText('\u9879\u76ee\u8bd1\u6587\u5f52\u6863')).toBeVisible()
+  await expect(page.locator('.translation-archive-table')).toContainText('Claim rewards')
+
+  await page.locator('.view-tabs .view-tab', { hasText: '\u6821\u5bf9' }).click()
+  await expect(page.locator('details', { hasText: '\u4e34\u65f6\u8df3\u8fc7 QA \u76f4\u63a5\u5f52\u6863' })).toHaveCount(0)
+})
+
+
+test('wizard QA refreshes readiness after manually selecting another translated language table', async ({ page, request }) => {
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-manual-readiness-'))
+  const emptyWorkbook = path.join(fixtureDir, 'empty-language.xlsx')
+  const translatedWorkbook = path.join(fixtureDir, 'manual-translated-language.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+empty_path, translated_path = sys.argv[1], sys.argv[2]
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "cn", "en"])
+ws.append([1, "\\u9886\\u53d6\\u5956\\u52b1", ""])
+ws.append([2, "\\u5f00\\u59cb\\u6e38\\u620f", ""])
+wb.save(empty_path)
+wb.close()
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "cn", "en"])
+ws.append([1, "\\u9886\\u53d6\\u5956\\u52b1", "Claim rewards"])
+ws.append([2, "\\u5f00\\u59cb\\u6e38\\u620f", "Start game"])
+wb.save(translated_path)
+wb.close()
+`, emptyWorkbook, translatedWorkbook])
+
+  const projectName = `E2E Manual Readiness ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Manual readiness refresh e2e' },
+  }).then((response) => response.json())
+  const translatedArtifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'manual-translated-language.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(translatedWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'empty-language.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(emptyWorkbook),
+      },
+    },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '\ud83d\ude80 \u542f\u52a8\u65b0\u7ffb\u8bd1\u4efb\u52a1' }).click()
+  await page.getByRole('button', { name: '8 \u81ea\u52a8\u6821\u5bf9' }).click()
+  await page.locator('.step-panel.active label.asset-select select').selectOption(translatedArtifact.id)
+
+  const skipPanel = page.locator('details', { hasText: '\u4e34\u65f6\u8df3\u8fc7 QA \u76f4\u63a5\u5f52\u6863' })
+  await skipPanel.locator('summary').click()
+  await expect(skipPanel.getByRole('button', { name: '\u786e\u8ba4\u8df3\u8fc7 QA \u5e76\u5f52\u6863' })).toBeEnabled({ timeout: 15000 })
+})
+
+
+

@@ -6,7 +6,7 @@ import { normalizeGlossaryNote, projectPromptForLanguage } from '../../domain/pr
 import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, latestRunOfKind, matchesTranslationRun } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, normalizeLanguageCode, type LanguageCode } from '../../languages'
 import { ProjectMetaTable } from '../project/ProjectMeta'
-import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TemplateDownloadLink, TranslationProgressBar } from '../shared/WorkflowPrimitives'
+import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import type { AppSettings, Artifact, DeliverableTask, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
 
 export const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
@@ -252,6 +252,8 @@ export function Wizard(props: {
   onTranslate: () => void
   onCancelTranslate: () => void
   onDirectQA: () => void
+  onSkipQAArchive: (artifact?: Artifact | null) => void
+  allowSkipQAArchive?: boolean
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
@@ -387,8 +389,7 @@ export function StepTerm({
       <div className="panel-desc">这里只导入人工维护过的术语模板。完整语言表不要放这里，请到 STEP 5 扫描高频术语候选。</div>
       <div className="action-card">
         <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} />
-        <FileBox label="上传术语表模板 xlsx/csv/json" onFile={onUploadTerm} />
-        <div className="row-actions"><TemplateDownloadLink kind="glossary" /></div>
+        <FileBoxWithTemplate label="上传术语表模板 xlsx/csv/json" onFile={onUploadTerm} templateKind="glossary" />
         <div className="row-actions">
           <button className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语</button>
           <button className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入到项目术语</button>
@@ -421,8 +422,7 @@ export function StepSource({
       <div className="panel-desc">可选择已有语言表，也可上传新的 Excel 语言表；默认字段：ID | cn | {lang.targetHeader}。</div>
       <div className="action-card">
         <AssetSelect label="使用已有语言表" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
-        <FileBox label="上传 language.xlsx" onFile={onUploadSource} />
-        <div className="row-actions"><TemplateDownloadLink kind="language-table" /></div>
+        <FileBoxWithTemplate label="上传 language.xlsx" onFile={onUploadSource} templateKind="language-table" />
       </div>
       {sourceArtifact ? <ArtifactNote artifact={sourceArtifact} /> : null}
     </>
@@ -729,7 +729,7 @@ export function StepTranslate({
         <div className="translation-actions">
           {alreadyTranslated ? (
             <>
-              <div className="ok-line">检测到这份表已有可校对译文，不需要重新走整表翻译；残留问题交给 QA 处理。</div>
+              <div className="ok-line">检测到这份表已有译文：默认进入 QA，QA 通过后写入译文归档；如确需跳过 QA，可在 STEP 8 使用“临时跳过 QA 直接归档”。</div>
               <button className="btn btn-primary" disabled={busy} onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>跳到校对</button>
             </>
           ) : (
@@ -779,6 +779,8 @@ export function StepQA({
   qaArtifact,
   setQaArtifact,
   onDirectQA,
+  onSkipQAArchive,
+  allowSkipQAArchive = false,
   onManualFixes,
   onModelFixes,
   onUploadTranslation,
@@ -795,6 +797,8 @@ export function StepQA({
   qaArtifact: Artifact | null
   setQaArtifact: (artifact: Artifact | null) => void
   onDirectQA: () => void
+  onSkipQAArchive: (artifact?: Artifact | null) => void
+  allowSkipQAArchive?: boolean
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
@@ -813,6 +817,19 @@ export function StepQA({
     : null
   const qaRole = qaArtifact ? artifactRole(qaArtifact) : ''
   const selectedReadiness = qaArtifact && translationReadiness?.artifact_id === qaArtifact.id ? translationReadiness : null
+  const canArchiveWithoutQA = Boolean(qaArtifact && (qaRole !== 'language_source' || canSkipModelTranslation(selectedReadiness)))
+  const skipArchiveHint = !qaArtifact
+    ? '先选择已有译文表。'
+    : qaRole === 'language_source' && !selectedReadiness
+      ? '系统正在检查这份语言表是否已有完整译文。'
+      : qaRole === 'language_source' && !canSkipModelTranslation(selectedReadiness)
+        ? '这份语言表还不是完整译文表，不能跳过 QA 直接归档。'
+        : '只在外部已经完成校对，或临时需要先入库供公告反查时使用。'
+  const handleSkipArchive = () => {
+    if (!qaArtifact || !canArchiveWithoutQA) return
+    const confirmed = window.confirm('跳过 QA 会把当前译文直接写入译文归档，系统不会检查术语、变量、中文残留。确认继续？')
+    if (confirmed) onSkipQAArchive(qaArtifact)
+  }
   const originText = qaArtifact?.run_id && previousTranslationRun?.id === qaArtifact.run_id
     ? `上一翻译结果：${previousTranslationRun.id.slice(0, 8)}`
     : qaRole === 'language_source'
@@ -844,6 +861,13 @@ export function StepQA({
         <button className="btn btn-primary" data-testid="run-qa" disabled={!qaArtifact || busy} onClick={onDirectQA}>运行 QA</button>
         {!qaArtifact ? <div className="warn-line">请选择“上一翻译结果”、此前导入的已译语言表，或上传新的译文 workbook 后再运行 QA。</div> : null}
         <ActionStatus status={status} busy={busy} />
+        {allowSkipQAArchive ? <details className="manual-maintenance">
+          <summary>临时跳过 QA 直接归档</summary>
+          <div className="language-inline-select">
+            <span>{skipArchiveHint}</span>
+            <button className="btn btn-ghost" disabled={!canArchiveWithoutQA || busy} onClick={handleSkipArchive}>确认跳过 QA 并归档</button>
+          </div>
+        </details> : null}
       </div>
       <div className="check-list">
         <CheckItem ok={Boolean(qaArtifact)} title="处理文件" detail={qaArtifact ? qaArtifact.label : '未选择'} />

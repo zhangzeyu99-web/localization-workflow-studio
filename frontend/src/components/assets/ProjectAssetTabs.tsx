@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { WIDE_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import { artifactPickerLabel } from '../../domain/artifacts'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
-import { ActionStatus, AssetSelect, FileBox, GlossaryPreview, LanguageSelector, TemplateDownloadLink } from '../shared/WorkflowPrimitives'
+import { ActionStatus, AssetSelect, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector } from '../shared/WorkflowPrimitives'
 import { altColumnVisible, displayLanguagesForWideRows, glossaryWideRowMatches, glossaryWideRows, languageFromValue, normalizeGlossaryNote, rowRecords, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from '../../domain/projectAssets'
 import type { Artifact, GlossaryPreviewRow, GlossaryTerm, Project, TranslationEntry, WideGlossaryRow, WideTranslationRow } from '../../types'
 
@@ -288,8 +288,7 @@ export function GlossaryToolsPanel({
     <div className="glossary-tools-panel">
       <div className="action-card">
         <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} allowEmpty />
-        <FileBox label="上传已确认术语表模板 xlsx/csv/json" onFile={onUploadTerm} />
-        <div className="row-actions"><TemplateDownloadLink kind="glossary" /></div>
+        <FileBoxWithTemplate label="上传已确认术语表模板 xlsx/csv/json" onFile={onUploadTerm} templateKind="glossary" />
         <div className="language-inline-select">
           <span>从完整语言表扫描候选：</span>
           <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />

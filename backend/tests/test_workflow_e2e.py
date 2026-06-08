@@ -1722,6 +1722,40 @@ def test_large_language_table_upload_is_rejected_as_term_base(tmp_path: Path) ->
         assert client.get(f"/api/projects/{project['id']}/assets?role=glossary_source").json() == []
 
 
+def test_large_language_table_is_rejected_as_project_material_but_allowed_as_language_table_or_plain_asset(tmp_path: Path) -> None:
+    language_table = tmp_path / "full-language-table.xlsx"
+    _large_language_table_workbook(language_table)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Project Material Guard", "type": "QA"}).json()
+        with language_table.open("rb") as fh:
+            material_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
+                files={"file": ("full-language-table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        assert material_response.status_code == 400
+        detail = material_response.json()["detail"]
+        assert "完整语言表" in detail
+        assert "STEP4" in detail or "STEP 4" in detail
+        assert client.get(f"/api/projects/{project['id']}/assets").json() == []
+
+        with language_table.open("rb") as fh:
+            language_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("full-language-table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        assert language_response.status_code == 200
+        assert language_response.json()["kind"] == "language_table"
+
+        with language_table.open("rb") as fh:
+            plain_asset_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("full-language-table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        assert plain_asset_response.status_code == 200
+        assert plain_asset_response.json()["kind"] == "asset"
+
+
 def test_glossary_manual_save_replaces_duplicate_cn() -> None:
     with TestClient(app) as client:
         project = client.post("/api/projects", json={"name": "Glossary Save Dedup", "type": "QA"}).json()

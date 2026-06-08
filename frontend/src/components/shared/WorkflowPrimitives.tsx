@@ -111,6 +111,35 @@ export function TemplateDownloadLink({ kind, label = '下载导入模板' }: { k
   return <a className="btn btn-ghost btn-sm" href={`/api/import-templates/${kind}`}>{label}</a>
 }
 
+export function FileBoxWithTemplate({
+  label,
+  onFile,
+  templateKind,
+  templateTitle = '导入模板',
+  templateNote = '先下载模板，按列填写后再上传。',
+  templateLabel = '下载模板',
+  testId
+}: {
+  label: string
+  onFile: (file: File) => void
+  templateKind: string
+  templateTitle?: string
+  templateNote?: string
+  templateLabel?: string
+  testId?: string
+}) {
+  return (
+    <div className="upload-template-row">
+      <FileBox label={label} onFile={onFile} testId={testId} />
+      <div className="template-card">
+        <strong>{templateTitle}</strong>
+        <span>{templateNote}</span>
+        <TemplateDownloadLink kind={templateKind} label={templateLabel} />
+      </div>
+    </div>
+  )
+}
+
 export function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compact?: boolean }) {
   return (
     <div className={`ai-card ${compact ? 'compact-note' : ''}`}>
