@@ -107,6 +107,10 @@ export function FileBox({ label, onFile, testId }: { label: string; onFile: (fil
   )
 }
 
+export function TemplateDownloadLink({ kind, label = '下载导入模板' }: { kind: string; label?: string }) {
+  return <a className="btn btn-ghost btn-sm" href={`/api/import-templates/${kind}`}>{label}</a>
+}
+
 export function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compact?: boolean }) {
   return (
     <div className={`ai-card ${compact ? 'compact-note' : ''}`}>

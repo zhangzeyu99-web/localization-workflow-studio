@@ -20,6 +20,7 @@ if __package__ is None or __package__ == "":
     from app import db
     from app.config import DATA_ROOT, load_settings, public_settings, save_settings
     from app.delivery_naming import safe_filename
+    from app.import_templates import build_import_template
     from app.jobs import active_job_id, cancel_singleton_job, start_singleton_job
     from app.languages import language_payload, require_supported_language
     from app.upload_storage import UploadTooLargeError, stream_upload
@@ -116,6 +117,7 @@ else:
     from . import db
     from .config import DATA_ROOT, load_settings, public_settings, save_settings
     from .delivery_naming import safe_filename
+    from .import_templates import build_import_template
     from .jobs import active_job_id, cancel_singleton_job, start_singleton_job
     from .languages import language_payload, require_supported_language
     from .upload_storage import UploadTooLargeError, stream_upload
@@ -247,6 +249,19 @@ def _query_language(language: str | None) -> str | None:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"ok": True, "data_root": str(DATA_ROOT)}
+
+
+@app.get("/api/import-templates/{kind}")
+def download_import_template(kind: str) -> FileResponse:
+    try:
+        path = build_import_template(kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=user_facing_error(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=path.name,
+    )
 
 
 @app.get("/api/settings")

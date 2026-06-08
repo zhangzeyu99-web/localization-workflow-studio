@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 import os
 import tempfile
 from pathlib import Path
@@ -43,6 +44,28 @@ def test_manifest_invalidates_when_source_language_prompt_or_settings_change() -
     assert not workflow._manifest_matches_rows(manifest, rows, "Prompt B", base_settings, 1, "en")
     assert not workflow._manifest_matches_rows(manifest, rows, "Prompt A", {**base_settings, "preset": "deep"}, 1, "en")
     assert not workflow._manifest_matches_rows(manifest, rows, "Prompt A", base_settings, 1, "ko")
+
+
+def test_import_templates_download_readable_workbooks() -> None:
+    expected_headers = {
+        "language-table": ["ID", "CN", "EN", "EN2", "KR", "JP", "备注"],
+        "glossary": ["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"],
+        "announcement-language-table": ["ID", "CN", "EN", "EN2", "KR", "JP", "备注"],
+        "announcement-terms": ["ID", "CN", "EN", "KR", "JP", "命中次数", "来源", "备注"],
+    }
+    with TestClient(app) as client:
+        for kind, headers in expected_headers.items():
+            response = client.get(f"/api/import-templates/{kind}")
+            assert response.status_code == 200, response.text
+            wb = load_workbook(BytesIO(response.content), data_only=True)
+            try:
+                assert "填写说明" in wb.sheetnames
+                ws = wb[wb.sheetnames[1]]
+                actual = [ws.cell(1, col).value for col in range(1, len(headers) + 1)]
+                assert actual == headers
+                assert ws.max_row >= 3
+            finally:
+                wb.close()
 
 
 def test_context_cap_keeps_project_prompt_under_batch_budget() -> None:

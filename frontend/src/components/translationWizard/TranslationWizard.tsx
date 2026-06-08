@@ -6,7 +6,7 @@ import { normalizeGlossaryNote, projectPromptForLanguage } from '../../domain/pr
 import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, latestRunOfKind, matchesTranslationRun } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, normalizeLanguageCode, type LanguageCode } from '../../languages'
 import { ProjectMetaTable } from '../project/ProjectMeta'
-import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from '../shared/WorkflowPrimitives'
+import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TemplateDownloadLink, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import type { AppSettings, Artifact, DeliverableTask, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
 
 export const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
@@ -379,6 +379,7 @@ export function StepTerm({
       <div className="action-card">
         <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} />
         <FileBox label="上传术语表 xlsx/csv/json" onFile={onUploadTerm} />
+        <div className="row-actions"><TemplateDownloadLink kind="glossary" /></div>
         <div className="row-actions">
           <button className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语</button>
           <button className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入到项目术语</button>
@@ -412,6 +413,7 @@ export function StepSource({
       <div className="action-card">
         <AssetSelect label="使用已有语言表" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
         <FileBox label="上传 language.xlsx" onFile={onUploadSource} />
+        <div className="row-actions"><TemplateDownloadLink kind="language-table" /></div>
       </div>
       {sourceArtifact ? <ArtifactNote artifact={sourceArtifact} /> : null}
     </>

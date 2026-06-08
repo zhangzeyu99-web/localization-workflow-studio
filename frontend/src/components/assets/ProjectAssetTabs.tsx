@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { WIDE_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import { artifactPickerLabel } from '../../domain/artifacts'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
-import { ActionStatus, AssetSelect, FileBox, GlossaryPreview, LanguageSelector } from '../shared/WorkflowPrimitives'
+import { ActionStatus, AssetSelect, FileBox, GlossaryPreview, LanguageSelector, TemplateDownloadLink } from '../shared/WorkflowPrimitives'
 import { altColumnVisible, displayLanguagesForWideRows, glossaryWideRowMatches, glossaryWideRows, languageFromValue, normalizeGlossaryNote, rowRecords, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from '../../domain/projectAssets'
 import type { Artifact, GlossaryPreviewRow, GlossaryTerm, Project, TranslationEntry, WideGlossaryRow, WideTranslationRow } from '../../types'
 
@@ -289,6 +289,7 @@ export function GlossaryToolsPanel({
       <div className="action-card">
         <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} allowEmpty />
         <FileBox label="上传术语表 xlsx/csv/json" onFile={onUploadTerm} />
+        <div className="row-actions"><TemplateDownloadLink kind="glossary" /></div>
         <div className="language-inline-select">
           <span>从语言表生成 / 单语言兜底：</span>
           <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />

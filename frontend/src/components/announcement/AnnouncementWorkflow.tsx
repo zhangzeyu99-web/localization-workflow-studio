@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
-import { ActionStatus, ArtifactNote, FileBox, TranslationProgressBar } from '../shared/WorkflowPrimitives'
+import { ActionStatus, ArtifactNote, FileBox, TemplateDownloadLink, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
 
 export const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译', '校对回填', '交付']
@@ -325,6 +325,7 @@ export function AnnouncementWizard({
                   <div className="constraint-source-title">完整语言表 / 术语交付表</div>
                   <p>可选。用于从公告原文反查已有翻译，生成本任务公告术语表；已生成的公告术语表请到 STEP 4 导入。</p>
                   <FileBox label="上传完整语言表（XLSX）" onFile={async (file) => { const artifact = await onUploadConstraint(file); if (artifact) setConstraintArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
+                  <div className="row-actions"><TemplateDownloadLink kind="announcement-language-table" /></div>
                 </div>
               </div>
               <div className="asset-list compact-list">
@@ -571,7 +572,10 @@ export function AnnouncementTermsStep({
       <details className="asset-list gap-top optional-panel" open={!draftTerms.length || Boolean(aiPacketArtifact || aiReportArtifact)}>
         <summary>更多操作：导入已有术语 / AI 复查设置 / 审计产物</summary>
         <div className="announcement-more-grid">
-          <FileBox label="上传已提取术语表（XLSX）" onFile={onImportFile} />
+          <div>
+            <FileBox label="上传已提取术语表（XLSX）" onFile={onImportFile} />
+            <div className="row-actions gap-top"><TemplateDownloadLink kind="announcement-terms" /></div>
+          </div>
           <div className="asset-list compact-asset-list">
             <label className="check-row">
               <input type="checkbox" checked={aiSupplement} onChange={(event) => setAiSupplement(event.target.checked)} />
