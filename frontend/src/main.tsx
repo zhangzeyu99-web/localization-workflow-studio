@@ -1,7 +1,7 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
-import { API, api, apiErrorText } from './apiClient'
+import { API, api, apiErrorText, sanitizeUserFacingError } from './apiClient'
 import { WIDE_TABLE_PAGE_SIZE, pagedRows } from './assetTableState'
 import { announcementLanguages, refreshLanguageOptions, supportedLanguages, unsupportedLanguages, languageSpec, languageChipTitle, languageQuery, normalizeLanguageCode, normalizeLanguageArray, type LanguageCode, type LanguageOption } from './languages'
 import { SettingsModal } from './SettingsModal'
@@ -80,7 +80,7 @@ import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementT
 
 function errorText(error: unknown): string {
   if (error instanceof Error) return apiErrorText(error.message, error.message)
-  return String(error)
+  return sanitizeUserFacingError(String(error))
 }
 
 function eventStatusText(message: unknown): string {
@@ -110,6 +110,8 @@ function humanBackendEvent(message: unknown): string {
   if (!message) return '处理中...'
   if (typeof message !== 'string') return eventStatusText(message)
   const text = message.trim()
+  const sanitized = sanitizeUserFacingError(text, '')
+  if (sanitized && sanitized !== text) return sanitized
   if (text.startsWith('{')) {
     try {
       const payload = JSON.parse(text) as { passed?: boolean; total_cases?: number; issues?: unknown[]; issue_counts?: Record<string, unknown> }

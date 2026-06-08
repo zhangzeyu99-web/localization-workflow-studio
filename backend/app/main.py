@@ -107,6 +107,7 @@ if __package__ is None or __package__ == "":
         run_qa_sync,
         run_translate_sync,
         translate_missing_glossary_candidates_sync,
+        user_facing_error,
         write_project_harness,
         write_project_prompt,
     )
@@ -201,6 +202,7 @@ else:
         run_qa_sync,
         run_translate_sync,
         translate_missing_glossary_candidates_sync,
+        user_facing_error,
         write_project_harness,
         write_project_prompt,
     )
@@ -237,7 +239,7 @@ def _query_language(language: str | None) -> str | None:
     try:
         return require_supported_language(language)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @app.get("/api/health")
@@ -353,7 +355,7 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
     try:
         target_language = require_supported_language(payload.target_language)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     notes = analyze_assets(payload.asset_artifact_ids, load_settings())
     profile_path, prompt_path, brief_path, prompt = write_project_prompt(project, payload.intro, notes, target_language=target_language)
     artifacts = [
@@ -371,13 +373,14 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     safe_name = safe_filename(file.filename or "upload.bin")
+    _validate_upload_kind_filename(kind, safe_name)
     upload_root = project_dir(project_id) / "uploads"
     upload_root.mkdir(parents=True, exist_ok=True)
     temp_path = _unique_path(upload_root / f".{safe_name}.uploading")
     try:
         digest, _ = stream_upload(file.file, temp_path)
     except UploadTooLargeError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+        raise HTTPException(status_code=413, detail=user_facing_error(exc)) from exc
     if kind == "asset":
         duplicate = _find_duplicate_project_upload(project_id, kind, digest)
         if duplicate:
@@ -416,7 +419,7 @@ def artifact_translation_readiness(artifact_id: str, batch_size: int | None = No
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @app.get("/api/artifacts/{artifact_id}/translation-targets")
@@ -426,7 +429,7 @@ def artifact_translation_targets(artifact_id: str) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/glossary")
@@ -477,7 +480,7 @@ def translate_missing_project_glossary_candidates(project_id: str, batch_id: str
     try:
         return translate_missing_glossary_candidates_sync(project_id, batch_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/glossary/batches/{batch_id}/reject")
@@ -522,7 +525,7 @@ def preview_project_glossary_import(project_id: str, payload: GlossaryImportRequ
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, artifact, or column not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/glossary/import")
@@ -533,7 +536,7 @@ def import_project_glossary(project_id: str, payload: GlossaryImportRequest) -> 
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, artifact, or column not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/glossary/export")
@@ -543,7 +546,7 @@ def export_project_glossary(project_id: str, format: str = "xlsx", language: str
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     if isinstance(exported, dict):
         return exported
     media_type = "text/csv" if exported.suffix.lower() == ".csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -601,7 +604,7 @@ def import_project_translations(project_id: str, payload: TranslationArchiveImpo
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/translations/export")
@@ -611,7 +614,7 @@ def export_project_translations(project_id: str, format: str = "xlsx", language:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     if isinstance(exported, dict):
         return exported
     media_type = "text/csv" if exported.suffix.lower() == ".csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -636,7 +639,7 @@ def create_project_delivery(project_id: str, run_id: str | None = None) -> dict[
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     for item in package["files"]:
         item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
     _attach_delivery_downloads(project_id, package["deliverable"])
@@ -669,9 +672,9 @@ def create_announcement_lookup(project_id: str, payload: AnnouncementLookupReque
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/announcement-terms")
@@ -681,9 +684,9 @@ def create_announcement_terms(project_id: str, payload: AnnouncementTermsRequest
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/announcement-docx/prepare", deprecated=True)
@@ -693,9 +696,9 @@ def prepare_announcement_docx(project_id: str, payload: AnnouncementDocxPrepareR
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, run, or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/announcement-docx/import-ai", deprecated=True)
@@ -705,9 +708,9 @@ def import_announcement_docx_ai(project_id: str, payload: AnnouncementDocxImport
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, run, or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/announcement-docx/apply", deprecated=True)
@@ -717,9 +720,9 @@ def apply_announcement_docx(project_id: str, payload: AnnouncementDocxApplyReque
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, run, or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/announcement-docx/deliver", deprecated=True)
@@ -729,9 +732,9 @@ def deliver_announcement_docx(project_id: str, payload: AnnouncementDocxDeliverR
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, run, or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/announcement-tasks")
@@ -749,9 +752,9 @@ def create_project_announcement_task(project_id: str, payload: AnnouncementTaskC
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.get("/api/announcement-tasks/{task_id}")
@@ -777,7 +780,7 @@ def inspect_project_announcement_constraints(task_id: str, payload: Announcement
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/announcement-tasks/{task_id}/extract-terms")
@@ -787,9 +790,9 @@ def extract_project_announcement_terms(task_id: str, payload: AnnouncementTaskAc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/announcement-tasks/{task_id}/import-terms")
@@ -799,9 +802,9 @@ def import_project_announcement_terms(task_id: str, payload: AnnouncementTaskTer
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/announcement-tasks/{task_id}/lookup-translations")
@@ -811,9 +814,9 @@ def lookup_project_announcement_translations(task_id: str, payload: Announcement
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/announcement-tasks/{task_id}/prepare")
@@ -823,9 +826,9 @@ def prepare_project_announcement_translation(task_id: str, payload: Announcement
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/announcement-tasks/{task_id}/translate")
@@ -835,9 +838,9 @@ def translate_project_announcement(task_id: str, payload: AnnouncementTaskTransl
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 def _start_announcement_translation_background(task_id: str, payload: AnnouncementTaskTranslateRequest) -> dict[str, Any]:
@@ -858,7 +861,7 @@ def _start_announcement_translation_background(task_id: str, payload: Announceme
             try:
                 current = db.get_announcement_task(task_id)
                 if current.get("status") not in {"translated", "canceled", "needs_input", "awaiting_ai_response", "prepared"}:
-                    db.update_announcement_task(task_id, status="failed", current_step=7, metadata={**(current.get("metadata") or {}), "error": str(exc)})
+                    db.update_announcement_task(task_id, status="failed", current_step=7, metadata={**(current.get("metadata") or {}), "error": user_facing_error(exc)})
             except Exception:
                 pass
 
@@ -894,9 +897,9 @@ def import_project_announcement_ai(task_id: str, payload: AnnouncementTaskImport
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/announcement-tasks/{task_id}/apply")
@@ -906,9 +909,9 @@ def apply_project_announcement(task_id: str, payload: AnnouncementTaskApplyReque
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/announcement-tasks/{task_id}/deliver")
@@ -918,9 +921,9 @@ def deliver_project_announcement(task_id: str, payload: AnnouncementTaskDeliverR
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/glossary/extract")
@@ -931,9 +934,9 @@ def extract_project_glossary(project_id: str, payload: GlossaryExtractRequest) -
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/runs")
@@ -945,7 +948,8 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
     try:
         language = require_supported_language(payload.language)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+    _validate_run_input_artifact(payload)
     active = [
         run
         for run in db.list_runs(payload.project_id)
@@ -996,7 +1000,7 @@ def translate(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run or artifact not found") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 def _start_translation_background(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
@@ -1022,7 +1026,7 @@ def _start_translation_background(run_id: str, payload: TranslateRequest) -> dic
             try:
                 current = db.get_run(run_id)
                 if current.get("status") not in {"failed", "canceled", "needs_input", "passed"}:
-                    db.update_run(run_id, status="failed", metadata={**current.get("metadata", {}), "error": str(exc)})
+                    db.update_run(run_id, status="failed", metadata={**current.get("metadata", {}), "error": user_facing_error(exc)})
             except Exception:
                 pass
 
@@ -1069,7 +1073,7 @@ def translate_batch_download(run_id: str, batch_index: int, kind: str) -> FileRe
         path = translation_batch_file(run_id, batch_index, kind)
         return FileResponse(path, filename=path.name)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="batch file not found") from exc
 
@@ -1081,7 +1085,7 @@ def qa(run_id: str) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run or artifact not found") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.get("/api/runs/{run_id}/quality-issues")
@@ -1099,7 +1103,7 @@ def manual_fixes(run_id: str, payload: ManualFixRequest) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/runs/{run_id}/model-fixes")
@@ -1109,9 +1113,9 @@ def model_fixes(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @app.post("/api/runs/{run_id}/semantic-qa")
@@ -1218,6 +1222,63 @@ def _unique_path(path: Path) -> Path:
             return candidate
         index += 1
 
+
+
+
+_TABLE_UPLOAD_SUFFIXES = {".xlsx", ".xls", ".csv"}
+_TERM_UPLOAD_SUFFIXES = {".xlsx", ".xls", ".csv", ".json"}
+_ANNOUNCEMENT_SOURCE_SUFFIXES = {".docx", ".txt", ".xlsx"}
+_AI_RESPONSE_SUFFIXES = {".json", ".jsonl"}
+
+
+def _allowed_upload_suffixes(kind: str) -> set[str] | None:
+    if kind in {"language_table", "quick_input", "final_workbook"}:
+        return _TABLE_UPLOAD_SUFFIXES
+    if kind in {"term_base", "glossary_final"}:
+        return _TERM_UPLOAD_SUFFIXES
+    if kind == "announcement_terms_workbook":
+        return {".xlsx", ".xls"}
+    if kind in {"announcement_ai_response", "announcement_ai_supplement_response"}:
+        return _AI_RESPONSE_SUFFIXES
+    return None
+
+
+def _upload_kind_error(kind: str, suffix: str) -> str:
+    ext = suffix or "unknown"
+    if kind in {"language_table", "quick_input", "final_workbook"}:
+        return (
+            f"\u5f53\u524d\u5165\u53e3\u4e0d\u652f\u6301 {ext} \u6587\u4ef6\u3002"
+            "\u8bed\u8a00\u5305\u7ffb\u8bd1\u8bf7\u4e0a\u4f20 XLSX/XLS/CSV \u8bed\u8a00\u8868\uff1b"
+            "TXT/DOCX \u957f\u6587\u672c\u8bf7\u4f7f\u7528\u516c\u544a\u7ffb\u8bd1/\u5916\u6587\u672c\u6d41\u7a0b\u3002"
+        )
+    if kind in {"term_base", "glossary_final"}:
+        return "\u672f\u8bed\u8868\u8bf7\u4e0a\u4f20 XLSX/XLS/CSV/JSON \u6587\u4ef6\u3002"
+    if kind == "announcement_terms_workbook":
+        return "\u5df2\u63d0\u53d6\u516c\u544a\u672f\u8bed\u8868\u8bf7\u4e0a\u4f20 XLSX \u6587\u4ef6\u3002"
+    return "\u6587\u4ef6\u7c7b\u578b\u4e0e\u5f53\u524d\u5165\u53e3\u4e0d\u5339\u914d\u3002"
+
+
+def _validate_upload_kind_filename(kind: str, filename: str) -> None:
+    allowed = _allowed_upload_suffixes(kind)
+    if not allowed:
+        return
+    suffix = Path(filename).suffix.lower()
+    if suffix not in allowed:
+        raise HTTPException(status_code=400, detail=_upload_kind_error(kind, suffix))
+
+
+def _validate_run_input_artifact(payload: RunCreate) -> None:
+    if payload.kind not in {"translation", "qa"} or not payload.input_artifact_id:
+        return
+    try:
+        artifact = db.get_artifact(payload.input_artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="input artifact not found") from exc
+    if artifact["project_id"] != payload.project_id:
+        raise HTTPException(status_code=400, detail="input artifact does not belong to project")
+    suffix = Path(str(artifact.get("path") or artifact.get("label") or "")).suffix.lower()
+    if suffix not in _TABLE_UPLOAD_SUFFIXES:
+        raise HTTPException(status_code=400, detail=_upload_kind_error("language_table", suffix))
 
 def _find_duplicate_project_upload(project_id: str, kind: str, digest: str) -> dict[str, Any] | None:
     for artifact in db.list_artifacts(project_id=project_id):

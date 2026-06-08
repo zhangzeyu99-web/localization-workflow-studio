@@ -936,6 +936,58 @@ def test_translation_batch_retry_persists_after_transient_failure(tmp_path: Path
         assert not (batch_dir / "batch_00001.error.json").exists()
 
 
+
+
+def test_language_table_upload_rejects_txt_with_human_message(tmp_path: Path) -> None:
+    text_file = tmp_path / "notice.txt"
+    text_file.write_text("announcement text", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "TXT Guard", "type": "QA"}).json()
+        with text_file.open("rb") as fh:
+            response = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert ".txt" in detail
+        assert "XLSX" in detail
+        assert "TXT" in detail
+        assert "Traceback" not in detail
+        assert "python.exe" not in detail
+        assert "run_translation_harness" not in detail
+        assert str(tmp_path) not in detail
+
+
+def test_translation_rejects_legacy_txt_input_without_raw_harness_error(tmp_path: Path) -> None:
+    text_file = tmp_path / "legacy.txt"
+    text_file.write_text("long text to translate", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Legacy TXT Guard", "type": "QA"}).json()
+        stored = workflow.copy_upload(project["id"], text_file, "legacy.txt", "asset")
+        run = db.insert_run(
+            project["id"],
+            "translation",
+            "ko",
+            {"input_artifact_id": stored["id"], "task_origin": "translation_run", "batch_size": 3},
+        )
+        response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 3})
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["run"]["status"] == "needs_input"
+        reason = payload["run"]["metadata"]["reason"]
+        assert ".txt" in reason
+        assert "XLSX" in reason
+        events = client.get(f"/api/runs/{run['id']}/events").json()
+        joined = "\n".join(str(event["message"]) for event in events)
+        assert "command failed" not in joined
+        assert "Traceback" not in joined
+        assert "python.exe" not in joined
+        assert "run_translation_harness" not in joined
+        assert str(tmp_path) not in joined
+
 def test_formal_translation_is_blocked_without_configured_api_key(tmp_path: Path) -> None:
     workbook = tmp_path / "sample-language.xlsx"
     _sample_workbook(workbook)
@@ -1844,7 +1896,16 @@ def test_existing_translation_workbook_can_run_qa_without_translation_workpack(t
         finally:
             snapshot_wb.close()
         events = client.get(f"/api/runs/{run_response.json()['id']}/events").json()
-        assert any("--term-base" in event["message"] and "project_glossary_snapshot.xlsx" in event["message"] for event in events)
+        joined_events = "\n".join(str(event["message"]) for event in events)
+        assert "--term-base" not in joined_events
+        assert "project_glossary_snapshot.xlsx" not in joined_events
+        assert "Traceback" not in joined_events
+        assert "running local workflow step" in joined_events
+        log_path = Path(os.environ["LWS_DATA_ROOT"]) / "runs" / run_response.json()["id"] / "logs" / "subprocess.log"
+        assert log_path.exists()
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "--term-base" in log_text
+        assert "project_glossary_snapshot" in log_text
         project_detail = client.get(f"/api/projects/{project['id']}").json()
         assert int(project_detail["stats"]["words"]) > 0
         assert project_detail["stats"]["langs"] == 1
