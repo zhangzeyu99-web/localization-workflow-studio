@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 0.5.2 - 2026-06-08
+
+- Added standalone stability tooling for local/LAN workbench runs, including start/stop scripts, a one-command stability check, and documented pass criteria for non-Codex operation.
+- Verified the full project workflow against real sample files using the configured API provider: project creation, AI analysis, glossary import/export, translation, QA, archive import/export, quick task translation, and announcement delivery preparation.
+- Kept frontend prompt display human-readable in Chinese while preserving the full execution prompt in backend snapshots for provider calls.
+- Improved interrupted-run resume behavior and cleaned user-facing task/progress text so internal batch logs do not leak into quick-task and workflow surfaces.
+- Extended E2E coverage for resumable translation, quick tasks, announcement workflow, language display, asset search/paging, delivery empty-state actions, and API failure feedback.
+
+
 ## 0.5.1 - 2026-06-04
 
 - Added project-scoped quick tasks and announcement translation workflow support, including glossary extraction, constraint lookup, AI-response import, QA/apply/deliver shells, and EN/KR/JP-oriented delivery handling.
