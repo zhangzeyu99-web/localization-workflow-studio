@@ -663,7 +663,9 @@ wb.close()
   await expect(page.locator('.panel-title', { hasText: '\u516c\u544a\u8d44\u6599' })).toBeVisible()
   await expect(page.locator('.announcement-current-task')).toHaveCount(0)
   await page.getByRole('button', { name: '\u2190 \u8fd4\u56de\u9879\u76ee\u6982\u89c8' }).click()
-  await page.locator('.announcement-task-row', { hasText: 'announcement_notice.txt' }).getByRole('button', { name: '\u7ee7\u7eed' }).click()
+  const deliveredAnnouncementRow = page.locator('.announcement-task-row', { hasText: 'announcement_notice.txt' })
+  await expect(deliveredAnnouncementRow.getByRole('button', { name: '\u7ee7\u7eed' })).toHaveCount(0)
+  await deliveredAnnouncementRow.getByRole('button', { name: '\u67e5\u770b\u4ea4\u4ed8' }).click()
 
   const stepTitles = ['\u516c\u544a\u8d44\u6599', '\u7ea6\u675f\u6765\u6e90', '\u76ee\u6807\u8bed\u8a00', '\u672f\u8bed\u63d0\u53d6', '\u8bd1\u6587\u53cd\u67e5', '\u7ffb\u8bd1\u51c6\u5907', 'AI \u7ffb\u8bd1', '\u6821\u5bf9\u56de\u586b', '\u4ea4\u4ed8']
   for (const [index, title] of stepTitles.entries()) {

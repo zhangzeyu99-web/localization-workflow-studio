@@ -41,23 +41,26 @@ export function AnnouncementProjectPanel({
         <div className="panel-desc">暂无公告任务。公告翻译归属于当前项目，用项目术语、QA归档和项目提示词约束游戏外文本。</div>
       ) : (
         <div className="announcement-task-list">
-          {activeTasks.slice(0, 4).map((task) => (
-            <div
-              key={task.id}
-              className={`announcement-task-row ${holdTaskId === task.id ? 'cancel-hold' : ''}`}
-              onPointerDown={(event) => { if (event.button === 0) onBeginCancelHold(task) }}
-              onPointerUp={onCancelHold}
-              onPointerLeave={onCancelHold}
-              onPointerCancel={onCancelHold}
-            >
-              <div>
-                <strong>{task.title || task.id}</strong>
-                <span>{task.source_format?.toUpperCase() || '-'} · STEP {task.current_step || 1}/9 · {announcementStatusLabel(task.status)}</span>
-                <span>{announcementLanguageSummary(task)}</span>
+          {activeTasks.slice(0, 4).map((task) => {
+            const isDelivered = task.status === 'delivered'
+            return (
+              <div
+                key={task.id}
+                className={`announcement-task-row ${holdTaskId === task.id ? 'cancel-hold' : ''}`}
+                onPointerDown={(event) => { if (event.button === 0 && announcementTaskCanCancel(task)) onBeginCancelHold(task) }}
+                onPointerUp={onCancelHold}
+                onPointerLeave={onCancelHold}
+                onPointerCancel={onCancelHold}
+              >
+                <div>
+                  <strong>{task.title || task.id}</strong>
+                  <span>{task.source_format?.toUpperCase() || '-'} · STEP {task.current_step || 1}/9 · {announcementStatusLabel(task.status)}</span>
+                  <span>{announcementLanguageSummary(task)}</span>
+                </div>
+                <button className="btn btn-ghost btn-sm" onPointerDown={(event) => event.stopPropagation()} onClick={() => onStartTask(task)}>{isDelivered ? '查看交付' : '继续'}</button>
               </div>
-              <button className="btn btn-ghost btn-sm" onPointerDown={(event) => event.stopPropagation()} onClick={() => onStartTask(task)}>继续</button>
-            </div>
-          ))}
+            )
+          })}
           {latest ? <div className="panel-desc">最近任务：{latest.title || latest.id}</div> : null}
         </div>
       )}
