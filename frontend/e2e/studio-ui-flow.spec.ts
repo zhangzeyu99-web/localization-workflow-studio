@@ -616,10 +616,10 @@ wb.close()
   await page.getByRole('button', { name: '\u53cd\u67e5\u672f\u8bed\u8bd1\u6587' }).click()
   await expect(page.locator('.panel-title', { hasText: '\u7ffb\u8bd1\u51c6\u5907' })).toBeVisible({ timeout: 20000 })
   await page.getByRole('button', { name: '\u751f\u6210\u7ffb\u8bd1\u51c6\u5907\u5305' }).click()
-  await expect(page.locator('.panel-title', { hasText: 'AI \u7ffb\u8bd1 / \u5bfc\u5165' })).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('.panel-title', { hasText: 'AI \u7ffb\u8bd1' })).toBeVisible({ timeout: 30000 })
   await expect(page.locator('.panel-desc', { hasText: '\u4e0d\u4f1a\u4f7f\u7528\u8c37\u6b4c\u673a\u7ffb' })).toBeVisible()
   await expect(page.locator('.announcement-artifacts')).toHaveCount(0)
-  const processArtifacts = page.locator('.asset-list', { hasText: '\u53ef\u4e0b\u8f7d\u51c6\u5907\u4ea7\u7269' })
+  const processArtifacts = page.locator('.asset-list', { hasText: '\u51c6\u5907\u4ea7\u7269\u4e0b\u8f7d' })
   await expect(processArtifacts.getByText(/\u516c\u544a Workpack.*EN/)).toBeVisible()
   await expect(processArtifacts.getByText(/\u516c\u544a\u7ffb\u8bd1\u4e2d\u8f6c\u8868/)).toBeVisible()
 
@@ -639,6 +639,7 @@ wb.close()
     'utf-8',
   )
 
+  await page.locator('summary', { hasText: '\u5916\u90e8 AI response \u5bfc\u5165' }).click()
   await page.locator('label.upload-box', { hasText: '\u4e0a\u4f20 ai_response_<lang>.jsonl' }).locator('input[type="file"]').setInputFiles(responseFile)
   await expect(page.locator('.inline-status')).toContainText(fileStem(responseFile), { timeout: 15000 })
   await page.getByRole('button', { name: '\u5bfc\u5165 AI response' }).click()
@@ -656,7 +657,7 @@ wb.close()
   await expect(page.locator('.announcement-project-panel')).not.toContainText('terms_ready')
   await page.locator('.announcement-task-row', { hasText: 'announcement_notice.txt' }).getByRole('button', { name: '\u7ee7\u7eed' }).click()
 
-  const stepTitles = ['\u516c\u544a\u8d44\u6599', '\u7ea6\u675f\u6765\u6e90', '\u76ee\u6807\u8bed\u8a00', '\u672f\u8bed\u63d0\u53d6', '\u8bd1\u6587\u53cd\u67e5', '\u7ffb\u8bd1\u51c6\u5907', 'AI \u7ffb\u8bd1 / \u5bfc\u5165', '\u6821\u5bf9\u56de\u586b', '\u4ea4\u4ed8']
+  const stepTitles = ['\u516c\u544a\u8d44\u6599', '\u7ea6\u675f\u6765\u6e90', '\u76ee\u6807\u8bed\u8a00', '\u672f\u8bed\u63d0\u53d6', '\u8bd1\u6587\u53cd\u67e5', '\u7ffb\u8bd1\u51c6\u5907', 'AI \u7ffb\u8bd1', '\u6821\u5bf9\u56de\u586b', '\u4ea4\u4ed8']
   for (const [index, title] of stepTitles.entries()) {
     await page.locator('.announcement-steps .step-item').nth(index).click()
     await expect(page.locator('.panel-title', { hasText: title })).toBeVisible()

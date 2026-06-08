@@ -4,7 +4,7 @@ import { artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnounc
 import { ActionStatus, ArtifactNote, FileBox, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
 
-export const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译/导入', '校对回填', '交付']
+export const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译', '校对回填', '交付']
 
 export function activeAnnouncementTasks(tasks: AnnouncementTask[]): AnnouncementTask[] {
   return tasks.filter((task) => task.status !== 'canceled')
@@ -382,24 +382,20 @@ export function AnnouncementWizard({
             <AnnouncementActionStep title="翻译准备" step={6} desc="按语言生成中转表、manifest、prompt snapshot 和 workpack。后续可直接调用 AI provider 或下载 workpack 外部翻译。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备包" onAction={() => run('prepare', 7)} />
           ) : step === 7 ? (
             <>
-              <div className="panel-title"><span className="badge">STEP 7</span>AI 翻译 / 导入</div>
-              <div className="panel-desc">有正式 OpenAI/Claude 配置时可直接翻译；否则下载 workpack 后上传外部 AI response。不会使用谷歌机翻或在线机翻聚合器。</div>
+              <div className="panel-title"><span className="badge">STEP 7</span>AI 翻译</div>
+              <div className="panel-desc">主流程是直接调用已配置的 AI provider 翻译；中转表、Workpack 和提示词快照只是兜底下载或审计材料。不会使用谷歌机翻或在线机翻聚合器。</div>
               {getAnnouncementTranslationProgress(activeTask) ? <TranslationProgressBar progress={getAnnouncementTranslationProgress(activeTask)!} /> : null}
               {activeTask?.metadata?.reason === 'background_job_interrupted' ? <div className="warn-line">后台翻译曾中断；可点击“调用已配置 AI 翻译”继续，已完成批次不会重跑。</div> : null}
               {activeTask?.metadata?.reason === 'api_budget_confirmation_required' ? <div className="warn-line">预计 API token 超过提醒阈值；请确认预算后再继续后台翻译。</div> : null}
               <div className="workflow-note-grid">
-                <div><strong>AI provider</strong><span>{providerReady ? `${settings?.provider} 已配置` : '未配置真实 API，建议上传 AI response'}</span></div>
+                <div><strong>AI provider</strong><span>{providerReady ? `${settings?.provider} 已配置，可直接翻译` : '未配置真实 API，请先到设置填写 API key'}</span></div>
                 <div><strong>目标语言</strong><span>{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
-                <div><strong>上传 response</strong><span>{responseArtifactIds.length} 个</span></div>
-              </div>
-              <div className="upload-row">
-                <FileBox label="上传 ai_response_<lang>.jsonl" onFile={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setResponseArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
-                <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
+                <div><strong>当前方式</strong><span>{providerReady ? '直接调用 AI' : '等待 API 配置'}</span></div>
               </div>
               <div className="row-actions">
                 <button
-                  className="btn btn-ghost"
-                  disabled={!activeTask || busy}
+                  className="btn btn-primary"
+                  disabled={!activeTask || busy || !providerReady}
                   onClick={() => {
                     const needsBudgetConfirm = activeTask?.metadata?.reason === 'api_budget_confirmation_required'
                     const confirmed = needsBudgetConfirm ? window.confirm('该公告翻译预计 API token 用量超过提醒阈值。确认后会从已完成批次继续。是否继续？') : false
@@ -407,11 +403,24 @@ export function AnnouncementWizard({
                     run(announcementTranslateEndpoint(activeTask), undefined, { confirm_api_budget: confirmed })
                   }}
                 >
-                  {activeTask?.status === 'needs_input' ? '确认后继续 AI 翻译' : '调用已配置 AI 翻译'}
+                  {providerReady ? (activeTask?.status === 'needs_input' ? '确认后继续 AI 翻译' : '调用已配置 AI 翻译') : '请先配置 API key'}
                 </button>
                 <button className="btn btn-ghost" disabled={!activeTask || busy || !['queued', 'running'].includes(activeTask?.status || '')} onClick={() => run('translate/cancel', 7)}>暂停后台翻译</button>
-                <button className="btn btn-primary" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入 AI response</button>
               </div>
+              <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
+              <details className="delivery-advanced">
+                <summary>外部 AI response 导入（备用）</summary>
+                <div className="panel-desc">只有在没有可用 API、或要把 workpack 发给外部 AI/供应商处理时才需要。当前已配置 API 时不用导入。</div>
+                <div className="upload-row">
+                  <FileBox label="上传 ai_response_<lang>.jsonl" onFile={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setResponseArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
+                  <div className="workflow-note-grid compact-grid">
+                    <div><strong>已上传 response</strong><span>{responseArtifactIds.length} 个</span></div>
+                  </div>
+                </div>
+                <div className="row-actions">
+                  <button className="btn btn-ghost" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入 AI response</button>
+                </div>
+              </details>
             </>
           ) : step === 8 ? (
             <AnnouncementActionStep title="校对回填" step={8} desc="按语言校验 ID、顺序、变量、标签、术语、中文残留和格式指纹；hard blocker 未清零不生成最终交付包。" activeTask={activeTask} busy={busy} actionLabel="QA 并回填同格式文件" onAction={() => run('apply', 9)} />
@@ -802,7 +811,8 @@ export function ArtifactLinks({ artifacts, kinds }: { artifacts: Artifact[]; kin
   const filtered = artifacts.filter((artifact) => kinds.includes(artifact.kind))
   return (
     <div className="asset-list">
-      <div className="ai-header">可下载准备产物</div>
+      <div className="ai-header">准备产物下载（可选）</div>
+      <div className="panel-desc">正常走 API 翻译时不用下载；需要人工检查、外部协作或复盘审计时再下载。</div>
       {!filtered.length ? <div className="warn-line">准备产物尚未生成，请先完成 STEP 6。</div> : null}
       {filtered.map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
     </div>

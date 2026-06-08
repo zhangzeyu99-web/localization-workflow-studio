@@ -1402,11 +1402,20 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   margin-top: 8px;
   padding: 10px;
 }
+.ai-card.compact-note .ai-header { margin-bottom: 0; }
 .ai-card.compact-note pre {
   max-height: 72px;
   overflow: auto;
 }
-.ai-header { color: #fff; font-weight: 600; margin-bottom: 10px; }
+.ai-header {
+  color: #fff;
+  font-weight: 600;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
 .row-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .history-card { margin-top: 14px; }
 .history-table th,

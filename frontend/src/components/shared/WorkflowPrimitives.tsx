@@ -110,7 +110,10 @@ export function FileBox({ label, onFile, testId }: { label: string; onFile: (fil
 export function ArtifactNote({ artifact, compact = false }: { artifact: Artifact; compact?: boolean }) {
   return (
     <div className={`ai-card ${compact ? 'compact-note' : ''}`}>
-      <div className="ai-header">{artifactPickerLabel(artifact)}</div>
+      <div className="ai-header">
+        <span>{artifactPickerLabel(artifact)}</span>
+        <a className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载</a>
+      </div>
       {!compact ? <div className="muted-left">{artifactFileName(artifact)}</div> : null}
     </div>
   )
