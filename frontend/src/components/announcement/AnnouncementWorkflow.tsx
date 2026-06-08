@@ -653,15 +653,38 @@ export function announcementTaskCanCancel(task: AnnouncementTask): boolean {
 export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { activeTask: AnnouncementTask | null; busy: boolean; onDeliver: (force?: boolean) => void }) {
   const deliveryArtifacts = (activeTask?.artifacts || []).filter((artifact) => ['announcement_delivery_package', 'announcement_docx_delivery_package'].includes(artifact.kind))
   const delivered = Boolean(activeTask?.status === 'delivered' && deliveryArtifacts.length)
+  const hardBlockers = Number(activeTask?.metadata?.hard_blockers || 0)
+  const qaSummaryArtifacts = pickerArtifacts((activeTask?.artifacts || []).filter((artifact) => ['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind)))
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 9</span>交付</div>
       <div className="panel-desc">生成公告交付总包：只包含按语言分目录的成品和 QA 摘要；中转表、manifest、workpack 留在过程产物区。</div>
       {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
       <AnnouncementTaskSnapshot task={activeTask} />
+      {hardBlockers > 0 && !delivered ? (
+        <div className="warn-line">
+          当前还有 {hardBlockers} 个 Hard blocker。默认不建议交付；如果只是临时验收或先看版面，可以跳过阻断生成带 QA 摘要的交付包。
+        </div>
+      ) : null}
+      {qaSummaryArtifacts.length && hardBlockers > 0 ? (
+        <div className="row-actions">
+          {qaSummaryArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载 QA 摘要</a>)}
+        </div>
+      ) : null}
       {delivered ? <div className="ok-line">已生成公告交付包，可在下方下载；不会重复生成新交付。</div> : null}
       <div className="row-actions">
-        {!delivered ? <button className="btn btn-primary" disabled={!activeTask || busy} onClick={() => onDeliver(false)}>生成交付总包</button> : null}
+        {!delivered && hardBlockers <= 0 ? <button className="btn btn-primary" disabled={!activeTask || busy} onClick={() => onDeliver(false)}>生成交付总包</button> : null}
+        {!delivered && hardBlockers > 0 ? (
+          <button
+            className="btn btn-primary"
+            disabled={!activeTask || busy}
+            onClick={() => {
+              if (window.confirm(`当前还有 ${hardBlockers} 个 Hard blocker。确认跳过阻断并生成交付包？QA 摘要会一起放进交付包。`)) onDeliver(true)
+            }}
+          >
+            跳过 Hard blocker 生成交付包
+          </button>
+        ) : null}
       </div>
       {delivered ? (
         <details className="delivery-advanced">
@@ -682,12 +705,22 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
 }
 
 export function AnnouncementActionStep({ title, step, desc, activeTask, busy, actionLabel, onAction }: { title: string; step: number; desc: string; activeTask: AnnouncementTask | null; busy: boolean; actionLabel: string; onAction: () => void }) {
+  const hardBlockers = Number(activeTask?.metadata?.hard_blockers || 0)
+  const qaSummaryArtifacts = pickerArtifacts((activeTask?.artifacts || []).filter((artifact) => ['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind)))
   return (
     <>
       <div className="panel-title"><span className="badge">STEP {step}</span>{title}</div>
       <div className="panel-desc">{desc}</div>
       {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
       <AnnouncementTaskSnapshot task={activeTask} />
+      {step === 8 && hardBlockers > 0 ? (
+        <div className="warn-line">检测到 {hardBlockers} 个 Hard blocker。可以下载 QA 摘要查看问题；如果只是临时验收，可去 STEP 9 跳过阻断生成交付包。</div>
+      ) : null}
+      {step === 8 && qaSummaryArtifacts.length ? (
+        <div className="row-actions">
+          {qaSummaryArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载 QA 摘要</a>)}
+        </div>
+      ) : null}
       <div className="row-actions"><button className="btn btn-primary" disabled={!activeTask || busy} onClick={onAction}>{actionLabel}</button></div>
     </>
   )

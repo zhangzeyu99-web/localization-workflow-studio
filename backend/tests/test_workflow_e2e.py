@@ -368,6 +368,79 @@ def test_announcement_task_extract_terms_ignores_generated_terms_workbook_as_con
         assert terms[0]["translations"]["en"] == "Trial Realm"
 
 
+def test_announcement_force_delivery_with_hard_blockers_generates_package(tmp_path: Path) -> None:
+    source_path = tmp_path / "notice_force.txt"
+    terms_path = tmp_path / "notice_terms.xlsx"
+    source_path.write_text("\u82f1\u96c4\u5956\u52b1 {0}\n", encoding="utf-8")
+    _announcement_ko_terms(terms_path)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "\u516c\u544a\u5f3a\u5236\u4ea4\u4ed8", "type": "RPG"}).json()
+        with source_path.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice_force.txt", fh, "text/plain")},
+            ).json()
+        with terms_path.open("rb") as fh:
+            terms_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("notice_terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": source_artifact["id"], "language_table_artifact_ids": [terms_artifact["id"]], "languages": ["ko"]},
+        ).json()
+        task_id = task["id"]
+        for endpoint in ("inspect-constraints", "extract-terms", "lookup-translations"):
+            response = client.post(
+                f"/api/announcement-tasks/{task_id}/{endpoint}",
+                json={"language_table_artifact_ids": [terms_artifact["id"]], "languages": ["ko"], "include_project_archive": True},
+            )
+            assert response.status_code == 200, response.text
+        prepared = client.post(f"/api/announcement-tasks/{task_id}/prepare", json={"languages": ["ko"]}).json()
+        workpack = next(artifact for artifact in prepared["artifacts"] if artifact["kind"] == "announcement_workpack")
+        rows = [json.loads(line) for line in Path(workpack["path"]).read_text(encoding="utf-8").splitlines()]
+        response_path = tmp_path / "ai_response_ko.jsonl"
+        response_path.write_text(
+            "\n".join(json.dumps({"para_id": row["para_id"], "translation": "\uc601\uc6c5 \ubcf4\uc0c1"}, ensure_ascii=False) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        with response_path.open("rb") as fh:
+            response_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("ai_response_ko.jsonl", fh, "application/jsonl")},
+            ).json()
+        imported = client.post(
+            f"/api/announcement-tasks/{task_id}/import-ai",
+            json={"languages": ["ko"], "response_artifact_ids": [response_artifact["id"]]},
+        )
+        assert imported.status_code == 200, imported.text
+
+        blocked = client.post(f"/api/announcement-tasks/{task_id}/apply", json={"languages": ["ko"]})
+        assert blocked.status_code == 400, blocked.text
+        assert "hard blockers" in blocked.json()["detail"]
+
+        normal_delivery = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260608"})
+        assert normal_delivery.status_code == 400
+        assert "hard blockers" in normal_delivery.json()["detail"]
+
+        forced = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260608", "force": True})
+        assert forced.status_code == 200, forced.text
+        summary = forced.json()["summary"]
+        assert summary["forced"] is True
+        assert summary["hard_blockers"] > 0
+        package = next(artifact for artifact in forced.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
+        assert package["metadata"]["forced"] is True
+        with zipfile.ZipFile(package["path"]) as archive:
+            names = sorted(archive.namelist())
+            assert names == ["KR/notice_force_KR.txt", "QA\u6458\u8981.xlsx"]
+            qa_wb = load_workbook(archive.open("QA\u6458\u8981.xlsx"), read_only=True, data_only=True)
+            qa_summary = {row[0]: row[1] for row in qa_wb["Summary"].iter_rows(min_row=2, values_only=True)}
+            assert qa_summary["hard_blockers"] > 0
+            assert qa_summary["outputs"] == 1
+            qa_wb.close()
+
+
 def test_announcement_extract_rejects_legacy_txt_constraint_with_human_message(tmp_path: Path) -> None:
     bad_constraint = tmp_path / "notice.txt"
     bad_constraint.write_text("this is announcement source, not a language table", encoding="utf-8")

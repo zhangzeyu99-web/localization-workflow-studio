@@ -1463,10 +1463,11 @@ def apply_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
 def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
     metadata = _announcement_task_metadata(task)
-    if int(metadata.get("hard_blockers") or 0) > 0:
-        raise ValueError("hard blockers must be fixed before delivery")
     languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
     force = bool(getattr(request, "force", False))
+    hard_blockers = int(metadata.get("hard_blockers") or 0)
+    if hard_blockers > 0 and not force:
+        raise ValueError("hard blockers must be fixed before delivery")
     stamp = str(getattr(request, "date_stamp", "") or datetime.now().strftime("%Y%m%d"))
     existing_artifact = _find_existing_announcement_delivery(task, languages, stamp)
     if existing_artifact and not force:
@@ -1486,14 +1487,19 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
             "artifacts": [existing_artifact],
         }
     superseded_artifacts = _matching_announcement_delivery_artifacts(task, languages, stamp) if force else []
-    output_artifact_ids = metadata.get("output_artifact_ids") or {}
-    if not output_artifact_ids:
-        raise ValueError("apply announcement translations before delivery")
     run = db.insert_run(task["project_id"], kind="announcement_deliver", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages})
     output = run_dir(run["id"]) / "announcement_delivery"
     output.mkdir(parents=True, exist_ok=True)
-    zip_path = output / f"{_announcement_delivery_base_name(task)}_announcement_delivery_{stamp}.zip"
+    output_artifact_ids = metadata.get("output_artifact_ids") or {}
     qa_artifact_id = metadata.get("qa_summary_artifact_id")
+    if not output_artifact_ids:
+        if not force:
+            raise ValueError("apply announcement translations before delivery")
+        generated = _force_materialize_announcement_outputs_for_delivery(task, metadata, languages, output, run["id"])
+        output_artifact_ids = generated["output_artifact_ids"]
+        qa_artifact_id = generated["qa_summary_artifact_id"]
+        metadata.update(generated)
+    zip_path = output / f"{_announcement_delivery_base_name(task)}_announcement_delivery_{stamp}.zip"
     with ZipFile(zip_path, "w") as archive:
         for language in languages:
             artifact_id = output_artifact_ids.get(language)
@@ -1504,7 +1510,10 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
         if qa_artifact_id:
             qa_artifact = db.get_artifact(qa_artifact_id)
             archive.write(qa_artifact["path"], "QA摘要.xlsx")
-    artifact = db.add_artifact(task["project_id"], "公告交付总包", zip_path, "announcement_delivery_package", run_id=run["id"], mime="application/zip", metadata={"task_id": task_id, "languages": languages, "date_stamp": stamp})
+    artifact_metadata = {"task_id": task_id, "languages": languages, "date_stamp": stamp}
+    if hard_blockers > 0 and force:
+        artifact_metadata.update({"forced": True, "hard_blockers": hard_blockers})
+    artifact = db.add_artifact(task["project_id"], "公告交付总包", zip_path, "announcement_delivery_package", run_id=run["id"], mime="application/zip", metadata=artifact_metadata)
     for old_artifact in superseded_artifacts:
         if old_artifact["id"] == artifact["id"]:
             continue
@@ -1513,8 +1522,33 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     task = db.update_announcement_task(task_id, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
     for language in languages:
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"])
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "delivery_artifact_id": artifact["id"]})
-    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"], "date_stamp": stamp}, "artifacts": [artifact]}
+    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "delivery_artifact_id": artifact["id"], "forced": bool(hard_blockers > 0 and force), "hard_blockers": hard_blockers})
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"], "date_stamp": stamp, "forced": bool(hard_blockers > 0 and force), "hard_blockers": hard_blockers}, "artifacts": [artifact]}
+
+
+def _force_materialize_announcement_outputs_for_delivery(task: dict[str, Any], metadata: dict[str, Any], languages: list[str], output: Path, run_id: str) -> dict[str, Any]:
+    workbook_artifact_id = str(metadata.get("translation_workbook_artifact_id") or "")
+    if not workbook_artifact_id:
+        raise ValueError("translation workbook is missing; prepare/import translations before delivery")
+    workbook_artifact = db.get_artifact(workbook_artifact_id)
+    segments = metadata.get("segments") or _announcement_task_segments(task)
+    rows = _read_announcement_translation_workbook(Path(workbook_artifact["path"]), languages)
+    issues = metadata.get("qa_issues") if isinstance(metadata.get("qa_issues"), list) else _validate_announcement_translation_rows(segments, rows, languages)
+    output_files = _write_announcement_outputs(task, segments, rows, languages, output / "forced_outputs")
+    qa_path = output / "QA摘要.xlsx"
+    _write_announcement_qa_summary(qa_path, issues, output_files)
+    qa_artifact = db.add_artifact(task["project_id"], "公告 QA 摘要", qa_path, "announcement_qa_summary", run_id=run_id, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", metadata={"task_id": task["id"], "hard_blockers": len(issues), "forced_delivery": True})
+    output_artifact_ids: dict[str, str] = {}
+    for language, path in output_files:
+        artifact = db.add_artifact(task["project_id"], f"公告成品 ({_visible_language_code(language)})", path, "announcement_output_file", run_id=run_id, mime=_mime_for_path(path), metadata={"task_id": task["id"], "language": language, "forced_delivery": True})
+        output_artifact_ids[language] = artifact["id"]
+        db.upsert_announcement_task_language(task["id"], task["project_id"], language, status="applied_with_blockers", current_step=ANNOUNCEMENT_STEP["deliver"], metadata={"output_artifact_id": artifact["id"], "qa_summary_artifact_id": qa_artifact["id"], "forced_delivery": True})
+    return {
+        "qa_summary_artifact_id": qa_artifact["id"],
+        "output_artifact_ids": output_artifact_ids,
+        "hard_blockers": len(issues),
+        "forced_delivery": True,
+    }
 
 
 def _find_existing_announcement_delivery(task: dict[str, Any], languages: list[str], date_stamp: str) -> dict[str, Any] | None:
