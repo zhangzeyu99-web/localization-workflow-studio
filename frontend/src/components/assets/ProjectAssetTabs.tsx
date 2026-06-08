@@ -288,22 +288,22 @@ export function GlossaryToolsPanel({
     <div className="glossary-tools-panel">
       <div className="action-card">
         <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} allowEmpty />
-        <FileBox label="上传术语表 xlsx/csv/json" onFile={onUploadTerm} />
+        <FileBox label="上传已确认术语表模板 xlsx/csv/json" onFile={onUploadTerm} />
         <div className="row-actions"><TemplateDownloadLink kind="glossary" /></div>
         <div className="language-inline-select">
-          <span>从语言表生成 / 单语言兜底：</span>
+          <span>从完整语言表扫描候选：</span>
           <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
         </div>
         <div className="row-actions">
-          <button type="button" className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>自动预览导入</button>
-          <button type="button" className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>自动导入多语言术语</button>
-          <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>生成 {lang.short} 术语候选</button>
+          <button type="button" className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语模板</button>
+          <button type="button" className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入已确认术语</button>
+          <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>生成 {lang.short} 候选</button>
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出全部 XLSX</a>
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=csv`}>导出全部 CSV</a>
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=json`}>导出全部 JSON</a>
         </div>
-        {!sourceArtifact ? <div className="warn-line">需要从语言表生成术语时，先在“翻译”页上传待翻译表。</div> : null}
-        <div className="muted-left">自动导入会识别 EN/EN2、KR/KO、JP/JA；KR/JP 默认不使用第二译名列。</div>
+        {!sourceArtifact ? <div className="warn-line">需要从完整语言表生成术语时，先在“翻译”页上传语言表。</div> : null}
+        <div className="muted-left">完整语言表会被拦截，不会直接写入项目术语库；请先生成候选并人工确认。</div>
       </div>
     </div>
   )

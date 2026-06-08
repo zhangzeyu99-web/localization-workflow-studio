@@ -383,11 +383,11 @@ export function StepTerm({
   const lang = languageSpec(selectedLanguage)
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 3</span>导入游戏术语表</div>
-      <div className="panel-desc">可使用已有术语表、上传新文件、预览后导入，也可跳过由 Step 5 生成。</div>
+      <div className="panel-title"><span className="badge">STEP 3</span>导入已确认术语表</div>
+      <div className="panel-desc">这里只导入人工维护过的术语模板。完整语言表不要放这里，请到 STEP 5 扫描高频术语候选。</div>
       <div className="action-card">
         <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} />
-        <FileBox label="上传术语表 xlsx/csv/json" onFile={onUploadTerm} />
+        <FileBox label="上传术语表模板 xlsx/csv/json" onFile={onUploadTerm} />
         <div className="row-actions"><TemplateDownloadLink kind="glossary" /></div>
         <div className="row-actions">
           <button className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语</button>
@@ -472,12 +472,12 @@ export function StepFreqV2({
   const rejected = activeBatch?.counts?.rejected ?? glossaryCandidates.filter((candidate) => candidate.status === 'rejected').length
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 5</span>高频词扫描 & 术语候选审核</div>
-      <div className="panel-desc">先扫描语言表中的高频中文词；缺少 {lang.short} 的候选需要显式补译或人工填写，审核加入后才进入项目术语库。</div>
+      <div className="panel-title"><span className="badge">STEP 5</span>从完整语言表扫描高频术语候选</div>
+      <div className="panel-desc">输入是 STEP 4 的完整语言表；项目资料只辅助生成 brief 和提示词。扫描结果先进入候选，人工确认后才加入项目术语库。</div>
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
         <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
-        <button className="btn btn-primary" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>🔎 开始扫描</button>
+        <button className="btn btn-primary" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>🔎 扫描术语候选</button>
         <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补齐缺失译文</button>
         <button className="btn btn-ghost" onClick={onFreq}>💡 查看补充策略</button>
       </div>

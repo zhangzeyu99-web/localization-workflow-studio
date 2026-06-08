@@ -59,6 +59,17 @@ def _sample_term_workbook(path: Path) -> None:
     wb.close()
 
 
+def _large_language_table_workbook(path: Path, rows: int = 1001) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "KR"])
+    for index in range(1, rows + 1):
+        ws.append([index, f"完整语言表源文 {index}", f"완성 번역 {index}"])
+    wb.save(path)
+    wb.close()
+
+
 def _translated_workbook(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -1664,6 +1675,51 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
             assert headers == ["ID", "CN", "EN", "EN2", "分类", "备注"]
         finally:
             wb.close()
+
+
+def test_large_language_table_is_blocked_from_project_glossary_import(tmp_path: Path) -> None:
+    language_table = tmp_path / "full-language-table.xlsx"
+    _large_language_table_workbook(language_table)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Guard", "type": "QA"}).json()
+        with language_table.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("full-language-table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        term_artifact = upload_response.json()
+
+        preview_response = client.post(
+            f"/api/projects/{project['id']}/glossary/import-preview",
+            json={"artifact_id": term_artifact["id"], "language": "ko"},
+        )
+        assert preview_response.status_code == 400
+        assert "完整语言表" in preview_response.json()["detail"]
+        assert "高频词扫描" in preview_response.json()["detail"]
+
+        import_response = client.post(
+            f"/api/projects/{project['id']}/glossary/import",
+            json={"artifact_id": term_artifact["id"], "language": "ko"},
+        )
+        assert import_response.status_code == 400
+        assert client.get(f"/api/projects/{project['id']}/glossary?language=ko").json() == []
+
+
+def test_large_language_table_upload_is_rejected_as_term_base(tmp_path: Path) -> None:
+    language_table = tmp_path / "full-language-table.xlsx"
+    _large_language_table_workbook(language_table)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary Upload Guard", "type": "QA"}).json()
+        with language_table.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("full-language-table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        assert upload_response.status_code == 400
+        assert "完整语言表" in upload_response.json()["detail"]
+        assert client.get(f"/api/projects/{project['id']}/assets?role=glossary_source").json() == []
 
 
 def test_glossary_manual_save_replaces_duplicate_cn() -> None:

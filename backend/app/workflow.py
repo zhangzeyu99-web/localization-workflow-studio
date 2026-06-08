@@ -3508,7 +3508,7 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
             artifacts.extend(
                 [
                     db.add_artifact(project_id, "Glossary details", detail_output, "glossary_detail", run_id=run["id"]),
-                    db.add_artifact(project_id, "ID CN EN EN2 glossary", final_output, "glossary_final", run_id=run["id"]),
+                    db.add_artifact(project_id, f"ID CN {final_suffix} glossary", final_output, "glossary_final", run_id=run["id"]),
                     db.add_artifact(project_id, "Project brief", brief_output, "project_brief", run_id=run["id"], mime="text/markdown"),
                     db.add_artifact(project_id, "Translation prompt", prompt_output, "translation_prompt", run_id=run["id"], mime="text/plain"),
                 ]
@@ -3795,11 +3795,55 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
 
 
+COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE = (
+    "这是完整语言表，不是项目术语表。请在「语言表/待翻译内容」上传后，"
+    "到 STEP5「高频词扫描 / 从完整语言表扫描高频术语候选」生成候选术语；"
+    "候选经人工确认后才会进入项目术语库。"
+)
+_LARGE_LANGUAGE_TABLE_ROW_THRESHOLD = 1000
+
+
+def is_complete_language_table_for_glossary_import(path: Path, sheet: str | None = None, row_threshold: int = _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD) -> bool:
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return False
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
+        header_row = next(ws.iter_rows(min_row=1, max_row=1), None)
+        if header_row is None:
+            return False
+        headers = [str(cell.value or "").strip() for cell in header_row]
+        normalized = _normalized_header_indices(headers)
+        term_key_idx = _column_index(normalized, None, ["id", "key", "编号", "序号"], required=False)
+        source_idx = _column_index(normalized, None, ["source", "original", "cn", "zh", "chinese", "原文", "中文", "简体中文"], required=False)
+        if term_key_idx is None or source_idx is None:
+            return False
+        reserved = {term_key_idx, source_idx}
+        language_indices = _auto_language_indices(headers, reserved)
+        if not language_indices:
+            return False
+        source_rows = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if _value_at(row, source_idx):
+                source_rows += 1
+                if source_rows > row_threshold:
+                    return True
+        return False
+    finally:
+        wb.close()
+
+
+def guard_complete_language_table_for_glossary_import(path: Path, sheet: str | None = None) -> None:
+    if is_complete_language_table_for_glossary_import(path, sheet=sheet):
+        raise ValueError(COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE)
+
+
 def preview_glossary_import(project_id: str, request: Any, import_all: bool = False) -> dict[str, Any]:
     project = db.get_project(project_id)
     _ = project
     artifact = db.get_artifact(request.artifact_id)
     path = Path(artifact["path"])
+    guard_complete_language_table_for_glossary_import(path, sheet=getattr(request, "sheet", None))
     language = require_supported_language(getattr(request, "language", "en") or "en")
     auto_languages = bool(getattr(request, "auto_languages", True))
     if auto_languages and not getattr(request, "target_column", None) and not getattr(request, "target_alt_column", None):

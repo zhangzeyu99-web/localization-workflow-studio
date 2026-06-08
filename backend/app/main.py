@@ -68,6 +68,7 @@ if __package__ is None or __package__ == "":
         export_glossary,
         export_translation_archive,
         extract_glossary,
+        guard_complete_language_table_for_glossary_import,
         harness_overview,
         import_glossary,
         import_translation_archive,
@@ -165,6 +166,7 @@ else:
         export_glossary,
         export_translation_archive,
         extract_glossary,
+        guard_complete_language_table_for_glossary_import,
         harness_overview,
         import_glossary,
         import_translation_archive,
@@ -406,6 +408,12 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
             return duplicate
     destination = _unique_path(upload_root / safe_name)
     temp_path.replace(destination)
+    if kind in {"term_base", "glossary_final"}:
+        try:
+            guard_complete_language_table_for_glossary_import(destination)
+        except ValueError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     mime = file.content_type or mimetypes.guess_type(str(destination))[0] or "application/octet-stream"
     artifact = db.add_artifact(
         project_id,

@@ -536,7 +536,7 @@ function App() {
   async function runGlossaryExtract() {
     if (!current || !sourceArtifact) return
     setBusy(true)
-    setStatus('正在提取术语并生成 project brief...')
+    setStatus('正在从完整语言表扫描术语候选...')
     try {
       const result = await api<{
         run: Run
@@ -573,7 +573,7 @@ function App() {
       await refreshGlossaryBatches(current.id)
       const backfill = result.glossary_backfill || {}
       const pendingConfirmation = backfill.pending_confirmation ?? backfill.inserted ?? 0
-      setStatus(`术语扫描完成：候选 ${backfill.candidates ?? 0}，按中文去重后 ${backfill.unique_candidates ?? 0}，已在库中跳过 ${backfill.skipped_existing ?? 0}，新增待审核 ${pendingConfirmation}，重复跳过 ${backfill.skipped_duplicate ?? 0}`)
+      setStatus(`术语候选已生成：候选 ${backfill.candidates ?? 0}，按中文去重后 ${backfill.unique_candidates ?? 0}，已在库中跳过 ${backfill.skipped_existing ?? 0}，待人工确认 ${pendingConfirmation}，重复跳过 ${backfill.skipped_duplicate ?? 0}`)
     } catch (error) {
       setStatus(`术语提取失败：${errorText(error)}`)
     } finally {
