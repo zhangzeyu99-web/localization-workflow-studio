@@ -120,7 +120,10 @@ export function DeliveryTab({
         {deliverables.map((task) => {
           const finalFile = task.files.final
           const changesFile = task.files.changes
-          const hasDelivery = Boolean(finalFile?.download_url && changesFile?.download_url)
+          const hasFinal = Boolean(finalFile?.download_url)
+          const hasChanges = Boolean(changesFile?.download_url)
+          const hasDelivery = hasFinal
+          const resultLabel = hasDelivery ? (hasChanges ? '\u5df2\u751f\u6210\u6700\u7ec8\u8bd1\u6587 + \u4fee\u6539\u8bb0\u5f55' : '\u5df2\u751f\u6210\u6700\u7ec8\u8bd1\u6587') : '\u5f85\u751f\u6210'
           return (
             <div key={task.run_id} className="delivery-card delivery-line">
               <div className="delivery-head">

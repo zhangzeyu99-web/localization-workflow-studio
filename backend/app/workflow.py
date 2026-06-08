@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from openpyxl import Workbook, load_workbook
 
 from . import db
-from .config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, REAL_PROVIDERS, load_settings, normalize_provider_name
+from .config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name, test_provider_enabled
 from .delivery_naming import safe_delivery_name, source_stem
 from .languages import ANNOUNCEMENT_LANGUAGE_ORDER, PROJECT_LANGUAGE_ORDER, alt_aliases, language_spec, normalize_language, require_supported_language, target_aliases, visible_language_code
 from .providers import call_text, translate_batch
@@ -1823,6 +1823,41 @@ def _txt_announcement_segments(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _is_quick_text_path(path: Path) -> bool:
+    return path.suffix.lower() in {".txt", ".md", ".markdown"}
+
+
+def _quick_text_translation_rows(path: Path) -> list[dict[str, Any]]:
+    return [
+        {"id": segment["id"], "source": segment["source"], "index": segment["index"], "source_file": segment["source_file"]}
+        for segment in _txt_announcement_segments(path)
+    ]
+
+
+def _write_quick_text_output(source_path: Path, translated_rows: list[dict[str, Any]], language: str, output_dir: Path) -> Path:
+    translations = {str(row.get("id")): str(row.get("translation") or "") for row in translated_rows}
+    segments = _txt_announcement_segments(source_path)
+    by_index = {int(segment["index"]): translations.get(str(segment["id"]), segment["source"]) for segment in segments}
+    raw_lines = source_path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
+    if not raw_lines and source_path.read_text(encoding="utf-8-sig").strip():
+        raw_lines = [source_path.read_text(encoding="utf-8-sig")]
+    output_parts: list[str] = []
+    for index, raw in enumerate(raw_lines):
+        if raw.endswith("\r\n"):
+            content, newline = raw[:-2], "\r\n"
+        elif raw.endswith("\n"):
+            content, newline = raw[:-1], "\n"
+        elif raw.endswith("\r"):
+            content, newline = raw[:-1], "\r"
+        else:
+            content, newline = raw, ""
+        output_parts.append((by_index.get(index, content) if content.strip() else content) + newline)
+    suffix = source_path.suffix.lower() if source_path.suffix.lower() in {".txt", ".md", ".markdown"} else ".txt"
+    output_path = output_dir / f"{_safe_source_stem(source_path.name)}_{_visible_language_code(language)}{suffix}"
+    output_path.write_text("".join(output_parts), encoding="utf-8")
+    return output_path
+
+
 def _xlsx_announcement_segments(path: Path) -> list[dict[str, Any]]:
     wb = load_workbook(path, read_only=True, data_only=True)
     rows: list[dict[str, Any]] = []
@@ -1963,6 +1998,7 @@ def _announcement_constraint_rows(project_id: str, metadata: dict[str, Any], lan
 
 def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str], languages: list[str]) -> list[dict[str, Any]]:
     by_source: dict[str, dict[str, Any]] = {}
+    scanned_artifacts = 0
     for artifact_id in artifact_ids:
         if not artifact_id:
             continue
@@ -1971,7 +2007,15 @@ def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str]
             raise KeyError(artifact_id)
         if _is_generated_announcement_terms_artifact(artifact):
             continue
-        for row in _read_language_table_rows(Path(artifact["path"]), languages):
+        path = Path(artifact["path"])
+        scanned_artifacts += 1
+        if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+            raise ValueError(f"约束文件格式不正确：{path.name} 不是 XLSX 语言表。请上传完整语言表/术语交付表，不要把公告原文或 TXT 放在约束来源。")
+        artifact_rows = _read_language_table_rows(path, languages)
+        if not artifact_rows:
+            visible = " / ".join(_visible_language_code(language) for language in languages) or "目标语言"
+            raise ValueError(f"约束文件未识别到可反查词条：{path.name}。请检查表头是否包含 ID、CN/中文/原文，以及 {visible} 目标语言列。")
+        for row in artifact_rows:
             key = _wide_source_key(row.get("source"))
             if not key:
                 continue
@@ -1982,6 +2026,9 @@ def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str]
                 if target and not existing["translations"].get(language):
                     existing["translations"][language] = target
             existing["sources"].append({"type": "language_table", "artifact_id": artifact_id})
+    if scanned_artifacts and not by_source:
+        visible = " / ".join(_visible_language_code(language) for language in languages) or "目标语言"
+        raise ValueError(f"约束文件未识别到可反查词条。请确认表头包含 ID、CN/中文/原文，以及 {visible} 目标语言列。")
     return list(by_source.values())
 
 
@@ -2801,12 +2848,17 @@ def inspect_translation_targets(artifact_id: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "artifact_id": artifact_id,
         "label": artifact.get("label", ""),
-        "supported_file": path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"},
+        "supported_file": path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"} or _is_quick_text_path(path),
         "source_detected": False,
         "detected_languages": [],
         "suggested_language": None,
         "sheets": [],
     }
+    if _is_quick_text_path(path) and path.exists():
+        segments = _txt_announcement_segments(path)
+        result["source_detected"] = bool(segments)
+        result["sheets"] = [{"sheet": path.name, "languages": [], "source_detected": bool(segments)}]
+        return result
     if not result["supported_file"] or not path.exists():
         return result
     detected: set[str] = set()
@@ -2863,6 +2915,14 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
         "batch_size": effective_batch_size,
         "estimated_batches": 0,
     }
+    if _is_quick_text_path(path) and path.exists():
+        rows = _quick_text_translation_rows(path)
+        summary["source_rows"] = len(rows)
+        summary["empty_target_rows"] = len(rows)
+        summary["needs_translation"] = bool(rows)
+        summary["reason"] = "needs_translation" if rows else "no_source_rows"
+        summary["estimated_batches"] = math.ceil(len(rows) / effective_batch_size) if rows else 0
+        return summary
     if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"} or not path.exists():
         return summary
 
@@ -4164,7 +4224,7 @@ def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
     for run in db.list_runs(project_id):
         if run["kind"] not in {"translation", "qa"} or run["status"] != "passed":
             continue
-        final_artifact = _run_artifact(run["id"], "qa_final_workbook")
+        final_artifact = _deliverable_final_artifact(run)
         if not final_artifact or not Path(final_artifact["path"]).exists():
             continue
         deliverables.append(_deliverable_summary(project, run, final_artifact))
@@ -4182,13 +4242,20 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
         if not selected:
             raise ValueError("指定任务未通过 QA，暂无最终交付")
     run = db.get_run(selected["run_id"])
-    final_source = _run_artifact(run["id"], "qa_final_workbook")
+    final_source = _deliverable_final_artifact(run)
     if not final_source or not Path(final_source["path"]).exists():
-        raise ValueError("QA 未通过，暂无最终交付 workbook")
+        raise ValueError("暂无最终交付文件")
     changes_source = _run_artifact(run["id"], "qa_changes")
 
     output_dir = project_dir(project_id) / "delivery"
     output_dir.mkdir(parents=True, exist_ok=True)
+    if final_source["kind"] == "final_text":
+        final_path = _delivery_final_output_path(project, run, final_source)
+        shutil.copy2(final_source["path"], final_path)
+        summary = _deliverable_summary(project, run, final_source)
+        summary["files"] = {"final": _delivery_file("final", final_path)}
+        return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values())}
+
     final_path, changes_path = _delivery_output_paths(project, run)
     shutil.copy2(final_source["path"], final_path)
     _normalize_delivery_workbook_headers(final_path, run.get("language") or "en")
@@ -4209,12 +4276,21 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
 def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_artifact: dict[str, Any]) -> dict[str, Any]:
     changes_artifact = _run_artifact(run["id"], "qa_changes")
     final_path, changes_path = _delivery_output_paths(project, run)
+    if final_artifact["kind"] == "final_text":
+        final_path = _delivery_final_output_path(project, run, final_artifact)
     task_code, task_run_id = _effective_task_identity(run)
     metadata = run.get("metadata", {})
     quality_summary = metadata.get("quality_summary") or {}
     provider, model = _deliverable_provider_model(metadata, quality_summary)
     input_label = _input_artifact_label(metadata, run["project_id"])
-    processed = _workbook_processed_rows(Path(final_artifact["path"]))
+    processed = (
+        {"processed_rows": int(metadata.get("translated_rows") or metadata.get("source_rows") or 0), "source_rows": int(metadata.get("source_rows") or 0), "translated_rows": int(metadata.get("translated_rows") or 0)}
+        if final_artifact["kind"] == "final_text"
+        else _workbook_processed_rows(Path(final_artifact["path"]))
+    )
+    files = {"final": _delivery_file("final", final_path) if final_path.exists() else _expected_delivery_file("final", final_path)}
+    if final_artifact["kind"] != "final_text":
+        files["changes"] = _delivery_file("changes", changes_path) if changes_path.exists() else _expected_delivery_file("changes", changes_path)
     return {
         "run_id": run["id"],
         "task_code": task_code,
@@ -4234,15 +4310,17 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
         "qa_status": "passed" if quality_summary.get("passed", run.get("status") == "passed") else "failed",
         "qa_hard_errors": int(quality_summary.get("hard_errors") or 0),
         "qa_soft_warnings": _soft_warning_count(quality_summary),
-        "files": {
-            "final": _delivery_file("final", final_path) if final_path.exists() else _expected_delivery_file("final", final_path),
-            "changes": _delivery_file("changes", changes_path) if changes_path.exists() else _expected_delivery_file("changes", changes_path),
-        },
+        "files": files,
         "source_artifacts": {
-            "qa_final_workbook": final_artifact["id"],
+            "qa_final_workbook": final_artifact["id"] if final_artifact["kind"] == "qa_final_workbook" else "",
+            "final_text": final_artifact["id"] if final_artifact["kind"] == "final_text" else "",
             "qa_changes": changes_artifact["id"] if changes_artifact else "",
         },
     }
+
+
+def _deliverable_final_artifact(run: dict[str, Any]) -> dict[str, Any] | None:
+    return _run_artifact(run["id"], "qa_final_workbook") or _run_artifact(run["id"], "final_text")
 
 
 def _effective_task_identity(run: dict[str, Any], seen: set[str] | None = None) -> tuple[str, str]:
@@ -4291,6 +4369,17 @@ def _delivery_output_paths(project: dict[str, Any], run: dict[str, Any]) -> tupl
     language = _visible_language_code(run.get("language") or "en")
     prefix = f"{_safe_delivery_name(project['name'])}_{language}_{timestamp}_{task_code}-{_short_run_id(task_run_id)}"
     return output_dir / f"{prefix}_final.xlsx", output_dir / f"{prefix}_changes.xlsx"
+
+
+def _delivery_final_output_path(project: dict[str, Any], run: dict[str, Any], source_artifact: dict[str, Any]) -> Path:
+    output_dir = project_dir(project["id"]) / "delivery"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    task_code, task_run_id = _effective_task_identity(run)
+    timestamp = _delivery_timestamp(run.get("created_at", ""))
+    language = _visible_language_code(run.get("language") or "en")
+    suffix = Path(str(source_artifact.get("path") or "")).suffix.lower() or ".txt"
+    prefix = f"{_safe_delivery_name(project['name'])}_{language}_{timestamp}_{task_code}-{_short_run_id(task_run_id)}"
+    return output_dir / f"{prefix}_final{suffix}"
 
 
 def _normalize_delivery_workbook_headers(path: Path, language: Any) -> None:
@@ -5902,6 +5991,117 @@ async def _translate_rows_with_orchestration(
     return translated_rows
 
 
+async def _translate_quick_text_run(
+    *,
+    run: dict[str, Any],
+    input_artifact: dict[str, Any],
+    settings: dict[str, Any],
+    batch_size: int,
+    language: str,
+    readiness: dict[str, Any],
+    request: Any,
+    cancel_event: Any | None = None,
+) -> dict[str, Any]:
+    run_id = run["id"]
+    project = db.get_project(run["project_id"])
+    metadata = run.get("metadata", {})
+    input_path = Path(input_artifact["path"])
+    rows = _quick_text_translation_rows(input_path)
+    if not rows:
+        reason = "TXT 文件没有检测到可翻译文本。"
+        db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason, "translation_readiness": readiness})
+        db.add_event(run_id, reason)
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
+
+    db.update_run(run_id, status="running")
+    db.add_event(run_id, f"quick TXT translation preflight: source_lines={len(rows)}, batch_size={batch_size}, estimated_batches={readiness.get('estimated_batches') or '-'}")
+    work_dir = run_dir(run_id) / "quick_text_translation"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = work_dir / "snapshots"
+    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir, language=language)
+    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir, language=language)
+    reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
+    prompt = snapshots["prompt"]
+    prompt_snapshot = snapshots["prompt_artifact"]
+    harness_snapshot_artifact = snapshots["harness_artifact"]
+    if reference_snapshot and reference_snapshot.get("context"):
+        prompt = _manage_project_prompt_context(f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}", settings)
+    prompt = _manage_project_prompt_context(
+        f"{prompt}\n\n快速 TXT 任务：逐行翻译 source 字段，保持每个 id 的顺序和结构。只返回 JSONL，每行包含 id 和 translation。",
+        settings,
+    )
+
+    workpack_path = work_dir / "quick_text_workpack.jsonl"
+    write_jsonl(workpack_path, rows)
+    workpack_artifact = db.add_artifact(project["id"], "快速 TXT workpack", workpack_path, "translation_workpack", run_id=run_id, mime="application/jsonl", metadata={"language": language, "source_artifact_id": input_artifact["id"]})
+    translated_rows = await _translate_rows_with_orchestration(
+        run_id=run_id,
+        rows=rows,
+        settings=settings,
+        project_prompt=prompt,
+        work_dir=work_dir,
+        batch_size=batch_size,
+        language=language,
+        cancel_event=cancel_event,
+        confirm_api_budget=bool(getattr(request, "confirm_api_budget", False)),
+    )
+    if not translated_rows and db.get_run(run_id).get("status") == "needs_input":
+        return {"run": db.get_run(run_id), "artifacts": [workpack_artifact], "quality": None, "translation_readiness": readiness}
+
+    response_path = work_dir / "translation_response.jsonl"
+    write_jsonl(response_path, translated_rows)
+    response_artifact = db.add_artifact(project["id"], "快速 TXT translation response", response_path, "translation_response", run_id=run_id, mime="application/jsonl", metadata={"language": language, "source_artifact_id": input_artifact["id"]})
+    output_path = _write_quick_text_output(input_path, translated_rows, language, work_dir)
+    final_artifact = db.add_artifact(project["id"], "快速 TXT 最终译文", output_path, "final_text", run_id=run_id, mime="text/plain", role="delivery", origin="generated", metadata={"language": language, "source_artifact_id": input_artifact["id"]})
+    manifest_path = work_dir / "quick_text_translation_manifest.json"
+    manifest = {
+        "kind": "quick_text_translation",
+        "run_id": run_id,
+        "project_id": project["id"],
+        "language": language,
+        "source_artifact_id": input_artifact["id"],
+        "source_rows": len(rows),
+        "final_artifact_id": final_artifact["id"],
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_artifact = db.add_artifact(project["id"], "快速 TXT translation manifest", manifest_path, "translation_manifest", run_id=run_id, mime="application/json", metadata={"language": language})
+    input_artifacts = {
+        "source_text": input_artifact["id"],
+        "final_text": final_artifact["id"],
+        "translation_workpack": workpack_artifact["id"],
+        "translation_response": response_artifact["id"],
+        "prompt_snapshot": prompt_snapshot["id"],
+        "harness_snapshot": harness_snapshot_artifact["id"],
+        "glossary_snapshot": glossary_snapshot["id"],
+    }
+    if reference_snapshot:
+        input_artifacts["quick_reference_snapshot"] = reference_snapshot["artifact"]["id"]
+    quality_summary = {"passed": True, "hard_errors": 0, "soft_warnings": 0, "rows": len(rows), "format": input_path.suffix.lower().lstrip(".") or "txt"}
+    final_metadata = db.get_run(run_id).get("metadata", {})
+    db.update_run(
+        run_id,
+        status="passed",
+        metadata={
+            **final_metadata,
+            "task_origin": metadata.get("task_origin") or "quick_task",
+            "input_artifacts": input_artifacts,
+            "quality_summary": quality_summary,
+            "quality": {"passed": True, "issues": []},
+            "translation_readiness": readiness,
+            "translated_rows": len(rows),
+            "source_rows": len(rows),
+            "output_format": input_path.suffix.lower().lstrip(".") or "txt",
+        },
+    )
+    db.add_event(run_id, f"quick TXT translation finished: rows={len(rows)}, output={output_path.name}")
+    return {
+        "run": db.get_run(run_id),
+        "artifacts": [final_artifact, response_artifact, workpack_artifact, manifest_artifact, glossary_snapshot, prompt_snapshot, harness_snapshot_artifact],
+        "quality": {"passed": True, "issues": []},
+        "translation_readiness": readiness,
+    }
+
+
 async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
     run = db.get_run(run_id)
     language = require_supported_language(run.get("language") or "en")
@@ -5909,6 +6109,11 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
     metadata = run.get("metadata", {})
     input_artifact = db.get_artifact(metadata["input_artifact_id"])
     settings = load_settings()
+    if request.provider and str(request.provider).strip() == TEST_FAKE_PROVIDER and not test_provider_enabled():
+        reason = "测试 provider 未启用；正式任务请使用已配置的 GPT / Claude API。"
+        db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason})
+        db.add_event(run_id, reason)
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
     if request.provider:
         settings["provider"] = normalize_provider_name(request.provider)
     if request.protocol:
@@ -5918,6 +6123,19 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
     batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
     batch_size = max(1, min(batch_size, 200))
     readiness = inspect_translation_readiness(input_artifact["id"], batch_size=batch_size, language=language)
+    if _is_quick_text_path(Path(input_artifact["path"])) and metadata.get("task_origin") != "quick_task":
+        reason = _friendly_unsupported_language_file_message(Path(input_artifact["path"]).suffix)
+        db.update_run(
+            run_id,
+            status="needs_input",
+            metadata={
+                **metadata,
+                "reason": reason,
+                "translation_readiness": readiness,
+            },
+        )
+        db.add_event(run_id, reason)
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
     if readiness.get("reason") == "unsupported_file":
         reason = _friendly_unsupported_language_file_message(Path(input_artifact["path"]).suffix)
         db.update_run(
@@ -5964,6 +6182,17 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             metadata={**metadata, "reason": f"{effective_provider} api_key is required for formal translation"},
         )
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
+    if metadata.get("task_origin") == "quick_task" and _is_quick_text_path(Path(input_artifact["path"])):
+        return await _translate_quick_text_run(
+            run=run,
+            input_artifact=input_artifact,
+            settings=settings,
+            batch_size=batch_size,
+            language=language,
+            readiness=readiness,
+            request=request,
+            cancel_event=cancel_event,
+        )
 
     db.update_run(run_id, status="running")
     db.add_event(

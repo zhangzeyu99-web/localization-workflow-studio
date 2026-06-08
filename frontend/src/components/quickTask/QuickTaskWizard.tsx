@@ -155,9 +155,9 @@ export function QuickTaskWizard({
         {quickStep === 1 ? (
           <>
             <div className="panel-title"><span className="badge">STEP 1</span>投入要处理的内容</div>
-            <div className="panel-desc">v1 先支持语言表 workbook。上传后系统只做本次任务输入，不写入长期语言表资产。</div>
+            <div className="panel-desc">支持语言表 workbook 或 TXT 文本。上传后系统只做本次任务输入，不写入长期语言表资产。</div>
             <div className="upload-row">
-              <FileBox label="上传待翻译 / 待校对 workbook（XLSX）" onFile={uploadInput} testId="quick-input-upload" />
+              <FileBox label="上传待翻译 / 待校对文件（XLSX/TXT）" onFile={uploadInput} testId="quick-input-upload" />
               {inputArtifact ? <ArtifactNote artifact={inputArtifact} /> : null}
             </div>
           </>
@@ -187,7 +187,7 @@ export function QuickTaskWizard({
         {quickStep === 3 ? (
           <>
             <div className="panel-title"><span className="badge">STEP 3</span>选择目标并启动</div>
-            <div className="panel-desc">语言从输入表头自动识别；识别不到时手动选择。质量门槛沿用正式翻译/QA 流程。</div>
+            <div className="panel-desc">语言从输入表头自动识别；TXT 识别不到时手动选择。质量门槛沿用正式翻译/QA 流程。</div>
             <div className="quick-launch-grid">
               <div className="quick-block">
                 <label>任务目标</label>

@@ -368,6 +368,83 @@ def test_announcement_task_extract_terms_ignores_generated_terms_workbook_as_con
         assert terms[0]["translations"]["en"] == "Trial Realm"
 
 
+def test_announcement_extract_rejects_legacy_txt_constraint_with_human_message(tmp_path: Path) -> None:
+    bad_constraint = tmp_path / "notice.txt"
+    bad_constraint.write_text("this is announcement source, not a language table", encoding="utf-8")
+    notice_path = tmp_path / "announcement.txt"
+    notice_path.write_text("\u79d8\u5883\u4e0a\u7ebf\u3002", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Bad Constraint TXT", "type": "RPG"}).json()
+        legacy_bad_artifact = workflow.copy_upload(project["id"], bad_constraint, "notice.txt", "language_table")
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("announcement.txt", fh, "text/plain")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={
+                "source_artifact_id": notice_artifact["id"],
+                "language_table_artifact_ids": [legacy_bad_artifact["id"]],
+                "languages": ["ko"],
+                "include_project_archive": False,
+            },
+        ).json()
+        response = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={
+                "language_table_artifact_ids": [legacy_bad_artifact["id"]],
+                "languages": ["ko"],
+                "include_project_archive": False,
+                "ai_supplement": False,
+            },
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "\u7ea6\u675f\u6587\u4ef6\u683c\u5f0f\u4e0d\u6b63\u786e" in detail
+        assert "TXT" in detail or ".txt" in detail
+        refreshed = client.get(f"/api/announcement-tasks/{task['id']}").json()
+        assert refreshed["status"] != "terms_ready"
+
+
+def test_announcement_extract_rejects_unrecognized_language_table_headers(tmp_path: Path) -> None:
+    table_path = tmp_path / "wrong_headers.xlsx"
+    notice_path = tmp_path / "announcement.txt"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["foo", "bar", "KR"])
+    ws.append(["1", "\u79d8\u5883", "\ube44\uacbd"])
+    wb.save(table_path)
+    wb.close()
+    notice_path.write_text("\u79d8\u5883\u4e0a\u7ebf\u3002", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Bad Constraint Headers", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("wrong_headers.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("announcement.txt", fh, "text/plain")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": notice_artifact["id"], "language_table_artifact_ids": [table_artifact["id"]], "languages": ["ko"], "include_project_archive": False},
+        ).json()
+        response = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={"language_table_artifact_ids": [table_artifact["id"]], "languages": ["ko"], "include_project_archive": False, "ai_supplement": False},
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "\u672a\u8bc6\u522b\u5230\u53ef\u53cd\u67e5\u8bcd\u6761" in detail
+        assert "CN" in detail
+
+
 def test_announcement_task_extract_terms_accepts_ai_supplement_response(tmp_path: Path) -> None:
     table_path = tmp_path / "language.xlsx"
     notice_path = tmp_path / "notice.txt"
@@ -2000,6 +2077,70 @@ def test_quick_task_artifacts_detect_languages_and_stay_temporary(tmp_path: Path
         ).json()
         assert run["metadata"]["task_origin"] == "quick_task"
         assert run["metadata"]["reference_artifact_ids"] == [quick_reference["id"]]
+
+
+def test_quick_task_can_translate_txt_and_deliver_same_format(tmp_path: Path) -> None:
+    source = tmp_path / "quick.txt"
+    source.write_text("\u5f00\u59cb\u6e38\u620f\n\n\u4fdd\u5b58 {0}\n", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Quick TXT", "type": "quick-task"}).json()
+        with source.open("rb") as fh:
+            quick_input = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_input",
+                files={"file": ("quick.txt", fh, "text/plain")},
+            ).json()
+
+        targets = client.get(f"/api/artifacts/{quick_input['id']}/translation-targets").json()
+        assert targets["supported_file"] is True
+        assert targets["source_detected"] is True
+        readiness = client.get(f"/api/artifacts/{quick_input['id']}/translation-readiness?language=ko&batch_size=1").json()
+        assert readiness["source_rows"] == 2
+        assert readiness["needs_translation"] is True
+
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "translation",
+                "language": "ko",
+                "input_artifact_id": quick_input["id"],
+                "task_origin": "quick_task",
+                "batch_size": 1,
+            },
+        ).json()
+        result = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 1}).json()
+        assert result["run"]["status"] == "passed"
+        final_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "final_text")
+        final_text = Path(final_artifact["path"]).read_text(encoding="utf-8")
+        assert "TestFake" in final_text
+        assert "{0}" in final_text
+        assert final_text.count("\n") == 3
+
+        package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}").json()
+        assert len(package["files"]) == 1
+        assert package["files"][0]["filename"].endswith("_final.txt")
+
+
+def test_disabled_test_fake_provider_does_not_fall_back_to_real_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LWS_ENABLE_TEST_PROVIDER", raising=False)
+    source = tmp_path / "quick.txt"
+    source.write_text("\u5f00\u59cb\u6e38\u620f\n", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "No Fake Fallback", "type": "quick-task"}).json()
+        with source.open("rb") as fh:
+            quick_input = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_input",
+                files={"file": ("quick.txt", fh, "text/plain")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "ko", "input_artifact_id": quick_input["id"], "task_origin": "quick_task"},
+        ).json()
+        result = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake"}).json()
+        assert result["run"]["status"] == "needs_input"
+        assert "\u6d4b\u8bd5 provider \u672a\u542f\u7528" in result["run"]["metadata"]["reason"]
 
 
 def test_quick_task_qa_creates_reference_snapshot(tmp_path: Path) -> None:

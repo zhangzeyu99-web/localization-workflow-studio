@@ -1226,13 +1226,16 @@ def _unique_path(path: Path) -> Path:
 
 
 _TABLE_UPLOAD_SUFFIXES = {".xlsx", ".xls", ".csv"}
+_QUICK_INPUT_SUFFIXES = _TABLE_UPLOAD_SUFFIXES | {".txt", ".md", ".markdown"}
 _TERM_UPLOAD_SUFFIXES = {".xlsx", ".xls", ".csv", ".json"}
 _ANNOUNCEMENT_SOURCE_SUFFIXES = {".docx", ".txt", ".xlsx"}
 _AI_RESPONSE_SUFFIXES = {".json", ".jsonl"}
 
 
 def _allowed_upload_suffixes(kind: str) -> set[str] | None:
-    if kind in {"language_table", "quick_input", "final_workbook"}:
+    if kind == "quick_input":
+        return _QUICK_INPUT_SUFFIXES
+    if kind in {"language_table", "final_workbook"}:
         return _TABLE_UPLOAD_SUFFIXES
     if kind in {"term_base", "glossary_final"}:
         return _TERM_UPLOAD_SUFFIXES
@@ -1245,7 +1248,12 @@ def _allowed_upload_suffixes(kind: str) -> set[str] | None:
 
 def _upload_kind_error(kind: str, suffix: str) -> str:
     ext = suffix or "unknown"
-    if kind in {"language_table", "quick_input", "final_workbook"}:
+    if kind == "quick_input":
+        return (
+            f"当前入口不支持 {ext} 文件。"
+            "快速任务请上传 XLSX/XLS/CSV 语言表，或 TXT 文本。"
+        )
+    if kind in {"language_table", "final_workbook"}:
         return (
             f"\u5f53\u524d\u5165\u53e3\u4e0d\u652f\u6301 {ext} \u6587\u4ef6\u3002"
             "\u8bed\u8a00\u5305\u7ffb\u8bd1\u8bf7\u4e0a\u4f20 XLSX/XLS/CSV \u8bed\u8a00\u8868\uff1b"
@@ -1277,6 +1285,8 @@ def _validate_run_input_artifact(payload: RunCreate) -> None:
     if artifact["project_id"] != payload.project_id:
         raise HTTPException(status_code=400, detail="input artifact does not belong to project")
     suffix = Path(str(artifact.get("path") or artifact.get("label") or "")).suffix.lower()
+    if payload.kind == "translation" and payload.task_origin == "quick_task" and suffix in {".txt", ".md", ".markdown"}:
+        return
     if suffix not in _TABLE_UPLOAD_SUFFIXES:
         raise HTTPException(status_code=400, detail=_upload_kind_error("language_table", suffix))
 

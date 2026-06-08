@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { API, api, apiErrorText, sanitizeUserFacingError } from './apiClient'
@@ -144,21 +144,22 @@ function humanBackendEvent(message: unknown): string {
   return eventStatusText(text)
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+function announcementActionLabel(endpoint: string): string {
+  const labels: Record<string, string> = {
+    'inspect-constraints': '\u7ea6\u675f\u8bc6\u522b',
+    'extract-terms': '\u672f\u8bed\u63d0\u53d6',
+    'import-terms': '\u672f\u8bed\u5bfc\u5165',
+    'lookup-translations': '\u8bd1\u6587\u53cd\u67e5',
+    prepare: '\u7ffb\u8bd1\u51c6\u5907',
+    translate: 'AI \u7ffb\u8bd1',
+    'translate/start': 'AI \u7ffb\u8bd1',
+    'translate/resume': '\u7ee7\u7eed AI \u7ffb\u8bd1',
+    'import-ai': '\u5bfc\u5165 AI response',
+    apply: '\u6821\u5bf9\u56de\u586b',
+    deliver: '\u4ea4\u4ed8'
+  }
+  return labels[endpoint] || endpoint
+}
 
 function App() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -650,6 +651,11 @@ function App() {
     setBusy(true)
     setStatus(objective === 'qa' ? `快速校对准备中：${languageSpec(language).short}` : `快速翻译准备中：${languageSpec(language).short}`)
     try {
+      const inputName = `${inputArtifact.label || ''} ${inputArtifact.path || ''}`.toLowerCase()
+      if (objective === 'qa' && /\.(txt|md|markdown)(\s|$)/i.test(inputName)) {
+        setStatus('TXT \u5feb\u901f\u4efb\u52a1\u76ee\u524d\u652f\u6301\u7ffb\u8bd1\u5e76\u8f93\u51fa\u540c\u683c\u5f0f\u6587\u672c\uff1b\u6821\u5bf9\u8bf7\u4e0a\u4f20\u5df2\u8bd1\u8bed\u8a00\u8868 workbook\u3002')
+        return null
+      }
       if (objective === 'qa') {
         const run = await api<Run>('/api/runs', {
           method: 'POST',
@@ -974,8 +980,13 @@ function App() {
       })
       if (result.run) setLatestRun({ ...result.run, artifacts: result.artifacts || [] })
       await refreshCurrent()
-      const summary = result.summary ? ` · ${compactSummary(result.summary)}` : ''
-      setStatus(`公告任务完成：${endpoint}${summary}`)
+      const summary = result.summary ? ` ? ${compactSummary(result.summary)}` : ''
+      const taskStatus = String(result.task?.status || '')
+      if (endpoint.startsWith('translate/') && ['queued', 'running'].includes(taskStatus)) {
+        setStatus(`\u516c\u544a\u540e\u53f0\u7ffb\u8bd1\u5df2\u542f\u52a8\uff1a${announcementActionLabel(endpoint)}${summary}`)
+      } else {
+        setStatus(`\u516c\u544a\u6b65\u9aa4\u5df2\u5b8c\u6210\uff1a${announcementActionLabel(endpoint)}${summary}`)
+      }
       return result
     } catch (error) {
       setStatus(`公告任务失败：${errorText(error)}`)
