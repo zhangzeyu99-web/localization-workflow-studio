@@ -181,7 +181,10 @@ def test_translate_start_returns_immediately_and_background_job_finishes(tmp_pat
         assert started.json()["status"] in {"queued", "running"}
 
         terminal = None
-        for _ in range(80):
+        # Full-suite Windows runs can spend >20s in subprocess startup and file
+        # cleanup even though the background job is healthy; keep this as a
+        # functional wait instead of a tight performance assertion.
+        for _ in range(200):
             current = client.get(f"/api/runs/{run['id']}").json()
             if current["status"] in {"passed", "failed", "needs_input", "canceled"}:
                 terminal = current

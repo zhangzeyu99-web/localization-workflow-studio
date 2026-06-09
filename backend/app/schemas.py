@@ -172,7 +172,7 @@ class AnnouncementTaskActionRequest(BaseModel):
     announcement_min_hit: int = 1
     generate_validation: bool = True
     confirm_languages: bool = False
-    ai_supplement: bool = False
+    ai_supplement: bool = True
     ai_supplement_response_artifact_id: str | None = None
 
 
@@ -217,7 +217,7 @@ class AnnouncementTermsRequest(BaseModel):
     languages: list[str] = Field(default_factory=list)
     announcement_min_hit: int = 1
     generate_validation: bool = True
-    ai_supplement: bool = False
+    ai_supplement: bool = True
     ai_supplement_response_artifact_id: str | None = None
 
 
@@ -279,6 +279,7 @@ class GlossaryExtractRequest(BaseModel):
     project_name: str | None = None
     source_only: bool = False
     include_empty_final_terms: bool = False
+    ai_candidate_supplement: bool = True
     project_material_artifact_ids: list[str] = Field(default_factory=list)
     project_notes: list[str] = Field(default_factory=list)
     announcement_material_artifact_ids: list[str] = Field(default_factory=list)

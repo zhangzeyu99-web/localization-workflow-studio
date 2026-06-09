@@ -468,6 +468,20 @@ export function StepFreqV2({
   const candidates = Number(backfill?.candidates ?? 0)
   const uniqueCandidates = Number(backfill?.unique_candidates ?? candidates)
   const existing = Number(backfill?.skipped_existing ?? 0)
+  const aiSupplement = (backfill?.ai_supplement && typeof backfill.ai_supplement === 'object' ? backfill.ai_supplement : {}) as Record<string, unknown>
+  const aiSupplementStatus = String(aiSupplement.status || '')
+  const aiSupplementReason = String(aiSupplement.reason || '')
+  const aiSupplementText = aiSupplementStatus === 'passed'
+    ? `补充 ${Number(aiSupplement.added ?? 0)} 条`
+    : aiSupplementReason === 'api_key_missing'
+      ? '未配置 API，已跳过'
+      : aiSupplementReason === 'test_provider'
+        ? '测试 provider，已跳过'
+        : aiSupplementStatus === 'provider_error'
+          ? 'API 失败，保留本地结果'
+          : aiSupplementReason
+            ? `已跳过：${aiSupplementReason}`
+            : '待自动检查'
   const accepted = activeBatch?.counts?.accepted ?? glossaryCandidates.filter((candidate) => candidate.status === 'accepted').length
   const rejected = activeBatch?.counts?.rejected ?? glossaryCandidates.filter((candidate) => candidate.status === 'rejected').length
   return (
@@ -485,10 +499,11 @@ export function StepFreqV2({
         <>
           <div className="scan-explain">
             <strong>本次扫描结果</strong>
-            <span>扫描 {candidates} 个候选，按中文去重后 {uniqueCandidates} 个；已在库 {existing} 个；待补译 {needsTranslation.length} 个；待审核 {readyCandidates.length} 个。</span>
+            <span>本地扫描 {candidates} 个候选，按中文去重后 {uniqueCandidates} 个；已在库 {existing} 个；AI 补漏：{aiSupplementText}；待人工确认 {pendingCandidates.length} 个。</span>
           </div>
           <div className="workflow-note-grid compact-grid">
             <div><strong>待补译</strong><span>{needsTranslation.length}</span></div>
+            <div><strong>AI 补漏</strong><span>{aiSupplementText}</span></div>
             <div><strong>待审核</strong><span>{readyCandidates.length}</span></div>
             <div><strong>已加入</strong><span>{accepted}</span></div>
             <div><strong>已跳过</strong><span>{rejected}</span></div>

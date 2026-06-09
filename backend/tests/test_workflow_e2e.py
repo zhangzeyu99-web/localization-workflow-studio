@@ -1907,6 +1907,108 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
         assert any("inserted=2" in event["message"] and "updated=0" in event["message"] for event in events)
 
 
+def test_glossary_backfill_maps_legacy_generated_headers_to_kr_candidates(tmp_path: Path) -> None:
+    generated = tmp_path / "generated_glossary_kr.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    # The embedded glossary extractor still writes legacy EN/EN2 headers even
+    # when the source language-table target column is KR. The workbench must
+    # map these generated columns into the active run language.
+    ws.append(["ID", "CN", "EN", "EN2"])
+    ws.append(["K-1", "\u653b\u51fb", "\uacf5\uaca9", "\uacf5\uaca9"])
+    wb.save(generated)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary KR Backfill", "type": "QA"}).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "ko"}).json()
+
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"], language="ko")
+
+        assert result["inserted"] == 1
+        batches = client.get(f"/api/projects/{project['id']}/glossary/batches?language=ko").json()
+        assert batches["active_batch"]["language"] == "ko"
+        assert batches["candidates"][0]["source"] == "\u653b\u51fb"
+        assert batches["candidates"][0]["target"] == "\uacf5\uaca9"
+
+
+def test_language_table_glossary_ai_supplement_adds_candidates_before_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    generated = tmp_path / "generated_glossary_kr.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2"])
+    ws.append(["K-1", "\u653b\u51fb", "\uacf5\uaca9", ""])
+    wb.save(generated)
+    wb.close()
+
+    language_table = tmp_path / "language_table_kr.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "KR"])
+    ws.append(["1", "\u653b\u51fb", "\uacf5\uaca9"])
+    ws.append(["2", "\u8054\u76df\u5546\u5e97", "\uc5f0\ub9f9 \uc0c1\uc810"])
+    ws.append(["3", "\u6d3b\u52a8\u5956\u52b1", "\uc774\ubca4\ud2b8 \ubcf4\uc0c1"])
+    wb.save(language_table)
+    wb.close()
+
+    settings = DEFAULT_SETTINGS.copy()
+    settings["provider"] = "openai"
+    settings["api_key"] = "test-key"
+    save_settings(settings)
+
+    def fake_call_text(provider_settings: dict[str, object], prompt: str, *, provider_override: str | None = None, system: str = "") -> str:
+        _ = provider_settings, provider_override, system
+        assert "language_table_glossary_ai_supplement" in prompt
+        assert "\u8054\u76df\u5546\u5e97" in prompt
+        return json.dumps(
+            {
+                "supplement_terms": [
+                    {
+                        "cn": "\u8054\u76df\u5546\u5e97",
+                        "translation": "\uc5f0\ub9f9 \uc0c1\uc810",
+                        "confidence": "high",
+                        "reason": "system shop term",
+                        "evidence_ids": ["2"],
+                    },
+                    {
+                        "cn": "\u4e0d\u5728\u8bc1\u636e\u91cc",
+                        "translation": "bad",
+                        "confidence": "high",
+                        "reason": "should be rejected",
+                        "evidence_ids": ["2"],
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(workflow, "call_text", fake_call_text)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary AI Supplement", "type": "QA"}).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "ko"}).json()
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"], language="ko")
+
+        supplement = workflow.supplement_language_table_glossary_candidates_with_ai(
+            project_id=project["id"],
+            batch_id=result["batch_id"],
+            input_path=language_table,
+            language="ko",
+            run_id=run["id"],
+        )
+
+        assert supplement["status"] == "passed"
+        assert supplement["added"] == 1
+        candidates = {candidate["source"]: candidate for candidate in client.get(f"/api/projects/{project['id']}/glossary/batches?language=ko").json()["candidates"]}
+        assert candidates["\u8054\u76df\u5546\u5e97"]["target"] == "\uc5f0\ub9f9 \uc0c1\uc810"
+        assert candidates["\u8054\u76df\u5546\u5e97"]["translation_source"] == "ai_supplement"
+        assert "\u4e0d\u5728\u8bc1\u636e\u91cc" not in candidates
+
+
+
 def test_glossary_backfill_dedupes_generated_terms_by_cn(tmp_path: Path) -> None:
     generated = tmp_path / "generated_glossary_duplicates.xlsx"
     wb = Workbook()

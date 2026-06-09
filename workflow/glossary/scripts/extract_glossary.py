@@ -5,9 +5,11 @@ import csv
 import hashlib
 import html
 import json
+import os
 import posixpath
 import re
-import sys
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -60,6 +62,8 @@ AI_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 AI_SUPPLEMENT_SCHEMA_VERSION = 1
 AI_SUPPLEMENT_EVIDENCE_LIMIT = 80
 AI_SUPPLEMENT_EVIDENCE_PER_TERM = 3
+DEFAULT_AI_SUPPLEMENT_MODEL = "gpt-4.1-mini"
+DEFAULT_OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses"
 CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
 QUOTED_TERM_RE = re.compile(r"[《「『“\"']([^《》「」『』“”\"']{2,20})[》」』”\"']")
 
@@ -399,11 +403,15 @@ class LanguageTableSpec:
 
 
 class AiSupplementProvider:
+    name = "base"
+
     def generate(self, packet: dict[str, object]) -> dict[str, object]:
         raise NotImplementedError
 
 
 class FileAiSupplementProvider(AiSupplementProvider):
+    name = "file"
+
     def __init__(self, response_path: Path):
         self.response_path = response_path
 
@@ -412,11 +420,174 @@ class FileAiSupplementProvider(AiSupplementProvider):
 
 
 class MockAiSupplementProvider(AiSupplementProvider):
+    name = "mock"
+
     def __init__(self, response: dict[str, object]):
         self.response = response
 
     def generate(self, packet: dict[str, object]) -> dict[str, object]:
         return self.response
+
+
+class PacketOnlyAiSupplementProvider(AiSupplementProvider):
+    name = "packet"
+
+    def generate(self, packet: dict[str, object]) -> dict[str, object]:
+        return {"supplement_terms": []}
+
+
+class OpenAiSupplementProvider(AiSupplementProvider):
+    name = "openai"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        api_url: str = DEFAULT_OPENAI_RESPONSES_API_URL,
+        timeout_seconds: int = 60,
+    ):
+        self.api_key = api_key
+        self.model = model
+        self.api_url = api_url
+        self.timeout_seconds = timeout_seconds
+
+    def generate(self, packet: dict[str, object]) -> dict[str, object]:
+        payload = {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a game localization glossary assistant. Return JSON only. "
+                        "Use only announcement_text, matched_terms, and evidence_rows from the packet. "
+                        "Do not invent translations without evidence."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(packet, ensure_ascii=False),
+                },
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "announcement_ai_supplement_response",
+                    "schema": ai_supplement_response_json_schema(),
+                    "strict": False,
+                }
+            },
+        }
+        request = urllib.request.Request(
+            self.api_url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                raw_response = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenAI AI supplement request failed: HTTP {exc.code} {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"OpenAI AI supplement request failed: {exc.reason}") from exc
+        api_response = json.loads(raw_response)
+        output_text = extract_openai_output_text(api_response)
+        if not output_text:
+            raise RuntimeError("OpenAI AI supplement response did not contain output text")
+        return json.loads(output_text)
+
+
+def ai_supplement_response_json_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "supplement_terms": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "cn": {"type": "string"},
+                        "translations": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        },
+                        "source_ids": {"type": "array", "items": {"type": "string"}},
+                        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                        "reason": {"type": "string"},
+                        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                        "action": {"type": "string", "enum": ["add_to_main", "report_only", "reject"]},
+                    },
+                    "required": [
+                        "cn",
+                        "translations",
+                        "source_ids",
+                        "confidence",
+                        "reason",
+                        "evidence_ids",
+                        "action",
+                    ],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["supplement_terms"],
+        "additionalProperties": False,
+    }
+
+
+def extract_openai_output_text(response: dict[str, object]) -> str:
+    output_text = response.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+    output = response.get("output")
+    if not isinstance(output, list):
+        return ""
+    chunks: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                chunks.append(text)
+    return "".join(chunks).strip()
+
+
+def resolve_ai_supplement_provider(
+    provider_name: str,
+    response_path: Path | None,
+    model: str,
+    api_url: str,
+    timeout_seconds: int,
+) -> AiSupplementProvider:
+    if response_path is not None and provider_name in {"auto", "file"}:
+        return FileAiSupplementProvider(response_path)
+    if provider_name == "file":
+        raise ValueError("--ai-supplement-provider=file requires --ai-supplement-response")
+    if provider_name == "packet":
+        return PacketOnlyAiSupplementProvider()
+    if provider_name not in {"auto", "openai"}:
+        raise ValueError(f"Unsupported AI supplement provider: {provider_name}")
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if api_key:
+        return OpenAiSupplementProvider(
+            api_key=api_key,
+            model=model,
+            api_url=api_url,
+            timeout_seconds=timeout_seconds,
+        )
+    if provider_name == "openai":
+        raise ValueError("--ai-supplement-provider=openai requires OPENAI_API_KEY")
+    return PacketOnlyAiSupplementProvider()
 
 
 def clean_text(value: object) -> str:
@@ -427,12 +598,6 @@ def clean_text(value: object) -> str:
     text = PLACEHOLDER_RE.sub("", text)
     text = SPACE_RE.sub(" ", text).strip()
     return text
-
-
-def configure_utf8_stdio() -> None:
-    for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def normalize_english_for_compare(text: str) -> str:
@@ -2928,7 +3093,8 @@ def build_ai_supplement_report_markdown(
     lines = [
         "# AI Supplement Report",
         "",
-        f"status: ok",
+        f"status: {report.get('status', 'ok')}",
+        f"provider: {report.get('provider', 'unknown')}",
         f"packet: {packet_path or 'disabled'}",
         f"response: {response_path or 'not provided'}",
         f"output: {output_path}",
@@ -2937,6 +3103,9 @@ def build_ai_supplement_report_markdown(
         f"report_only: {sum(1 for term in terms if isinstance(term, dict) and term.get('status') == 'report_only')}",
         "",
     ]
+    provider_error = clean_text(report.get("provider_error"))
+    if provider_error:
+        lines.extend(["## Provider Error", "", provider_error, ""])
     if report.get("project_name_translation_missing"):
         lines.extend(
             [
@@ -2974,6 +3143,7 @@ def run_ai_supplement_flow(
     packet_output_path: Path,
     report_output_path: Path,
     response_path: Path | None,
+    provider: AiSupplementProvider,
 ) -> tuple[list[dict[str, object]], dict[str, object], Path, Path]:
     packet = build_ai_supplement_packet(
         announcement_text=announcement_text,
@@ -2984,8 +3154,11 @@ def run_ai_supplement_flow(
     )
     write_json_output(packet_output_path, packet)
     response: dict[str, object] = {"supplement_terms": []}
-    if response_path is not None:
-        response = FileAiSupplementProvider(response_path).generate(packet)
+    provider_error = ""
+    try:
+        response = provider.generate(packet)
+    except Exception as exc:
+        provider_error = str(exc)
     merged_rows, report = apply_ai_supplement_response(
         announcement_rows=announcement_rows,
         headers=headers,
@@ -2994,6 +3167,10 @@ def run_ai_supplement_flow(
         response=response,
         project_name=project_name,
     )
+    report["provider"] = provider.name
+    if provider_error:
+        report["status"] = "provider_error"
+        report["provider_error"] = provider_error
     report_markdown = build_ai_supplement_report_markdown(
         report=report,
         packet_path=packet_output_path,
@@ -3257,7 +3434,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ai-supplement",
         action="store_true",
-        help="Enable optional AI supplement packet/response flow for announcement glossary lookup.",
+        help="Enable optional AI supplement flow for announcement glossary lookup. In auto mode, uses response file first, then OPENAI_API_KEY, then packet-only fallback.",
+    )
+    parser.add_argument(
+        "--ai-supplement-provider",
+        choices=["auto", "packet", "file", "openai"],
+        default="auto",
+        help="AI supplement provider. auto uses --ai-supplement-response if present, otherwise OpenAI when OPENAI_API_KEY is set, otherwise packet-only. Default: auto",
     )
     parser.add_argument(
         "--ai-supplement-packet-output",
@@ -3271,11 +3454,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--ai-supplement-report-output",
         help="Path for the AI supplement sidecar report. Defaults to *_ai_supplement_YYYYMMDD.md.",
     )
+    parser.add_argument(
+        "--ai-supplement-model",
+        default=os.environ.get("OPENAI_MODEL", DEFAULT_AI_SUPPLEMENT_MODEL),
+        help=f"OpenAI model used when the AI supplement provider is openai. Default: OPENAI_MODEL or {DEFAULT_AI_SUPPLEMENT_MODEL}",
+    )
+    parser.add_argument(
+        "--ai-supplement-api-url",
+        default=os.environ.get("OPENAI_RESPONSES_API_URL", DEFAULT_OPENAI_RESPONSES_API_URL),
+        help="OpenAI Responses API URL used by the openai provider.",
+    )
+    parser.add_argument(
+        "--ai-supplement-timeout",
+        type=int,
+        default=60,
+        help="Timeout in seconds for automatic AI supplement provider calls. Default: 60",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -3309,6 +3507,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--ai-supplement is required when using AI supplement packet, response, or report options.")
     if args.ai_supplement and not announcement_material_paths:
         parser.error("--ai-supplement is only supported with --announcement-material.")
+    ai_supplement_provider: AiSupplementProvider | None = None
+    if args.ai_supplement:
+        try:
+            ai_supplement_provider = resolve_ai_supplement_provider(
+                provider_name=args.ai_supplement_provider,
+                response_path=ai_supplement_response_path,
+                model=args.ai_supplement_model,
+                api_url=args.ai_supplement_api_url,
+                timeout_seconds=args.ai_supplement_timeout,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
     curated_rules_path = Path(args.curated_rules) if args.curated_rules else None
     observations_store_path = Path(args.observations_store) if args.observations_store else None
     curated_rules = load_curated_rules(curated_rules_path)
@@ -3356,6 +3566,7 @@ def main(argv: list[str] | None = None) -> int:
                 packet_output_path=ai_supplement_packet_output_path,
                 report_output_path=ai_supplement_report_output_path,
                 response_path=ai_supplement_response_path,
+                provider=ai_supplement_provider or PacketOnlyAiSupplementProvider(),
             )
         write_announcement_glossary_workbook(
             output_path=announcement_output_path,
@@ -3390,6 +3601,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"OBSERVATIONS_STORE={observations_store_path or 'disabled'}")
         print(f"AI_SUPPLEMENT_PACKET_OUTPUT={ai_supplement_packet_output_path if args.ai_supplement else 'disabled'}")
         print(f"AI_SUPPLEMENT_REPORT_OUTPUT={ai_supplement_report_output_path if args.ai_supplement else 'disabled'}")
+        print(f"AI_SUPPLEMENT_PROVIDER={ai_supplement_provider.name if ai_supplement_provider else 'disabled'}")
+        if ai_supplement_report and ai_supplement_report.get("provider_error"):
+            print(f"AI_SUPPLEMENT_PROVIDER_ERROR={ai_supplement_report.get('provider_error')}")
         if ai_supplement_report and ai_supplement_report.get("project_name_translation_missing"):
             print(f"PROJECT_NAME_TRANSLATION_MISSING={clean_text(args.project_name)}")
         return 0
@@ -3468,6 +3682,7 @@ def main(argv: list[str] | None = None) -> int:
                 packet_output_path=ai_supplement_packet_output_path,
                 report_output_path=ai_supplement_report_output_path,
                 response_path=ai_supplement_response_path,
+                provider=ai_supplement_provider or PacketOnlyAiSupplementProvider(),
             )
         write_announcement_glossary_workbook(
             output_path=announcement_output_path,
@@ -3503,6 +3718,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"RECORDS={len(records)}")
         print(f"AI_SUPPLEMENT_PACKET_OUTPUT={ai_supplement_packet_output_path if args.ai_supplement else 'disabled'}")
         print(f"AI_SUPPLEMENT_REPORT_OUTPUT={ai_supplement_report_output_path if args.ai_supplement else 'disabled'}")
+        print(f"AI_SUPPLEMENT_PROVIDER={ai_supplement_provider.name if ai_supplement_provider else 'disabled'}")
+        if ai_supplement_report and ai_supplement_report.get("provider_error"):
+            print(f"AI_SUPPLEMENT_PROVIDER_ERROR={ai_supplement_report.get('provider_error')}")
         if ai_supplement_report and ai_supplement_report.get("project_name_translation_missing"):
             print(f"PROJECT_NAME_TRANSLATION_MISSING={clean_text(args.project_name)}")
         return 0
@@ -3602,6 +3820,7 @@ def main(argv: list[str] | None = None) -> int:
                 packet_output_path=ai_supplement_packet_output_path,
                 report_output_path=ai_supplement_report_output_path,
                 response_path=ai_supplement_response_path,
+                provider=ai_supplement_provider or PacketOnlyAiSupplementProvider(),
             )
         write_announcement_glossary_workbook(
             output_path=announcement_output_path,
@@ -3645,6 +3864,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"MANUAL_ADAPTATION_ROWS={len(manual_rows)}")
     print(f"AI_SUPPLEMENT_PACKET_OUTPUT={ai_supplement_packet_output_path if args.ai_supplement else 'disabled'}")
     print(f"AI_SUPPLEMENT_REPORT_OUTPUT={ai_supplement_report_output_path if args.ai_supplement else 'disabled'}")
+    print(f"AI_SUPPLEMENT_PROVIDER={ai_supplement_provider.name if ai_supplement_provider else 'disabled'}")
+    if 'ai_supplement_report' in locals() and ai_supplement_report and ai_supplement_report.get("provider_error"):
+        print(f"AI_SUPPLEMENT_PROVIDER_ERROR={ai_supplement_report.get('provider_error')}")
     if 'ai_supplement_report' in locals() and ai_supplement_report and ai_supplement_report.get("project_name_translation_missing"):
         print(f"PROJECT_NAME_TRANSLATION_MISSING={clean_text(project_name)}")
     print(f"FINAL_ROWS={len(final_rows)}")

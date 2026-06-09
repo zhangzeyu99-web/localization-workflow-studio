@@ -566,7 +566,8 @@ function App() {
           language: selectedLanguage,
           project_material_artifact_ids: assetArtifacts.map((artifact) => artifact.id),
           project_notes: [intro.trim() || current.description || `${current.name} ${current.type}`].filter(Boolean),
-          include_empty_final_terms: true
+          include_empty_final_terms: true,
+          ai_candidate_supplement: true
         })
       })
       setTermArtifact(result.artifacts.find((a) => a.kind === 'glossary_final') || null)
@@ -635,10 +636,26 @@ function App() {
     }
   }
 
+  function selectSourceArtifact(artifact: Artifact | null) {
+    setSourceArtifact(artifact)
+    if (artifact && artifactRole(artifact) === 'language_source') {
+      void syncLanguageFromArtifact(artifact)
+    }
+  }
+
   function selectQaArtifact(artifact: Artifact | null) {
     setQaArtifact(artifact)
     if (artifact && artifactRole(artifact) === 'language_source') {
       void refreshTranslationReadiness(artifact.id)
+    }
+  }
+
+  async function syncLanguageFromArtifact(artifact: Artifact) {
+    const targets = await inspectTranslationTargets(artifact.id)
+    const suggested = targets?.suggested_language
+    if (suggested && suggested !== selectedLanguage) {
+      setSelectedLanguage(suggested)
+      setStatus(`\u5df2\u8bc6\u522b\u8bed\u8a00\u8868\u76ee\u6807\u8bed\u8a00\uff1a${languageSpec(suggested).short}`)
     }
   }
 
@@ -1327,13 +1344,13 @@ function App() {
                 qualityIssues={qualityIssues}
                 glossaryPreview={glossaryPreview}
                 deliverables={deliverables}
-                setSourceArtifact={setSourceArtifact}
+                setSourceArtifact={selectSourceArtifact}
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={selectQaArtifact}
                 setArchiveArtifact={setArchiveArtifact}
                 onSaveMeta={saveProjectMeta}
                 onAnalyze={runAnalysis}
-                onUploadSource={async (file) => setSourceArtifact(await upload(file, 'language_table'))}
+                onUploadSource={async (file) => { const artifact = await upload(file, 'language_table'); selectSourceArtifact(artifact) }}
                 onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
                 onGlossaryPreview={previewGlossaryImport}
                 onGlossaryImport={importGlossaryArtifact}
@@ -1419,14 +1436,14 @@ function App() {
                 qualityIssues={qualityIssues}
                 selectedLanguage={selectedLanguage}
                 setSelectedLanguage={setSelectedLanguage}
-                setSourceArtifact={setSourceArtifact}
+                setSourceArtifact={selectSourceArtifact}
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={selectQaArtifact}
                 glossaryPreview={glossaryPreview}
                 settings={settings}
                 status={status}
                 onBack={() => setView('overview')}
-                onUploadSource={async (file) => setSourceArtifact(await upload(file, 'language_table'))}
+                onUploadSource={async (file) => { const artifact = await upload(file, 'language_table'); selectSourceArtifact(artifact) }}
                 onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
                 onUploadAsset={uploadProjectMaterial}
                 onAnalyze={runAnalysis}

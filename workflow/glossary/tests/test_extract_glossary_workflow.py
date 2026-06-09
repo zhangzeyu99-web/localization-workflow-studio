@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from openpyxl import Workbook, load_workbook
@@ -551,7 +553,6 @@ class CliIntegrationTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
                 check=False,
             )
 
@@ -641,7 +642,6 @@ class CliIntegrationTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
                 check=False,
             )
 
@@ -720,7 +720,6 @@ class CliIntegrationTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
                 check=False,
             )
 
@@ -771,7 +770,6 @@ class CliIntegrationTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
                 check=False,
             )
 
@@ -819,7 +817,6 @@ class CliIntegrationTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
                 check=False,
             )
 
@@ -865,7 +862,6 @@ class CliIntegrationTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
                 check=False,
             )
 
@@ -1088,6 +1084,146 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertEqual([term["status"] for term in report["terms"]], ["report_only", "report_only"])
 
+    def test_resolve_ai_supplement_provider_auto_falls_back_to_packet_without_api_key(self):
+        with patch.dict(os.environ, {}, clear=True):
+            provider = MODULE.resolve_ai_supplement_provider(
+                provider_name="auto",
+                response_path=None,
+                model="test-model",
+                api_url="https://example.test/v1/responses",
+                timeout_seconds=1,
+            )
+
+        self.assertIsInstance(provider, MODULE.PacketOnlyAiSupplementProvider)
+
+    def test_resolve_ai_supplement_provider_auto_prefers_response_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            response_path = Path(temp_dir) / "ai_response.json"
+            response_path.write_text('{"supplement_terms":[]}', encoding="utf-8")
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+                provider = MODULE.resolve_ai_supplement_provider(
+                    provider_name="auto",
+                    response_path=response_path,
+                    model="test-model",
+                    api_url="https://example.test/v1/responses",
+                    timeout_seconds=1,
+                )
+
+        self.assertIsInstance(provider, MODULE.FileAiSupplementProvider)
+
+    def test_openai_ai_supplement_provider_parses_structured_response(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "output_text": json.dumps(
+                            {
+                                "supplement_terms": [
+                                    {
+                                        "cn": "\u661f\u754c\u88c2\u9699",
+                                        "translations": {"EN": "Astral Rift"},
+                                        "source_ids": ["S1"],
+                                        "confidence": "high",
+                                        "reason": "evidence-backed split",
+                                        "evidence_ids": ["S1"],
+                                        "action": "add_to_main",
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            captured["headers"] = dict(request.header_items())
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        provider = MODULE.OpenAiSupplementProvider(
+            api_key="test-key",
+            model="test-model",
+            api_url="https://example.test/v1/responses",
+            timeout_seconds=7,
+        )
+        with patch.object(MODULE.urllib.request, "urlopen", fake_urlopen):
+            response = provider.generate({"announcement_text": "\u65b0\u589e\u661f\u754c\u88c2\u9699"})
+
+        self.assertEqual(captured["url"], "https://example.test/v1/responses")
+        self.assertEqual(captured["timeout"], 7)
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(captured["payload"]["model"], "test-model")
+        self.assertEqual(captured["payload"]["text"]["format"]["type"], "json_schema")
+        self.assertEqual(response["supplement_terms"][0]["cn"], "\u661f\u754c\u88c2\u9699")
+
+    def test_cli_ai_supplement_auto_uses_packet_fallback_without_api_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "language.xlsx"
+            notice_path = temp_path / "notice.txt"
+            announcement_output = temp_path / "announcement_terms.xlsx"
+            packet_output = temp_path / "ai_packet.json"
+            report_output = temp_path / "ai_report.md"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Main"
+            worksheet.append(["ID", "CN", "EN"])
+            worksheet.append(["T1", "\u79d8\u5883", "Trial Realm"])
+            worksheet.append(["S1", "\u5f00\u542f\u661f\u754c\u88c2\u9699\u6311\u6218", "Unlock Astral Rift Challenge"])
+            workbook.save(table_path)
+            workbook.close()
+
+            notice_path.write_text("\u65b0\u589e\u79d8\u5883\u548c\u661f\u754c\u88c2\u9699\u73a9\u6cd5\u3002", encoding="utf-8")
+            env = os.environ.copy()
+            env.pop("OPENAI_API_KEY", None)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(table_path),
+                    "--announcement-material",
+                    str(notice_path),
+                    "--announcement-output",
+                    str(announcement_output),
+                    "--ai-supplement",
+                    "--ai-supplement-packet-output",
+                    str(packet_output),
+                    "--ai-supplement-report-output",
+                    str(report_output),
+                    "--curated-rules",
+                    str(temp_path / "curated.json"),
+                    "--observations-store",
+                    str(temp_path / "observations.json"),
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            self.assertIn("AI_SUPPLEMENT_PROVIDER=packet", result.stdout)
+            self.assertTrue(packet_output.exists())
+            self.assertTrue(report_output.exists())
+            output_workbook = load_workbook(announcement_output, read_only=True, data_only=True)
+            rows = list(output_workbook["Glossary"].iter_rows(values_only=True))
+            output_workbook.close()
+            self.assertEqual(rows[0], ("ID", "CN", "EN"))
+            self.assertEqual(rows[1:], [("T1", "\u79d8\u5883", "Trial Realm")])
+
     def test_cli_ai_supplement_reports_missing_project_name_translation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -1151,7 +1287,6 @@ class CliIntegrationTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
                 check=False,
             )
 
@@ -1222,7 +1357,6 @@ class CliIntegrationTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
                 check=False,
             )
 
