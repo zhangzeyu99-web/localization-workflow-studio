@@ -1620,6 +1620,7 @@ def test_translation_readiness_skips_filled_translation_workbook(tmp_path: Path)
         assert readiness_response.status_code == 200
         readiness = readiness_response.json()
         assert readiness["ready_for_qa"] is True
+        assert readiness["ready_for_translation"] is False
         assert readiness["needs_translation"] is False
         assert readiness["source_rows"] == 5
         assert readiness["translated_rows"] == 5
@@ -1657,6 +1658,7 @@ def test_string_ids_run_through_translation_and_qa(tmp_path: Path) -> None:
         assert readiness["invalid_id_rows"] == 0
         assert readiness["invalid_id_samples"] == []
         assert readiness["needs_translation"] is True
+        assert readiness["ready_for_translation"] is True
         assert readiness["ready_for_qa"] is False
         assert readiness["estimated_batches"] == 1
 
@@ -3057,6 +3059,10 @@ def test_model_fix_requires_configured_provider(tmp_path: Path) -> None:
 def test_model_fix_applies_provider_suggestions_and_reruns_qa(tmp_path: Path, monkeypatch) -> None:
     workbook = tmp_path / "project-failed.xlsx"
     _project_harness_failed_workbook(workbook)
+    wb = load_workbook(workbook)
+    wb.create_sheet("Empty")
+    wb.save(workbook)
+    wb.close()
 
     def fake_model(settings: dict, prompt: str) -> str:
         if "待修复行" not in prompt:
@@ -3087,6 +3093,13 @@ def test_model_fix_applies_provider_suggestions_and_reruns_qa(tmp_path: Path, mo
         assert result["model_fixes"][0]["rule_source"] == "model_fix"
         assert result["qa_result"]["run"]["status"] == "passed"
         assert result["qa_result"]["quality_summary"]["sources"]["model_fix_source_run"] == failed_run["id"]
+        delivery_response = client.post(
+            f"/api/projects/{project['id']}/delivery-package?run_id={result['qa_result']['run']['id']}"
+        )
+        assert delivery_response.status_code == 200, delivery_response.text
+        delivery_label = delivery_response.json()["deliverable"]["input_label"]
+        assert "project-failed" in delivery_label
+        assert "model_fixed" not in delivery_label
 
 
 def test_project_harness_is_project_scoped_and_affects_only_its_run(tmp_path: Path) -> None:

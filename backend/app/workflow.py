@@ -3567,6 +3567,7 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
         "invalid_id_rows": 0,
         "invalid_id_samples": [],
         "needs_translation": False,
+        "ready_for_translation": False,
         "ready_for_qa": False,
         "reason": "unsupported_file",
         "batch_size": effective_batch_size,
@@ -3577,6 +3578,7 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
         summary["source_rows"] = len(rows)
         summary["empty_target_rows"] = len(rows)
         summary["needs_translation"] = bool(rows)
+        summary["ready_for_translation"] = bool(rows)
         summary["reason"] = "needs_translation" if rows else "no_source_rows"
         summary["estimated_batches"] = math.ceil(len(rows) / effective_batch_size) if rows else 0
         return summary
@@ -3636,6 +3638,7 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
         return summary
     if not found_target_column:
         summary["needs_translation"] = True
+        summary["ready_for_translation"] = True
         summary["reason"] = "target_column_missing"
         return summary
     if empty_rows == 0 and cjk_rows == 0 and translated_rows > 0:
@@ -3643,6 +3646,7 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
         summary["reason"] = "existing_target_translation"
         return summary
     summary["needs_translation"] = True
+    summary["ready_for_translation"] = True
     if empty_rows and cjk_rows:
         summary["reason"] = "empty_or_cjk_target_rows"
     elif empty_rows:
@@ -5300,7 +5304,7 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
     metadata = run.get("metadata", {})
     quality_summary = metadata.get("quality_summary") or {}
     provider, model = _deliverable_provider_model(metadata, quality_summary)
-    input_label = _input_artifact_label(metadata, run["project_id"])
+    input_label = _input_artifact_label(run, run["project_id"])
     processed = (
         {"processed_rows": int(metadata.get("translated_rows") or metadata.get("source_rows") or 0), "source_rows": int(metadata.get("source_rows") or 0), "translated_rows": int(metadata.get("translated_rows") or 0)}
         if final_artifact["kind"] == "final_text"
@@ -5436,12 +5440,29 @@ def _run_artifact(run_id: str, kind: str) -> dict[str, Any] | None:
     return artifacts[0] if artifacts else None
 
 
-def _input_artifact_label(metadata: dict[str, Any], project_id: str) -> str:
+def _input_artifact_label(run: dict[str, Any], project_id: str, seen: set[str] | None = None) -> str:
+    seen = seen or set()
+    run_id = str(run.get("id") or "")
+    if run_id:
+        if run_id in seen:
+            return "-"
+        seen.add(run_id)
+    metadata = run.get("metadata") or {}
+    source_run_id = metadata.get("manual_fix_source_run_id") or metadata.get("model_fix_source_run_id") or metadata.get("source_run_id")
+    if source_run_id:
+        try:
+            source_run = db.get_run(str(source_run_id))
+            if source_run.get("project_id") == project_id:
+                source_label = _input_artifact_label(source_run, project_id, seen)
+                if source_label and source_label != "-":
+                    return source_label
+        except KeyError:
+            pass
     input_artifacts = metadata.get("input_artifacts") if isinstance(metadata.get("input_artifacts"), dict) else {}
     candidates = [
         input_artifacts.get("source_workbook"),
-        input_artifacts.get("translation_workbook"),
         metadata.get("input_artifact_id"),
+        input_artifacts.get("translation_workbook"),
     ]
     for artifact_id in candidates:
         if not artifact_id:
@@ -6619,7 +6640,13 @@ def _append_improvement_items(project_id: str, items: list[dict[str, Any]]) -> l
 
 def _header_map(ws: Any) -> dict[str, int]:
     result: dict[str, int] = {}
-    for cell in ws[1]:
+    if getattr(ws, "max_row", 0) < 1 or getattr(ws, "max_column", 0) < 1:
+        return result
+    try:
+        header_row = ws[1]
+    except IndexError:
+        return result
+    for cell in header_row:
         if cell.value is None:
             continue
         result[str(cell.value).strip().lower()] = int(cell.column)
@@ -6737,6 +6764,16 @@ def _translation_progress(
 def _update_translation_progress(run_id: str, progress: dict[str, Any], status: str = "running") -> None:
     current = db.get_run(run_id)
     db.update_run(run_id, status=status, metadata={**current.get("metadata", {}), "translation_progress": progress})
+
+
+def _terminal_translation_progress(progress: Any, status: str) -> Any:
+    if not isinstance(progress, dict):
+        return progress
+    normalized = dict(progress)
+    normalized["current_batch"] = None
+    if str(normalized.get("lease_status") or "").lower() == "running":
+        normalized["lease_status"] = status
+    return normalized
 
 
 def _translation_cancel_path(work_dir: Path) -> Path:
@@ -7375,11 +7412,13 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             db.add_event(run_id, f"translation archive updated: rows={archive_result['imported_count']}")
         db.add_event(run_id, f"translation run finished: status={status}")
         final_metadata = db.get_run(run_id).get("metadata", {})
+        final_progress = _terminal_translation_progress(final_metadata.get("translation_progress"), status)
         db.update_run(
             run_id,
             status=status,
             metadata={
                 **final_metadata,
+                "translation_progress": final_progress,
                 "task_origin": metadata.get("task_origin") or "translation_run",
                 "input_artifacts": input_artifacts,
                 "quality": qa_result["quality"],
@@ -7411,7 +7450,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         db.add_event(run_id, friendly, level="error")
         failed_metadata = db.get_run(run_id).get("metadata", {})
         status = "canceled" if str(exc) == "translation canceled" else "failed"
-        db.update_run(run_id, status=status, metadata={**failed_metadata, "error": friendly})
+        db.update_run(run_id, status=status, metadata={**failed_metadata, "translation_progress": _terminal_translation_progress(failed_metadata.get("translation_progress"), status), "error": friendly})
         if isinstance(exc, UserFacingWorkflowError):
             raise
         raise UserFacingWorkflowError(friendly) from exc
@@ -7436,9 +7475,12 @@ def cancel_translation_run(run_id: str) -> dict[str, Any]:
 def translation_run_progress(run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     metadata = run.get("metadata", {})
+    progress = metadata.get("translation_progress")
+    if run.get("status") in {"passed", "failed", "needs_input", "canceled"}:
+        progress = _terminal_translation_progress(progress, str(run.get("status") or ""))
     return {
         "run": run,
-        "progress": metadata.get("translation_progress"),
+        "progress": progress,
         "api_budget_estimate": metadata.get("api_budget_estimate"),
         "reason": metadata.get("reason"),
     }

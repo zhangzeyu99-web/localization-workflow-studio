@@ -34,3 +34,4 @@ api_key*
 *.bak
 
 .local-logs/
+tmp/
