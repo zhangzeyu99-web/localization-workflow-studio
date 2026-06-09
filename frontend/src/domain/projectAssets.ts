@@ -347,6 +347,14 @@ export function fieldText(value: unknown, fallback = '未生成'): string {
   return text || fallback
 }
 
+function looksEnglishHeavy(value: unknown): boolean {
+  const text = compactText(value)
+  if (!text) return false
+  const latinLetters = (text.match(/[A-Za-z]/g) || []).length
+  const cjkChars = (text.match(/[\u4e00-\u9fff]/g) || []).length
+  return latinLetters > Math.max(30, cjkChars * 1.5)
+}
+
 export function profileText(project: Project, key: string, fallback = '未生成'): string {
   const displayKeyBySource: Record<string, string> = {
     game_type: 'display_game_type',
@@ -354,8 +362,29 @@ export function profileText(project: Project, key: string, fallback = '未生成
     content_scope: 'display_content_scope',
     translation_style: 'display_translation_style'
   }
+  const tableLabelsBySource: Record<string, string[]> = {
+    game_type: ['游戏类型'],
+    target_audience: ['目标用户', '目标用户（推断）'],
+    content_scope: ['内容构成', '内容范围'],
+    translation_style: ['翻译风格', '风格要求']
+  }
+  const profile = profileForLanguage(project, 'en')
+  const topProfile = project.profile || {}
   const displayKey = displayKeyBySource[key]
-  return fieldText(displayKey ? (project.profile?.[displayKey] ?? project.profile?.[key]) : project.profile?.[key], fallback)
+  const source = [profileSourceText(profile), profileSourceText(topProfile)].filter(Boolean).join(' ')
+  const tableValue = tableLabelsBySource[key] ? profileTableValue(source, tableLabelsBySource[key]) : ''
+  const displayValue = displayKey ? firstProfileText(profile[displayKey], topProfile[displayKey]) : ''
+  const rawValue = firstProfileText(profile[key], topProfile[key])
+  const preferred = firstProfileText(
+    looksEnglishHeavy(displayValue) ? '' : displayValue,
+    tableValue,
+    looksEnglishHeavy(rawValue) && tableValue ? '' : rawValue
+  )
+  if (looksEnglishHeavy(preferred) && displayKey) {
+    if (key === 'game_type' && project.type) return `${project.type}（请重新运行 AI 分析更新详细信息）`
+    return '请重新运行 AI 分析生成中文信息'
+  }
+  return fieldText(preferred, fallback)
 }
 
 export function fixedTermsSummary(project: Project): string {
