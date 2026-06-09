@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import base64
 import json
 import re
 import tempfile
@@ -1061,7 +1062,7 @@ def test_fake_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert "只返回 JSONL" in analysis_response.json()["prompt"]
         analyzed_project = analysis_response.json()["project"]
         display_prompt = analyzed_project["profile"]["display_prompts_by_language"]["en"]
-        assert "\u7ffb\u8bd1\u76ee\u6807" in display_prompt
+        assert "\u9879\u76ee\u5b9a\u4f4d" in display_prompt
         assert "????" not in display_prompt
         assert "JSONL" not in display_prompt
 
@@ -1132,6 +1133,54 @@ def test_fake_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert resume_response.status_code == 200, resume_response.text
         resume_events = client.get(f"/api/runs/{run['id']}/events").json()
         assert any("resume: batch 1/2 already completed" in event["message"] for event in resume_events)
+
+
+def test_project_analysis_display_prompt_keeps_project_brief_specifics(tmp_path: Path) -> None:
+    brief = tmp_path / "hell-slg-projectbrief.md"
+    brief.write_text(
+        """# 地狱SLG 翻译提示词与项目元信息
+
+## AI 生成的专属翻译提示词
+
+```
+你是一位资深游戏本地化译者，正在翻译一款地狱监狱帝国经营题材的竖屏 SLG/模拟经营手游。
+译文需符合以下要求：
+1. 文字以黑色幽默为主，兼顾战争、战斗、同盟、掠夺等 SLG 系统的清晰度；
+4. 术语保持一致：监狱长、监狱、灵魂、审判、净化室、灵魂召唤屋、飞艇、英雄、同盟、集结、掠夺、迁城、基地等；
+```
+
+## 项目元信息
+
+| 项目 | 信息 |
+|---|---|
+| 游戏类型 | 地狱监狱经营 SLG / 竖屏模拟经营 + 战斗同盟玩法 |
+| 目标用户（推断） | 喜欢暗黑题材、黑色幽默、基地经营、英雄养成和联盟战斗的移动端 SLG 用户 |
+| 内容构成 | UI、报错、任务、建筑、英雄、技能、道具、活动、同盟、战斗、邮件、剧情新手引导 |
+| 视觉与世界观 | 暗红地狱、工业监狱、恶魔管理者、红色灵魂、审判/净化设备、现代科技设施 |
+| 翻译风格 | UI 精简；剧情自然、讽刺、黑色幽默；系统名严谨统一 |
+| 重点注意 | 地狱梗可以保留幽默，但功能说明不能玩梗；监狱、灵魂、审判、净化等核心术语优先一致性 |
+""",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "地狱", "type": "地狱slg"}).json()
+        with brief.open("rb") as fh:
+            upload = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
+                files={"file": ("hell-slg-projectbrief.md", fh, "text/markdown")},
+            )
+        assert upload.status_code == 200, upload.text
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "地狱 地狱slg", "asset_artifact_ids": [upload.json()["id"]]},
+        )
+        assert response.status_code == 200, response.text
+        display_prompt = response.json()["project"]["profile"]["display_prompts_by_language"]["en"]
+        assert "地狱监狱经营 SLG" in display_prompt
+        assert "黑色幽默" in display_prompt
+        assert "监狱长、监狱、灵魂、审判" in display_prompt
+        assert "项目资料：以后端保存" not in display_prompt
 
 
 def test_translation_batch_retry_persists_after_transient_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1297,7 +1346,7 @@ def test_markdown_reference_material_uploads_and_feeds_analysis(tmp_path: Path) 
         assert Path(artifact["path"]).exists()
 
         notes = workflow.analyze_assets([artifact["id"]], DEFAULT_SETTINGS)
-        assert notes and "text_material:" in notes[0]
+        assert notes and "parsed_text:" in notes[0]
         assert "Sci-fi SLG" in notes[0]
 
         analysis_response = client.post(
@@ -1356,6 +1405,172 @@ def test_project_analysis_uses_configured_provider_for_semantic_profile(tmp_path
         assert profile["analysis_source"] == "provider"
         assert profile["game_type"] == "AI识别：科幻 SLG / 战争策略"
         assert "硬核军事感" in payload["prompt"]
+
+
+def test_project_analysis_parses_docx_material_packet(tmp_path: Path) -> None:
+    docx_path = tmp_path / "project-brief.docx"
+    document = Document()
+    document.add_heading("?????? SLG", level=1)
+    document.add_paragraph("?????????????????????????????????")
+    document.add_paragraph("?????UI ????????????????????????")
+    document.save(docx_path)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Docx Brief", "type": "SLG"}).json()
+        with docx_path.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
+                files={"file": ("project-brief.docx", fh, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            ).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "", "asset_artifact_ids": [artifact["id"]]},
+        )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["analysis"]["summary"]["parsed"] == 1
+        material = payload["project"]["profile"]["material_packet"]["materials"][0]
+        assert material["material_type"] == "docx"
+        assert material["status"] == "parsed_docx"
+        assert "????" in payload["project"]["profile"]["display_prompts_by_language"]["en"]
+
+
+def test_project_analysis_image_material_reports_no_api_key(tmp_path: Path) -> None:
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="))
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Image No API", "type": "QA"}).json()
+        with image_path.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
+                files={"file": ("screen.png", fh, "image/png")},
+            ).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "", "asset_artifact_ids": [artifact["id"]]},
+        )
+
+        assert response.status_code == 200, response.text
+        material = response.json()["analysis"]["materials"][0]
+        assert material["material_type"] == "image"
+        assert material["status"] == "archived_only:image_api_key_missing"
+        assert "API" in material["warning"]
+
+
+def test_project_analysis_image_material_uses_configured_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="))
+    calls: list[str] = []
+
+    def fake_image_provider(settings: dict, prompt: str, image_path_arg: Path, **kwargs) -> str:
+        _ = kwargs
+        calls.append(image_path_arg.name)
+        assert settings["provider"] == "openai"
+        assert "JSON" in prompt
+        return json.dumps({"ui_type": "battle UI", "theme": "dark prison", "visible_text": "Start"}, ensure_ascii=False)
+
+    def fake_semantic_provider(settings: dict, prompt: str) -> str:
+        _ = settings, prompt
+        return json.dumps({"display_game_type": "dark prison SLG", "display_translation_style": "short UI text with dark humor"}, ensure_ascii=False)
+
+    monkeypatch.setattr(workflow, "call_image_text", fake_image_provider)
+    monkeypatch.setattr(workflow, "_call_semantic_provider", fake_semantic_provider)
+
+    with TestClient(app) as client:
+        client.patch("/api/settings", json={"provider": "openai", "api_key": "test-key", "model": "gpt-test"})
+        project = client.post("/api/projects", json={"name": "Image API", "type": "QA"}).json()
+        with image_path.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
+                files={"file": ("screen.png", fh, "image/png")},
+            ).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "", "asset_artifact_ids": [artifact["id"]]},
+        )
+
+        assert response.status_code == 200, response.text
+        assert calls == ["screen.png"]
+        material = response.json()["analysis"]["materials"][0]
+        assert material["status"] == "vision_analyzed"
+        assert response.json()["project"]["profile"]["display_game_type"] == "dark prison SLG"
+
+
+def test_project_analysis_video_material_reports_no_api_key(tmp_path: Path) -> None:
+    video_path = tmp_path / "trailer.mp4"
+    video_path.write_bytes(b"fake video")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Video No API", "type": "QA"}).json()
+        with video_path.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
+                files={"file": ("trailer.mp4", fh, "video/mp4")},
+            ).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "", "asset_artifact_ids": [artifact["id"]]},
+        )
+
+        assert response.status_code == 200, response.text
+        material = response.json()["analysis"]["materials"][0]
+        assert material["material_type"] == "video"
+        assert material["status"] == "archived_only:video_api_key_missing"
+        assert "API" in material["warning"]
+
+
+def test_project_analysis_video_material_extracts_frames_and_uses_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    video_path = tmp_path / "trailer.mp4"
+    video_path.write_bytes(b"fake video")
+    frame_1 = tmp_path / "frame_01.png"
+    frame_2 = tmp_path / "frame_02.png"
+    frame_1.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="))
+    frame_2.write_bytes(frame_1.read_bytes())
+    frame_calls: list[str] = []
+
+    def fake_extract(path: Path, output_dir: Path, *, max_frames: int = 4):
+        _ = path, output_dir, max_frames
+        return [frame_1, frame_2], {"frame_count": 20, "fps": 10, "frames": [frame_1.name, frame_2.name]}
+
+    def fake_image_provider(settings: dict, prompt: str, image_path_arg: Path, **kwargs) -> str:
+        _ = settings, prompt, kwargs
+        frame_calls.append(image_path_arg.name)
+        return json.dumps({"ui_type": "map UI", "theme": "hell prison", "visible_text": image_path_arg.stem}, ensure_ascii=False)
+
+    def fake_semantic_provider(settings: dict, prompt: str) -> str:
+        _ = settings, prompt
+        return json.dumps({"display_game_type": "hell prison management SLG", "display_content_scope": "video UI and announcement text"}, ensure_ascii=False)
+
+    monkeypatch.setattr(workflow, "_extract_video_keyframes", fake_extract)
+    monkeypatch.setattr(workflow, "call_image_text", fake_image_provider)
+    monkeypatch.setattr(workflow, "_call_semantic_provider", fake_semantic_provider)
+
+    with TestClient(app) as client:
+        client.patch("/api/settings", json={"provider": "openai", "api_key": "test-key", "model": "gpt-test"})
+        project = client.post("/api/projects", json={"name": "Video API", "type": "QA"}).json()
+        with video_path.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
+                files={"file": ("trailer.mp4", fh, "video/mp4")},
+            ).json()
+
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "", "asset_artifact_ids": [artifact["id"]]},
+        )
+
+        assert response.status_code == 200, response.text
+        assert frame_calls == ["frame_01.png", "frame_02.png"]
+        material = response.json()["analysis"]["materials"][0]
+        assert material["status"] == "vision_analyzed_video"
+        assert material["material_type"] == "video"
+        assert response.json()["project"]["profile"]["display_game_type"] == "hell prison management SLG"
 
 
 def test_duplicate_reference_material_upload_reuses_existing_artifact(tmp_path: Path) -> None:
@@ -1722,22 +1937,32 @@ def test_large_language_table_upload_is_rejected_as_term_base(tmp_path: Path) ->
         assert client.get(f"/api/projects/{project['id']}/assets?role=glossary_source").json() == []
 
 
-def test_large_language_table_is_rejected_as_project_material_but_allowed_as_language_table_or_plain_asset(tmp_path: Path) -> None:
+def test_large_language_table_project_material_participates_in_analysis_but_does_not_import_terms(tmp_path: Path) -> None:
     language_table = tmp_path / "full-language-table.xlsx"
     _large_language_table_workbook(language_table)
 
     with TestClient(app) as client:
-        project = client.post("/api/projects", json={"name": "Project Material Guard", "type": "QA"}).json()
+        project = client.post("/api/projects", json={"name": "Project Material Analysis", "type": "QA"}).json()
         with language_table.open("rb") as fh:
             material_response = client.post(
                 f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
                 files={"file": ("full-language-table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             )
-        assert material_response.status_code == 400
-        detail = material_response.json()["detail"]
-        assert "完整语言表" in detail
-        assert "STEP4" in detail or "STEP 4" in detail
-        assert client.get(f"/api/projects/{project['id']}/assets").json() == []
+        assert material_response.status_code == 200, material_response.text
+        material_artifact = material_response.json()
+        assert material_artifact["kind"] == "asset"
+
+        analysis_response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "Project material can include a full language table.", "asset_artifact_ids": [material_artifact["id"]]},
+        )
+        assert analysis_response.status_code == 200, analysis_response.text
+        payload = analysis_response.json()
+        candidates = payload["analysis"]["language_table_candidates"]
+        assert len(candidates) == 1
+        assert candidates[0]["artifact_id"] == material_artifact["id"]
+        assert payload["analysis"]["summary"]["language_table_candidates"] == 1
+        assert client.get(f"/api/projects/{project['id']}/glossary").json() == []
 
         with language_table.open("rb") as fh:
             language_response = client.post(

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -317,6 +320,131 @@ def call_text(settings: dict[str, Any], prompt: str, *, provider_override: str |
         return anthropic_messages_text(settings, prompt, system=system)
     if provider == TEST_FAKE_PROVIDER:
         raise ProviderError("test fake provider cannot run semantic text generation")
+    raise ProviderError(f"unsupported provider: {provider}")
+
+
+def _image_data_url(image_path: Path) -> tuple[str, str, str]:
+    media_type = mimetypes.guess_type(str(image_path))[0] or "image/png"
+    data = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return media_type, data, f"data:{media_type};base64,{data}"
+
+
+def openai_responses_image_text(settings: dict[str, Any], prompt: str, image_path: Path, *, system: str = "Return strict JSON only.") -> str:
+    api_key = settings.get("api_key")
+    if not api_key:
+        raise ProviderError("api_key is required for image analysis")
+    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
+    model = settings.get("model") or "gpt-5.5"
+    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    _, _, data_url = _image_data_url(image_path)
+    body = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": f"{system}\n\n{prompt}" if system else prompt},
+                    {"type": "input_image", "image_url": data_url},
+                ],
+            }
+        ],
+        "reasoning": {"effort": settings.get("reasoning_effort") or "medium"},
+        "max_output_tokens": int(settings.get("max_output_tokens") or 4096),
+    }
+    response = httpx.post(
+        f"{base_url}/v1/responses",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=timeout_seconds,
+    )
+    if response.status_code >= 400:
+        raise ProviderError(f"image analysis failed: {response.status_code} {response.text[:500]}")
+    payload = response.json()
+    return str(payload.get("output_text") or _collect_response_text(payload))
+
+
+def openai_chat_image_text(settings: dict[str, Any], prompt: str, image_path: Path, *, system: str = "Return strict JSON only.") -> str:
+    api_key = settings.get("api_key")
+    if not api_key:
+        raise ProviderError("api_key is required for image analysis")
+    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
+    model = settings.get("model") or "gpt-5.5"
+    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    _, _, data_url = _image_data_url(image_path)
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ],
+        "max_tokens": int(settings.get("max_output_tokens") or 4096),
+    }
+    reasoning_effort = str(settings.get("reasoning_effort") or "").strip()
+    if reasoning_effort and reasoning_effort not in {"none", "adaptive"}:
+        body["reasoning"] = {"effort": reasoning_effort}
+    response = httpx.post(
+        f"{base_url}/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=timeout_seconds,
+    )
+    if response.status_code >= 400:
+        raise ProviderError(f"image analysis failed: {response.status_code} {response.text[:500]}")
+    return _collect_openai_chat_text(response.json())
+
+
+def anthropic_messages_image_text(settings: dict[str, Any], prompt: str, image_path: Path, *, system: str = "Return strict JSON only.") -> str:
+    api_key = settings.get("api_key")
+    if not api_key:
+        raise ProviderError("api_key is required for image analysis")
+    base_url = str(settings.get("base_url") or "https://api.anthropic.com").rstrip("/")
+    model = settings.get("model") or "claude-sonnet-4-6"
+    timeout_seconds = int(settings.get("provider_timeout_seconds") or 180)
+    media_type, data, _ = _image_data_url(image_path)
+    response = httpx.post(
+        f"{base_url}/v1/messages",
+        headers={
+            "x-api-key": str(api_key),
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": int(settings.get("max_output_tokens") or 4096),
+            "system": system,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}},
+                    ],
+                }
+            ],
+        },
+        timeout=timeout_seconds,
+    )
+    if response.status_code >= 400:
+        raise ProviderError(f"image analysis failed: {response.status_code} {response.text[:500]}")
+    return _collect_anthropic_text(response.json())
+
+
+def call_image_text(settings: dict[str, Any], prompt: str, image_path: Path, *, provider_override: str | None = None, system: str = "Return strict JSON only.") -> str:
+    provider = normalize_provider_name(provider_override or settings.get("provider"))
+    if provider == "openai":
+        return openai_responses_image_text(settings, prompt, image_path, system=system)
+    if provider == "openai-chat":
+        return openai_chat_image_text(settings, prompt, image_path, system=system)
+    if provider == "anthropic":
+        return anthropic_messages_image_text(settings, prompt, image_path, system=system)
+    if provider == TEST_FAKE_PROVIDER:
+        raise ProviderError("test fake provider cannot run image analysis")
     raise ProviderError(f"unsupported provider: {provider}")
 
 

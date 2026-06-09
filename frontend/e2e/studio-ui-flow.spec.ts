@@ -50,9 +50,9 @@ test('user can complete the EN localization workflow from project tabs', async (
 
   await page.getByPlaceholder('补充本次分析需要的上下文；留空时使用项目描述。').fill('小小战机：飞行射击项目，资源、战机、任务、奖励术语需统一。')
   await page.getByRole('button', { name: '🔄 重新生成' }).click()
-  await expect(page.getByText('项目提示词已生成')).toBeVisible({ timeout: 20000 })
+  await expect(page.getByText(/项目(提示词已生成|分析完成)/)).toBeVisible({ timeout: 20000 })
   const promptView = page.locator('.reference-card pre').first()
-  await expect(promptView).toContainText('\u7ffb\u8bd1\u76ee\u6807')
+  await expect(promptView).toContainText('\u5fc5\u987b\u4fdd\u7559')
   await expect(promptView).not.toContainText('JSONL')
   await page.locator('.reference-card .card-actions button').nth(1).click()
   const manualPrompt = '\u4eba\u5de5\u4fee\u8ba2\u9879\u76ee\u63d0\u793a\u8bcd\uff1a\u4fdd\u6301 UI \u7b80\u6d01\uff0c\u672f\u8bed\u4e25\u683c\u6309\u9879\u76ee\u8868\u6267\u884c\u3002'
@@ -355,8 +355,8 @@ wb.close()
   ]))
 })
 
-test('translation workflow rejects full language table as project material but accepts it in language table step', async ({ page, request }) => {
-  const languageTable = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-project-material-guard-')), 'full-language-table.xlsx')
+test('translation workflow accepts full language table as project material and language table input', async ({ page, request }) => {
+  const languageTable = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-project-material-analysis-')), 'full-language-table.xlsx')
   execFileSync('python', ['-c', `
 from openpyxl import Workbook
 import sys
@@ -365,31 +365,33 @@ ws = wb.active
 ws.title = "Language"
 ws.append(["ID", "CN", "KR"])
 for i in range(1, 1003):
-    ws.append([i, f"完整语言表源文 {i}", f"완성 번역 {i}"])
+    ws.append([i, f"source {i}", f"target {i}"])
 wb.save(sys.argv[1])
 wb.close()
 `, languageTable])
 
-  const projectName = `E2E Material Guard ${Date.now()}`
+  const projectName = `E2E Material Analysis ${Date.now()}`
   const createResponse = await request.post(`${baseURL}/api/projects`, {
-    data: { name: projectName, type: 'QA', description: 'Project material upload guard.' },
+    data: { name: projectName, type: 'QA', description: 'Project material can include language tables.' },
   })
   const project = await createResponse.json()
 
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
-  await page.getByRole('button', { name: '🚀 启动新翻译任务' }).click()
+  await page.getByRole('button', { name: /\u542f\u52a8\u65b0\u7ffb\u8bd1\u4efb\u52a1/ }).click()
 
-  await page.locator('label.upload-box', { hasText: '上传 Markdown' }).locator('input[type="file"]').setInputFiles(languageTable)
-  await expect(inlineStatus(page, '这个文件看起来是完整语言表，请上传到 STEP4「语言表」')).toBeVisible({ timeout: 20000 })
-  const assetsAfterRejectedMaterial = await request.get(`${baseURL}/api/projects/${project.id}/assets`).then((response) => response.json())
-  expect(assetsAfterRejectedMaterial.filter((artifact: { kind: string }) => artifact.kind === 'asset')).toHaveLength(0)
+  await page.locator('label.upload-box', { hasText: /\u4e0a\u4f20 Markdown/ }).locator('input[type="file"]').setInputFiles(languageTable)
+  await expect.poll(async () => {
+    const assets = await request.get(`${baseURL}/api/projects/${project.id}/assets`).then((response) => response.json())
+    return assets.filter((artifact: { kind: string }) => artifact.kind === 'asset').length
+  }, { timeout: 20000 }).toBe(1)
 
-  await page.getByRole('button', { name: '4 语言表' }).click()
-  await page.locator('label.upload-box', { hasText: '上传 language.xlsx' }).locator('input[type="file"]').setInputFiles(languageTable)
-  await expect(inlineStatus(page, `已上传：上传语言表｜${fileStem(languageTable)}`)).toBeVisible({ timeout: 20000 })
-  const assetsAfterLanguageUpload = await request.get(`${baseURL}/api/projects/${project.id}/assets?role=language_source`).then((response) => response.json())
-  expect(assetsAfterLanguageUpload.some((artifact: { kind: string }) => artifact.kind === 'language_table')).toBeTruthy()
+  await page.getByRole('button', { name: /4\s+\u8bed\u8a00\u8868/ }).click()
+  await page.locator('label.upload-box', { hasText: /\u4e0a\u4f20 language\.xlsx/ }).locator('input[type="file"]').setInputFiles(languageTable)
+  await expect.poll(async () => {
+    const assets = await request.get(`${baseURL}/api/projects/${project.id}/assets?role=language_source`).then((response) => response.json())
+    return assets.some((artifact: { kind: string }) => artifact.kind === 'language_table')
+  }, { timeout: 20000 }).toBeTruthy()
 })
 
 test('project tabs show multilingual wide glossary and archive assets', async ({ page, request }) => {

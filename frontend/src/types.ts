@@ -265,6 +265,42 @@ export type DeliveryFile = {
   artifact_id?: string
 }
 
+export type ProjectMaterialAnalysis = {
+  source?: string
+  warning?: string
+  summary?: {
+    total?: number
+    parsed?: number
+    unsupported?: number
+    images?: number
+    language_table_candidates?: number
+    warnings?: number
+  }
+  materials?: {
+    artifact_id?: string
+    label?: string
+    material_type?: string
+    status?: string
+    warning?: string
+    language_table_candidate?: boolean
+    detected_languages?: string[]
+    rows?: number
+  }[]
+  language_table_candidates?: {
+    artifact_id: string
+    label?: string
+    languages?: string[]
+    rows?: number
+  }[]
+}
+
+export type ProjectAnalysisResponse = {
+  project: Project
+  artifacts: Artifact[]
+  prompt: string
+  analysis?: ProjectMaterialAnalysis
+}
+
 export type AnnouncementLookupSummary = {
   language: string
   text_chars: number

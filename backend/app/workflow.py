@@ -25,7 +25,7 @@ from . import db
 from .config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name, test_provider_enabled
 from .delivery_naming import safe_delivery_name, source_stem
 from .languages import ANNOUNCEMENT_LANGUAGE_ORDER, PROJECT_LANGUAGE_ORDER, alt_aliases, language_spec, normalize_language, require_supported_language, target_aliases, visible_language_code
-from .providers import call_text, translate_batch
+from .providers import call_image_text, call_text, translate_batch
 from .translation_batches import (
     AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
     build_batch_manifest as _build_batch_manifest,
@@ -248,7 +248,7 @@ def _is_warplane_project(project: dict[str, Any], intro: str, material_labels: l
     return any(token in text for token in ("战机", "飞行射击", "导弹", "装备", "Warplane", "warplane"))
 
 
-def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: list[str], target_language: str = "en") -> dict[str, Any]:
+def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: list[str], target_language: str = "en", material_packet: dict[str, Any] | None = None) -> dict[str, Any]:
     target_language = require_supported_language(target_language)
     spec = language_spec(target_language)
     material_labels = _project_material_labels(project["id"])
@@ -267,6 +267,7 @@ def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: lis
         content_scope = description or "UI、系统、任务、道具、活动和剧情文本。"
         translation_style = f"准确翻译为自然{style_language}；UI/按钮/任务短句清晰；剧情对话自然但不改设定；术语以项目术语表为准；保留变量、占位符、富文本标签、数字和换行。"
         tone = "自然、准确、游戏 UI 友好"
+    seed = _display_profile_seed_from_packet(material_packet or {"materials": []})
     return {
         "project_name": project["name"],
         "project_type": project.get("type", ""),
@@ -285,45 +286,91 @@ def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: lis
         "tone": tone,
         "generated_date": db.now_iso()[:10],
         "analysis_source": "template",
+        "analysis_warning": "未配置 API key，只生成模板草稿，未进行 AI 资料分析。",
+        "display_game_type": seed.get("display_game_type") or game_type,
+        "display_target_audience": seed.get("display_target_audience") or target_audience,
+        "display_content_scope": seed.get("display_content_scope") or content_scope,
+        "display_worldview": seed.get("display_worldview") or tone,
+        "display_translation_style": seed.get("display_translation_style") or translation_style,
+        "display_focus": seed.get("display_focus") or "",
+        "display_key_terms": seed.get("display_key_terms") or "",
     }
 
 
-def _project_analysis_provider_prompt(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any]) -> str:
+def _display_profile_seed_from_packet(material_packet: dict[str, Any]) -> dict[str, str]:
+    source_text = " ".join(str(material.get("excerpt") or "") for material in material_packet.get("materials", []) if isinstance(material, dict))
+
+    def table_value(*labels: str) -> str:
+        for label in labels:
+            pattern = rf"\|\s*{re.escape(label)}(?:（[^|]*）)?\s*\|\s*([^|]+?)\s*\|"
+            match = re.search(pattern, source_text)
+            if match:
+                return re.sub(r"\s+", " ", match.group(1)).strip()
+        return ""
+
+    term_match = re.search(r"术语保持一致[：:]\s*([^；;。]+)", source_text)
+    return {
+        "display_game_type": table_value("游戏类型"),
+        "display_target_audience": table_value("目标用户"),
+        "display_content_scope": table_value("内容构成", "内容范围"),
+        "display_worldview": table_value("视觉与世界观", "世界观"),
+        "display_translation_style": table_value("翻译风格", "风格要求"),
+        "display_focus": table_value("重点注意", "注意事项"),
+        "display_key_terms": re.sub(r"\s+", " ", term_match.group(1)).strip() if term_match else "",
+    }
+
+
+def _project_analysis_provider_prompt(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any], material_packet: dict[str, Any]) -> str:
     return (
-        "You are analyzing source material for a game localization project.\n"
+        "你正在为游戏本地化项目做真实资料分析，不是套模板。\n"
         "Return strict JSON only. No markdown fences or prose.\n"
-        "Use the project intro and reference material semantically; do not invent lore not supported by the input.\n"
-        "Required JSON fields: game_type, target_audience, content_scope, translation_style, tone.\n\n"
+        "必须只基于 evidence packet、项目 intro 和参考资料；资料没有支持的信息写入 missing_info，不要编造。\n"
+        "display_* 字段必须用中文，给前端和译员看；执行字段可用目标语言或英文，给模型翻译/QA 使用。\n"
+        "Required JSON fields: game_type, target_audience, content_scope, translation_style, tone, "
+        "display_game_type, display_target_audience, display_content_scope, display_worldview, "
+        "display_translation_style, display_focus, display_key_terms, confidence, missing_info.\n\n"
         f"Project name: {project.get('name', '')}\n"
         f"Project type: {project.get('type', '')}\n"
         f"Project description: {project.get('description', '')}\n"
         f"Target language: {profile.get('target_language_name', profile.get('target_language', 'en'))}\n"
         f"User intro:\n{intro}\n\n"
         f"Reference material notes:\n{json.dumps(asset_notes, ensure_ascii=False, indent=2)}\n\n"
+        f"Evidence packet:\n{json.dumps({k: v for k, v in material_packet.items() if k != 'context'}, ensure_ascii=False, indent=2)}\n\n"
+        f"Evidence context:\n{material_packet.get('context', '')}\n\n"
         f"Template baseline:\n{json.dumps({key: profile.get(key, '') for key in ('game_type', 'target_audience', 'content_scope', 'translation_style', 'tone')}, ensure_ascii=False, indent=2)}"
     )
 
 
-def _apply_project_analysis_provider(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any]) -> dict[str, Any]:
+def _apply_project_analysis_provider(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any], material_packet: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings()
     provider = normalize_provider_name(settings.get("provider"))
     if provider not in REAL_PROVIDERS or not settings.get("api_key"):
         return profile
-    prompt = _cap_context_text(_project_analysis_provider_prompt(project, intro, asset_notes, profile), 6000, "project analysis")
+    prompt = _cap_context_text(_project_analysis_provider_prompt(project, intro, asset_notes, profile, material_packet), 12000, "project analysis")
     payload = _parse_semantic_qa_payload(_call_semantic_provider(settings, prompt))
     if not isinstance(payload, dict):
         raise ValueError("project analysis provider must return a JSON object")
-    updates: dict[str, str] = {}
-    for key in ("game_type", "target_audience", "content_scope", "translation_style", "tone"):
+    updates: dict[str, Any] = {}
+    for key in (
+        "game_type", "target_audience", "content_scope", "translation_style", "tone",
+        "display_game_type", "display_target_audience", "display_content_scope", "display_worldview",
+        "display_translation_style", "display_focus", "display_key_terms", "confidence",
+    ):
         value = str(payload.get(key) or "").strip()
         if value:
             updates[key] = value
+    missing_info = payload.get("missing_info")
+    if isinstance(missing_info, list):
+        updates["missing_info"] = [str(item).strip() for item in missing_info if str(item).strip()]
+    elif str(missing_info or "").strip():
+        updates["missing_info"] = [str(missing_info).strip()]
     return {
         **profile,
         **updates,
         "analysis_source": "provider",
         "analysis_provider": provider,
         "analysis_model": str(settings.get("model") or ""),
+        "analysis_warning": "",
     }
 
 
@@ -358,11 +405,45 @@ def _project_prompt_display_zh(profile: dict[str, Any]) -> str:
         else f"\u9879\u76ee\u672f\u8bed\u4ee5\u672f\u8bed\u8868\u4e3a\u51c6\uff1a{spec.target_header} \u662f\u6807\u51c6\u8bd1\u6cd5\u3002"
     )
     project_name = str(profile.get("project_name") or "\u5f53\u524d\u9879\u76ee").strip()
+    source_text = " ".join(str(item or "") for item in profile.get("asset_notes") or [])
+
+    def table_value(*labels: str) -> str:
+        for label in labels:
+            pattern = rf"\|\s*{re.escape(label)}(?:（[^|]*）)?\s*\|\s*([^|]+?)\s*\|"
+            match = re.search(pattern, source_text)
+            if match:
+                return match.group(1).strip()
+        return ""
+
+    def first_text(*values: Any) -> str:
+        for value in values:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if text:
+                return text
+        return ""
+
+    def sentence(label: str, value: str) -> str:
+        value = value.strip().rstrip("。；;")
+        return f"{label}：{value}。" if value else ""
+
+    term_match = re.search(r"术语保持一致[：:]\s*([^；;。]+)", source_text)
+    key_terms = term_match.group(1).strip() if term_match else ""
+    game_type = first_text(profile.get("display_game_type"), table_value("游戏类型"), profile.get("game_type"))
+    target_audience = first_text(profile.get("display_target_audience"), table_value("目标用户"), profile.get("target_audience"))
+    content_scope = first_text(profile.get("display_content_scope"), table_value("内容构成", "内容范围"), profile.get("content_scope"))
+    worldview = first_text(profile.get("display_worldview"), table_value("视觉与世界观", "世界观"), profile.get("tone"))
+    style = first_text(profile.get("display_translation_style"), table_value("翻译风格", "风格要求"), profile.get("translation_style"))
+    focus = first_text(profile.get("display_focus"), table_value("重点注意", "注意事项"))
+    key_terms = first_text(profile.get("display_key_terms"), key_terms)
     lines = [
         f"\u4f60\u6b63\u5728\u5904\u7406\u300a{project_name}\u300b\u7684\u6e38\u620f\u672c\u5730\u5316\uff0c\u76ee\u6807\u8bed\u8a00\uff1a{spec.label}\u3002",
-        "\u7ffb\u8bd1\u76ee\u6807\uff1a\u51c6\u786e\u3001\u81ea\u7136\u3001\u9002\u5408\u6e38\u620f UI\u3001\u5267\u60c5\u3001\u4efb\u52a1\u3001\u9053\u5177\u3001\u5956\u52b1\u548c\u7cfb\u7edf\u8bf4\u660e\u3002",
-        "\u9879\u76ee\u8d44\u6599\uff1a\u4ee5\u540e\u7aef\u4fdd\u5b58\u7684\u9879\u76ee\u5206\u6790\u3001\u672f\u8bed\u8868\u3001\u8bd1\u6587\u5f52\u6863\u548c\u672c\u6b21\u4e0a\u4f20\u6750\u6599\u4e3a\u51c6\u3002",
-        "\u98ce\u683c\u8981\u6c42\uff1a\u81ea\u7136\u3001\u51c6\u786e\u3001\u7b80\u6d01\uff1bUI \u6587\u6848\u4f18\u5148\u77ed\u53e5\uff0c\u5267\u60c5\u6587\u672c\u4fdd\u7559\u8bed\u6c14\u548c\u60c5\u7eea\u3002",
+        sentence("项目定位", game_type),
+        sentence("目标用户", target_audience),
+        sentence("内容范围", content_scope),
+        sentence("世界观/语气", worldview),
+        sentence("风格要求", style),
+        sentence("重点注意", focus),
+        sentence("核心术语", key_terms),
         term_rule,
         f"\u5df2\u6709{spec.label}\u8bd1\u6587\u4ee3\u8868\u9879\u76ee\u5386\u53f2\u7528\u6cd5\uff1b\u5982\u9700\u4f18\u5316\uff0c\u4e0d\u80fd\u7834\u574f\u5df2\u56fa\u5b9a\u7684\u7cfb\u7edf\u672f\u8bed\u3002",
         "\u5fc5\u987b\u4fdd\u7559\u53d8\u91cf\u3001\u6570\u5b57\u3001\u6362\u884c\u3001\u989c\u8272\u6807\u7b7e\u3001HTML/\u5bcc\u6587\u672c\u6807\u7b7e\u548c\u5360\u4f4d\u7b26\uff0c\u4f8b\u5982 {0}\u3001%s\u3001<color>\u3002",
@@ -371,6 +452,13 @@ def _project_prompt_display_zh(profile: dict[str, Any]) -> str:
     return "\n".join(str(line).strip() for line in lines if str(line).strip())
 
 def _project_brief_markdown(profile: dict[str, Any], prompt: str) -> str:
+    game_type = str(profile.get("display_game_type") or profile.get("game_type") or "")
+    target_audience = str(profile.get("display_target_audience") or profile.get("target_audience") or "")
+    content_scope = str(profile.get("display_content_scope") or profile.get("content_scope") or "")
+    translation_style = str(profile.get("display_translation_style") or profile.get("translation_style") or "")
+    focus = str(profile.get("display_focus") or "")
+    key_terms = str(profile.get("display_key_terms") or "")
+    warning = str(profile.get("analysis_warning") or "")
     return (
         f"# {profile['project_name']} 翻译提示词与项目元信息\n\n"
         "## 🤖 AI 生成的专属翻译提示词\n\n"
@@ -380,13 +468,41 @@ def _project_brief_markdown(profile: dict[str, Any], prompt: str) -> str:
         "## 📌 项目元信息\n\n"
         "| 项目 | 信息 |\n"
         "| --- | --- |\n"
-        f"| 游戏类型 | {profile['game_type']} |\n"
-        f"| 目标用户 | {profile['target_audience']} |\n"
-        f"| 内容构成 | {profile['content_scope']} |\n"
-        f"| 翻译风格 | {profile['translation_style']} |\n"
+        f"| 游戏类型 | {game_type} |\n"
+        f"| 目标用户 | {target_audience} |\n"
+        f"| 内容构成 | {content_scope} |\n"
+        f"| 翻译风格 | {translation_style} |\n"
+        f"| 重点注意 | {focus or '-'} |\n"
+        f"| 核心术语 | {key_terms or '-'} |\n"
         f"| 语言资产 | {profile['language_assets']} |\n"
+        f"| 分析状态 | {warning or profile.get('analysis_source', 'template')} |\n"
         f"| 生成日期 | {profile['generated_date']} |\n"
     )
+
+
+def _project_analysis_report_markdown(profile: dict[str, Any], material_packet: dict[str, Any]) -> str:
+    summary = material_packet.get("summary") or {}
+    warnings = material_packet.get("warnings") or []
+    materials = material_packet.get("materials") or []
+    rows = [
+        "# 项目资料 AI 分析报告",
+        "",
+        f"- 分析状态：{profile.get('analysis_source', 'template')}",
+        f"- 模型：{profile.get('analysis_provider', '-')}/{profile.get('analysis_model', '-')}",
+        f"- 资料总数：{summary.get('total', 0)}",
+        f"- 已读取：{summary.get('parsed', 0)}",
+        f"- 语言表候选：{summary.get('language_table_candidates', 0)}",
+        f"- 图片资料：{summary.get('images', 0)}",
+    ]
+    if profile.get("analysis_warning"):
+        rows.append(f"- 提示：{profile['analysis_warning']}")
+    if warnings:
+        rows.extend(["", "## 未完全分析的资料", *[f"- {warning}" for warning in warnings]])
+    rows.append("")
+    rows.append("## 资料读取明细")
+    for material in materials:
+        rows.append(f"- {material.get('label')}: {material.get('status')}；{material.get('note', '')}")
+    return "\n".join(rows).strip() + "\n"
 
 
 def _save_generated_project_harness(project: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
@@ -413,20 +529,56 @@ def _save_generated_project_harness(project: dict[str, Any], profile: dict[str, 
     )
 
 
-def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[str], target_language: str = "en") -> tuple[Path, Path, Path, str]:
+def _profile_material_summary(material_packet: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "summary": material_packet.get("summary") or {},
+        "materials": [
+            {
+                "artifact_id": material.get("artifact_id"),
+                "label": material.get("label"),
+                "material_type": material.get("material_type"),
+                "status": material.get("status"),
+                "rows": material.get("rows"),
+                "detected_languages": material.get("detected_languages") or [],
+                "language_table_candidate": bool(material.get("language_table_candidate")),
+                "warning": material.get("warning") or "",
+            }
+            for material in material_packet.get("materials", [])
+            if isinstance(material, dict)
+        ],
+        "language_table_candidates": material_packet.get("language_table_candidates") or [],
+        "warnings": material_packet.get("warnings") or [],
+    }
+
+
+def write_project_prompt(
+    project: dict[str, Any],
+    intro: str,
+    asset_notes: list[str],
+    target_language: str = "en",
+    material_packet: dict[str, Any] | None = None,
+) -> tuple[Path, Path, Path, Path, Path, str]:
     target_language = require_supported_language(target_language)
     root = project_dir(project["id"]) / "profile"
-    profile = _build_project_profile(project, intro, asset_notes, target_language=target_language)
-    profile = _apply_project_analysis_provider(project, intro, asset_notes, profile)
+    root.mkdir(parents=True, exist_ok=True)
+    material_packet = material_packet or build_project_material_packet(project["id"], [], load_settings(), run_visual_analysis=False)
+    profile = _build_project_profile(project, intro, asset_notes, target_language=target_language, material_packet=material_packet)
+    profile = _apply_project_analysis_provider(project, intro, asset_notes, profile, material_packet)
+    profile["material_packet"] = _profile_material_summary(material_packet)
+    profile["source_materials"] = [material.get("label") for material in material_packet.get("materials", []) if isinstance(material, dict)]
     prompt = _project_prompt_from_profile(profile)
     display_prompt = _project_prompt_display_zh(profile)
     _save_generated_project_harness(project, profile)
     profile_path = root / f"project_profile_{target_language}.json"
     prompt_path = root / f"translation_prompt_{target_language}.txt"
     brief_path = root / f"project_brief_{target_language}.md"
+    packet_path = root / "project_material_packet.json"
+    report_path = root / "project_analysis_report.md"
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
     prompt_path.write_text(prompt, encoding="utf-8")
     brief_path.write_text(_project_brief_markdown(profile, prompt), encoding="utf-8")
+    packet_path.write_text(json.dumps(material_packet, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(_project_analysis_report_markdown(profile, material_packet), encoding="utf-8")
     project_profile = dict(project.get("profile") or {})
     prompts = dict(project_profile.get("prompts_by_language") or {})
     prompts[target_language] = prompt
@@ -434,7 +586,14 @@ def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[
     display_prompts[target_language] = display_prompt
     profiles = dict(project_profile.get("profiles_by_language") or {})
     profiles[target_language] = profile
-    project_profile.update(profile if target_language == "en" else {})
+    shared_profile_keys = (
+        "game_type", "target_audience", "content_scope", "translation_style", "tone",
+        "display_game_type", "display_target_audience", "display_content_scope", "display_worldview",
+        "display_translation_style", "display_focus", "display_key_terms",
+        "language_assets", "source_materials", "asset_notes", "material_packet", "analysis_source",
+        "analysis_warning", "analysis_provider", "analysis_model", "confidence", "missing_info", "generated_date",
+    )
+    project_profile.update({key: profile[key] for key in shared_profile_keys if key in profile})
     project_profile["prompts_by_language"] = prompts
     project_profile["display_prompts_by_language"] = display_prompts
     project_profile["profiles_by_language"] = profiles
@@ -442,7 +601,7 @@ def write_project_prompt(project: dict[str, Any], intro: str, asset_notes: list[
     if target_language == "en" or not str(project.get("prompt_text") or "").strip():
         updates["prompt_text"] = prompt
     db.update_project(project["id"], updates)
-    return profile_path, prompt_path, brief_path, prompt
+    return profile_path, prompt_path, brief_path, packet_path, report_path, prompt
 
 
 def compile_project_harness_prompt(project: dict[str, Any], base_prompt: str, output_dir: Path) -> tuple[Path, Path, str, dict[str, Any]]:
@@ -630,27 +789,20 @@ def create_quick_reference_snapshot(project_id: str, run_id: str, reference_arti
     return {"artifact": artifact, "snapshot": snapshot, "context": managed_context, "context_budget": context_summary}
 
 
+PROJECT_TEXT_MATERIAL_EXTENSIONS = {".md", ".markdown", ".txt"}
+PROJECT_DOCX_MATERIAL_EXTENSIONS = {".docx"}
+PROJECT_PDF_MATERIAL_EXTENSIONS = {".pdf"}
+PROJECT_TABLE_MATERIAL_EXTENSIONS = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+PROJECT_DELIMITED_MATERIAL_EXTENSIONS = {".csv", ".tsv"}
+PROJECT_JSON_MATERIAL_EXTENSIONS = {".json", ".jsonl"}
+PROJECT_IMAGE_MATERIAL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+PROJECT_VIDEO_MATERIAL_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
+PROJECT_AUDIO_MATERIAL_EXTENSIONS = {".mp3", ".wav", ".m4a"}
+
+
 def analyze_assets(artifact_ids: list[str], settings: dict[str, Any]) -> list[str]:
-    support = settings.get("multimodal", {})
-    notes: list[str] = []
-    for artifact_id in artifact_ids:
-        artifact = db.get_artifact(artifact_id)
-        path = Path(artifact["path"])
-        suffix = path.suffix.lower()
-        if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
-            state = "analyzed" if support.get("images") else "archived_only:image_not_supported"
-        elif suffix == ".pdf":
-            state = "analyzed_text_first" if support.get("pdf") else "archived_only:pdf_not_supported"
-        elif suffix in {".md", ".markdown", ".txt"}:
-            state = _text_asset_note(path)
-        elif suffix in {".mp4", ".mov", ".mkv"}:
-            state = "analyzed" if support.get("video") else "archived_only:video_not_supported"
-        elif suffix in {".mp3", ".wav", ".m4a"}:
-            state = "analyzed" if support.get("audio") else "archived_only:audio_not_supported"
-        else:
-            state = "archived_only:unknown_type"
-        notes.append(f"{artifact['label']}={state}")
-    return notes
+    packet = build_project_material_packet("", artifact_ids, settings, run_visual_analysis=False)
+    return [str(material.get("note") or f"{material.get('label')}={material.get('status')}") for material in packet.get("materials", [])]
 
 
 def _text_asset_note(path: Path) -> str:
@@ -662,6 +814,327 @@ def _text_asset_note(path: Path) -> str:
     if not compact:
         return "text_material:empty"
     return f"text_material:{compact[:800]}"
+
+
+def build_project_material_packet(
+    project_id: str,
+    artifact_ids: list[str],
+    settings: dict[str, Any],
+    *,
+    run_visual_analysis: bool = True,
+) -> dict[str, Any]:
+    materials: list[dict[str, Any]] = []
+    context_parts: list[str] = []
+    warnings: list[str] = []
+    language_table_candidates: list[dict[str, Any]] = []
+    for artifact_id in artifact_ids:
+        artifact = db.get_artifact(artifact_id)
+        material = _parse_project_material_artifact(artifact, settings, run_visual_analysis=run_visual_analysis, project_id=project_id)
+        materials.append(material)
+        if material.get("excerpt"):
+            context_parts.append(f"## {material.get('label')}\n{material.get('excerpt')}")
+        if material.get("language_table_candidate"):
+            language_table_candidates.append({
+                "artifact_id": artifact_id,
+                "label": material.get("label"),
+                "languages": material.get("detected_languages", []),
+                "rows": material.get("rows", 0),
+            })
+        if material.get("warning"):
+            warnings.append(str(material["warning"]))
+    parsed = [m for m in materials if str(m.get("status") or "").startswith(("parsed", "vision_analyzed"))]
+    image_materials = [m for m in materials if m.get("material_type") == "image"]
+    unsupported = [m for m in materials if str(m.get("status") or "").startswith(("archived_only", "unsupported"))]
+    return {
+        "version": 1,
+        "source": "project_material_packet",
+        "project_id": project_id,
+        "artifact_ids": artifact_ids,
+        "materials": materials,
+        "context": _cap_context_text("\n\n".join(context_parts), 9000, "project material packet"),
+        "summary": {
+            "total": len(materials),
+            "parsed": len(parsed),
+            "unsupported": len(unsupported),
+            "images": len(image_materials),
+            "language_table_candidates": len(language_table_candidates),
+            "warnings": len(warnings),
+        },
+        "language_table_candidates": language_table_candidates,
+        "warnings": warnings,
+    }
+
+
+def _parse_project_material_artifact(artifact: dict[str, Any], settings: dict[str, Any], *, run_visual_analysis: bool, project_id: str = "") -> dict[str, Any]:
+    path = Path(artifact["path"])
+    suffix = path.suffix.lower()
+    base = {
+        "artifact_id": artifact.get("id"),
+        "label": artifact.get("label") or path.name,
+        "filename": path.name,
+        "kind": artifact.get("kind", ""),
+        "role": artifact.get("role", ""),
+        "origin": artifact.get("origin", ""),
+        "size": artifact.get("size", 0),
+        "suffix": suffix,
+        "status": "parsed",
+        "note": "",
+        "excerpt": "",
+    }
+    try:
+        if suffix in PROJECT_TEXT_MATERIAL_EXTENSIONS:
+            result = _parse_project_text_material(path)
+        elif suffix in PROJECT_DOCX_MATERIAL_EXTENSIONS:
+            result = _parse_project_docx_material(path)
+        elif suffix in PROJECT_PDF_MATERIAL_EXTENSIONS:
+            result = _parse_project_pdf_material(path, settings)
+        elif suffix in PROJECT_TABLE_MATERIAL_EXTENSIONS:
+            result = _parse_project_xlsx_material(path)
+        elif suffix in PROJECT_DELIMITED_MATERIAL_EXTENSIONS:
+            result = _parse_project_delimited_material(path)
+        elif suffix in PROJECT_JSON_MATERIAL_EXTENSIONS:
+            result = _parse_project_json_material(path)
+        elif suffix in PROJECT_IMAGE_MATERIAL_EXTENSIONS:
+            result = _parse_project_image_material(path, settings, run_visual_analysis=run_visual_analysis)
+        elif suffix in PROJECT_VIDEO_MATERIAL_EXTENSIONS:
+            result = _parse_project_video_material(path, settings, run_visual_analysis=run_visual_analysis, project_id=project_id, artifact_id=str(artifact.get("id") or "video"))
+        elif suffix in PROJECT_AUDIO_MATERIAL_EXTENSIONS:
+            result = {"material_type": "audio", "status": "archived_only:audio_analysis_not_supported", "warning": f"{path.name} 已归档，v1 未进行音频内容分析。", "excerpt": f"音频资料：{path.name}。v1 未分析内容。"}
+        else:
+            result = {"material_type": "unknown", "status": "archived_only:unknown_type", "warning": f"{path.name} 文件类型暂未分析。", "excerpt": f"未分析资料：{path.name}"}
+    except Exception as exc:
+        result = {"material_type": "unknown", "status": "parse_failed", "warning": f"{path.name} 解析失败：{user_facing_error(exc)}", "excerpt": ""}
+    item = {**base, **result}
+    item["note"] = _project_material_note(item)
+    return item
+
+
+def _project_material_note(material: dict[str, Any]) -> str:
+    label = material.get("label") or material.get("filename") or "material"
+    status = material.get("status") or "parsed"
+    if material.get("language_table_candidate"):
+        langs = "/".join(str(x) for x in material.get("detected_languages") or [])
+        return f"{label}=language_table_candidate:{material.get('rows', 0)} rows:{langs}"
+    if material.get("material_type") == "image":
+        return f"{label}={status}:{str(material.get('visual_summary') or material.get('excerpt') or '')[:300]}"
+    return f"{label}={status}:{str(material.get('excerpt') or '')[:300]}"
+
+
+def _parse_project_text_material(path: Path) -> dict[str, Any]:
+    text = _read_lookup_text_file(path)
+    compact = re.sub(r"\s+", " ", text).strip()
+    headings = re.findall(r"(?m)^#{1,4}\s+(.+)$", text)[:20]
+    table_rows = re.findall(r"(?m)^\|.+\|$", text)[:40]
+    excerpt = "\n".join(part for part in [
+        "\n".join(f"# {heading}" for heading in headings[:8]),
+        "\n".join(table_rows[:20]),
+        compact[:3000],
+    ] if part).strip()
+    return {"material_type": "text", "status": "parsed_text", "chars": len(text), "headings": headings, "table_rows": table_rows[:20], "excerpt": excerpt}
+
+
+def _parse_project_docx_material(path: Path) -> dict[str, Any]:
+    with ZipFile(path) as archive:
+        if "word/document.xml" not in archive.namelist():
+            raise ValueError(f"Missing word/document.xml in DOCX file: {path}")
+        root = ET.fromstring(archive.read("word/document.xml"))
+    paragraphs: list[str] = []
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    for paragraph in root.findall(".//w:p", ns):
+        text = re.sub(r"\s+", " ", "".join(node.text or "" for node in paragraph.findall(".//w:t", ns))).strip()
+        if text:
+            paragraphs.append(text)
+    return {"material_type": "docx", "status": "parsed_docx", "paragraphs": len(paragraphs), "excerpt": "\n".join(paragraphs[:120])[:5000]}
+
+
+def _parse_project_pdf_material(path: Path, settings: dict[str, Any]) -> dict[str, Any]:
+    if not (settings.get("multimodal", {}) or {}).get("pdf", True):
+        return {"material_type": "pdf", "status": "archived_only:pdf_not_supported", "warning": f"{path.name} 已归档，当前设置未启用 PDF 文字提取。", "excerpt": ""}
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception as exc:
+        return {"material_type": "pdf", "status": "archived_only:pdf_parser_missing", "warning": f"缺少 PDF 解析依赖：{exc}", "excerpt": ""}
+    reader = PdfReader(str(path))
+    chunks: list[str] = []
+    for page in reader.pages[:20]:
+        text = re.sub(r"\s+", " ", page.extract_text() or "").strip()
+        if text:
+            chunks.append(text)
+    return {"material_type": "pdf", "status": "parsed_pdf_text", "pages": len(reader.pages), "excerpt": "\n".join(chunks)[:5000]}
+
+
+def _parse_project_xlsx_material(path: Path) -> dict[str, Any]:
+    wb = load_workbook(path, read_only=True, data_only=True)
+    sheets: list[dict[str, Any]] = []
+    detected_languages: set[str] = set()
+    total_rows = 0
+    samples: list[dict[str, Any]] = []
+    try:
+        for ws in wb.worksheets[:12]:
+            rows_iter = ws.iter_rows(values_only=True)
+            first = next(rows_iter, None)
+            headers = [str(value or "").strip() for value in (first or [])]
+            normalized = _normalized_header_indices(headers)
+            id_idx = _column_index(normalized, None, ["id", "key", "编号", "序号"], required=False)
+            source_idx = _column_index(normalized, None, ["source", "original", "cn", "zh", "chinese", "原文", "中文", "简体中文"], required=False)
+            reserved = {idx for idx in (id_idx, source_idx) if idx is not None}
+            language_indices = _auto_language_indices(headers, reserved)
+            detected_languages.update(language_indices.keys())
+            row_count = 0
+            for row in rows_iter:
+                if any(str(cell or "").strip() for cell in row):
+                    row_count += 1
+                if len(samples) < 30 and source_idx is not None:
+                    source = _value_at(row, source_idx)
+                    if source:
+                        item = {"sheet": ws.title, "source": source}
+                        for code, (target_idx, _alt_idx) in language_indices.items():
+                            target = _value_at(row, target_idx)
+                            if target:
+                                item[visible_language_code(code)] = target
+                        samples.append(item)
+            total_rows += row_count
+            sheets.append({"name": ws.title, "headers": headers[:40], "rows": row_count, "source_column": headers[source_idx] if source_idx is not None and source_idx < len(headers) else "", "languages": sorted(visible_language_code(code) for code in language_indices)})
+    finally:
+        wb.close()
+    language_table_candidate = total_rows > 0 and bool(detected_languages) and any(sheet.get("source_column") for sheet in sheets)
+    excerpt = json.dumps({"sheets": sheets[:8], "samples": samples[:20]}, ensure_ascii=False, indent=2)
+    return {
+        "material_type": "table",
+        "status": "parsed_xlsx",
+        "rows": total_rows,
+        "sheets": sheets,
+        "samples": samples,
+        "detected_languages": sorted(visible_language_code(code) for code in detected_languages),
+        "language_table_candidate": language_table_candidate,
+        "excerpt": excerpt[:7000],
+    }
+
+
+def _parse_project_delimited_material(path: Path) -> dict[str, Any]:
+    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+    raw = _read_lookup_text_file(path)
+    rows = list(csv.reader(raw.splitlines(), delimiter=delimiter))
+    headers = [str(value or "").strip() for value in rows[0]] if rows else []
+    samples = rows[1:31]
+    return {"material_type": "table", "status": "parsed_delimited", "rows": max(0, len(rows) - 1), "headers": headers, "excerpt": json.dumps({"headers": headers, "samples": samples}, ensure_ascii=False)[:4000]}
+
+
+def _parse_project_json_material(path: Path) -> dict[str, Any]:
+    text = _read_lookup_text_file(path)
+    try:
+        payload = json.loads(text)
+        excerpt = json.dumps(payload, ensure_ascii=False, indent=2)[:5000]
+    except Exception:
+        excerpt = text[:5000]
+    return {"material_type": "json", "status": "parsed_json", "excerpt": excerpt}
+
+
+def _parse_project_image_material(path: Path, settings: dict[str, Any], *, run_visual_analysis: bool) -> dict[str, Any]:
+    if not run_visual_analysis:
+        return {"material_type": "image", "status": "archived_only:image_not_requested", "excerpt": f"图片资料：{path.name}"}
+    provider = normalize_provider_name(settings.get("provider"))
+    if provider not in REAL_PROVIDERS or not settings.get("api_key"):
+        return {"material_type": "image", "status": "archived_only:image_api_key_missing", "warning": f"{path.name} 已归档，未配置支持图片分析的 API。", "excerpt": f"图片资料：{path.name}；未配置 API，未做视觉分析。"}
+    prompt = (
+        "请分析这张游戏本地化项目资料图。返回严格 JSON："
+        "{\"ui_type\":\"\", \"theme\":\"\", \"worldview\":\"\", \"characters_or_scene\":\"\", "
+        "\"visible_text\":\"\", \"localization_style_hints\":\"\", \"confidence\":\"low|medium|high\"}。"
+        "只基于图片可见信息，不要编造。"
+    )
+    try:
+        raw = call_image_text(settings, prompt, path, system="Return strict JSON only.")
+        payload = _parse_semantic_qa_payload(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("image provider returned non-object")
+        summary = "；".join(str(payload.get(key) or "").strip() for key in ("ui_type", "theme", "worldview", "characters_or_scene", "visible_text", "localization_style_hints") if str(payload.get(key) or "").strip())
+        return {"material_type": "image", "status": "vision_analyzed", "visual_analysis": payload, "visual_summary": summary, "excerpt": summary[:2500]}
+    except Exception as exc:
+        return {"material_type": "image", "status": "vision_failed", "warning": f"{path.name} 图片分析失败：{user_facing_error(exc)}", "excerpt": f"图片资料：{path.name}；视觉分析失败。"}
+
+
+def _extract_video_keyframes(path: Path, output_dir: Path, *, max_frames: int = 4) -> tuple[list[Path], dict[str, Any]]:
+    try:
+        import cv2  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"缺少视频抽帧依赖 OpenCV：{exc}") from exc
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise RuntimeError("视频无法打开，可能是格式不受支持或文件损坏")
+    try:
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        if frame_count > 0:
+            ratios = [0.08, 0.32, 0.58, 0.84][:max_frames]
+            indices = sorted({min(frame_count - 1, max(0, int(frame_count * ratio))) for ratio in ratios})
+        else:
+            indices = list(range(max_frames))
+        frames: list[Path] = []
+        for order, index in enumerate(indices, start=1):
+            if frame_count > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            frame_path = output_dir / f"frame_{order:02d}.png"
+            if cv2.imwrite(str(frame_path), frame):
+                frames.append(frame_path)
+        if not frames:
+            raise RuntimeError("没有抽取到可用关键帧")
+        return frames, {"frame_count": frame_count, "fps": fps, "width": width, "height": height, "frames": [frame.name for frame in frames]}
+    finally:
+        cap.release()
+
+
+def _parse_project_video_material(path: Path, settings: dict[str, Any], *, run_visual_analysis: bool, project_id: str, artifact_id: str) -> dict[str, Any]:
+    if not run_visual_analysis:
+        return {"material_type": "video", "status": "archived_only:video_not_requested", "excerpt": f"视频资料：{path.name}"}
+    provider = normalize_provider_name(settings.get("provider"))
+    if provider not in REAL_PROVIDERS or not settings.get("api_key"):
+        return {"material_type": "video", "status": "archived_only:video_api_key_missing", "warning": f"{path.name} 已归档，未配置支持视频关键帧分析的 API。", "excerpt": f"视频资料：{path.name}；未配置 API，未做画面分析。"}
+    frame_root = (project_dir(project_id) / "profile" / "video_frames" / artifact_id) if project_id else (path.parent / ".lws_video_frames" / artifact_id)
+    try:
+        frames, frame_meta = _extract_video_keyframes(path, frame_root, max_frames=4)
+    except Exception as exc:
+        return {"material_type": "video", "status": "video_frame_extract_failed", "warning": f"{path.name} 抽帧失败：{user_facing_error(exc)}", "excerpt": f"视频资料：{path.name}；抽帧失败。"}
+    prompt = (
+        "请分析这个游戏本地化项目视频的关键帧。返回严格 JSON："
+        "{\"ui_type\":\"\", \"theme\":\"\", \"worldview\":\"\", \"characters_or_scene\":\"\", "
+        "\"visible_text\":\"\", \"localization_style_hints\":\"\", \"confidence\":\"low|medium|high\"}。"
+        "只基于当前帧可见信息，不要编造；如果文字看不清，visible_text 写空。"
+    )
+    analyses: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for frame in frames:
+        try:
+            raw = call_image_text(settings, prompt, frame, system="Return strict JSON only.")
+            payload = _parse_semantic_qa_payload(raw)
+            if not isinstance(payload, dict):
+                payload = {"summary": str(raw)[:1000]}
+            payload["frame"] = frame.name
+            analyses.append(payload)
+        except Exception as exc:
+            warnings.append(f"{frame.name}: {user_facing_error(exc)}")
+    if not analyses:
+        return {"material_type": "video", "status": "vision_failed_video", "warning": f"{path.name} 关键帧视觉分析失败：{'；'.join(warnings[:3])}", "frame_meta": frame_meta, "excerpt": f"视频资料：{path.name}；关键帧分析失败。"}
+    summary_parts: list[str] = []
+    for payload in analyses:
+        summary = "；".join(str(payload.get(key) or "").strip() for key in ("ui_type", "theme", "worldview", "characters_or_scene", "visible_text", "localization_style_hints") if str(payload.get(key) or "").strip())
+        if summary:
+            summary_parts.append(f"{payload.get('frame')}: {summary}")
+    warning = f"{path.name} 部分关键帧分析失败：{'；'.join(warnings[:3])}" if warnings else ""
+    return {
+        "material_type": "video",
+        "status": "vision_analyzed_video",
+        "frames_analyzed": len(analyses),
+        "frame_meta": frame_meta,
+        "visual_analysis": analyses,
+        "warning": warning,
+        "excerpt": "\n".join(summary_parts)[:4000],
+    }
 
 
 def _read_lookup_text_file(path: Path) -> str:

@@ -22,7 +22,7 @@ declare global {
   }
 }
 
-import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, Project, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
+import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, Project, ProjectAnalysisResponse, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
 
 
 
@@ -515,9 +515,9 @@ function App() {
   async function runAnalysis() {
     if (!current) return
     setBusy(true)
-    setStatus('正在生成项目 profile 和翻译提示词...')
+    setStatus('正在读取项目资料并调用 AI 分析...')
     try {
-      await api(`/api/projects/${current.id}/analyze`, {
+      const result = await api<ProjectAnalysisResponse>(`/api/projects/${current.id}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -527,7 +527,22 @@ function App() {
         })
       })
       await refreshCurrent()
-      setStatus(`${currentLang.short} 项目提示词已生成`)
+      const summary = result.analysis?.summary || {}
+      const warning = result.analysis?.warning
+      setStatus(`${currentLang.short} 项目分析完成：已读取 ${summary.parsed ?? 0}/${summary.total ?? 0} 个资料${warning ? `；${warning}` : ''}`)
+      const candidates = result.analysis?.language_table_candidates || []
+      if (candidates.length) {
+        const confirmScan = window.confirm(`识别到 ${candidates.length} 个完整语言表。是否现在扫描术语候选？候选不会直接进入项目术语库。`)
+        if (confirmScan) {
+          const candidate = candidates[0]
+          const artifacts = result.project.artifacts || []
+          const artifact = artifacts.find((item) => item.id === candidate.artifact_id) || assetArtifacts.find((item) => item.id === candidate.artifact_id) || null
+          if (artifact) {
+            setSourceArtifact(artifact)
+            await runGlossaryExtract(artifact)
+          }
+        }
+      }
     } catch (error) {
       setStatus(`项目分析失败：${errorText(error)}`)
     } finally {
@@ -535,8 +550,9 @@ function App() {
     }
   }
 
-  async function runGlossaryExtract() {
-    if (!current || !sourceArtifact) return
+  async function runGlossaryExtract(inputArtifact?: Artifact) {
+    const artifact = inputArtifact || sourceArtifact
+    if (!current || !artifact) return
     setBusy(true)
     setStatus('正在从完整语言表扫描术语候选...')
     try {
@@ -557,7 +573,7 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input_artifact_id: sourceArtifact.id,
+          input_artifact_id: artifact.id,
           project_name: current.name,
           source_only: false,
           id_column: 'ID',

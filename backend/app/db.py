@@ -59,6 +59,8 @@ ARTIFACT_ROLE_BY_KIND = {
     "compiled_style_hint": "prompt",
     "project_profile": "profile",
     "project_brief": "profile",
+    "project_material_packet": "profile",
+    "project_analysis_report": "profile",
     "project_harness_snapshot": "harness_snapshot",
 }
 

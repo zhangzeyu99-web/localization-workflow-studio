@@ -992,6 +992,26 @@ a { color: #a5b4fc; text-decoration: none; }
 .inline-warning {
   margin: 0;
 }
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.metric-card {
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 10px;
+  background: rgba(15,23,42,.45);
+}
+.metric-label {
+  color: #a1a1aa;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.span-all {
+  grid-column: 1 / -1;
+}
 .translation-guard-strip {
   display: flex;
   flex-wrap: wrap;

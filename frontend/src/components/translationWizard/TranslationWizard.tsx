@@ -7,7 +7,7 @@ import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisib
 import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, normalizeLanguageCode, type LanguageCode } from '../../languages'
 import { ProjectMetaTable } from '../project/ProjectMeta'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from '../shared/WorkflowPrimitives'
-import type { AppSettings, Artifact, DeliverableTask, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
+import type { AppSettings, Artifact, DeliverableTask, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, ProjectMaterialAnalysis, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
 
 export const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
 
@@ -336,6 +336,58 @@ export function StepIntro({
   )
 }
 
+function projectMaterialAnalysis(project: Project): ProjectMaterialAnalysis | null {
+  const packet = project.profile?.material_packet
+  if (!packet || typeof packet !== 'object') return null
+  const record = packet as Record<string, unknown>
+  return {
+    summary: record.summary as ProjectMaterialAnalysis['summary'],
+    materials: record.materials as ProjectMaterialAnalysis['materials'],
+    language_table_candidates: record.language_table_candidates as ProjectMaterialAnalysis['language_table_candidates'],
+    warning: String(project.profile?.analysis_warning || '')
+  }
+}
+
+function StepAnalyzeMaterialStatus({ project }: { project: Project }) {
+  const analysis = projectMaterialAnalysis(project)
+  if (!analysis) return null
+  const summary = analysis.summary || {}
+  const materials = analysis.materials || []
+  const imageDone = materials.filter((item) => item.material_type === 'image' && item.status === 'vision_analyzed').length
+  const imageTotal = materials.filter((item) => item.material_type === 'image').length
+  const videoDone = materials.filter((item) => item.material_type === 'video' && String(item.status || '').startsWith('vision_analyzed')).length
+  const videoTotal = materials.filter((item) => item.material_type === 'video').length
+  const languageTables = analysis.language_table_candidates?.length || 0
+  const unsupported = materials.filter((item) => String(item.status || '').startsWith('archived_only') || item.warning).length
+  const warnings = materials.map((item) => item.warning).filter(Boolean).slice(0, 3)
+  return (
+    <div className="status-grid">
+      <div className="metric-card">
+        <div className="metric-label">资料读取</div>
+        <strong>{summary.parsed ?? 0}/{summary.total ?? 0}</strong>
+      </div>
+      <div className="metric-card">
+        <div className="metric-label">语言表识别</div>
+        <strong>{languageTables} 个</strong>
+      </div>
+      <div className="metric-card">
+        <div className="metric-label">图片视觉分析</div>
+        <strong>{imageTotal ? `${imageDone}/${imageTotal}` : '-'}</strong>
+      </div>
+      <div className="metric-card">
+        <div className="metric-label">视频画面分析</div>
+        <strong>{videoTotal ? `${videoDone}/${videoTotal}` : '-'}</strong>
+      </div>
+      <div className="metric-card">
+        <div className="metric-label">未完整分析</div>
+        <strong>{unsupported || '-'}</strong>
+      </div>
+      {analysis.warning ? <div className="inline-warning span-all">{analysis.warning}</div> : null}
+      {warnings.length ? <div className="muted-left span-all">{warnings.join('；')}</div> : null}
+    </div>
+  )
+}
+
 export function StepAnalyze({
   onAnalyze,
   project,
@@ -353,8 +405,9 @@ export function StepAnalyze({
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 2</span>AI 分析与专属提示词生成</div>
-      <div className="panel-desc">基于文字资料、已归档素材和项目资产生成提示词、项目规则与元信息。生成后会自动保存到当前项目。当前素材：{assetArtifacts.length} 个。</div>
+      <div className="panel-desc">先读取上传资料形成资料包，再调用已配置 AI 分析项目定位、风格和注意事项。当前素材：{assetArtifacts.length} 个。</div>
       <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>🤖 启动 AI 分析</button>
+      <StepAnalyzeMaterialStatus project={project} />
       <div className="ai-card"><div className="ai-header">当前 {lang.short} 提示词</div><pre>{projectPromptForLanguage(project, selectedLanguage) || '尚未生成'}</pre></div>
       <ProjectMetaTable project={project} />
     </>

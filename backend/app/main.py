@@ -59,9 +59,9 @@ if __package__ is None or __package__ == "":
         TranslationEntryUpdate,
     )
     from app.workflow import (
-        analyze_assets,
         apply_manual_fixes,
         apply_model_fixes,
+        build_project_material_packet,
         build_delivery_package,
         create_improvement_review,
         create_semantic_qa_context,
@@ -69,7 +69,6 @@ if __package__ is None or __package__ == "":
         export_translation_archive,
         extract_glossary,
         guard_complete_language_table_for_glossary_import,
-        guard_complete_language_table_for_project_material,
         harness_overview,
         import_glossary,
         import_translation_archive,
@@ -158,9 +157,9 @@ else:
         TranslationEntryUpdate,
     )
     from .workflow import (
-        analyze_assets,
         apply_manual_fixes,
         apply_model_fixes,
+        build_project_material_packet,
         build_delivery_package,
         create_improvement_review,
         create_semantic_qa_context,
@@ -168,7 +167,6 @@ else:
         export_translation_archive,
         extract_glossary,
         guard_complete_language_table_for_glossary_import,
-        guard_complete_language_table_for_project_material,
         harness_overview,
         import_glossary,
         import_translation_archive,
@@ -377,14 +375,50 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
         target_language = require_supported_language(payload.target_language)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
-    notes = analyze_assets(payload.asset_artifact_ids, load_settings())
-    profile_path, prompt_path, brief_path, prompt = write_project_prompt(project, payload.intro, notes, target_language=target_language)
+    settings = load_settings()
+    material_packet = build_project_material_packet(project_id, payload.asset_artifact_ids, settings, run_visual_analysis=True)
+    notes = [str(material.get("note") or "") for material in material_packet.get("materials", []) if isinstance(material, dict)]
+    profile_path, prompt_path, brief_path, packet_path, report_path, prompt = write_project_prompt(
+        project,
+        payload.intro,
+        notes,
+        target_language=target_language,
+        material_packet=material_packet,
+    )
     artifacts = [
         db.add_artifact(project_id, "Project profile", profile_path, "project_profile", mime="application/json"),
         db.add_artifact(project_id, "Translation prompt", prompt_path, "translation_prompt", mime="text/plain"),
         db.add_artifact(project_id, "Project brief", brief_path, "project_brief", mime="text/markdown"),
+        db.add_artifact(project_id, "Project material packet", packet_path, "project_material_packet", mime="application/json"),
+        db.add_artifact(project_id, "Project analysis report", report_path, "project_analysis_report", mime="text/markdown"),
     ]
-    return {"project": _with_project_stats(db.get_project(project_id), include_details=True), "artifacts": artifacts, "prompt": prompt}
+    fresh_project = _with_project_stats(db.get_project(project_id), include_details=True)
+    profile = fresh_project.get("profile") or {}
+    return {
+        "project": fresh_project,
+        "artifacts": artifacts,
+        "prompt": prompt,
+        "analysis": {
+            "source": profile.get("analysis_source") or "template",
+            "warning": profile.get("analysis_warning") or "",
+            "summary": material_packet.get("summary") or {},
+            "materials": [
+                {
+                    "artifact_id": material.get("artifact_id"),
+                    "label": material.get("label"),
+                    "material_type": material.get("material_type"),
+                    "status": material.get("status"),
+                    "warning": material.get("warning") or "",
+                    "language_table_candidate": bool(material.get("language_table_candidate")),
+                    "detected_languages": material.get("detected_languages") or [],
+                    "rows": material.get("rows"),
+                }
+                for material in material_packet.get("materials", [])
+                if isinstance(material, dict)
+            ],
+            "language_table_candidates": material_packet.get("language_table_candidates") or [],
+        },
+    }
 
 
 @app.post("/api/projects/{project_id}/files")
@@ -412,11 +446,6 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
     destination = _unique_path(upload_root / safe_name)
     temp_path.replace(destination)
     if project_material_upload:
-        try:
-            guard_complete_language_table_for_project_material(destination)
-        except ValueError as exc:
-            destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
         duplicate = _find_duplicate_project_upload(project_id, kind, digest)
         if duplicate:
             destination.unlink(missing_ok=True)
