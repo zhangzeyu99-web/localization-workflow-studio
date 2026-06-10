@@ -11,11 +11,8 @@ from typing import Any
 import httpx
 
 from .config import TEST_FAKE_PROVIDER, normalize_provider_name, test_provider_enabled
+from .errors import ProviderError
 from .translation_batches import manage_project_prompt_context
-
-
-class ProviderError(RuntimeError):
-    pass
 
 
 @dataclass

@@ -9,10 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from .. import db
+from ..errors import UserFacingWorkflowError
 from .common import project_dir, run_dir
-
-class UserFacingWorkflowError(RuntimeError):
-    pass
 
 
 def _friendly_unsupported_language_file_message(suffix: str) -> str:
