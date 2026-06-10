@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+# ruff: noqa: F403,F405
+from .shared import *
+
+router = APIRouter()
+
+@router.get("/api/projects")
+def get_projects() -> list[dict[str, Any]]:
+    return [_with_project_stats(project) for project in db.list_projects()]
+
+
+@router.post("/api/projects")
+def create_project(payload: ProjectCreate) -> dict[str, Any]:
+    existing = db.find_project_by_name(payload.name)
+    if existing:
+        return {**_with_project_stats(existing), "duplicate": True}
+    project = db.insert_project(payload.name, payload.type, payload.description, payload.icon)
+    project_dir(project["id"])
+    return {**_with_project_stats(project), "duplicate": False}
+
+
+@router.get("/api/projects/{project_id}")
+def get_project(project_id: str) -> dict[str, Any]:
+    try:
+        return _with_project_stats(db.get_project(project_id), include_details=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@router.patch("/api/projects/{project_id}")
+def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
+    try:
+        current = db.get_project(project_id)
+        updates = payload.model_dump(exclude_none=True)
+        if "profile" in updates or "prompt_text" in updates:
+            profile = dict(current.get("profile") or {})
+            incoming_profile = updates.get("profile")
+            if isinstance(incoming_profile, dict):
+                profile.update(incoming_profile)
+            if "prompt_text" in updates:
+                prompts = dict(profile.get("prompts_by_language") or {})
+                display_prompts = dict(profile.get("display_prompts_by_language") or {})
+                prompts["en"] = updates["prompt_text"]
+                display_prompts["en"] = updates["prompt_text"]
+                profile["prompts_by_language"] = prompts
+                profile["display_prompts_by_language"] = display_prompts
+            elif isinstance(profile.get("prompts_by_language"), dict) and str(profile["prompts_by_language"].get("en") or "").strip():
+                updates["prompt_text"] = str(profile["prompts_by_language"].get("en") or "")
+            updates["profile"] = profile
+        return _with_project_stats(db.update_project(project_id, updates), include_details=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@router.delete("/api/projects/{project_id}")
+def delete_project(project_id: str) -> dict[str, bool]:
+    try:
+        run_ids = [run["id"] for run in db.list_runs(project_id)]
+        db.delete_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    shutil.rmtree(DATA_ROOT / "projects" / project_id, ignore_errors=True)
+    for run_id in run_ids:
+        shutil.rmtree(DATA_ROOT / "runs" / run_id, ignore_errors=True)
+    return {"deleted": True}
+
+
+@router.get("/api/projects/{project_id}/harness")
+def get_project_harness(project_id: str) -> dict[str, Any]:
+    try:
+        return harness_overview(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@router.patch("/api/projects/{project_id}/harness")
+def patch_project_harness(project_id: str, payload: ProjectHarnessUpdate) -> dict[str, Any]:
+    try:
+        harness = write_project_harness(project_id, payload.model_dump(exclude_none=True))
+        return {"global_harness": harness_overview(project_id)["global_harness"], "project_harness": harness}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@router.post("/api/projects/{project_id}/analyze")
+def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[str, Any]:
+    try:
+        project = db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    try:
+        target_language = require_supported_language(payload.target_language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+    settings = load_settings()
+    material_packet = build_project_material_packet(project_id, payload.asset_artifact_ids, settings, run_visual_analysis=True)
+    notes = [str(material.get("note") or "") for material in material_packet.get("materials", []) if isinstance(material, dict)]
+    profile_path, prompt_path, brief_path, packet_path, report_path, prompt = write_project_prompt(
+        project,
+        payload.intro,
+        notes,
+        target_language=target_language,
+        material_packet=material_packet,
+    )
+    artifacts = [
+        db.add_artifact(project_id, "Project profile", profile_path, "project_profile", mime="application/json"),
+        db.add_artifact(project_id, "Translation prompt", prompt_path, "translation_prompt", mime="text/plain"),
+        db.add_artifact(project_id, "Project brief", brief_path, "project_brief", mime="text/markdown"),
+        db.add_artifact(project_id, "Project material packet", packet_path, "project_material_packet", mime="application/json"),
+        db.add_artifact(project_id, "Project analysis report", report_path, "project_analysis_report", mime="text/markdown"),
+    ]
+    fresh_project = _with_project_stats(db.get_project(project_id), include_details=True)
+    profile = fresh_project.get("profile") or {}
+    return {
+        "project": fresh_project,
+        "artifacts": artifacts,
+        "prompt": prompt,
+        "analysis": {
+            "source": profile.get("analysis_source") or "template",
+            "warning": profile.get("analysis_warning") or "",
+            "summary": material_packet.get("summary") or {},
+            "materials": [
+                {
+                    "artifact_id": material.get("artifact_id"),
+                    "label": material.get("label"),
+                    "material_type": material.get("material_type"),
+                    "status": material.get("status"),
+                    "warning": material.get("warning") or "",
+                    "language_table_candidate": bool(material.get("language_table_candidate")),
+                    "project_brief_candidate": bool(material.get("project_brief_candidate")),
+                    "detected_languages": material.get("detected_languages") or [],
+                    "rows": material.get("rows"),
+                }
+                for material in material_packet.get("materials", [])
+                if isinstance(material, dict)
+            ],
+            "language_table_candidates": material_packet.get("language_table_candidates") or [],
+        },
+    }
+
+
+@router.post("/api/projects/{project_id}/files")
+def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str = "upload", purpose: str = "") -> dict[str, Any]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    safe_name = safe_filename(file.filename or "upload.bin")
+    _validate_upload_kind_filename(kind, safe_name)
+    upload_root = project_dir(project_id) / "uploads"
+    upload_root.mkdir(parents=True, exist_ok=True)
+    temp_path = _unique_path(upload_root / f".{safe_name}.uploading")
+    try:
+        digest, _ = stream_upload(file.file, temp_path)
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=user_facing_error(exc)) from exc
+    project_material_upload = kind == "asset" and purpose == "project_material"
+    if kind == "asset" and not project_material_upload:
+        duplicate = _find_duplicate_project_upload(project_id, kind, digest)
+        if duplicate:
+            temp_path.unlink(missing_ok=True)
+            duplicate["duplicate"] = True
+            return duplicate
+    destination = _unique_path(upload_root / safe_name)
+    temp_path.replace(destination)
+    if project_material_upload:
+        duplicate = _find_duplicate_project_upload(project_id, kind, digest)
+        if duplicate:
+            destination.unlink(missing_ok=True)
+            duplicate["duplicate"] = True
+            return duplicate
+    if kind in {"term_base", "glossary_final"}:
+        try:
+            guard_complete_language_table_for_glossary_import(destination)
+        except ValueError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+    mime = file.content_type or mimetypes.guess_type(str(destination))[0] or "application/octet-stream"
+    artifact = db.add_artifact(
+        project_id,
+        safe_name,
+        destination,
+        kind,
+        mime=mime,
+        origin="uploaded",
+        metadata={"sha256": digest, "original_filename": safe_name, **({"purpose": purpose} if purpose else {})},
+    )
+    artifact["duplicate"] = False
+    return artifact
+
+
+@router.get("/api/projects/{project_id}/assets")
+def list_project_assets(project_id: str, role: str | None = None, origin: str | None = None, run_id: str | None = None) -> list[dict[str, Any]]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    return db.list_artifacts(project_id=project_id, run_id=run_id, role=role, origin=origin)
+
+
+@router.get("/api/artifacts/{artifact_id}/translation-readiness")
+def artifact_translation_readiness(artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
+    try:
+        return inspect_translation_readiness(artifact_id, batch_size=batch_size, language=require_supported_language(language))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+
+
+@router.get("/api/artifacts/{artifact_id}/translation-targets")
+def artifact_translation_targets(artifact_id: str) -> dict[str, Any]:
+    try:
+        return inspect_translation_targets(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
