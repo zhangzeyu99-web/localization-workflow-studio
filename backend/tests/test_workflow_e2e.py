@@ -1135,7 +1135,7 @@ def test_fake_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert any("resume: batch 1/2 already completed" in event["message"] for event in resume_events)
 
 
-def test_project_analysis_display_prompt_keeps_project_brief_specifics(tmp_path: Path) -> None:
+def test_project_analysis_display_prompt_keeps_project_brief_specifics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     brief = tmp_path / "hell-slg-projectbrief.md"
     brief.write_text(
         """# 地狱SLG 翻译提示词与项目元信息
@@ -1146,7 +1146,10 @@ def test_project_analysis_display_prompt_keeps_project_brief_specifics(tmp_path:
 你是一位资深游戏本地化译者，正在翻译一款地狱监狱帝国经营题材的竖屏 SLG/模拟经营手游。
 译文需符合以下要求：
 1. 文字以黑色幽默为主，兼顾战争、战斗、同盟、掠夺等 SLG 系统的清晰度；
+2. UI、任务、按钮、弹窗尽量短促直接，适配移动端竖屏；
+3. 剧情和角色台词可带讽刺、冷幽默和黑色幽默，不要逐字直译；
 4. 术语保持一致：监狱长、监狱、灵魂、审判、净化室、灵魂召唤屋、飞艇、英雄、同盟、集结、掠夺、迁城、基地等；
+5. 保留所有代码占位符、富文本、跳转标签和特殊符号。
 ```
 
 ## 项目元信息
@@ -1159,11 +1162,20 @@ def test_project_analysis_display_prompt_keeps_project_brief_specifics(tmp_path:
 | 视觉与世界观 | 暗红地狱、工业监狱、恶魔管理者、红色灵魂、审判/净化设备、现代科技设施 |
 | 翻译风格 | UI 精简；剧情自然、讽刺、黑色幽默；系统名严谨统一 |
 | 重点注意 | 地狱梗可以保留幽默，但功能说明不能玩梗；监狱、灵魂、审判、净化等核心术语优先一致性 |
+| 信息来源 | 地狱slg-projectbrief-20260609.md |
+| 语言资产 | 8379 条中文文本，术语表 485 条术语 |
 """,
         encoding="utf-8",
     )
 
+    def fail_if_provider_called(settings: dict, prompt: str) -> str:
+        _ = settings, prompt
+        raise AssertionError("structured project brief markdown must not be re-summarized by provider")
+
+    monkeypatch.setattr(workflow, "_call_semantic_provider", fail_if_provider_called)
+
     with TestClient(app) as client:
+        client.patch("/api/settings", json={"provider": "openai", "api_key": "test-key", "model": "gpt-test"})
         project = client.post("/api/projects", json={"name": "地狱", "type": "地狱slg"}).json()
         with brief.open("rb") as fh:
             upload = client.post(
@@ -1176,11 +1188,149 @@ def test_project_analysis_display_prompt_keeps_project_brief_specifics(tmp_path:
             json={"intro": "地狱 地狱slg", "asset_artifact_ids": [upload.json()["id"]]},
         )
         assert response.status_code == 200, response.text
-        display_prompt = response.json()["project"]["profile"]["display_prompts_by_language"]["en"]
-        assert "地狱监狱经营 SLG" in display_prompt
+        payload = response.json()
+        profile = payload["project"]["profile"]
+        display_prompt = profile["display_prompts_by_language"]["en"]
+        execution_prompt = profile["prompts_by_language"]["en"]
+
+        assert profile["analysis_source"] == "md_primary"
+        assert profile["brief_source"] == "md_primary"
+        assert profile["display_game_type"] == "地狱监狱经营 SLG / 竖屏模拟经营 + 战斗同盟玩法"
+        assert profile["display_target_audience"] == "喜欢暗黑题材、黑色幽默、基地经营、英雄养成和联盟战斗的移动端 SLG 用户"
+        assert profile["language_assets"] == "8379 条中文文本，术语表 485 条术语"
+        assert "竖屏 SLG/模拟经营" in display_prompt
         assert "黑色幽默" in display_prompt
-        assert "监狱长、监狱、灵魂、审判" in display_prompt
-        assert "项目资料：以后端保存" not in display_prompt
+        assert "UI、任务、按钮、弹窗尽量短促直接" in display_prompt
+        assert "术语译法以随附术语表、行级 term_hits 和译文归档命中为准" in display_prompt
+        assert "监狱长、监狱、灵魂、审判" not in display_prompt
+        assert "核心术语" not in display_prompt
+        assert "source" not in display_prompt
+        assert "target" not in display_prompt
+        assert "输出协议" not in display_prompt
+        assert "输出协议：只返回 JSONL" in execution_prompt
+
+
+def test_project_analysis_generates_signal_based_brief_without_markdown(tmp_path: Path) -> None:
+    workbook = tmp_path / "hell-language.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "KR"
+    ws.append(["ID", "CN", "KR"])
+    rows = [
+        "监狱长等级提升",
+        "灵魂净化室已满",
+        "审判即将开始",
+        "恶魔管理者正在巡逻",
+        "同盟集结掠夺基地",
+        "英雄进入牢房战斗",
+    ]
+    for index in range(1, 40):
+        source = rows[index % len(rows)]
+        ws.append([index, source, f"KR {index}"])
+    wb.save(workbook)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "无MD地狱", "type": "SLG"}).json()
+        with workbook.open("rb") as fh:
+            upload = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("hell-language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        assert upload.status_code == 200, upload.text
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "", "asset_artifact_ids": [upload.json()["id"]], "target_language": "ko"},
+        )
+        assert response.status_code == 200, response.text
+        profile = response.json()["project"]["profile"]
+        display_prompt = profile["display_prompts_by_language"]["ko"]
+
+        assert profile["analysis_source"] == "template"
+        assert profile["analysis_warning"].startswith("未配置 API key")
+        assert "地狱监狱经营 SLG" in profile["display_game_type"]
+        assert "黑色题材" in profile["display_target_audience"]
+        assert "审判/净化" in profile["display_worldview"]
+        assert "术语译法以本次任务随附术语表" in display_prompt
+        assert "核心术语" not in display_prompt
+        assert "source" not in display_prompt
+        assert "target" not in display_prompt
+
+
+def test_project_analysis_does_not_treat_ordinary_markdown_as_primary_brief(tmp_path: Path) -> None:
+    material = tmp_path / "feature-requirements.md"
+    material.write_text(
+        """# 研发需求说明
+
+本次更新包括新增活动、副本入口和奖励弹窗。翻译时注意按钮短一些。
+
+```text
+这里是一段参考提示词，但不是项目 brief。
+```
+""",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "需求文档项目", "type": "SLG"}).json()
+        with material.open("rb") as fh:
+            upload = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
+                files={"file": ("feature-requirements.md", fh, "text/markdown")},
+            )
+        assert upload.status_code == 200, upload.text
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "", "asset_artifact_ids": [upload.json()["id"]], "target_language": "en"},
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        profile = payload["project"]["profile"]
+        material_summary = profile["material_packet"]["materials"][0]
+
+        assert profile["analysis_source"] == "template"
+        assert "brief_source" not in profile
+        assert material_summary["project_brief_candidate"] is False
+        assert profile["analysis_warning"].startswith("未配置 API key，只生成本地规则草稿")
+
+
+def test_prompt_snapshot_repairs_legacy_verbose_project_prompt(tmp_path: Path) -> None:
+    stale_prompt = (
+        "你正在处理《地狱》的游戏本地化。\n"
+        "核心术语：[{ source: '监狱长', target: 'Warden' }]。\n"
+        "项目术语以术语表为准：EN 是标准译法，EN2 是手动适配译法。\n"
+        "已有EN 英语译文代表项目历史用法。\n"
+        "输出协议：只返回 JSONL。"
+    )
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Legacy Prompt", "type": "地狱 SLG"}).json()
+        profile = {
+            "game_type": "地狱监狱经营 SLG",
+            "content_scope": "UI、任务、建筑、英雄、联盟、战斗文本",
+            "translation_style": "UI 短促直接，剧情自然讽刺",
+            "display_game_type": "地狱监狱经营 SLG",
+            "display_content_scope": "UI、任务、建筑、英雄、联盟、战斗文本",
+            "display_translation_style": "UI 短促直接，剧情自然讽刺",
+            "prompts_by_language": {"en": stale_prompt},
+            "display_prompts_by_language": {"en": stale_prompt},
+        }
+        patched = client.patch(f"/api/projects/{project['id']}", json={"profile": profile, "prompt_text": stale_prompt})
+        assert patched.status_code == 200, patched.text
+
+        prompt_file = workflow.project_dir(project["id"]) / "profile" / "translation_prompt_en.txt"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text(stale_prompt, encoding="utf-8")
+        run = db.insert_run(project["id"], kind="translation", language="en")
+
+        snapshots = workflow.create_prompt_and_harness_snapshots(project["id"], run["id"], tmp_path / "snapshots", language="en")
+        prompt_text = Path(snapshots["prompt_path"]).read_text(encoding="utf-8")
+        refreshed_project = db.get_project(project["id"])
+        saved_display = refreshed_project["profile"]["display_prompts_by_language"]["en"]
+
+        assert "核心术语" not in prompt_text
+        assert "项目术语以术语表为准" not in prompt_text
+        assert "source" not in prompt_text
+        assert "术语译法以本次任务随附术语表" in saved_display
 
 
 def test_translation_batch_retry_persists_after_transient_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1378,6 +1528,7 @@ def test_project_analysis_uses_configured_provider_for_semantic_profile(tmp_path
                 "content_scope": "AI识别：基地建设、联盟战争、活动公告",
                 "translation_style": "AI识别：硬核军事感，短句清晰，避免可爱化",
                 "tone": "AI识别：冷静、硬核、军事化",
+                "display_game_type": "Sci-fi SLG / war strategy",
             },
             ensure_ascii=False,
         )
@@ -1404,6 +1555,7 @@ def test_project_analysis_uses_configured_provider_for_semantic_profile(tmp_path
         profile = payload["project"]["profile"]
         assert profile["analysis_source"] == "provider"
         assert profile["game_type"] == "AI识别：科幻 SLG / 战争策略"
+        assert profile["display_game_type"] == "AI识别：科幻 SLG / 战争策略"
         assert "硬核军事感" in payload["prompt"]
 
 
@@ -1475,7 +1627,7 @@ def test_project_analysis_image_material_uses_configured_provider(tmp_path: Path
 
     def fake_semantic_provider(settings: dict, prompt: str) -> str:
         _ = settings, prompt
-        return json.dumps({"display_game_type": "dark prison SLG", "display_translation_style": "short UI text with dark humor"}, ensure_ascii=False)
+        return json.dumps({"display_game_type": "暗黑监狱 SLG", "display_translation_style": "短句 UI 文案，保留黑色幽默"}, ensure_ascii=False)
 
     monkeypatch.setattr(workflow, "call_image_text", fake_image_provider)
     monkeypatch.setattr(workflow, "_call_semantic_provider", fake_semantic_provider)
@@ -1498,7 +1650,7 @@ def test_project_analysis_image_material_uses_configured_provider(tmp_path: Path
         assert calls == ["screen.png"]
         material = response.json()["analysis"]["materials"][0]
         assert material["status"] == "vision_analyzed"
-        assert response.json()["project"]["profile"]["display_game_type"] == "dark prison SLG"
+        assert response.json()["project"]["profile"]["display_game_type"] == "暗黑监狱 SLG"
 
 
 def test_project_analysis_video_material_reports_no_api_key(tmp_path: Path) -> None:
@@ -1545,7 +1697,7 @@ def test_project_analysis_video_material_extracts_frames_and_uses_provider(tmp_p
 
     def fake_semantic_provider(settings: dict, prompt: str) -> str:
         _ = settings, prompt
-        return json.dumps({"display_game_type": "hell prison management SLG", "display_content_scope": "video UI and announcement text"}, ensure_ascii=False)
+        return json.dumps({"display_game_type": "地狱监狱经营 SLG", "display_content_scope": "视频 UI 与公告文本"}, ensure_ascii=False)
 
     monkeypatch.setattr(workflow, "_extract_video_keyframes", fake_extract)
     monkeypatch.setattr(workflow, "call_image_text", fake_image_provider)
@@ -1570,7 +1722,7 @@ def test_project_analysis_video_material_extracts_frames_and_uses_provider(tmp_p
         material = response.json()["analysis"]["materials"][0]
         assert material["status"] == "vision_analyzed_video"
         assert material["material_type"] == "video"
-        assert response.json()["project"]["profile"]["display_game_type"] == "hell prison management SLG"
+        assert response.json()["project"]["profile"]["display_game_type"] == "地狱监狱经营 SLG"
 
 
 def test_duplicate_reference_material_upload_reuses_existing_artifact(tmp_path: Path) -> None:

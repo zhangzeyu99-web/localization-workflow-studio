@@ -239,22 +239,27 @@ function promptSentence(label: string, value: string): string {
   return text ? `${label}：${text}。` : ''
 }
 
+function stripTermNoise(value: string): string {
+  return value
+    .replace(/术语保持一致[：:][^。；;]*[。；;]?/g, '')
+    .replace(/[^。；;]*核心术语[^。；;]*[。；;]?/g, '')
+    .replace(/[^。；;]*术语优先一致性[^。；;]*[。；;]?/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[；;。 ]+$/g, '')
+    .trim()
+}
+
 function generatedChinesePrompt(project: Project, code: LanguageCode): string {
   const profile = profileForLanguage(project, code)
   const lang = languageSpec(code)
   const projectName = textField(profile, 'project_name', project.name || '\u5f53\u524d\u9879\u76ee')
   const source = profileSourceText(profile)
-  const termMatch = source.match(/术语保持一致[：:]\s*([^；;。]+)/)
   const gameType = firstProfileText(profile.display_game_type, profileTableValue(source, ['游戏类型']), profile.game_type)
   const targetAudience = firstProfileText(profile.display_target_audience, profileTableValue(source, ['目标用户']), profile.target_audience)
   const contentScope = firstProfileText(profile.display_content_scope, profileTableValue(source, ['内容构成', '内容范围']), profile.content_scope)
   const worldview = firstProfileText(profile.display_worldview, profileTableValue(source, ['视觉与世界观', '世界观']), profile.tone)
   const style = firstProfileText(profile.display_translation_style, profileTableValue(source, ['翻译风格', '风格要求']), profile.translation_style)
-  const focus = firstProfileText(profile.display_focus, profileTableValue(source, ['重点注意', '注意事项']))
-  const keyTerms = firstProfileText(profile.display_key_terms, termMatch?.[1] || '')
-  const termRule = lang.altHeader
-    ? `\u9879\u76ee\u672f\u8bed\u4ee5\u672f\u8bed\u8868\u4e3a\u51c6\uff1a${lang.targetHeader} \u662f\u6807\u51c6\u8bd1\u6cd5\uff0c${lang.altHeader} \u662f\u7a33\u5b9a\u51fa\u73b0\u7684\u624b\u52a8\u9002\u914d\u8bd1\u6cd5\u3002`
-    : `\u9879\u76ee\u672f\u8bed\u4ee5\u672f\u8bed\u8868\u4e3a\u51c6\uff1a${lang.targetHeader} \u662f\u6807\u51c6\u8bd1\u6cd5\u3002`
+  const focus = stripTermNoise(firstProfileText(profile.display_focus, profileTableValue(source, ['重点注意', '注意事项'])))
   return [
     `\u4f60\u6b63\u5728\u5904\u7406\u300a${projectName}\u300b\u7684\u6e38\u620f\u672c\u5730\u5316\uff0c\u76ee\u6807\u8bed\u8a00\uff1a${lang.label}\u3002`,
     promptSentence('项目定位', gameType),
@@ -263,9 +268,7 @@ function generatedChinesePrompt(project: Project, code: LanguageCode): string {
     promptSentence('世界观/语气', worldview),
     promptSentence('风格要求', style),
     promptSentence('重点注意', focus),
-    promptSentence('核心术语', keyTerms),
-    termRule,
-    `\u5df2\u6709${lang.label}\u8bd1\u6587\u4ee3\u8868\u9879\u76ee\u5386\u53f2\u7528\u6cd5\uff1b\u5982\u9700\u4f18\u5316\uff0c\u4e0d\u80fd\u7834\u574f\u5df2\u56fa\u5b9a\u7684\u7cfb\u7edf\u672f\u8bed\u3002`,
+    '\u672f\u8bed\u8bd1\u6cd5\u4ee5\u672c\u6b21\u4efb\u52a1\u968f\u9644\u672f\u8bed\u8868\u3001\u884c\u7ea7 term_hits \u548c\u8bd1\u6587\u5f52\u6863\u547d\u4e2d\u4e3a\u51c6\u3002',
     '\u5fc5\u987b\u4fdd\u7559\u53d8\u91cf\u3001\u6570\u5b57\u3001\u6362\u884c\u3001\u989c\u8272\u6807\u7b7e\u3001HTML/\u5bcc\u6587\u672c\u6807\u7b7e\u548c\u5360\u4f4d\u7b26\uff0c\u4f8b\u5982 {0}\u3001%s\u3001<color>\u3002',
     '\u65e0\u6cd5\u786e\u8ba4\u7684\u4e13\u6709\u540d\u8bcd\u6216\u4fe1\u606f\u7f3a\u53e3\u7528 [TBD] \u6807\u8bb0\uff0c\u4e0d\u8981\u81ea\u884c\u7f16\u9020\u8bbe\u5b9a\u3002',
   ].filter(Boolean).join('\n')
@@ -273,6 +276,8 @@ function generatedChinesePrompt(project: Project, code: LanguageCode): string {
 
 function looksLikeExecutionPrompt(value: string): boolean {
   if (!value.trim()) return false
+  if (/核心术语|术语保持一致|项目术语以术语表为准|已有.+译文代表项目历史用法/.test(value)) return true
+  if (/\{\s*["']?source["']?\s*:|\{\s*source\s*:|["']target["']\s*:/.test(value)) return true
   if (/JSONL|Project Harness|Translate into|Translate accurately|output protocol/i.test(value)) return true
   const latinLetters = (value.match(/[A-Za-z]/g) || []).length
   const cjkChars = (value.match(/[\u4e00-\u9fff]/g) || []).length

@@ -410,6 +410,7 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
                     "status": material.get("status"),
                     "warning": material.get("warning") or "",
                     "language_table_candidate": bool(material.get("language_table_candidate")),
+                    "project_brief_candidate": bool(material.get("project_brief_candidate")),
                     "detected_languages": material.get("detected_languages") or [],
                     "rows": material.get("rows"),
                 }
