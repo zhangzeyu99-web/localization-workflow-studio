@@ -23,6 +23,7 @@ from . import (
     glossary as glossary,
     delivery as delivery,
     qa as qa,
+    semantic_qa as semantic_qa,
     quick_task as quick_task,
     translation as translation,
 )
@@ -47,6 +48,7 @@ _MODULES = [
     glossary,
     delivery,
     qa,
+    semantic_qa,
     quick_task,
     translation,
 ]

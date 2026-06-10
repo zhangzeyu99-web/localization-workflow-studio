@@ -19,7 +19,7 @@ from .common import _CJK_RE, project_dir, run_dir
 from .materials import analyze_assets
 from .naming import _safe_source_stem, _today_stamp
 from .announcement_segments import _read_language_table_rows
-from .qa import _parse_semantic_qa_payload
+from .semantic_qa import _parse_semantic_qa_payload
 from .subprocess_runner import parse_key_output, run_subprocess, user_facing_error
 from .table_helpers import _read_glossary_rows
 
