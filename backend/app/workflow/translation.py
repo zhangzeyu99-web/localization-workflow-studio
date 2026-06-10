@@ -1,8 +1,42 @@
 from __future__ import annotations
 
-# ruff: noqa: F403,F405
+import asyncio
+import json
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any
 
-from .common import *
+from .. import db
+from ..config import LOCALIZATION_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name, test_provider_enabled
+from ..languages import require_supported_language
+from ..providers import translate_batch
+from ..translation_batches import (
+    AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
+    load_or_create_batch_manifest as _load_or_create_batch_manifest,
+    manage_project_prompt_context as _manage_project_prompt_context,
+    project_context_summary as _project_context_summary,
+    provider_retry_delay_seconds as _provider_retry_delay_seconds,
+)
+from .announcement import ANNOUNCEMENT_STEP
+from .announcement_segments import _is_quick_text_path
+from .common import _looks_like_untranslated_seed, run_dir
+from .glossary import archive_translation_artifact, read_jsonl, write_jsonl
+from .prompt_snapshots import (
+    create_project_glossary_snapshot,
+    create_prompt_and_harness_snapshots,
+    create_quick_reference_snapshot,
+)
+from .qa import _normalize_translation_id, run_localization_qa
+from .subprocess_runner import (
+    UserFacingWorkflowError,
+    _friendly_unsupported_language_file_message,
+    parse_key_output,
+    run_subprocess,
+    user_facing_error,
+)
+from .translation_readiness import inspect_translation_readiness
 
 def _completed_batch_rows(path: Path, batch: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     if not path.exists():
@@ -444,6 +478,8 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         )
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
     if metadata.get("task_origin") == "quick_task" and _is_quick_text_path(Path(input_artifact["path"])):
+        from .quick_task import _translate_quick_text_run
+
         return await _translate_quick_text_run(
             run=run,
             input_artifact=input_artifact,
