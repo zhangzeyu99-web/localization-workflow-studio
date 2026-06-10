@@ -32,3 +32,6 @@ api_key*
 *_changes.xlsx
 *.tmp
 *.bak
+
+.local-logs/
+tmp/

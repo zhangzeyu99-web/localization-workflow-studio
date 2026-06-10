@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -15,6 +15,29 @@ SETTINGS_EXAMPLE_PATH = REPO_ROOT / "settings.example.json"
 DB_PATH = DATA_ROOT / "studio.sqlite3"
 
 
+REAL_PROVIDERS = {"openai", "openai-chat", "anthropic"}
+TEST_FAKE_PROVIDER = "test-fake"
+LEGACY_TEST_PROVIDER_NAMES = {TEST_FAKE_PROVIDER}
+
+
+def test_provider_enabled() -> bool:
+    return str(os.environ.get("LWS_ENABLE_TEST_PROVIDER") or "").lower() in {"1", "true", "yes"}
+
+
+def normalize_provider_name(value: Any, *, allow_test_provider: bool | None = None) -> str:
+    provider = str(value or DEFAULT_SETTINGS["provider"]).strip()
+    if provider == "openai-compatible":
+        provider = "openai"
+    if provider == "codex-relay":
+        provider = "openai-chat"
+    allow_test = test_provider_enabled() if allow_test_provider is None else allow_test_provider
+    if provider in LEGACY_TEST_PROVIDER_NAMES and allow_test:
+        return TEST_FAKE_PROVIDER
+    if provider in REAL_PROVIDERS:
+        return provider
+    return str(DEFAULT_SETTINGS["provider"])
+
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "provider": "openai",
     "preset": "balanced",
@@ -23,7 +46,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "api_key": "",
     "model": "gpt-5.5",
     "reasoning_effort": "medium",
+    "max_output_tokens": 8192,
     "batch_size": 90,
+    "max_concurrent_batches": 2,
+    "max_requests_per_minute": 12,
+    "max_estimated_tokens_per_minute": 120000,
+    "max_batch_input_tokens": 12000,
+    "max_project_context_tokens": 6000,
+    "max_quick_reference_context_tokens": 2000,
+    "api_budget_warning_tokens": 1000000,
+    "max_batch_attempts": 3,
+    "provider_timeout_seconds": 120,
     "multimodal": {
         "images": True,
         "pdf": True,
@@ -32,52 +65,72 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
 }
 
+LONG_TEXT_PRESET_DEFAULTS: dict[str, dict[str, int]] = {
+    "fast": {
+        "batch_size": 100,
+        "max_concurrent_batches": 2,
+        "max_requests_per_minute": 16,
+        "max_estimated_tokens_per_minute": 160000,
+        "max_batch_input_tokens": 10000,
+        "max_project_context_tokens": 4000,
+        "api_budget_warning_tokens": 800000,
+        "max_batch_attempts": 2,
+        "provider_timeout_seconds": 120,
+    },
+    "balanced": {
+        "batch_size": 90,
+        "max_concurrent_batches": 2,
+        "max_requests_per_minute": 12,
+        "max_estimated_tokens_per_minute": 120000,
+        "max_batch_input_tokens": 12000,
+        "max_project_context_tokens": 6000,
+        "api_budget_warning_tokens": 1000000,
+        "max_batch_attempts": 3,
+        "provider_timeout_seconds": 120,
+    },
+    "deep": {
+        "batch_size": 60,
+        "max_concurrent_batches": 1,
+        "max_requests_per_minute": 8,
+        "max_estimated_tokens_per_minute": 90000,
+        "max_batch_input_tokens": 16000,
+        "max_project_context_tokens": 8000,
+        "api_budget_warning_tokens": 1500000,
+        "max_batch_attempts": 3,
+        "provider_timeout_seconds": 180,
+    },
+    "critical": {
+        "batch_size": 40,
+        "max_concurrent_batches": 1,
+        "max_requests_per_minute": 6,
+        "max_estimated_tokens_per_minute": 70000,
+        "max_batch_input_tokens": 16000,
+        "max_project_context_tokens": 8000,
+        "api_budget_warning_tokens": 2000000,
+        "max_batch_attempts": 3,
+        "provider_timeout_seconds": 240,
+    },
+}
+
+
 PROVIDER_PRESETS: dict[str, dict[str, dict[str, str | int | None]]] = {
     "openai": {
-        "fast": {
-            "label": "快速响应",
-            "model": "gpt-5.4-mini",
-            "reasoning_effort": "low",
-            "base_url": "https://api.openai.com",
-            "max_output_tokens": 8192,
-        },
-        "balanced": {
-            "label": "平衡",
-            "model": "gpt-5.5",
-            "reasoning_effort": "medium",
-            "base_url": "https://api.openai.com",
-            "max_output_tokens": 8192,
-        },
-        "deep": {
-            "label": "深度思考",
-            "model": "gpt-5.5-pro",
-            "reasoning_effort": "high",
-            "base_url": "https://api.openai.com",
-            "max_output_tokens": 16384,
-        },
+        "fast": {"label": "快速", "model": "gpt-5.4-mini", "reasoning_effort": "low", "base_url": "https://api.openai.com", "max_output_tokens": 8192},
+        "balanced": {"label": "平衡", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "https://api.openai.com", "max_output_tokens": 8192},
+        "deep": {"label": "深度", "model": "gpt-5.5-pro", "reasoning_effort": "high", "base_url": "https://api.openai.com", "max_output_tokens": 16384},
+        "critical": {"label": "关键校对", "model": "gpt-5.5-pro", "reasoning_effort": "xhigh", "base_url": "https://api.openai.com", "max_output_tokens": 16384},
+    },
+    "openai-chat": {
+        "fast": {"label": "快速", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "", "max_output_tokens": 8192},
+        "balanced": {"label": "平衡", "model": "gpt-5.5", "reasoning_effort": "medium", "base_url": "", "max_output_tokens": 8192},
+        "deep": {"label": "深度", "model": "gpt-5.5", "reasoning_effort": "high", "base_url": "", "max_output_tokens": 16384},
+        "critical": {"label": "关键校对", "model": "gpt-5.5", "reasoning_effort": "xhigh", "base_url": "", "max_output_tokens": 16384},
     },
     "anthropic": {
-        "fast": {
-            "label": "快速响应",
-            "model": "claude-haiku-4-5-20251001",
-            "reasoning_effort": "none",
-            "base_url": "https://api.anthropic.com",
-            "max_output_tokens": 8192,
-        },
-        "balanced": {
-            "label": "平衡",
-            "model": "claude-sonnet-4-6",
-            "reasoning_effort": "adaptive",
-            "base_url": "https://api.anthropic.com",
-            "max_output_tokens": 8192,
-        },
-        "deep": {
-            "label": "深度思考",
-            "model": "claude-opus-4-7",
-            "reasoning_effort": "adaptive",
-            "base_url": "https://api.anthropic.com",
-            "max_output_tokens": 16384,
-        },
+        "fast": {"label": "快速", "model": "claude-haiku-4-5-20251001", "reasoning_effort": "none", "base_url": "https://api.anthropic.com", "max_output_tokens": 8192},
+        "balanced": {"label": "平衡", "model": "claude-sonnet-4-6", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 8192},
+        "deep": {"label": "深度", "model": "claude-opus-4-7", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 16384},
+        "critical": {"label": "关键校对", "model": "claude-opus-4-7", "reasoning_effort": "adaptive", "base_url": "https://api.anthropic.com", "max_output_tokens": 16384},
     },
 }
 
@@ -120,17 +173,14 @@ def public_settings(settings: dict[str, Any] | None = None) -> dict[str, Any]:
 
 def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     payload = dict(settings)
-    provider = str(payload.get("provider") or DEFAULT_SETTINGS["provider"])
-    if provider == "openai-compatible":
-        provider = "openai"
-    if provider not in {"openai", "anthropic", "mock"}:
-        provider = str(DEFAULT_SETTINGS["provider"])
+    provider = normalize_provider_name(payload.get("provider"))
     payload["provider"] = provider
-    if provider == "mock":
+    if provider == TEST_FAKE_PROVIDER:
         payload["preset"] = payload.get("preset") or "balanced"
-        payload["model"] = payload.get("model") or "mock-localization"
+        payload["model"] = payload.get("model") or "test-fake-localization"
         payload["reasoning_effort"] = "none"
-        payload["protocol"] = "mock"
+        payload["protocol"] = TEST_FAKE_PROVIDER
+        _normalize_long_text_settings(payload)
         return payload
 
     preset = str(payload.get("preset") or DEFAULT_SETTINGS["preset"])
@@ -138,9 +188,24 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         preset = str(DEFAULT_SETTINGS["preset"])
     selected = PROVIDER_PRESETS[provider][preset]
     payload["preset"] = preset
-    payload["model"] = selected["model"]
-    payload["reasoning_effort"] = selected["reasoning_effort"]
-    payload["base_url"] = selected["base_url"]
-    payload["max_output_tokens"] = selected["max_output_tokens"]
-    payload["protocol"] = "responses" if provider == "openai" else "messages"
+    if provider == "openai-chat":
+        payload["model"] = str(payload.get("model") or selected["model"]).strip()
+        payload["reasoning_effort"] = str(payload.get("reasoning_effort") or selected["reasoning_effort"]).strip()
+        payload["base_url"] = str(payload.get("base_url") or selected["base_url"]).rstrip("/")
+        payload["max_output_tokens"] = int(selected["max_output_tokens"] or 8192)
+    else:
+        payload["model"] = selected["model"]
+        payload["reasoning_effort"] = selected["reasoning_effort"]
+        payload["base_url"] = selected["base_url"]
+        payload["max_output_tokens"] = selected["max_output_tokens"]
+    payload["protocol"] = "chat-completions" if provider == "openai-chat" else ("responses" if provider == "openai" else "messages")
+    _normalize_long_text_settings(payload)
     return payload
+
+
+def _normalize_long_text_settings(payload: dict[str, Any]) -> None:
+    preset = str(payload.get("preset") or DEFAULT_SETTINGS["preset"])
+    profile = LONG_TEXT_PRESET_DEFAULTS.get(preset, LONG_TEXT_PRESET_DEFAULTS["balanced"])
+    for key, value in profile.items():
+        payload[key] = value
+

@@ -2,6 +2,32 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.0.0 - 2026-06-10
+
+- Promoted Localization Workflow Studio to the first formal 1.0 release after the language-pack, QA, archive, delivery, quick-task, and announcement workflows were validated as one integrated workbench.
+- Stabilized project AI analysis around structured Project Brief Markdown: uploaded project brief files now drive the project prompt and metadata directly, while ordinary requirement notes remain supporting evidence.
+- Kept project prompts clean and delivery-oriented: term lists are excluded from the generic project prompt and continue to be injected per run through glossary snapshots, row-level `term_hits`, archive matches, and QA term bases.
+- Preserved non-Codex operation boundaries: local harness, batching, QA, apply, archive, and delivery run inside the workbench backend; configured OpenAI/GPT-compatible or Claude providers handle only model-required steps.
+- Locked the official 1.0 validation baseline: backend tests, workflow compile checks, Ruff fatal checks, frontend build, Playwright E2E, and forbidden Google/machine-translation scanning all pass locally before release tagging.
+
+## 0.5.2 - 2026-06-08
+
+- Added standalone stability tooling for local/LAN workbench runs, including start/stop scripts, a one-command stability check, and documented pass criteria for non-Codex operation.
+- Verified the full project workflow against real sample files using the configured API provider: project creation, AI analysis, glossary import/export, translation, QA, archive import/export, quick task translation, and announcement delivery preparation.
+- Kept frontend prompt display human-readable in Chinese while preserving the full execution prompt in backend snapshots for provider calls.
+- Improved interrupted-run resume behavior and cleaned user-facing task/progress text so internal batch logs do not leak into quick-task and workflow surfaces.
+- Extended E2E coverage for resumable translation, quick tasks, announcement workflow, language display, asset search/paging, delivery empty-state actions, and API failure feedback.
+
+
+## 0.5.1 - 2026-06-04
+
+- Added project-scoped quick tasks and announcement translation workflow support, including glossary extraction, constraint lookup, AI-response import, QA/apply/deliver shells, and EN/KR/JP-oriented delivery handling.
+- Expanded multilingual asset handling with wide glossary/archive views, strong search, language-column controls, pagination, KR/JP display codes, and centralized language configuration through `/api/languages`.
+- Hardened long-text AI orchestration with persistent batch fingerprints, local job leases, resumable/cancelable progress, provider rate limiting, and budget-aware batch execution.
+- Consolidated provider calls so OpenAI uses Responses, Anthropic uses Messages, semantic QA/AI supplement/project analysis share one provider seam, and Google/external machine-translation paths remain absent.
+- Hardened repository/runtime operations with streaming upload limits, SQLite foreign keys/indexes/dedupe, unified delivery naming helpers, frontend module extraction, and guardrail tests.
+- Verified with backend tests, workflow harness tests, Ruff, frontend build, Playwright E2E, restart smoke, and forbidden-machine-translation scanning.
+
 ## 0.4.9 - 2026-05-21
 
 - Reworked the GitHub Pages workbench entry to match the local product navigation: starting a new translation task now replaces the main project overview with the 9-step workflow view instead of opening a modal.

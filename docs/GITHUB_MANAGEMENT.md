@@ -4,69 +4,63 @@
 
 ## 仓库入口
 
-- Repository: https://github.com/zhangzeyu99-web/localization-workflow-studio
-- GitHub Pages: https://zhangzeyu99-web.github.io/localization-workflow-studio/
-- Feishu user guide: https://my.feishu.cn/docx/Pt9pdBypNoLy5MxYpZ3cr3A8nMc
+- Repository: <https://github.com/zhangzeyu99-web/localization-workflow-studio>
+- GitHub Pages: <https://zhangzeyu99-web.github.io/localization-workflow-studio/>
 
 ## 分支策略
 
-- `master`：稳定分支。推送到该分支后应能通过 CI。
+- `master`：稳定分支。推送到该分支后应能通过 CI，并可作为 GitHub Pages 来源。
+- `codex/multilingual-announcement-workflow`：当前 1.0 开发与验证分支。
 - `feature/<short-name>`：较大的功能改动。
 - `fix/<short-name>`：明确缺陷修复。
 - `docs/<short-name>`：文档、仓库治理、README、Pages 文案。
 
-小型文档维护可以直接提交到 `master`；涉及运行行为、API、数据结构或 UI 主流程的改动建议走分支和 PR。
+涉及运行行为、API、数据结构或 UI 主流程的改动，优先走功能分支或 PR；纯文档维护可直接提交到稳定分支。
 
 ## 提交范围
 
-每次提交应只覆盖一个清晰目标：
+每次提交只覆盖一个清晰目标：
 
 - 功能改动：源码 + 对应测试 + 文档说明。
-- UI 改动：前端代码 + E2E 或截图验证。
-- 工作流改动：workflow 代码 + fixture / harness 测试。
-- 文档改动：README / docs / `.github`，不夹带运行产物。
+- UI 改动：前端代码 + build/E2E 或浏览器验证。
+- 工作流改动：`workflow/` 代码 + fixture/harness 测试。
+- 文档改动：README/docs/.github，不夹带运行产物。
 
-提交前必须确认没有真实项目数据进入 Git：
+提交前确认没有真实项目数据、API key、SQLite、上传文件、交付文件、日志或缓存进入 Git：
 
 ```powershell
 git status --short
 git diff --check
-git ls-files | Select-String -Pattern "settings.local|sqlite|api_key|translated.xlsx|final.xlsx|output.xlsx"
+git ls-files | Select-String -Pattern "settings.local|sqlite|api_key|translated.xlsx|final.xlsx|output.xlsx|uploads|runs"
 ```
 
-## CI
+## CI 与本地验证
 
-GitHub Actions 跑：
+GitHub Actions 覆盖：
 
-- Backend mock E2E。
-- Localization workflow baseline tests。
-- Glossary workflow baseline tests。
-- Frontend TypeScript / Vite build。
-- Browser E2E against local FastAPI + Vite stack。
+- 后端测试。
+- workflow baseline tests。
+- 前端 TypeScript/Vite build。
+- 浏览器 E2E。
 
-本地对应命令：
+发布前本地建议执行：
 
 ```powershell
 python -m pytest -q
-
-Push-Location workflow\localization
-python -m pytest -q
-Pop-Location
-
-Push-Location workflow\glossary
-python -m pytest -q
-Pop-Location
+python -m compileall -q backend workflow
+python -m ruff check backend/app backend/tests --select E9,F
 
 Push-Location frontend
 npm run build
+npm run e2e -- --workers=1
 Pop-Location
-```
 
-UI 或主流程变化还需要跑浏览器 E2E。
+rg -n -i "deep_translator|googletrans|GoogleTranslator|translate\.google|google translate|Google Translate|GOOGLE_TRANSLATE|google_trans" backend workflow frontend --glob "!frontend/node_modules/**"
+```
 
 ## Issue 管理
 
-Issue 应写清楚：
+Issue 应写清：
 
 - 当前行为。
 - 期望行为。
@@ -90,8 +84,6 @@ Issue 应写清楚：
 
 P0 表示阻断真实交付；P1 表示阻断验收或造成明显误导；P2 表示重要但不阻断。
 
-标签清单维护在 `.github/labels.yml`。如果 GitHub 上的实际标签和该文件不一致，以该文件为准手动同步。
-
 ## PR 要求
 
 PR 描述必须包含：
@@ -106,23 +98,29 @@ PR 模板位于 `.github/pull_request_template.md`。
 
 ## 版本管理
 
+当前正式版本：`1.0.0`。
+
 版本号同步维护：
 
 - `VERSION`
 - `backend/app/main.py`
 - `frontend/package.json`
+- `frontend/package-lock.json`
+- `README.md`
+- `CHANGELOG.md`
+- `docs/releases/vX.Y.Z.md`
 
 规则：
 
 - Patch：文档、UI 小修、兼容性修复、小范围 bug fix。
 - Minor：新增用户可见流程、API、数据资产角色或 provider 能力。
-- Major：破坏旧数据、旧 API、旧 workflow 输入输出。
+- Major：破坏旧数据、旧 API 或旧 workflow 输入输出。
 
 打 tag：
 
 ```powershell
-git tag -a v0.4.10 -m "Release v0.4.10"
-git push origin v0.4.10
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
 ## Release checklist
@@ -134,8 +132,9 @@ git push origin v0.4.10
 3. 本地核心测试通过，或明确说明未跑原因。
 4. GitHub Actions 通过。
 5. GitHub Pages Demo 可打开。
-6. 飞书说明书如有流程变化已同步。
-7. Release note 写清楚用户影响和迁移要求。
+6. Release note 写清用户影响、迁移要求和已知边界。
+7. 仓库内无真实项目数据、API key、SQLite、run 日志或交付文件。
+8. 文档无乱码、连续问号占位、U+FFFD 或历史版本误导。
 
 ## GitHub Pages 管理
 
@@ -146,7 +145,7 @@ branch: master
 folder: /docs
 ```
 
-`docs/index.html` 只能作为静态 Demo。不要在这里放真实上传文件、真实译文、API key、SQLite 或可下载交付文件。
+`docs/index.html` 只作为静态 Demo/说明入口，不承载完整工作台功能。不要在 Pages 放真实上传文件、真实译文、API key、SQLite 或可下载交付文件。
 
 ## 依赖更新
 
@@ -156,5 +155,5 @@ Dependabot 配置位于 `.github/dependabot.yml`。
 
 - 依赖 PR 必须跑 CI。
 - 前端依赖更新至少跑 `npm run build`。
-- FastAPI / openpyxl / provider SDK 相关更新必须跑 backend tests 和 mock E2E。
+- FastAPI、openpyxl、provider SDK 相关更新必须跑后端测试和 mock E2E。
 - Playwright 更新必须跑浏览器 E2E。

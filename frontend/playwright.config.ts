@@ -23,6 +23,7 @@ const managedWebServers = process.env.E2E_BASE_URL
           ...process.env,
           LWS_DATA_ROOT: dataRoot,
           PYTHONPATH: path.join(repoRoot, 'backend'),
+          LWS_ENABLE_TEST_PROVIDER: '1',
         },
       },
       {
@@ -42,6 +43,7 @@ const managedWebServers = process.env.E2E_BASE_URL
 export default defineConfig({
   testDir: './e2e',
   timeout: 120_000,
+  workers: 1,
   expect: { timeout: 20_000 },
   use: {
     baseURL: frontendURL,
