@@ -14,7 +14,6 @@ Normal (interactive) mode:
   python cli.py --input language.xlsx --auto-fix --skip-ai
 """
 import argparse
-import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -113,7 +112,7 @@ def phase2(states, term_lookup, batch_size, lang='en'):
     total_corrections = 0
 
     print(f"\n  共 {total_batches} 个批次, 每批约 {batch_size} 行")
-    print(f"  操作: 复制提示词 → 粘贴到 ChatGPT → 复制回复 → 粘贴结果\n")
+    print("  操作: 复制提示词 → 粘贴到 ChatGPT → 复制回复 → 粘贴结果\n")
 
     current = 0
     while current < total_batches:
@@ -344,9 +343,9 @@ def agent_prepare(args):
     if recheck_rows:
         print(f"  二次审查提示词: {len(recheck_rows)} 行术语漏网")
     print()
-    print(f"  下一步: 读取 batch_N.txt → 发给 LLM → 保存回复为 batch_N_response.txt")
+    print("  下一步: 读取 batch_N.txt → 发给 LLM → 保存回复为 batch_N_response.txt")
     if recheck_rows:
-        print(f"  二次审查: 读取 batch_recheck_N.txt → 发给 LLM → 保存为 batch_recheck_N_response.txt")
+        print("  二次审查: 读取 batch_recheck_N.txt → 发给 LLM → 保存为 batch_recheck_N_response.txt")
     print(f"  然后运行: python cli.py --input {args.input} --auto-fix --agent merge")
     _hr('═')
     print()

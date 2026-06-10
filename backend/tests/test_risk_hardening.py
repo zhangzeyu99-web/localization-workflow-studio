@@ -89,9 +89,9 @@ def test_context_cap_keeps_project_prompt_under_batch_budget() -> None:
 
 
 def test_orchestrator_passes_managed_project_context_to_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = db.insert_project("Managed Context", "QA", "", "馃幃")
+    project = db.insert_project("Managed Context", "QA", "", "🎯")
     run = db.insert_run(project["id"], "translation", "en", metadata={})
-    rows = [{"id": 1, "source": "寮€濮?{count}"}]
+    rows = [{"id": 1, "source": "开始 {count}"}]
     long_prompt = "项目规则开始\n" + ("超长项目背景 " * 2000) + "\n输出协议：只返回 JSONL"
     settings = {
         **DEFAULT_SETTINGS,

@@ -468,7 +468,7 @@ def run_workspace_task(
             states,
             batch_type='recheck',
             strict=strict_review,
-            ignore_fingerprint_for=main_corrected,
+            ignore_fingerprint_for=ai_corrected_ids,
         )
         ai_reviewed_ids.update(recheck_reviewed)
         ai_corrected_ids.update(recheck_corrected)
