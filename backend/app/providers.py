@@ -24,6 +24,49 @@ class TranslationItem:
     translation: str
 
 
+@dataclass(frozen=True)
+class ProviderRuntime:
+    provider: str
+    api_key: str
+    base_url: str
+    model: str
+    reasoning_effort: str
+    max_output_tokens: int
+    timeout_seconds: int
+
+
+def _provider_runtime(
+    settings: dict[str, Any],
+    provider: str,
+    *,
+    default_base_url: str,
+    default_model: str,
+    default_timeout_seconds: int,
+    default_max_output_tokens: int,
+    default_reasoning_effort: str = "",
+    api_key_error: str,
+) -> ProviderRuntime:
+    api_key = str(settings.get("api_key") or "")
+    if not api_key:
+        raise ProviderError(api_key_error)
+    return ProviderRuntime(
+        provider=provider,
+        api_key=api_key,
+        base_url=str(settings.get("base_url") or default_base_url).rstrip("/"),
+        model=str(settings.get("model") or default_model),
+        reasoning_effort=str(settings.get("reasoning_effort") or default_reasoning_effort),
+        max_output_tokens=int(settings.get("max_output_tokens") or default_max_output_tokens),
+        timeout_seconds=int(settings.get("provider_timeout_seconds") or default_timeout_seconds),
+    )
+
+
+def _chat_reasoning_payload(reasoning_effort: str) -> dict[str, dict[str, str]]:
+    effort = str(reasoning_effort or "").strip()
+    if effort and effort not in {"none", "adaptive"}:
+        return {"reasoning": {"effort": effort}}
+    return {}
+
+
 def _normalize_translation_id(value: Any) -> int | str:
     if isinstance(value, bool):
         return str(value)
@@ -104,24 +147,26 @@ async def openai_responses_translate_batch(
     settings: dict[str, Any],
     project_prompt: str,
 ) -> list[TranslationItem]:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for responses provider")
-    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
-    model = settings.get("model") or "gpt-5.5"
-    reasoning_effort = settings.get("reasoning_effort") or "medium"
-    max_output_tokens = int(settings.get("max_output_tokens") or 8192)
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    runtime = _provider_runtime(
+        settings,
+        "openai",
+        default_base_url="https://api.openai.com",
+        default_model="gpt-5.5",
+        default_timeout_seconds=120,
+        default_max_output_tokens=8192,
+        default_reasoning_effort="medium",
+        api_key_error="api_key is required for responses provider",
+    )
     body = {
-        "model": model,
+        "model": runtime.model,
         "input": build_prompt(rows, project_prompt),
-        "reasoning": {"effort": reasoning_effort},
-        "max_output_tokens": max_output_tokens,
+        "reasoning": {"effort": runtime.reasoning_effort},
+        "max_output_tokens": runtime.max_output_tokens,
     }
-    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+    async with httpx.AsyncClient(timeout=runtime.timeout_seconds) as client:
         response = await client.post(
-            f"{base_url}/v1/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            f"{runtime.base_url}/v1/responses",
+            headers={"Authorization": f"Bearer {runtime.api_key}", "Content-Type": "application/json"},
             json=body,
         )
     if response.status_code >= 400:
@@ -136,27 +181,28 @@ async def openai_chat_translate_batch(
     settings: dict[str, Any],
     project_prompt: str,
 ) -> list[TranslationItem]:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for OpenAI chat-compatible provider")
-    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
-    model = settings.get("model") or "gpt-5.5"
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    runtime = _provider_runtime(
+        settings,
+        "openai-chat",
+        default_base_url="https://api.openai.com",
+        default_model="gpt-5.5",
+        default_timeout_seconds=120,
+        default_max_output_tokens=8192,
+        api_key_error="api_key is required for OpenAI chat-compatible provider",
+    )
     body = {
-        "model": model,
+        "model": runtime.model,
         "messages": [
             {"role": "system", "content": "Return strict JSONL only. Do not include prose, markdown fences, or explanations."},
             {"role": "user", "content": build_prompt(rows, project_prompt, ascii_escape=True)},
         ],
-        "max_tokens": int(settings.get("max_output_tokens") or 8192),
+        "max_tokens": runtime.max_output_tokens,
     }
-    reasoning_effort = str(settings.get("reasoning_effort") or "").strip()
-    if reasoning_effort and reasoning_effort not in {"none", "adaptive"}:
-        body["reasoning"] = {"effort": reasoning_effort}
-    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+    body.update(_chat_reasoning_payload(runtime.reasoning_effort))
+    async with httpx.AsyncClient(timeout=runtime.timeout_seconds) as client:
         response = await client.post(
-            f"{base_url}/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            f"{runtime.base_url}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {runtime.api_key}", "Content-Type": "application/json"},
             json=body,
         )
     if response.status_code >= 400:
@@ -169,15 +215,18 @@ async def anthropic_messages_translate_batch(
     settings: dict[str, Any],
     project_prompt: str,
 ) -> list[TranslationItem]:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for Claude provider")
-    base_url = str(settings.get("base_url") or "https://api.anthropic.com").rstrip("/")
-    model = settings.get("model") or "claude-sonnet-4-6"
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 180)
+    runtime = _provider_runtime(
+        settings,
+        "anthropic",
+        default_base_url="https://api.anthropic.com",
+        default_model="claude-sonnet-4-6",
+        default_timeout_seconds=180,
+        default_max_output_tokens=8192,
+        api_key_error="api_key is required for Claude provider",
+    )
     body = {
-        "model": model,
-        "max_tokens": int(settings.get("max_output_tokens") or 8192),
+        "model": runtime.model,
+        "max_tokens": runtime.max_output_tokens,
         "system": "Return strict JSONL only. Do not include prose, markdown fences, or explanations.",
         "messages": [
             {
@@ -186,11 +235,11 @@ async def anthropic_messages_translate_batch(
             }
         ],
     }
-    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+    async with httpx.AsyncClient(timeout=runtime.timeout_seconds) as client:
         response = await client.post(
-            f"{base_url}/v1/messages",
+            f"{runtime.base_url}/v1/messages",
             headers={
-                "x-api-key": str(api_key),
+                "x-api-key": runtime.api_key,
                 "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
             },
@@ -229,23 +278,27 @@ def _collect_anthropic_text(payload: dict[str, Any]) -> str:
 
 
 def openai_responses_text(settings: dict[str, Any], prompt: str, *, system: str = "Return strict JSON only.") -> str:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for responses provider")
-    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
-    model = settings.get("model") or "gpt-5.5"
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    runtime = _provider_runtime(
+        settings,
+        "openai",
+        default_base_url="https://api.openai.com",
+        default_model="gpt-5.5",
+        default_timeout_seconds=120,
+        default_max_output_tokens=4096,
+        default_reasoning_effort="medium",
+        api_key_error="api_key is required for responses provider",
+    )
     body = {
-        "model": model,
+        "model": runtime.model,
         "input": f"{system}\n\n{prompt}" if system else prompt,
-        "reasoning": {"effort": settings.get("reasoning_effort") or "medium"},
-        "max_output_tokens": int(settings.get("max_output_tokens") or 4096),
+        "reasoning": {"effort": runtime.reasoning_effort},
+        "max_output_tokens": runtime.max_output_tokens,
     }
     response = httpx.post(
-        f"{base_url}/v1/responses",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        f"{runtime.base_url}/v1/responses",
+        headers={"Authorization": f"Bearer {runtime.api_key}", "Content-Type": "application/json"},
         json=body,
-        timeout=timeout_seconds,
+        timeout=runtime.timeout_seconds,
     )
     if response.status_code >= 400:
         raise ProviderError(f"responses failed: {response.status_code} {response.text[:500]}")
@@ -254,29 +307,30 @@ def openai_responses_text(settings: dict[str, Any], prompt: str, *, system: str 
 
 
 def openai_chat_text(settings: dict[str, Any], prompt: str, *, system: str = "Return strict JSON only.") -> str:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for OpenAI chat-compatible provider")
-    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
-    model = settings.get("model") or "gpt-5.5"
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    runtime = _provider_runtime(
+        settings,
+        "openai-chat",
+        default_base_url="https://api.openai.com",
+        default_model="gpt-5.5",
+        default_timeout_seconds=120,
+        default_max_output_tokens=4096,
+        api_key_error="api_key is required for OpenAI chat-compatible provider",
+    )
     prompt_content = "Read this task from a JSON string. Decode Unicode escapes before following it.\nPrompt JSON string:\n" + json.dumps(prompt, ensure_ascii=True)
     body = {
-        "model": model,
+        "model": runtime.model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt_content},
         ],
-        "max_tokens": int(settings.get("max_output_tokens") or 4096),
+        "max_tokens": runtime.max_output_tokens,
     }
-    reasoning_effort = str(settings.get("reasoning_effort") or "").strip()
-    if reasoning_effort and reasoning_effort not in {"none", "adaptive"}:
-        body["reasoning"] = {"effort": reasoning_effort}
+    body.update(_chat_reasoning_payload(runtime.reasoning_effort))
     response = httpx.post(
-        f"{base_url}/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        f"{runtime.base_url}/v1/chat/completions",
+        headers={"Authorization": f"Bearer {runtime.api_key}", "Content-Type": "application/json"},
         json=body,
-        timeout=timeout_seconds,
+        timeout=runtime.timeout_seconds,
     )
     if response.status_code >= 400:
         raise ProviderError(f"openai chat-compatible provider failed: {response.status_code} {response.text[:500]}")
@@ -284,26 +338,29 @@ def openai_chat_text(settings: dict[str, Any], prompt: str, *, system: str = "Re
 
 
 def anthropic_messages_text(settings: dict[str, Any], prompt: str, *, system: str = "Return strict JSON only.") -> str:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for Claude provider")
-    base_url = str(settings.get("base_url") or "https://api.anthropic.com").rstrip("/")
-    model = settings.get("model") or "claude-sonnet-4-6"
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 180)
+    runtime = _provider_runtime(
+        settings,
+        "anthropic",
+        default_base_url="https://api.anthropic.com",
+        default_model="claude-sonnet-4-6",
+        default_timeout_seconds=180,
+        default_max_output_tokens=4096,
+        api_key_error="api_key is required for Claude provider",
+    )
     response = httpx.post(
-        f"{base_url}/v1/messages",
+        f"{runtime.base_url}/v1/messages",
         headers={
-            "x-api-key": str(api_key),
+            "x-api-key": runtime.api_key,
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         },
         json={
-            "model": model,
-            "max_tokens": int(settings.get("max_output_tokens") or 4096),
+            "model": runtime.model,
+            "max_tokens": runtime.max_output_tokens,
             "system": system,
             "messages": [{"role": "user", "content": prompt}],
         },
-        timeout=timeout_seconds,
+        timeout=runtime.timeout_seconds,
     )
     if response.status_code >= 400:
         raise ProviderError(f"claude messages failed: {response.status_code} {response.text[:500]}")
@@ -330,15 +387,19 @@ def _image_data_url(image_path: Path) -> tuple[str, str, str]:
 
 
 def openai_responses_image_text(settings: dict[str, Any], prompt: str, image_path: Path, *, system: str = "Return strict JSON only.") -> str:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for image analysis")
-    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
-    model = settings.get("model") or "gpt-5.5"
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    runtime = _provider_runtime(
+        settings,
+        "openai",
+        default_base_url="https://api.openai.com",
+        default_model="gpt-5.5",
+        default_timeout_seconds=120,
+        default_max_output_tokens=4096,
+        default_reasoning_effort="medium",
+        api_key_error="api_key is required for image analysis",
+    )
     _, _, data_url = _image_data_url(image_path)
     body = {
-        "model": model,
+        "model": runtime.model,
         "input": [
             {
                 "role": "user",
@@ -348,14 +409,14 @@ def openai_responses_image_text(settings: dict[str, Any], prompt: str, image_pat
                 ],
             }
         ],
-        "reasoning": {"effort": settings.get("reasoning_effort") or "medium"},
-        "max_output_tokens": int(settings.get("max_output_tokens") or 4096),
+        "reasoning": {"effort": runtime.reasoning_effort},
+        "max_output_tokens": runtime.max_output_tokens,
     }
     response = httpx.post(
-        f"{base_url}/v1/responses",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        f"{runtime.base_url}/v1/responses",
+        headers={"Authorization": f"Bearer {runtime.api_key}", "Content-Type": "application/json"},
         json=body,
-        timeout=timeout_seconds,
+        timeout=runtime.timeout_seconds,
     )
     if response.status_code >= 400:
         raise ProviderError(f"image analysis failed: {response.status_code} {response.text[:500]}")
@@ -364,15 +425,18 @@ def openai_responses_image_text(settings: dict[str, Any], prompt: str, image_pat
 
 
 def openai_chat_image_text(settings: dict[str, Any], prompt: str, image_path: Path, *, system: str = "Return strict JSON only.") -> str:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for image analysis")
-    base_url = str(settings.get("base_url") or "https://api.openai.com").rstrip("/")
-    model = settings.get("model") or "gpt-5.5"
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 120)
+    runtime = _provider_runtime(
+        settings,
+        "openai-chat",
+        default_base_url="https://api.openai.com",
+        default_model="gpt-5.5",
+        default_timeout_seconds=120,
+        default_max_output_tokens=4096,
+        api_key_error="api_key is required for image analysis",
+    )
     _, _, data_url = _image_data_url(image_path)
     body = {
-        "model": model,
+        "model": runtime.model,
         "messages": [
             {"role": "system", "content": system},
             {
@@ -383,16 +447,14 @@ def openai_chat_image_text(settings: dict[str, Any], prompt: str, image_path: Pa
                 ],
             },
         ],
-        "max_tokens": int(settings.get("max_output_tokens") or 4096),
+        "max_tokens": runtime.max_output_tokens,
     }
-    reasoning_effort = str(settings.get("reasoning_effort") or "").strip()
-    if reasoning_effort and reasoning_effort not in {"none", "adaptive"}:
-        body["reasoning"] = {"effort": reasoning_effort}
+    body.update(_chat_reasoning_payload(runtime.reasoning_effort))
     response = httpx.post(
-        f"{base_url}/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        f"{runtime.base_url}/v1/chat/completions",
+        headers={"Authorization": f"Bearer {runtime.api_key}", "Content-Type": "application/json"},
         json=body,
-        timeout=timeout_seconds,
+        timeout=runtime.timeout_seconds,
     )
     if response.status_code >= 400:
         raise ProviderError(f"image analysis failed: {response.status_code} {response.text[:500]}")
@@ -400,23 +462,26 @@ def openai_chat_image_text(settings: dict[str, Any], prompt: str, image_path: Pa
 
 
 def anthropic_messages_image_text(settings: dict[str, Any], prompt: str, image_path: Path, *, system: str = "Return strict JSON only.") -> str:
-    api_key = settings.get("api_key")
-    if not api_key:
-        raise ProviderError("api_key is required for image analysis")
-    base_url = str(settings.get("base_url") or "https://api.anthropic.com").rstrip("/")
-    model = settings.get("model") or "claude-sonnet-4-6"
-    timeout_seconds = int(settings.get("provider_timeout_seconds") or 180)
+    runtime = _provider_runtime(
+        settings,
+        "anthropic",
+        default_base_url="https://api.anthropic.com",
+        default_model="claude-sonnet-4-6",
+        default_timeout_seconds=180,
+        default_max_output_tokens=4096,
+        api_key_error="api_key is required for image analysis",
+    )
     media_type, data, _ = _image_data_url(image_path)
     response = httpx.post(
-        f"{base_url}/v1/messages",
+        f"{runtime.base_url}/v1/messages",
         headers={
-            "x-api-key": str(api_key),
+            "x-api-key": runtime.api_key,
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         },
         json={
-            "model": model,
-            "max_tokens": int(settings.get("max_output_tokens") or 4096),
+            "model": runtime.model,
+            "max_tokens": runtime.max_output_tokens,
             "system": system,
             "messages": [
                 {
@@ -428,7 +493,7 @@ def anthropic_messages_image_text(settings: dict[str, Any], prompt: str, image_p
                 }
             ],
         },
-        timeout=timeout_seconds,
+        timeout=runtime.timeout_seconds,
     )
     if response.status_code >= 400:
         raise ProviderError(f"image analysis failed: {response.status_code} {response.text[:500]}")
