@@ -2,6 +2,14 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.0.0 - 2026-06-10
+
+- Promoted Localization Workflow Studio to the first formal 1.0 release after the language-pack, QA, archive, delivery, quick-task, and announcement workflows were validated as one integrated workbench.
+- Stabilized project AI analysis around structured Project Brief Markdown: uploaded project brief files now drive the project prompt and metadata directly, while ordinary requirement notes remain supporting evidence.
+- Kept project prompts clean and delivery-oriented: term lists are excluded from the generic project prompt and continue to be injected per run through glossary snapshots, row-level `term_hits`, archive matches, and QA term bases.
+- Preserved non-Codex operation boundaries: local harness, batching, QA, apply, archive, and delivery run inside the workbench backend; configured OpenAI/GPT-compatible or Claude providers handle only model-required steps.
+- Locked the official 1.0 validation baseline: backend tests, workflow compile checks, Ruff fatal checks, frontend build, Playwright E2E, and forbidden Google/machine-translation scanning all pass locally before release tagging.
+
 ## 0.5.2 - 2026-06-08
 
 - Added standalone stability tooling for local/LAN workbench runs, including start/stop scripts, a one-command stability check, and documented pass criteria for non-Codex operation.

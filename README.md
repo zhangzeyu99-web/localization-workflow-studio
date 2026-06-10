@@ -31,7 +31,6 @@ Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web �
 - 后端：FastAPI + SQLite。
 - 正式语言：语言包工作流和公告外文本工作流共用同一组语言配置：EN / KR / JP / FR / DE / RU / IT / ES / PT / TR / IDN / TH / AR。
 - Provider：正式入口支持 OpenAI/GPT、GPT 中转站与 Claude；测试环境使用隐藏 test-fake，不作为产品 provider。
-- ???????????? provider ? API key ??????????????????????
 - 长文本翻译：由后端任务编排器拆批、限流、断点续跑和失败恢复；不依赖 Codex/Agent 才能运行。
 - 公告翻译：项目内 9 步外文本工作流，支持公告资料、约束来源、目标语言、术语提取、译文反查、翻译准备、AI 翻译/导入、校对回填和交付。
 - 禁止路径：不使用 Google Translate、`deep_translator`、`googletrans` 或浏览器机翻。
@@ -390,13 +389,13 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 - [迭代方式](docs/ITERATION.md)
 - [GitHub 管理](docs/GITHUB_MANAGEMENT.md)
 - [更新日志](CHANGELOG.md)
+- [v1.0.0 正式版说明](docs/releases/v1.0.0.md)
 - [许可证](LICENSE)
 
 ## 版本
 
-当前版本：`0.5.2`
 
-版本号需要同步维护：
+当前版本：`1.0.0`
 
 - `VERSION`
 - `backend/app/main.py`
