@@ -14,7 +14,7 @@ from .announcement_outputs import _announcement_task_source_stem, _today_stamp, 
 from .announcement_segments import _announcement_task_source_text, _glossary_extractor_module
 from .common import run_dir
 from .table_helpers import _wide_source_key
-from .qa import _call_semantic_provider, _parse_semantic_qa_payload
+from .semantic_qa import _call_semantic_provider, _parse_semantic_qa_payload
 from .subprocess_runner import user_facing_error
 
 def _announcement_ai_headers(languages: list[str]) -> list[str]:

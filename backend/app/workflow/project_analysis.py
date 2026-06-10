@@ -15,7 +15,7 @@ from .common import (
     read_project_harness,
     write_project_harness,
 )
-from .qa import _call_semantic_provider, _parse_semantic_qa_payload
+from .semantic_qa import _call_semantic_provider, _parse_semantic_qa_payload
 
 def _is_warplane_project(project: dict[str, Any], intro: str, material_labels: list[str], asset_notes: list[str] | None = None) -> bool:
     text = " ".join(

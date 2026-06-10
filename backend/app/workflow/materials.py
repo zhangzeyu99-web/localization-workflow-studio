@@ -17,7 +17,7 @@ from ..providers import call_image_text
 from ..translation_batches import cap_context_text as _cap_context_text
 from .common import project_dir
 from .project_analysis import _project_brief_from_text
-from .qa import _parse_semantic_qa_payload
+from .semantic_qa import _parse_semantic_qa_payload
 from .subprocess_runner import user_facing_error
 from .table_helpers import _auto_language_indices, _column_index, _normalized_header_indices, _value_at
 
