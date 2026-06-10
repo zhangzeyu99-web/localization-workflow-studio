@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+# ruff: noqa: F401,F821
+
+import asyncio
+import csv
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import math
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zipfile import ZipFile
+import xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
+
+from openpyxl import Workbook, load_workbook
+
+from .. import db
+from ..config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name, test_provider_enabled
+from ..delivery_naming import safe_delivery_name, source_stem
+from ..languages import ANNOUNCEMENT_LANGUAGE_ORDER, PROJECT_LANGUAGE_ORDER, alt_aliases, language_spec, normalize_language, require_supported_language, target_aliases, visible_language_code
+from ..providers import call_image_text, call_text, translate_batch
+from ..translation_batches import (
+    AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
+    build_batch_manifest as _build_batch_manifest,
+    cap_context_text as _cap_context_text,
+    estimate_row_tokens as _estimate_row_tokens,
+    estimate_text_tokens as _estimate_text_tokens,
+    load_or_create_batch_manifest as _load_or_create_batch_manifest,
+    manage_project_prompt_context as _manage_project_prompt_context,
+    manifest_matches_rows as _manifest_matches_rows,
+    project_context_summary as _project_context_summary,
+    provider_retry_delay_seconds as _provider_retry_delay_seconds,
+)
+
+__all__ = [
+    "_AsyncTokenRateLimiter",
+    "_build_batch_manifest",
+    "_cap_context_text",
+    "_estimate_row_tokens",
+    "_estimate_text_tokens",
+    "_load_or_create_batch_manifest",
+    "_manage_project_prompt_context",
+    "_manifest_matches_rows",
+    "_project_context_summary",
+    "_provider_retry_delay_seconds",
+]
+
+
+HARNESS_SCHEMA_VERSION = 1
+_GLOSSARY_EXTRACTOR_MODULE: Any | None = None
+GLOBAL_HARNESS_CONTRACT: dict[str, Any] = {
+    "source": "global_harness",
+    "workpack": "translation_workpack.jsonl",
+    "response_protocol": "jsonl:{id:int|str,translation:str}",
+    "hard_gates": ["id", "placeholder", "tag", "newline", "input_fingerprint"],
+    "qa_sources": ["workflow/localization/utils/quality_harness.py", "workflow/localization/fixtures/quality_regression.json"],
+}
+
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+RowId = int | str
+LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
+TERM_REFERENCE_RULE = "术语译法以随附术语表、行级 term_hits 和译文归档命中为准。"
+AUTO_LANGUAGE_TARGET_ALIASES = {code: tuple(target_aliases(code)) for code in LANGUAGE_ORDER}
+AUTO_LANGUAGE_ALT_ALIASES = {code: tuple(alt_aliases(code)) for code in LANGUAGE_ORDER}
+_TARGET_DETECTION_ALIASES: dict[str, set[str]] = {
+    "en": {"en", "english"},
+    "ko": {"ko", "kr", "korean"},
+    "ja": {"ja", "jp", "japanese"},
+    "fr": {"fr", "fre", "french"},
+    "de": {"de", "ger", "german"},
+    "ru": {"ru", "rus", "russian"},
+    "it": {"it", "ita", "italian"},
+    "es": {"es", "spa", "spanish"},
+    "pt": {"pt", "pt-br", "ptbr", "por", "portuguese"},
+    "tr": {"tr", "tk", "tur", "turkish"},
+    "idn": {"idn", "ind", "indonesian", "bahasa", "bahasa indonesia"},
+    "th": {"th", "tha", "thai"},
+    "ar": {"ar", "ara", "arabic"},
+}
+_STRUCTURAL_TARGET_HEADERS = {
+    "id", "key", "编号", "序号",
+    "cn", "zh", "source", "original", "chinese", "term", "原文", "中文", "术语",
+    "category", "type", "分类", "类别", "类型",
+    "note", "notes", "comment", "备注",
+    "target", "translation", "译文",
+}
+
+
+def _looks_like_untranslated_seed(text: str, language: str) -> bool:
+    value = str(text or "")
+    if not _CJK_RE.search(value):
+        return False
+    if language == "ja":
+        return False
+    return True
+
+
+def project_dir(project_id: str) -> Path:
+    path = DATA_ROOT / "projects" / project_id
+    path.mkdir(parents=True, exist_ok=True)
+    for child in ("uploads", "profile", "glossary", "runs", "assets", "translations"):
+        (path / child).mkdir(exist_ok=True)
+    return path
+
+
+def run_dir(run_id: str) -> Path:
+    path = DATA_ROOT / "runs" / run_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def default_project_harness(project: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": HARNESS_SCHEMA_VERSION,
+        "source": "project_harness",
+        "project_id": project["id"],
+        "project_name": project["name"],
+        "project_metadata": {},
+        "style_guidance": "",
+        "target_audience": "",
+        "tone": "",
+        "forbidden_translations": [],
+        "fixed_terms": [],
+        "hard_rules": [],
+        "soft_rules": [],
+        "reference_examples": [],
+        "manual_fixes": [],
+        "qa_summary": {},
+        "updated_at": "",
+    }
+
+
+def project_harness_path(project_id: str) -> Path:
+    return project_dir(project_id) / "profile" / "project_harness.json"
+
+
+def read_project_harness(project_id: str) -> dict[str, Any]:
+    project = db.get_project(project_id)
+    default = default_project_harness(project)
+    path = project_harness_path(project_id)
+    if not path.exists():
+        return default
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    merged = {**default, **payload}
+    merged["project_id"] = project_id
+    merged["project_name"] = project["name"]
+    merged["schema_version"] = HARNESS_SCHEMA_VERSION
+    return _sanitize_harness(merged)
+
+
+def write_project_harness(project_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    payload = read_project_harness(project_id)
+    for key, value in updates.items():
+        if value is not None:
+            payload[key] = value
+    payload["updated_at"] = db.now_iso()
+    payload = _sanitize_harness(payload)
+    path = project_harness_path(project_id)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+
+def harness_overview(project_id: str) -> dict[str, Any]:
+    return {
+        "global_harness": GLOBAL_HARNESS_CONTRACT,
+        "project_harness": read_project_harness(project_id),
+        "boundary": (
+            "global_harness stores reusable workflow contracts and gates; "
+            "project_harness stores this project's private requirements only."
+        ),
+    }
+
+
+def _workbook_text_stats(path: Path) -> dict[str, int]:
+    try:
+        wb = load_workbook(path, read_only=True, data_only=False)
+        ws = wb.active
+        headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        lowered = [header.lower() for header in headers]
+        source_idx = next(
+            (idx for idx, header in enumerate(lowered) if header in {"cn", "source", "原文", "中文"}),
+            None,
+        )
+        target_idx = next(
+            (idx for idx, header in enumerate(lowered) if header in {"en", "target", "translation", "译文", "英文"}),
+            None,
+        )
+        source_rows = 0
+        translated_rows = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if source_idx is not None and row[source_idx] not in (None, ""):
+                source_rows += 1
+            if target_idx is not None and row[target_idx] not in (None, ""):
+                translated_rows += 1
+        wb.close()
+        return {"source_rows": source_rows, "translated_rows": translated_rows}
+    except Exception:
+        return {"source_rows": 0, "translated_rows": 0}
+
+
+def _language_assets_summary(project_id: str) -> str:
+    candidates = [
+        *db.list_artifacts(project_id=project_id, role="translation_workbook"),
+        *db.list_artifacts(project_id=project_id, role="language_source"),
+    ]
+    best = {"source_rows": 0, "translated_rows": 0}
+    for artifact in candidates:
+        path = Path(str(artifact.get("path") or ""))
+        if path.suffix.lower() != ".xlsx" or not path.exists():
+            continue
+        stats = _workbook_text_stats(path)
+        if stats["source_rows"] > best["source_rows"]:
+            best = stats
+        elif stats["translated_rows"] > best["translated_rows"]:
+            best["translated_rows"] = stats["translated_rows"]
+    if best["source_rows"]:
+        return f"{best['source_rows']} 条文本，已有英文 {best['translated_rows']} 条。"
+    return "暂未统计语言表行数。"
+
+
+def _project_material_labels(project_id: str) -> list[str]:
+    labels: list[str] = []
+    for role in ("glossary_source", "language_source", "translation_workbook"):
+        for artifact in db.list_artifacts(project_id=project_id, role=role):
+            label = str(artifact.get("label") or "").strip()
+            if label and label not in labels:
+                labels.append(label)
+    return labels
+
+# Export imported helpers and private compatibility names for sibling modules.
+__all__ = [name for name in globals() if not name.startswith("__")]
