@@ -1063,7 +1063,7 @@ def test_fake_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         analyzed_project = analysis_response.json()["project"]
         display_prompt = analyzed_project["profile"]["display_prompts_by_language"]["en"]
         assert "\u9879\u76ee\u5b9a\u4f4d" in display_prompt
-        assert "????" not in display_prompt
+        assert "?" * 4 not in display_prompt
         assert "JSONL" not in display_prompt
 
         with workbook.open("rb") as fh:
@@ -1562,9 +1562,9 @@ def test_project_analysis_uses_configured_provider_for_semantic_profile(tmp_path
 def test_project_analysis_parses_docx_material_packet(tmp_path: Path) -> None:
     docx_path = tmp_path / "project-brief.docx"
     document = Document()
-    document.add_heading("?????? SLG", level=1)
-    document.add_paragraph("?????????????????????????????????")
-    document.add_paragraph("?????UI ????????????????????????")
+    document.add_heading("暗黑监狱 SLG", level=1)
+    document.add_paragraph("面向移动端玩家的监狱经营与联盟战争游戏。")
+    document.add_paragraph("翻译要求：UI 文案短促直接，剧情保持黑色幽默。")
     document.save(docx_path)
 
     with TestClient(app) as client:
@@ -1586,7 +1586,7 @@ def test_project_analysis_parses_docx_material_packet(tmp_path: Path) -> None:
         material = payload["project"]["profile"]["material_packet"]["materials"][0]
         assert material["material_type"] == "docx"
         assert material["status"] == "parsed_docx"
-        assert "????" in payload["project"]["profile"]["display_prompts_by_language"]["en"]
+        assert "暗黑监狱" in payload["project"]["profile"]["display_prompts_by_language"]["en"]
 
 
 def test_project_analysis_image_material_reports_no_api_key(tmp_path: Path) -> None:

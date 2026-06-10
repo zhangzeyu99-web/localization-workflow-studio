@@ -4094,7 +4094,7 @@ def _sanitize_harness(payload: dict[str, Any]) -> dict[str, Any]:
         target = str(item.get("target") or "").strip()
         if not source or not target:
             continue
-        if all(ch in "?�" or ch.isspace() for ch in source):
+        if all(ch in {"?", "\ufffd"} or ch.isspace() for ch in source):
             continue
         cleaned_fixed_terms.append(item)
     payload["fixed_terms"] = cleaned_fixed_terms
