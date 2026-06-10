@@ -9,7 +9,7 @@ from openpyxl import Workbook
 from .. import db
 from ..config import REAL_PROVIDERS, load_settings, normalize_provider_name
 from ..languages import ANNOUNCEMENT_LANGUAGE_ORDER, require_supported_language, target_aliases, visible_language_code
-from .announcement import ANNOUNCEMENT_STEP, _announcement_task_metadata, _count_lookup_hits, _hydrate_announcement_task
+from .announcement_shared import ANNOUNCEMENT_STEP, _announcement_task_metadata, _count_lookup_hits
 from .announcement_outputs import _announcement_task_source_stem, _today_stamp, _visible_language_code
 from .announcement_segments import _announcement_task_source_text, _glossary_extractor_module
 from .common import run_dir
@@ -244,6 +244,8 @@ def _save_announcement_terms(task_id: str, rows: list[dict[str, Any]], languages
         missing = sum(1 for row in rows if not str((row.get("translations") or {}).get(language) or "").strip())
         db.upsert_announcement_task_language(task_id, project_id, language, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], metadata={"terms": len(rows), "missing_terms": missing})
     db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary, "task_id": task_id})
+    from .announcement import _hydrate_announcement_task
+
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
 
 

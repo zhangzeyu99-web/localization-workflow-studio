@@ -11,15 +11,15 @@ from openpyxl import load_workbook
 from .. import db
 from ..config import GLOSSARY_ROOT
 from ..languages import ANNOUNCEMENT_LANGUAGE_ORDER, require_supported_language, target_aliases
-from .announcement import (
+from .announcement_outputs import _file_sha256, _safe_source_stem, _visible_language_code
+from .announcement_shared import (
     _announcement_task_metadata,
     _count_lookup_hits,
     _rank_translation_lookup_source,
     _suppress_overlapping_lookup_hits,
 )
-from .announcement_outputs import _file_sha256, _safe_source_stem, _visible_language_code
 from .common import _CJK_RE
-from .glossary import _wide_source_key
+from .table_helpers import _wide_source_key
 
 def _announcement_source_format(path: Path) -> str:
     suffix = path.suffix.lower()

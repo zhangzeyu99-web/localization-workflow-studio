@@ -1,8 +1,35 @@
 from __future__ import annotations
 
-# ruff: noqa: F403,F405
+import json
+import re
+import shutil
+import sys
+from pathlib import Path
+from typing import Any
 
-from .common import *
+from openpyxl import Workbook, load_workbook
+
+from .. import db
+from ..config import LOCALIZATION_ROOT, REAL_PROVIDERS, load_settings, normalize_provider_name
+from ..languages import language_spec, require_supported_language, target_aliases
+from ..providers import call_text
+from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
+from .common import GLOBAL_HARNESS_CONTRACT, HARNESS_SCHEMA_VERSION, RowId, project_dir, read_project_harness, run_dir, write_project_harness
+from .subprocess_runner import run_subprocess, run_subprocess_allow_failure, user_facing_error
+
+
+def _harness_summary(harness: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": "project_harness",
+        "schema_version": harness.get("schema_version", HARNESS_SCHEMA_VERSION),
+        "updated_at": harness.get("updated_at", ""),
+        "style_guidance": bool(harness.get("style_guidance")),
+        "hard_rules": len(harness.get("hard_rules", [])),
+        "soft_rules": len(harness.get("soft_rules", [])),
+        "fixed_terms": len(harness.get("fixed_terms", [])),
+        "forbidden_translations": len(harness.get("forbidden_translations", [])),
+        "reference_examples": len(harness.get("reference_examples", [])),
+    }
 
 def run_project_harness_qa(final_workbook: Path, harness: dict[str, Any], language: str = "en") -> dict[str, Any]:
     language = require_supported_language(language)
@@ -361,6 +388,8 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
     output_dir = run_dir(run_id) / "qa"
     output_dir.mkdir(parents=True, exist_ok=True)
     language = require_supported_language(run.get("language") or "en")
+    from .prompt_snapshots import create_project_glossary_snapshot, create_prompt_and_harness_snapshots, create_quick_reference_snapshot
+
     glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, output_dir / "snapshots", language=language)
     snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, output_dir / "snapshots", language=language)
     reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), output_dir / "snapshots")
@@ -389,6 +418,8 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
     status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
     archive_result = None
     if status == "passed" and qa_result.get("qa_final_artifact"):
+        from .glossary import archive_translation_artifact
+
         archive_result = archive_translation_artifact(
             project["id"],
             qa_result["qa_final_artifact"]["id"],

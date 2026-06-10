@@ -19,10 +19,11 @@ from ..translation_batches import (
     project_context_summary as _project_context_summary,
     provider_retry_delay_seconds as _provider_retry_delay_seconds,
 )
-from .announcement import ANNOUNCEMENT_STEP
+from .announcement_shared import ANNOUNCEMENT_STEP
 from .announcement_segments import _is_quick_text_path
 from .common import _looks_like_untranslated_seed, run_dir
-from .glossary import archive_translation_artifact, read_jsonl, write_jsonl
+from .glossary import archive_translation_artifact
+from .jsonl_helpers import read_jsonl, write_jsonl
 from .prompt_snapshots import (
     create_project_glossary_snapshot,
     create_prompt_and_harness_snapshots,

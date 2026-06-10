@@ -1,49 +1,76 @@
 from __future__ import annotations
 
-# ruff: noqa: F403,F405
+import asyncio
+import hashlib
+import json
+import re
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zipfile import ZipFile
 
-from .common import *
+from openpyxl import Workbook
 
-def _count_lookup_hits(text: str, needle: str) -> tuple[int, int]:
-    if not needle:
-        return (0, -1)
-    count = 0
-    first = -1
-    start = 0
-    while True:
-        index = text.find(needle, start)
-        if index < 0:
-            break
-        if first < 0:
-            first = index
-        count += 1
-        start = index + max(1, len(needle))
-    return (count, first)
-
-
-def _suppress_overlapping_lookup_hits(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    accepted: list[dict[str, Any]] = []
-    spans: list[tuple[int, int]] = []
-    for row in sorted(rows, key=lambda item: (int(item.get("first_position") or 0), -len(str(item.get("source") or "")), str(item.get("source") or ""))):
-        start = int(row.get("first_position") or 0)
-        end = start + len(str(row.get("source") or ""))
-        if any(start < existing_end and end > existing_start for existing_start, existing_end in spans):
-            continue
-        accepted.append(row)
-        spans.append((start, end))
-    return accepted
-
-
-def _rank_translation_lookup_source(source_type: str) -> int:
-    priority = {
-        "qa_passed": 0,
-        "qa_final": 0,
-        "manual": 1,
-        "imported": 2,
-        "archive": 2,
-        "translation_archive": 2,
-    }
-    return priority.get(str(source_type or "").strip().lower(), 3)
+from .. import db
+from ..config import REAL_PROVIDERS, load_settings, normalize_provider_name
+from ..languages import language_spec, require_supported_language
+from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
+from .announcement_ai import (
+    _announcement_terms_languages,
+    _announcement_terms_validation,
+    _apply_announcement_ai_supplement,
+    _filter_announcement_terms_languages,
+    _normalize_announcement_terms_payload,
+    _save_announcement_terms,
+    _write_announcement_terms_workbook,
+)
+from .announcement_outputs import (
+    _announcement_delivery_base_name,
+    _announcement_response_artifact_map,
+    _announcement_task_source_stem,
+    _announcement_translation_prompt,
+    _announcement_workpack_rows,
+    _artifact_source_stem,
+    _import_announcement_response_into_workbook,
+    _mime_for_path,
+    _project_archive_by_language,
+    _read_announcement_translation_workbook,
+    _repair_announcement_translation_workbook,
+    _safe_file_stem,
+    _validate_announcement_translation_rows,
+    _write_announcement_outputs,
+    _write_announcement_qa_summary,
+    _write_announcement_translation_workbook,
+)
+from .announcement_segments import (
+    _announcement_constraint_rows,
+    _announcement_language_constraint_summary,
+    _announcement_source_format,
+    _announcement_source_manifest,
+    _announcement_task_segments,
+    _announcement_task_source_text,
+    _detect_announcement_constraint_languages,
+    _detect_language_columns,
+    _normalize_announcement_languages,
+    _read_language_table_rows,
+    _select_announcement_constraint_rows,
+)
+from .announcement_shared import (
+    ANNOUNCEMENT_STEP,
+    _announcement_task_metadata,
+    _count_lookup_hits,
+    _rank_translation_lookup_source,
+    _suppress_overlapping_lookup_hits,
+)
+from .common import project_dir, run_dir
+from .jsonl_helpers import read_jsonl, write_jsonl
+from .materials import _compact_lookup_text, _read_lookup_material_text
+from .naming import _today_stamp, _visible_language_code
+from .prompt_snapshots import create_prompt_and_harness_snapshots
+from .subprocess_runner import user_facing_error
+from .table_helpers import _wide_source_key
+from .translation import _translate_rows_with_orchestration
 
 
 def _lookup_terms(text: str, terms: list[dict[str, Any]], *, min_length: int, limit: int) -> list[dict[str, Any]]:
@@ -289,18 +316,6 @@ def run_announcement_lookup(project_id: str, request: Any) -> dict[str, Any]:
         db.update_run(run["id"], status="failed", metadata={**run.get("metadata", {}), "error": friendly})
         raise
 
-
-ANNOUNCEMENT_STEP = {
-    "source": 1,
-    "constraints": 2,
-    "languages": 3,
-    "terms": 4,
-    "lookup": 5,
-    "prepare": 6,
-    "translate": 7,
-    "apply": 8,
-    "deliver": 9,
-}
 
 
 def list_announcement_tasks(project_id: str) -> list[dict[str, Any]]:
@@ -1121,9 +1136,6 @@ def _hydrate_announcement_task(task: dict[str, Any]) -> dict[str, Any]:
     task["artifacts"] = artifacts
     return task
 
-
-def _announcement_task_metadata(task: dict[str, Any]) -> dict[str, Any]:
-    return dict(task.get("metadata") or {})
 
 
 def _merge_announcement_constraint_request(metadata: dict[str, Any], request: Any) -> dict[str, Any]:

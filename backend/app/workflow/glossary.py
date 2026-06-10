@@ -1,8 +1,42 @@
 from __future__ import annotations
 
-# ruff: noqa: F403,F405
+import asyncio
+import csv
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
 
-from .common import *
+from openpyxl import Workbook, load_workbook
+
+from .. import db
+from ..config import GLOSSARY_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name
+from ..languages import alt_aliases, language_spec, normalize_language, require_supported_language, target_aliases
+from ..providers import call_text, translate_batch
+from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
+from . import jsonl_helpers as _jsonl_helpers
+from .common import _CJK_RE, project_dir, run_dir
+from .materials import analyze_assets
+from .naming import _safe_delivery_name, _safe_source_stem, _today_stamp, _visible_language_code
+from .announcement_segments import _read_language_table_rows
+from .qa import _parse_semantic_qa_payload
+from .subprocess_runner import parse_key_output, run_subprocess, user_facing_error
+from .table_helpers import (
+    LANGUAGE_ORDER,
+    _auto_language_indices,
+    _column_index,
+    _normalized_header_indices,
+    _read_glossary_rows,
+    _value_at,
+    _wide_source_key,
+)
+
+_LARGE_LANGUAGE_TABLE_ROW_THRESHOLD = 1000
+COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE = "这个文件看起来是完整语言表，不是项目术语表。请到「生成术语」或翻译流程 STEP5 做高频词扫描并生成术语候选，候选确认后才会进入项目术语库。"
+COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE = "这个文件看起来是完整语言表，请上传到 STEP4「语言表」。它不会作为项目资料参与术语提取。"
 
 def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
     project = db.get_project(project_id)
@@ -606,6 +640,14 @@ def _glossary_candidate_translation_prompt(project: dict[str, Any], rows: list[d
     )
 
 
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return _jsonl_helpers.read_jsonl(path)
+
+
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    _jsonl_helpers.write_jsonl(path, rows)
+
+
 def _glossary_source_key(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "").strip()).casefold()
 
@@ -622,25 +664,6 @@ def _fill_blank_glossary_fields(base: dict[str, Any], incoming: dict[str, Any]) 
         if not str(base.get(field) or "").strip() and str(incoming.get(field) or "").strip():
             base[field] = incoming.get(field, "")
 
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
-
-
-COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE = (
-    "这是完整语言表，不是项目术语表。请在「语言表/待翻译内容」上传后，"
-    "到 STEP5「高频词扫描 / 从完整语言表扫描高频术语候选」生成候选术语；"
-    "候选经人工确认后才会进入项目术语库。"
-)
-COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE = (
-    "这个文件看起来是完整语言表，请上传到 STEP4「语言表」。"
-    "它不会作为项目资料参与术语提取。"
-)
-_LARGE_LANGUAGE_TABLE_ROW_THRESHOLD = 1000
 
 
 def is_complete_language_table_for_glossary_import(path: Path, sheet: str | None = None, row_threshold: int = _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD) -> bool:
@@ -986,9 +1009,6 @@ def _wide_rows(items: list[dict[str, Any]], *, key_field: str, shared_fields: tu
     return {"languages": languages, "coverage": {code: coverage[code] for code in languages}, "row_count": len(wide_rows), "rows": wide_rows}
 
 
-def _wide_source_key(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip()).casefold()
-
 
 def _first_non_blank(rows: list[dict[str, Any]], field: str) -> str:
     for row in rows:
@@ -1010,35 +1030,6 @@ def _wide_conflicts(rows: list[dict[str, Any]], fields: tuple[str, ...]) -> list
             conflicts.append({"field": field, "values": values})
     return conflicts
 
-
-def _normalized_header_indices(headers: list[str]) -> dict[str, int]:
-    normalized: dict[str, int] = {}
-    for index, header in enumerate(headers):
-        key = str(header or "").strip().lower()
-        if key and key not in normalized:
-            normalized[key] = index
-    return normalized
-
-
-def _auto_language_indices(headers: list[str], reserved_indices: set[int] | None = None) -> dict[str, tuple[int, int | None]]:
-    reserved = reserved_indices or set()
-    normalized_headers: dict[str, int] = {}
-    for index, header in enumerate(headers):
-        if index in reserved:
-            continue
-        key = str(header or "").strip().lower()
-        if key:
-            normalized_headers[key] = index
-    detected: dict[str, tuple[int, int | None]] = {}
-    for code in LANGUAGE_ORDER:
-        target_idx = _column_index(normalized_headers, None, list(AUTO_LANGUAGE_TARGET_ALIASES[code]), required=False)
-        if target_idx is None:
-            continue
-        alt_idx = None
-        if code == "en":
-            alt_idx = _column_index(normalized_headers, None, list(AUTO_LANGUAGE_ALT_ALIASES["en"]), required=False)
-        detected[code] = (target_idx, alt_idx)
-    return detected
 
 
 def _read_multilingual_glossary_rows(
