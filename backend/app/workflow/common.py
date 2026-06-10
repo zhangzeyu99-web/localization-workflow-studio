@@ -1,59 +1,26 @@
 from __future__ import annotations
 
-# ruff: noqa: F401,F821
-
-import asyncio
-import csv
-import hashlib
-import importlib.util
 import json
-import os
 import re
-import shutil
-import subprocess
-import sys
-import math
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
-from zipfile import ZipFile
-import xml.etree.ElementTree as ET
-from zoneinfo import ZoneInfo
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 
-from .. import db
-from ..config import DATA_ROOT, GLOSSARY_ROOT, LOCALIZATION_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name, test_provider_enabled
-from ..delivery_naming import safe_delivery_name, source_stem
-from ..languages import ANNOUNCEMENT_LANGUAGE_ORDER, PROJECT_LANGUAGE_ORDER, alt_aliases, language_spec, normalize_language, require_supported_language, target_aliases, visible_language_code
-from ..providers import call_image_text, call_text, translate_batch
-from ..translation_batches import (
-    AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
-    build_batch_manifest as _build_batch_manifest,
-    cap_context_text as _cap_context_text,
-    estimate_row_tokens as _estimate_row_tokens,
-    estimate_text_tokens as _estimate_text_tokens,
-    load_or_create_batch_manifest as _load_or_create_batch_manifest,
-    manage_project_prompt_context as _manage_project_prompt_context,
-    manifest_matches_rows as _manifest_matches_rows,
-    project_context_summary as _project_context_summary,
-    provider_retry_delay_seconds as _provider_retry_delay_seconds,
-)
+from .. import db, translation_batches as _translation_batches
+from ..config import DATA_ROOT
+from ..languages import PROJECT_LANGUAGE_ORDER, alt_aliases, target_aliases
 
-__all__ = [
-    "_AsyncTokenRateLimiter",
-    "_build_batch_manifest",
-    "_cap_context_text",
-    "_estimate_row_tokens",
-    "_estimate_text_tokens",
-    "_load_or_create_batch_manifest",
-    "_manage_project_prompt_context",
-    "_manifest_matches_rows",
-    "_project_context_summary",
-    "_provider_retry_delay_seconds",
-]
-
+_AsyncTokenRateLimiter = _translation_batches.AsyncTokenRateLimiter
+_build_batch_manifest = _translation_batches.build_batch_manifest
+_cap_context_text = _translation_batches.cap_context_text
+_estimate_row_tokens = _translation_batches.estimate_row_tokens
+_estimate_text_tokens = _translation_batches.estimate_text_tokens
+_load_or_create_batch_manifest = _translation_batches.load_or_create_batch_manifest
+_manage_project_prompt_context = _translation_batches.manage_project_prompt_context
+_manifest_matches_rows = _translation_batches.manifest_matches_rows
+_project_context_summary = _translation_batches.project_context_summary
+_provider_retry_delay_seconds = _translation_batches.provider_retry_delay_seconds
 
 HARNESS_SCHEMA_VERSION = 1
 _GLOSSARY_EXTRACTOR_MODULE: Any | None = None
@@ -141,6 +108,40 @@ def default_project_harness(project: dict[str, Any]) -> dict[str, Any]:
 
 def project_harness_path(project_id: str) -> Path:
     return project_dir(project_id) / "profile" / "project_harness.json"
+
+
+def _sanitize_harness(payload: dict[str, Any]) -> dict[str, Any]:
+    text_fields = ("style_guidance", "target_audience", "tone")
+    list_fields = (
+        "forbidden_translations",
+        "fixed_terms",
+        "hard_rules",
+        "soft_rules",
+        "reference_examples",
+        "manual_fixes",
+    )
+    for key in text_fields:
+        payload[key] = str(payload.get(key) or "").strip()
+    for key in list_fields:
+        value = payload.get(key)
+        payload[key] = value if isinstance(value, list) else []
+    cleaned_fixed_terms = []
+    for item in payload.get("fixed_terms", []):
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "").strip()
+        target = str(item.get("target") or "").strip()
+        if not source or not target:
+            continue
+        if all(ch in {"?", "\ufffd"} or ch.isspace() for ch in source):
+            continue
+        cleaned_fixed_terms.append(item)
+    payload["fixed_terms"] = cleaned_fixed_terms
+    if not isinstance(payload.get("project_metadata"), dict):
+        payload["project_metadata"] = {}
+    if not isinstance(payload.get("qa_summary"), dict):
+        payload["qa_summary"] = {}
+    return payload
 
 
 def read_project_harness(project_id: str) -> dict[str, Any]:

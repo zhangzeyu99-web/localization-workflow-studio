@@ -476,3 +476,16 @@ def test_persistent_long_text_lease_allows_single_running_job_and_cancel() -> No
 
     db.release_job_lease("long_text", "job_a", status="completed")
     assert db.acquire_job_lease("long_text", "job_b")
+
+
+def test_core_python_files_do_not_have_utf8_bom() -> None:
+    for relative in ("backend/app/config.py", "backend/app/workflow/common.py"):
+        assert not Path(relative).read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_workflow_modules_do_not_use_legacy_common_star_imports() -> None:
+    for path in Path("backend/app/workflow").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert "from .common import *" not in text
+        assert "ruff: noqa: F403,F405" not in text
+

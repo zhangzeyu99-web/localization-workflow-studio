@@ -179,39 +179,6 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
     return summary
 
 
-def _sanitize_harness(payload: dict[str, Any]) -> dict[str, Any]:
-    text_fields = ("style_guidance", "target_audience", "tone")
-    list_fields = (
-        "forbidden_translations",
-        "fixed_terms",
-        "hard_rules",
-        "soft_rules",
-        "reference_examples",
-        "manual_fixes",
-    )
-    for key in text_fields:
-        payload[key] = str(payload.get(key) or "").strip()
-    for key in list_fields:
-        value = payload.get(key)
-        payload[key] = value if isinstance(value, list) else []
-    cleaned_fixed_terms = []
-    for item in payload.get("fixed_terms", []):
-        if not isinstance(item, dict):
-            continue
-        source = str(item.get("source") or "").strip()
-        target = str(item.get("target") or "").strip()
-        if not source or not target:
-            continue
-        if all(ch in {"?", "\ufffd"} or ch.isspace() for ch in source):
-            continue
-        cleaned_fixed_terms.append(item)
-    payload["fixed_terms"] = cleaned_fixed_terms
-    if not isinstance(payload.get("project_metadata"), dict):
-        payload["project_metadata"] = {}
-    if not isinstance(payload.get("qa_summary"), dict):
-        payload["qa_summary"] = {}
-    return payload
-
 
 def _project_harness_prompt_parts(harness: dict[str, Any]) -> list[str]:
     parts: list[str] = []
