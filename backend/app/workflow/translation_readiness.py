@@ -72,6 +72,82 @@ def inspect_translation_targets(artifact_id: str) -> dict[str, Any]:
     return result
 
 
+
+def _scan_workbook_translation_readiness(path: Path, language: str, summary: dict[str, Any]) -> tuple[bool, str | None]:
+    found_target_column = False
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            for ws in wb.worksheets:
+                try:
+                    headers = _header_map(ws)
+                except Exception:
+                    continue
+                source_col = _first_col(headers, ["cn", "source", "original", "zh", "chinese", "??", "??"])
+                target_col = _first_col(headers, target_aliases(language))
+                id_col = _first_col(headers, ["id", "??", "??"])
+                if source_col is None:
+                    continue
+                if target_col is not None:
+                    found_target_column = True
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    source = _row_cell(row, source_col)
+                    if not source:
+                        continue
+                    summary["source_rows"] += 1
+                    raw_id = _row_cell(row, id_col) if id_col is not None else ""
+                    if not _is_supported_translation_id(raw_id):
+                        summary["invalid_id_rows"] += 1
+                        if len(summary["invalid_id_samples"]) < 5:
+                            summary["invalid_id_samples"].append(raw_id or "<missing>")
+                    target = _row_cell(row, target_col) if target_col is not None else ""
+                    if not target:
+                        summary["empty_target_rows"] += 1
+                    elif _looks_like_untranslated_seed(target, language):
+                        summary["cjk_target_rows"] += 1
+                    else:
+                        summary["translated_rows"] += 1
+        finally:
+            wb.close()
+    except Exception as exc:
+        return found_target_column, f"inspect_failed:{user_facing_error(exc)}"
+    return found_target_column, None
+
+
+def _finalize_translation_readiness(summary: dict[str, Any], *, found_target_column: bool, effective_batch_size: int) -> dict[str, Any]:
+    source_rows = int(summary["source_rows"])
+    empty_rows = int(summary["empty_target_rows"])
+    cjk_rows = int(summary["cjk_target_rows"])
+    translated_rows = int(summary["translated_rows"])
+    summary["estimated_batches"] = math.ceil(source_rows / effective_batch_size) if source_rows else 0
+    if not source_rows:
+        summary["reason"] = "no_source_rows"
+        return summary
+    if int(summary["invalid_id_rows"]):
+        summary["estimated_batches"] = 0
+        summary["reason"] = "invalid_id_rows"
+        return summary
+    if not found_target_column:
+        summary["needs_translation"] = True
+        summary["ready_for_translation"] = True
+        summary["reason"] = "target_column_missing"
+        return summary
+    if empty_rows == 0 and cjk_rows == 0 and translated_rows > 0:
+        summary["ready_for_qa"] = True
+        summary["reason"] = "existing_target_translation"
+        return summary
+    summary["needs_translation"] = True
+    summary["ready_for_translation"] = True
+    if empty_rows and cjk_rows:
+        summary["reason"] = "empty_or_cjk_target_rows"
+    elif empty_rows:
+        summary["reason"] = "empty_target_rows"
+    elif cjk_rows:
+        summary["reason"] = "cjk_target_rows"
+    else:
+        summary["reason"] = "needs_translation"
+    return summary
+
 def inspect_translation_readiness(artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
     language = require_supported_language(language)
     artifact = db.get_artifact(artifact_id)
@@ -106,44 +182,11 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
     if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"} or not path.exists():
         return summary
 
-    found_target_column = False
-    try:
-        wb = load_workbook(path, read_only=True, data_only=True)
-        try:
-            for ws in wb.worksheets:
-                try:
-                    headers = _header_map(ws)
-                except Exception:
-                    continue
-                source_col = _first_col(headers, ["cn", "source", "original", "zh", "chinese", "原文", "中文"])
-                target_col = _first_col(headers, target_aliases(language))
-                id_col = _first_col(headers, ["id", "编号", "序号"])
-                if source_col is None:
-                    continue
-                if target_col is not None:
-                    found_target_column = True
-                for row in ws.iter_rows(min_row=2, values_only=True):
-                    source = _row_cell(row, source_col)
-                    if not source:
-                        continue
-                    summary["source_rows"] += 1
-                    raw_id = _row_cell(row, id_col) if id_col is not None else ""
-                    if not _is_supported_translation_id(raw_id):
-                        summary["invalid_id_rows"] += 1
-                        if len(summary["invalid_id_samples"]) < 5:
-                            summary["invalid_id_samples"].append(raw_id or "<missing>")
-                    target = _row_cell(row, target_col) if target_col is not None else ""
-                    if not target:
-                        summary["empty_target_rows"] += 1
-                    elif _looks_like_untranslated_seed(target, language):
-                        summary["cjk_target_rows"] += 1
-                    else:
-                        summary["translated_rows"] += 1
-        finally:
-            wb.close()
-    except Exception as exc:
-        summary["reason"] = f"inspect_failed:{user_facing_error(exc)}"
+    found_target_column, scan_error = _scan_workbook_translation_readiness(path, language, summary)
+    if scan_error:
+        summary["reason"] = scan_error
         return summary
+    return _finalize_translation_readiness(summary, found_target_column=found_target_column, effective_batch_size=effective_batch_size)
 
     source_rows = int(summary["source_rows"])
     empty_rows = int(summary["empty_target_rows"])

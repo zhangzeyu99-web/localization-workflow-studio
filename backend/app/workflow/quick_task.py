@@ -14,7 +14,158 @@ from .prompt_snapshots import (
     create_prompt_and_harness_snapshots,
     create_quick_reference_snapshot,
 )
-from .translation import _translate_rows_with_orchestration
+from .translation_orchestrator import _translate_rows_with_orchestration
+
+
+def _quick_text_empty_result(run_id: str, metadata: dict[str, Any], readiness: dict[str, Any]) -> dict[str, Any]:
+    reason = "TXT 文件没有检测到可翻译文本。"
+    db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason, "translation_readiness": readiness})
+    db.add_event(run_id, reason)
+    return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
+
+
+def _quick_text_prompt_context(
+    *,
+    project_id: str,
+    run_id: str,
+    metadata: dict[str, Any],
+    language: str,
+    work_dir: Path,
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    snapshot_dir = work_dir / "snapshots"
+    glossary_snapshot = create_project_glossary_snapshot(project_id, run_id, snapshot_dir, language=language)
+    snapshots = create_prompt_and_harness_snapshots(project_id, run_id, snapshot_dir, language=language)
+    reference_snapshot = create_quick_reference_snapshot(project_id, run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
+    prompt = snapshots["prompt"]
+    if reference_snapshot and reference_snapshot.get("context"):
+        prompt = _manage_project_prompt_context(f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}", settings)
+    prompt = _manage_project_prompt_context(
+        f"{prompt}\n\n快速 TXT 任务：逐行翻译 source 字段，保持每个 id 的顺序和结构。只返回 JSONL，每行包含 id 和 translation。",
+        settings,
+    )
+    return {
+        "prompt": prompt,
+        "glossary_snapshot": glossary_snapshot,
+        "prompt_snapshot": snapshots["prompt_artifact"],
+        "harness_snapshot_artifact": snapshots["harness_artifact"],
+        "reference_snapshot": reference_snapshot,
+    }
+
+
+def _write_quick_text_artifacts(
+    *,
+    project: dict[str, Any],
+    run_id: str,
+    input_artifact: dict[str, Any],
+    input_path: Path,
+    work_dir: Path,
+    translated_rows: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    language: str,
+) -> dict[str, Any]:
+    response_path = work_dir / "translation_response.jsonl"
+    write_jsonl(response_path, translated_rows)
+    response_artifact = db.add_artifact(
+        project["id"],
+        "快速 TXT translation response",
+        response_path,
+        "translation_response",
+        run_id=run_id,
+        mime="application/jsonl",
+        metadata={"language": language, "source_artifact_id": input_artifact["id"]},
+    )
+    output_path = _write_quick_text_output(input_path, translated_rows, language, work_dir)
+    final_artifact = db.add_artifact(
+        project["id"],
+        "快速 TXT 最终译文",
+        output_path,
+        "final_text",
+        run_id=run_id,
+        mime="text/plain",
+        role="delivery",
+        origin="generated",
+        metadata={"language": language, "source_artifact_id": input_artifact["id"]},
+    )
+    manifest_path = work_dir / "quick_text_translation_manifest.json"
+    manifest = {
+        "kind": "quick_text_translation",
+        "run_id": run_id,
+        "project_id": project["id"],
+        "language": language,
+        "source_artifact_id": input_artifact["id"],
+        "source_rows": len(rows),
+        "final_artifact_id": final_artifact["id"],
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_artifact = db.add_artifact(
+        project["id"],
+        "快速 TXT translation manifest",
+        manifest_path,
+        "translation_manifest",
+        run_id=run_id,
+        mime="application/json",
+        metadata={"language": language},
+    )
+    return {"response": response_artifact, "final": final_artifact, "manifest": manifest_artifact, "output_path": output_path}
+
+
+def _finish_quick_text_run(
+    *,
+    run_id: str,
+    metadata: dict[str, Any],
+    input_artifact: dict[str, Any],
+    input_path: Path,
+    rows: list[dict[str, Any]],
+    readiness: dict[str, Any],
+    artifacts: dict[str, Any],
+    prompt_context: dict[str, Any],
+    workpack_artifact: dict[str, Any],
+) -> dict[str, Any]:
+    input_artifacts = {
+        "source_text": input_artifact["id"],
+        "final_text": artifacts["final"]["id"],
+        "translation_workpack": workpack_artifact["id"],
+        "translation_response": artifacts["response"]["id"],
+        "prompt_snapshot": prompt_context["prompt_snapshot"]["id"],
+        "harness_snapshot": prompt_context["harness_snapshot_artifact"]["id"],
+        "glossary_snapshot": prompt_context["glossary_snapshot"]["id"],
+    }
+    if prompt_context["reference_snapshot"]:
+        input_artifacts["quick_reference_snapshot"] = prompt_context["reference_snapshot"]["artifact"]["id"]
+    quality_summary = {"passed": True, "hard_errors": 0, "soft_warnings": 0, "rows": len(rows), "format": input_path.suffix.lower().lstrip(".") or "txt"}
+    final_metadata = db.get_run(run_id).get("metadata", {})
+    db.update_run(
+        run_id,
+        status="passed",
+        metadata={
+            **final_metadata,
+            "task_origin": metadata.get("task_origin") or "quick_task",
+            "input_artifacts": input_artifacts,
+            "quality_summary": quality_summary,
+            "quality": {"passed": True, "issues": []},
+            "translation_readiness": readiness,
+            "translated_rows": len(rows),
+            "source_rows": len(rows),
+            "output_format": input_path.suffix.lower().lstrip(".") or "txt",
+        },
+    )
+    db.add_event(run_id, f"quick TXT translation finished: rows={len(rows)}, output={artifacts['output_path'].name}")
+    return {
+        "run": db.get_run(run_id),
+        "artifacts": [
+            artifacts["final"],
+            artifacts["response"],
+            workpack_artifact,
+            artifacts["manifest"],
+            prompt_context["glossary_snapshot"],
+            prompt_context["prompt_snapshot"],
+            prompt_context["harness_snapshot_artifact"],
+        ],
+        "quality": {"passed": True, "issues": []},
+        "translation_readiness": readiness,
+    }
+
 
 async def _translate_quick_text_run(
     *,
@@ -33,37 +184,37 @@ async def _translate_quick_text_run(
     input_path = Path(input_artifact["path"])
     rows = _quick_text_translation_rows(input_path)
     if not rows:
-        reason = "TXT 文件没有检测到可翻译文本。"
-        db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason, "translation_readiness": readiness})
-        db.add_event(run_id, reason)
-        return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
+        return _quick_text_empty_result(run_id, metadata, readiness)
 
     db.update_run(run_id, status="running")
     db.add_event(run_id, f"quick TXT translation preflight: source_lines={len(rows)}, batch_size={batch_size}, estimated_batches={readiness.get('estimated_batches') or '-'}")
     work_dir = run_dir(run_id) / "quick_text_translation"
     work_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_dir = work_dir / "snapshots"
-    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir, language=language)
-    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir, language=language)
-    reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
-    prompt = snapshots["prompt"]
-    prompt_snapshot = snapshots["prompt_artifact"]
-    harness_snapshot_artifact = snapshots["harness_artifact"]
-    if reference_snapshot and reference_snapshot.get("context"):
-        prompt = _manage_project_prompt_context(f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}", settings)
-    prompt = _manage_project_prompt_context(
-        f"{prompt}\n\n快速 TXT 任务：逐行翻译 source 字段，保持每个 id 的顺序和结构。只返回 JSONL，每行包含 id 和 translation。",
-        settings,
+    prompt_context = _quick_text_prompt_context(
+        project_id=project["id"],
+        run_id=run_id,
+        metadata=metadata,
+        language=language,
+        work_dir=work_dir,
+        settings=settings,
     )
 
     workpack_path = work_dir / "quick_text_workpack.jsonl"
     write_jsonl(workpack_path, rows)
-    workpack_artifact = db.add_artifact(project["id"], "快速 TXT workpack", workpack_path, "translation_workpack", run_id=run_id, mime="application/jsonl", metadata={"language": language, "source_artifact_id": input_artifact["id"]})
+    workpack_artifact = db.add_artifact(
+        project["id"],
+        "快速 TXT workpack",
+        workpack_path,
+        "translation_workpack",
+        run_id=run_id,
+        mime="application/jsonl",
+        metadata={"language": language, "source_artifact_id": input_artifact["id"]},
+    )
     translated_rows = await _translate_rows_with_orchestration(
         run_id=run_id,
         rows=rows,
         settings=settings,
-        project_prompt=prompt,
+        project_prompt=prompt_context["prompt"],
         work_dir=work_dir,
         batch_size=batch_size,
         language=language,
@@ -73,57 +224,27 @@ async def _translate_quick_text_run(
     if not translated_rows and db.get_run(run_id).get("status") == "needs_input":
         return {"run": db.get_run(run_id), "artifacts": [workpack_artifact], "quality": None, "translation_readiness": readiness}
 
-    response_path = work_dir / "translation_response.jsonl"
-    write_jsonl(response_path, translated_rows)
-    response_artifact = db.add_artifact(project["id"], "快速 TXT translation response", response_path, "translation_response", run_id=run_id, mime="application/jsonl", metadata={"language": language, "source_artifact_id": input_artifact["id"]})
-    output_path = _write_quick_text_output(input_path, translated_rows, language, work_dir)
-    final_artifact = db.add_artifact(project["id"], "快速 TXT 最终译文", output_path, "final_text", run_id=run_id, mime="text/plain", role="delivery", origin="generated", metadata={"language": language, "source_artifact_id": input_artifact["id"]})
-    manifest_path = work_dir / "quick_text_translation_manifest.json"
-    manifest = {
-        "kind": "quick_text_translation",
-        "run_id": run_id,
-        "project_id": project["id"],
-        "language": language,
-        "source_artifact_id": input_artifact["id"],
-        "source_rows": len(rows),
-        "final_artifact_id": final_artifact["id"],
-    }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    manifest_artifact = db.add_artifact(project["id"], "快速 TXT translation manifest", manifest_path, "translation_manifest", run_id=run_id, mime="application/json", metadata={"language": language})
-    input_artifacts = {
-        "source_text": input_artifact["id"],
-        "final_text": final_artifact["id"],
-        "translation_workpack": workpack_artifact["id"],
-        "translation_response": response_artifact["id"],
-        "prompt_snapshot": prompt_snapshot["id"],
-        "harness_snapshot": harness_snapshot_artifact["id"],
-        "glossary_snapshot": glossary_snapshot["id"],
-    }
-    if reference_snapshot:
-        input_artifacts["quick_reference_snapshot"] = reference_snapshot["artifact"]["id"]
-    quality_summary = {"passed": True, "hard_errors": 0, "soft_warnings": 0, "rows": len(rows), "format": input_path.suffix.lower().lstrip(".") or "txt"}
-    final_metadata = db.get_run(run_id).get("metadata", {})
-    db.update_run(
-        run_id,
-        status="passed",
-        metadata={
-            **final_metadata,
-            "task_origin": metadata.get("task_origin") or "quick_task",
-            "input_artifacts": input_artifacts,
-            "quality_summary": quality_summary,
-            "quality": {"passed": True, "issues": []},
-            "translation_readiness": readiness,
-            "translated_rows": len(rows),
-            "source_rows": len(rows),
-            "output_format": input_path.suffix.lower().lstrip(".") or "txt",
-        },
+    artifacts = _write_quick_text_artifacts(
+        project=project,
+        run_id=run_id,
+        input_artifact=input_artifact,
+        input_path=input_path,
+        work_dir=work_dir,
+        translated_rows=translated_rows,
+        rows=rows,
+        language=language,
     )
-    db.add_event(run_id, f"quick TXT translation finished: rows={len(rows)}, output={output_path.name}")
-    return {
-        "run": db.get_run(run_id),
-        "artifacts": [final_artifact, response_artifact, workpack_artifact, manifest_artifact, glossary_snapshot, prompt_snapshot, harness_snapshot_artifact],
-        "quality": {"passed": True, "issues": []},
-        "translation_readiness": readiness,
-    }
+    return _finish_quick_text_run(
+        run_id=run_id,
+        metadata=metadata,
+        input_artifact=input_artifact,
+        input_path=input_path,
+        rows=rows,
+        readiness=readiness,
+        artifacts=artifacts,
+        prompt_context=prompt_context,
+        workpack_artifact=workpack_artifact,
+    )
+
 
 __all__ = [name for name in globals() if not name.startswith("__")]
