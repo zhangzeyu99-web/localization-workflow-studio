@@ -12,11 +12,10 @@ from zoneinfo import ZoneInfo
 from openpyxl import Workbook, load_workbook
 
 from .. import db
-from ..delivery_naming import source_stem
+from ..delivery_naming import safe_delivery_name as _safe_delivery_name, source_stem
 from ..languages import language_spec, require_supported_language, visible_language_code
 from .announcement import _announcement_task_metadata, _rank_translation_lookup_source
 from .common import _CJK_RE
-from .delivery import _safe_delivery_name
 from .glossary import _wide_source_key, read_jsonl
 
 def _project_archive_by_language(project_id: str, languages: list[str]) -> dict[str, dict[str, dict[str, Any]]]:

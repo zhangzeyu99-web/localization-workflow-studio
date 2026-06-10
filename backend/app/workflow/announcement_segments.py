@@ -20,7 +20,6 @@ from .announcement import (
 from .announcement_outputs import _file_sha256, _safe_source_stem, _visible_language_code
 from .common import _CJK_RE
 from .glossary import _wide_source_key
-from .materials import _compact_lookup_text, _read_lookup_material_text
 
 def _announcement_source_format(path: Path) -> str:
     suffix = path.suffix.lower()
@@ -39,6 +38,8 @@ def _announcement_source_manifest(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def _announcement_task_source_text(task: dict[str, Any]) -> str:
+    from .materials import _compact_lookup_text, _read_lookup_material_text
+
     artifact = db.get_artifact(task["source_artifact_id"])
     return _compact_lookup_text(_read_lookup_material_text(Path(artifact["path"])))
 
