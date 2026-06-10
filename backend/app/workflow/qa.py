@@ -418,7 +418,7 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
     status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
     archive_result = None
     if status == "passed" and qa_result.get("qa_final_artifact"):
-        from .glossary import archive_translation_artifact
+        from .asset_import_export import archive_translation_artifact
 
         archive_result = archive_translation_artifact(
             project["id"],

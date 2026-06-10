@@ -16,7 +16,7 @@ from ..translation_batches import (
     project_context_summary as _project_context_summary,
 )
 from .common import GLOBAL_HARNESS_CONTRACT, _language_assets_summary, project_dir, read_project_harness, run_dir
-from .glossary import _glossary_export_row
+from .asset_import_export import _glossary_export_row
 from .materials import build_project_material_packet
 from .project_analysis import (
     _apply_project_analysis_provider,

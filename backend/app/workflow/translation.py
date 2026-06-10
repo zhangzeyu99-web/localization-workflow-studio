@@ -16,7 +16,7 @@ from ..translation_batches import (
 from .announcement_shared import ANNOUNCEMENT_STEP
 from .announcement_segments import _is_quick_text_path
 from .common import run_dir
-from .glossary import archive_translation_artifact
+from .asset_import_export import archive_translation_artifact
 from .jsonl_helpers import read_jsonl, write_jsonl
 from .translation_orchestrator import (
     _terminal_translation_progress,
