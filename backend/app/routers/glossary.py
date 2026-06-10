@@ -1,7 +1,29 @@
 from __future__ import annotations
 
-# ruff: noqa: F403,F405
-from .shared import *
+from .shared import (
+    APIRouter,
+    Any,
+    FileResponse,
+    GlossaryBatchResolveRequest,
+    GlossaryCandidateUpdate,
+    GlossaryExtractRequest,
+    GlossaryImportRequest,
+    GlossaryTermPayload,
+    GlossaryTermUpdate,
+    HTTPException,
+    _query_language,
+    _require_project_batch,
+    _require_project_candidate,
+    _require_project_term,
+    db,
+    export_glossary,
+    extract_glossary,
+    import_glossary,
+    list_glossary_wide,
+    preview_glossary_import,
+    translate_missing_glossary_candidates_sync,
+    user_facing_error,
+)
 
 router = APIRouter()
 
