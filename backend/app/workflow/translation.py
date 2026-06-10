@@ -110,18 +110,8 @@ def _translation_preflight_blocker(
     return None
 
 
-async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
-    run = db.get_run(run_id)
-    language = require_supported_language(run.get("language") or "en")
-    project = db.get_project(run["project_id"])
-    metadata = run.get("metadata", {})
-    input_artifact = db.get_artifact(metadata["input_artifact_id"])
+def _translation_settings_and_batch_size(request: Any, metadata: dict[str, Any]) -> tuple[dict[str, Any], int]:
     settings = load_settings()
-    if request.provider and str(request.provider).strip() == TEST_FAKE_PROVIDER and not test_provider_enabled():
-        reason = "测试 provider 未启用；正式任务请使用已配置的 GPT / Claude API。"
-        db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason})
-        db.add_event(run_id, reason)
-        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
     if request.provider:
         settings["provider"] = normalize_provider_name(request.provider)
     if request.protocol:
@@ -129,7 +119,67 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
     if getattr(request, "preset", None):
         settings["preset"] = request.preset
     batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
-    batch_size = max(1, min(batch_size, 200))
+    return settings, max(1, min(batch_size, 200))
+
+
+def _create_translation_run_snapshots(
+    *,
+    project: dict[str, Any],
+    run_id: str,
+    metadata: dict[str, Any],
+    language: str,
+    snapshot_dir: Path,
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir, language=language)
+    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir, language=language)
+    reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
+    prompt = snapshots["prompt"]
+    prompt_snapshot = snapshots["prompt_artifact"]
+    prompt_path = snapshots["prompt_path"]
+    if reference_snapshot and reference_snapshot.get("context"):
+        raw_prompt = f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}"
+        prompt = _manage_project_prompt_context(raw_prompt, settings)
+        prompt_path = snapshot_dir / "compiled_project_harness_prompt_with_quick_refs.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_snapshot = db.add_artifact(
+            project["id"],
+            "Prompt snapshot with quick references",
+            prompt_path,
+            "prompt_snapshot",
+            run_id=run_id,
+            mime="text/plain",
+            origin="generated",
+            metadata={
+                "source": "project_prompt_harness_and_quick_references",
+                "language": language,
+                "reference_artifact_ids": metadata.get("reference_artifact_ids") or [],
+                "context_budget": _project_context_summary(raw_prompt, settings),
+            },
+        )
+    return {
+        "glossary_snapshot": glossary_snapshot,
+        "prompt": prompt,
+        "prompt_snapshot": prompt_snapshot,
+        "harness_snapshot_artifact": snapshots["harness_artifact"],
+        "harness_snapshot": snapshots["harness_snapshot"],
+        "prompt_path": prompt_path,
+        "reference_snapshot": reference_snapshot,
+    }
+
+
+async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    language = require_supported_language(run.get("language") or "en")
+    project = db.get_project(run["project_id"])
+    metadata = run.get("metadata", {})
+    input_artifact = db.get_artifact(metadata["input_artifact_id"])
+    if request.provider and str(request.provider).strip() == TEST_FAKE_PROVIDER and not test_provider_enabled():
+        reason = "测试 provider 未启用；正式任务请使用已配置的 GPT / Claude API。"
+        db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason})
+        db.add_event(run_id, reason)
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
+    settings, batch_size = _translation_settings_and_batch_size(request, metadata)
     readiness = inspect_translation_readiness(input_artifact["id"], batch_size=batch_size, language=language)
     preflight_blocker = _translation_preflight_blocker(
         run_id=run_id,
@@ -165,36 +215,21 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
     work_dir = run_dir(run_id) / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir = work_dir / "snapshots"
-    language = require_supported_language(run.get("language") or "en")
-    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir, language=language)
-    snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir, language=language)
-    reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
-    prompt = snapshots["prompt"]
-    prompt_snapshot = snapshots["prompt_artifact"]
-    harness_snapshot_artifact = snapshots["harness_artifact"]
-    harness_snapshot = snapshots["harness_snapshot"]
-    prompt_path = snapshots["prompt_path"]
-    if reference_snapshot and reference_snapshot.get("context"):
-        raw_prompt = f"{prompt}\n\nQuick Task References:\n{reference_snapshot['context']}"
-        settings = load_settings()
-        prompt = _manage_project_prompt_context(raw_prompt, settings)
-        prompt_path = snapshot_dir / "compiled_project_harness_prompt_with_quick_refs.txt"
-        prompt_path.write_text(prompt, encoding="utf-8")
-        prompt_snapshot = db.add_artifact(
-            project["id"],
-            "Prompt snapshot with quick references",
-            prompt_path,
-            "prompt_snapshot",
-            run_id=run_id,
-            mime="text/plain",
-            origin="generated",
-            metadata={
-                "source": "project_prompt_harness_and_quick_references",
-                "language": language,
-                "reference_artifact_ids": metadata.get("reference_artifact_ids") or [],
-                "context_budget": _project_context_summary(raw_prompt, settings),
-            },
-        )
+    snapshot_data = _create_translation_run_snapshots(
+        project=project,
+        run_id=run_id,
+        metadata=metadata,
+        language=language,
+        snapshot_dir=snapshot_dir,
+        settings=settings,
+    )
+    glossary_snapshot = snapshot_data["glossary_snapshot"]
+    prompt = snapshot_data["prompt"]
+    prompt_snapshot = snapshot_data["prompt_snapshot"]
+    harness_snapshot_artifact = snapshot_data["harness_snapshot_artifact"]
+    harness_snapshot = snapshot_data["harness_snapshot"]
+    prompt_path = snapshot_data["prompt_path"]
+    reference_snapshot = snapshot_data["reference_snapshot"]
 
     prepare_args = [
         sys.executable,
