@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-from .shared import (
-    APIRouter,
-    Any,
-    HTTPException,
+from .. import db
+from ..schemas import (
     ManualFixRequest,
     ModelFixRequest,
+)
+from ..workflow import (
     apply_manual_fixes,
     apply_model_fixes,
     create_improvement_review,
     create_semantic_qa_context,
-    db,
     list_improvements,
     list_quality_issues,
     run_qa_sync,
     user_facing_error,
 )
+from fastapi import (
+    APIRouter,
+    HTTPException,
+)
+from typing import Any
 
 router = APIRouter()
 

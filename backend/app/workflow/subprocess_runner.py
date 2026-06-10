@@ -56,6 +56,38 @@ def _append_subprocess_log(run_id: str, args: list[str], proc: subprocess.Comple
         fh.write("\n".join(payload).strip() + "\n\n")
 
 
+def _short_log_text(text: str, limit: int = 4000) -> str:
+    stripped = (text or "").strip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[:limit] + "...[truncated]"
+
+
+def _write_subprocess_record(run_id: str, args: list[str], cwd: Path, proc: subprocess.CompletedProcess[str]) -> None:
+    """Write a structured backend-only record for subprocess calls.
+
+    The UI should use user_facing_error(); this file is for debugging and for
+    future workflow adapters that return result.json/error.json instead of raw
+    stdout/stderr.
+    """
+    log_dir = run_dir(run_id) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    record = {
+        "time": db.now_iso(),
+        "returncode": proc.returncode,
+        "cwd": str(cwd),
+        "command": [str(arg) for arg in args],
+        "stdout": _short_log_text(proc.stdout),
+        "stderr": _short_log_text(proc.stderr),
+    }
+    events_path = log_dir / "subprocess_events.jsonl"
+    with events_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    latest_name = "subprocess_result.json" if proc.returncode == 0 else "subprocess_error.json"
+    with (log_dir / latest_name).open("w", encoding="utf-8") as fh:
+        json.dump(record, fh, ensure_ascii=False, indent=2)
+
+
 def _safe_subprocess_event_output(text: str) -> str:
     stripped = text.strip()
     if not stripped:
@@ -86,6 +118,7 @@ def run_subprocess(args: list[str], cwd: Path, run_id: str) -> subprocess.Comple
         capture_output=True,
     )
     _append_subprocess_log(run_id, args, proc)
+    _write_subprocess_record(run_id, args, cwd, proc)
     if proc.stdout:
         safe_stdout = _safe_subprocess_event_output(proc.stdout)
         if safe_stdout:
@@ -112,6 +145,7 @@ def run_subprocess_allow_failure(args: list[str], cwd: Path, run_id: str) -> sub
         capture_output=True,
     )
     _append_subprocess_log(run_id, args, proc)
+    _write_subprocess_record(run_id, args, cwd, proc)
     if proc.stdout:
         safe_stdout = _safe_subprocess_event_output(proc.stdout)
         if safe_stdout:

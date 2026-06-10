@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from io import BytesIO
+import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,27 @@ def reset_test_state(monkeypatch: pytest.MonkeyPatch) -> None:
     yield
     wait_for_background_jobs()
     save_settings(DEFAULT_SETTINGS)
+
+
+def test_subprocess_failure_writes_structured_backend_error_without_raw_user_text(tmp_path: Path) -> None:
+    project = db.insert_project("Subprocess Structured Error", "QA", "", "🎮")
+    run = db.insert_run(project["id"], "translation", "en", metadata={})
+
+    with pytest.raises(workflow.UserFacingWorkflowError) as raised:
+        workflow.run_subprocess(
+            [sys.executable, "-c", "import sys; print('public stdout'); print('Traceback raw secret', file=sys.stderr); sys.exit(7)"],
+            tmp_path,
+            run["id"],
+        )
+
+    assert "Traceback raw secret" not in str(raised.value)
+    log_dir = Path(os.environ["LWS_DATA_ROOT"]) / "runs" / run["id"] / "logs"
+    error_file = log_dir / "subprocess_error.json"
+    assert error_file.exists()
+    payload = json.loads(error_file.read_text(encoding="utf-8"))
+    assert payload["returncode"] == 7
+    assert "Traceback raw secret" in payload["stderr"]
+    assert (log_dir / "subprocess_events.jsonl").exists()
 
 
 def test_manifest_invalidates_when_source_language_prompt_or_settings_change() -> None:

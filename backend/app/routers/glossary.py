@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-from .shared import (
-    APIRouter,
-    Any,
-    FileResponse,
+from .. import db
+from ..schemas import (
     GlossaryBatchResolveRequest,
     GlossaryCandidateUpdate,
     GlossaryExtractRequest,
     GlossaryImportRequest,
     GlossaryTermPayload,
     GlossaryTermUpdate,
-    HTTPException,
-    _query_language,
-    _require_project_batch,
-    _require_project_candidate,
-    _require_project_term,
-    db,
+)
+from ..workflow import (
     export_glossary,
     extract_glossary,
     import_glossary,
@@ -24,6 +18,18 @@ from .shared import (
     translate_missing_glossary_candidates_sync,
     user_facing_error,
 )
+from .shared import (
+    _query_language,
+    _require_project_batch,
+    _require_project_candidate,
+    _require_project_term,
+)
+from fastapi import (
+    APIRouter,
+    HTTPException,
+)
+from fastapi.responses import FileResponse
+from typing import Any
 
 router = APIRouter()
 

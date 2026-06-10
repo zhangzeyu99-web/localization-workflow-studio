@@ -2699,6 +2699,9 @@ def test_existing_translation_workbook_can_run_qa_without_translation_workpack(t
         log_text = log_path.read_text(encoding="utf-8")
         assert "--term-base" in log_text
         assert "project_glossary_snapshot" in log_text
+        structured_log = log_path.parent / "subprocess_events.jsonl"
+        assert structured_log.exists()
+        assert (log_path.parent / "subprocess_result.json").exists()
         project_detail = client.get(f"/api/projects/{project['id']}").json()
         assert int(project_detail["stats"]["words"]) > 0
         assert project_detail["stats"]["langs"] == 1

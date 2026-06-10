@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from .shared import (
+from .. import db
+from ..config import DATA_ROOT
+from ..schemas import ArtifactUpdate
+from fastapi import (
     APIRouter,
-    Any,
-    ArtifactUpdate,
-    DATA_ROOT,
-    FileResponse,
     HTTPException,
-    Path,
-    db,
 )
+from fastapi.responses import FileResponse
+from pathlib import Path
+from typing import Any
 
 router = APIRouter()
 
