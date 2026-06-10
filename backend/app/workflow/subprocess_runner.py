@@ -70,7 +70,59 @@ def _short_log_text(text: str, limit: int = 4000) -> str:
     return stripped[:limit] + "...[truncated]"
 
 
-def _write_subprocess_record(run_id: str, args: list[str], cwd: Path, proc: subprocess.CompletedProcess[str]) -> None:
+def _structured_subprocess_paths(run_id: str) -> tuple[Path, Path]:
+    log_dir = run_dir(run_id) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "result.json", log_dir / "error.json"
+
+
+def _read_structured_payload(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _structured_payload_message(payload: dict[str, Any] | None) -> str:
+    if not payload:
+        return ""
+    for key in ("user_message", "message", "detail", "error"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _structured_payload_stdout(payload: dict[str, Any] | None) -> str:
+    if not payload:
+        return ""
+    stdout = str(payload.get("stdout") or "").strip()
+    if stdout:
+        return stdout
+    key_output = payload.get("key_output")
+    if isinstance(key_output, dict):
+        return "\n".join(f"{key}={value}" for key, value in key_output.items())
+    outputs = payload.get("outputs")
+    if isinstance(outputs, dict):
+        return "\n".join(f"{key}={value}" for key, value in outputs.items())
+    return ""
+
+
+def _completed_process_with_structured_output(proc: subprocess.CompletedProcess[str], result_payload: dict[str, Any] | None, error_payload: dict[str, Any] | None) -> subprocess.CompletedProcess[str]:
+    stdout = _structured_payload_stdout(result_payload)
+    stderr_message = _structured_payload_message(error_payload)
+    return subprocess.CompletedProcess(
+        args=proc.args,
+        returncode=proc.returncode,
+        stdout=stdout or proc.stdout,
+        stderr=stderr_message or proc.stderr,
+    )
+
+
+def _write_subprocess_record(run_id: str, args: list[str], cwd: Path, proc: subprocess.CompletedProcess[str], *, result_payload: dict[str, Any] | None = None, error_payload: dict[str, Any] | None = None) -> None:
     """Write a structured backend-only record for subprocess calls.
 
     The UI should use user_facing_error(); this file is for debugging and for
@@ -87,6 +139,10 @@ def _write_subprocess_record(run_id: str, args: list[str], cwd: Path, proc: subp
         "stdout": _short_log_text(proc.stdout),
         "stderr": _short_log_text(proc.stderr),
     }
+    if result_payload:
+        record["result"] = result_payload
+    if error_payload:
+        record["error"] = error_payload
     events_path = log_dir / "subprocess_events.jsonl"
     with events_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -115,6 +171,9 @@ def run_subprocess(args: list[str], cwd: Path, run_id: str) -> subprocess.Comple
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    result_path, error_path = _structured_subprocess_paths(run_id)
+    env["LWS_SUBPROCESS_RESULT_PATH"] = str(result_path)
+    env["LWS_SUBPROCESS_ERROR_PATH"] = str(error_path)
     proc = subprocess.run(
         args,
         cwd=str(cwd),
@@ -124,8 +183,11 @@ def run_subprocess(args: list[str], cwd: Path, run_id: str) -> subprocess.Comple
         errors="replace",
         capture_output=True,
     )
+    result_payload = _read_structured_payload(result_path)
+    error_payload = _read_structured_payload(error_path)
+    proc = _completed_process_with_structured_output(proc, result_payload, error_payload)
     _append_subprocess_log(run_id, args, proc)
-    _write_subprocess_record(run_id, args, cwd, proc)
+    _write_subprocess_record(run_id, args, cwd, proc, result_payload=result_payload, error_payload=error_payload)
     if proc.stdout:
         safe_stdout = _safe_subprocess_event_output(proc.stdout)
         if safe_stdout:
@@ -133,7 +195,7 @@ def run_subprocess(args: list[str], cwd: Path, run_id: str) -> subprocess.Comple
     if proc.stderr:
         db.add_event(run_id, "local workflow emitted warnings; details were written to the run log", level="warn")
     if proc.returncode != 0:
-        raise UserFacingWorkflowError(user_facing_error(proc.stderr or proc.stdout or f"command failed ({proc.returncode})"))
+        raise UserFacingWorkflowError(user_facing_error(_structured_payload_message(error_payload) or proc.stderr or proc.stdout or f"command failed ({proc.returncode})"))
     return proc
 
 
@@ -142,6 +204,9 @@ def run_subprocess_allow_failure(args: list[str], cwd: Path, run_id: str) -> sub
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    result_path, error_path = _structured_subprocess_paths(run_id)
+    env["LWS_SUBPROCESS_RESULT_PATH"] = str(result_path)
+    env["LWS_SUBPROCESS_ERROR_PATH"] = str(error_path)
     proc = subprocess.run(
         args,
         cwd=str(cwd),
@@ -151,8 +216,11 @@ def run_subprocess_allow_failure(args: list[str], cwd: Path, run_id: str) -> sub
         errors="replace",
         capture_output=True,
     )
+    result_payload = _read_structured_payload(result_path)
+    error_payload = _read_structured_payload(error_path)
+    proc = _completed_process_with_structured_output(proc, result_payload, error_payload)
     _append_subprocess_log(run_id, args, proc)
-    _write_subprocess_record(run_id, args, cwd, proc)
+    _write_subprocess_record(run_id, args, cwd, proc, result_payload=result_payload, error_payload=error_payload)
     if proc.stdout:
         safe_stdout = _safe_subprocess_event_output(proc.stdout)
         if safe_stdout:

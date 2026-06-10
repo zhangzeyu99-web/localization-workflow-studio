@@ -57,6 +57,43 @@ def test_subprocess_failure_writes_structured_backend_error_without_raw_user_tex
     assert (log_dir / "subprocess_events.jsonl").exists()
 
 
+def test_subprocess_reads_structured_result_key_output(tmp_path: Path) -> None:
+    project = db.insert_project("Subprocess Structured Result", "QA", "", "🎮")
+    run = db.insert_run(project["id"], "glossary", "en", metadata={})
+    script = (
+        "import json, os, pathlib; "
+        "pathlib.Path(os.environ['LWS_SUBPROCESS_RESULT_PATH']).write_text("
+        "json.dumps({'key_output': {'FINAL_OUTPUT': 'final.xlsx', 'DETAIL_OUTPUT': 'detail.xlsx'}}, ensure_ascii=False), encoding='utf-8')"
+    )
+
+    proc = workflow.run_subprocess([sys.executable, "-c", script], tmp_path, run["id"])
+    parsed = workflow.parse_key_output(proc.stdout)
+
+    assert parsed == {"FINAL_OUTPUT": "final.xlsx", "DETAIL_OUTPUT": "detail.xlsx"}
+    log_dir = Path(os.environ["LWS_DATA_ROOT"]) / "runs" / run["id"] / "logs"
+    payload = json.loads((log_dir / "subprocess_result.json").read_text(encoding="utf-8"))
+    assert payload["result"]["key_output"]["FINAL_OUTPUT"] == "final.xlsx"
+
+
+def test_subprocess_reads_structured_error_user_message(tmp_path: Path) -> None:
+    project = db.insert_project("Subprocess Structured Error Message", "QA", "", "🎮")
+    run = db.insert_run(project["id"], "glossary", "en", metadata={})
+    script = (
+        "import json, os, pathlib, sys; "
+        "pathlib.Path(os.environ['LWS_SUBPROCESS_ERROR_PATH']).write_text("
+        "json.dumps({'user_message': '请上传完整语言表，不要上传公告原文。'}, ensure_ascii=False), encoding='utf-8'); "
+        "print('Traceback raw secret', file=sys.stderr); sys.exit(9)"
+    )
+
+    with pytest.raises(workflow.UserFacingWorkflowError) as raised:
+        workflow.run_subprocess([sys.executable, "-c", script], tmp_path, run["id"])
+
+    assert str(raised.value) == "请上传完整语言表，不要上传公告原文。"
+    log_dir = Path(os.environ["LWS_DATA_ROOT"]) / "runs" / run["id"] / "logs"
+    payload = json.loads((log_dir / "subprocess_error.json").read_text(encoding="utf-8"))
+    assert payload["error"]["user_message"] == "请上传完整语言表，不要上传公告原文。"
+
+
 def test_manifest_invalidates_when_source_language_prompt_or_settings_change() -> None:
     rows = [{"id": 1, "source": "开始游戏"}]
     base_settings = {**DEFAULT_SETTINGS, "provider": "test-fake", "preset": "balanced", "batch_size": 1, "max_batch_input_tokens": 12000}
