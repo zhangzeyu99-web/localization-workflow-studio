@@ -38,29 +38,18 @@ from .subprocess_runner import (
 )
 from .translation_readiness import inspect_translation_readiness
 
-async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
-    run = db.get_run(run_id)
-    language = require_supported_language(run.get("language") or "en")
-    project = db.get_project(run["project_id"])
-    metadata = run.get("metadata", {})
-    input_artifact = db.get_artifact(metadata["input_artifact_id"])
-    settings = load_settings()
-    if request.provider and str(request.provider).strip() == TEST_FAKE_PROVIDER and not test_provider_enabled():
-        reason = "测试 provider 未启用；正式任务请使用已配置的 GPT / Claude API。"
-        db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason})
-        db.add_event(run_id, reason)
-        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
-    if request.provider:
-        settings["provider"] = normalize_provider_name(request.provider)
-    if request.protocol:
-        settings["protocol"] = request.protocol
-    if getattr(request, "preset", None):
-        settings["preset"] = request.preset
-    batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
-    batch_size = max(1, min(batch_size, 200))
-    readiness = inspect_translation_readiness(input_artifact["id"], batch_size=batch_size, language=language)
-    if _is_quick_text_path(Path(input_artifact["path"])) and metadata.get("task_origin") != "quick_task":
-        reason = _friendly_unsupported_language_file_message(Path(input_artifact["path"]).suffix)
+def _translation_preflight_blocker(
+    *,
+    run_id: str,
+    metadata: dict[str, Any],
+    input_artifact: dict[str, Any],
+    settings: dict[str, Any],
+    readiness: dict[str, Any],
+    language: str,
+) -> dict[str, Any] | None:
+    input_path = Path(input_artifact["path"])
+    if _is_quick_text_path(input_path) and metadata.get("task_origin") != "quick_task":
+        reason = _friendly_unsupported_language_file_message(input_path.suffix)
         db.update_run(
             run_id,
             status="needs_input",
@@ -73,7 +62,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         db.add_event(run_id, reason)
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
     if readiness.get("reason") == "unsupported_file":
-        reason = _friendly_unsupported_language_file_message(Path(input_artifact["path"]).suffix)
+        reason = _friendly_unsupported_language_file_message(input_path.suffix)
         db.update_run(
             run_id,
             status="needs_input",
@@ -118,6 +107,40 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             metadata={**metadata, "reason": f"{effective_provider} api_key is required for formal translation"},
         )
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
+    return None
+
+
+async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    language = require_supported_language(run.get("language") or "en")
+    project = db.get_project(run["project_id"])
+    metadata = run.get("metadata", {})
+    input_artifact = db.get_artifact(metadata["input_artifact_id"])
+    settings = load_settings()
+    if request.provider and str(request.provider).strip() == TEST_FAKE_PROVIDER and not test_provider_enabled():
+        reason = "测试 provider 未启用；正式任务请使用已配置的 GPT / Claude API。"
+        db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason})
+        db.add_event(run_id, reason)
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
+    if request.provider:
+        settings["provider"] = normalize_provider_name(request.provider)
+    if request.protocol:
+        settings["protocol"] = request.protocol
+    if getattr(request, "preset", None):
+        settings["preset"] = request.preset
+    batch_size = int(request.batch_size or metadata.get("batch_size") or settings.get("batch_size") or 90)
+    batch_size = max(1, min(batch_size, 200))
+    readiness = inspect_translation_readiness(input_artifact["id"], batch_size=batch_size, language=language)
+    preflight_blocker = _translation_preflight_blocker(
+        run_id=run_id,
+        metadata=metadata,
+        input_artifact=input_artifact,
+        settings=settings,
+        readiness=readiness,
+        language=language,
+    )
+    if preflight_blocker is not None:
+        return preflight_blocker
     if metadata.get("task_origin") == "quick_task" and _is_quick_text_path(Path(input_artifact["path"])):
         from .quick_task import _translate_quick_text_run
 
