@@ -10,6 +10,13 @@ export function sanitizeUserFacingError(text: string, fallback = '\u64cd\u4f5c\u
   if (/another long-text AI job is active/i.test(raw)) {
     return '\u5df2\u6709\u4e00\u4e2a\u957f\u6587\u672c AI \u4efb\u52a1\u6b63\u5728\u8fd0\u884c\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u6216\u5148\u53d6\u6d88\u540e\u518d\u7ee7\u7eed\u3002'
   }
+  if (/413 Request Entity Too Large|Request Entity Too Large/i.test(raw)) {
+    return '\u6587\u4ef6\u592a\u5927\uff0c\u5f53\u524d\u4e0a\u4f20\u94fe\u8def\u62d2\u7edd\u4e86\u5355\u6b21\u8bf7\u6c42\u3002\u8bf7\u91cd\u8bd5\uff1b\u5de5\u4f5c\u53f0\u4f1a\u81ea\u52a8\u4f7f\u7528\u5206\u7247\u4e0a\u4f20\u3002'
+  }
+  if (/<html[\s>]/i.test(raw) || /<body[\s>]/i.test(raw)) {
+    const title = raw.match(/<title[^>]*>(.*?)<\/title>/i)?.[1]?.replace(/\s+/g, ' ').trim()
+    return title ? `\u64cd\u4f5c\u5931\u8d25\uff1a${title}` : fallback
+  }
   if (/Traceback|command failed|python\.exe|run_translation_harness\.py|\bFile "[^\n]+", line/i.test(raw) || /[A-Za-z]:[\\/]/.test(raw)) {
     return '\u672c\u5730 workflow \u6267\u884c\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165\u6587\u4ef6\u683c\u5f0f\u548c\u5f53\u524d\u6b65\u9aa4\u662f\u5426\u5339\u914d\u3002'
   }

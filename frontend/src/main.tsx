@@ -25,6 +25,54 @@ declare global {
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, Project, ProjectAnalysisResponse, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
 
 
+const CHUNKED_UPLOAD_THRESHOLD_BYTES = 768 * 1024
+const UPLOAD_CHUNK_BYTES = 512 * 1024
+
+async function uploadProjectFile(
+  projectId: string,
+  file: File,
+  kind: string,
+  purpose: string,
+  onProgress: (done: number, total: number) => void
+): Promise<Artifact> {
+  if (file.size <= CHUNKED_UPLOAD_THRESHOLD_BYTES) {
+    const data = new FormData()
+    data.append('file', file)
+    const query = new URLSearchParams({ kind })
+    if (purpose) query.set('purpose', purpose)
+    return api<Artifact>(`/api/projects/${projectId}/files?${query.toString()}`, {
+      method: 'POST',
+      body: data
+    })
+  }
+  const total = Math.ceil(file.size / UPLOAD_CHUNK_BYTES)
+  const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  for (let index = 0; index < total; index += 1) {
+    const start = index * UPLOAD_CHUNK_BYTES
+    const chunk = file.slice(start, Math.min(file.size, start + UPLOAD_CHUNK_BYTES))
+    const data = new FormData()
+    data.append('file', chunk, file.name)
+    data.append('upload_id', uploadId)
+    data.append('filename', file.name)
+    data.append('kind', kind)
+    data.append('purpose', purpose)
+    data.append('index', String(index))
+    data.append('total', String(total))
+    const response = await fetch(`${API}/api/projects/${projectId}/files/chunk`, {
+      method: 'POST',
+      body: data
+    })
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(apiErrorText(text, response.statusText))
+    }
+    const payload = await response.json() as { complete?: boolean; artifact?: Artifact; received?: number; total?: number }
+    onProgress(index + 1, total)
+    if (payload.complete && payload.artifact) return payload.artifact
+  }
+  throw new Error('分片上传已完成，但后端没有返回文件记录。')
+}
+
 
 
 
@@ -489,13 +537,8 @@ function App() {
     setBusy(true)
     setStatus(`正在上传：${file.name}`)
     try {
-      const data = new FormData()
-      data.append('file', file)
-      const query = new URLSearchParams({ kind })
-      if (purpose) query.set('purpose', purpose)
-      const artifact = await api<Artifact>(`/api/projects/${current.id}/files?${query.toString()}`, {
-        method: 'POST',
-        body: data
+      const artifact = await uploadProjectFile(current.id, file, kind, purpose, (done, total) => {
+        if (total > 1) setStatus(`正在上传：${file.name}（分片 ${done}/${total}）`)
       })
       await refreshCurrent()
       if (artifact.duplicate) {

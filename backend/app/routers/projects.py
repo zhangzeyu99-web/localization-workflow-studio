@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import shutil
 from .. import db
@@ -17,6 +18,7 @@ from ..schemas import (
 )
 from ..upload_storage import (
     UploadTooLargeError,
+    max_upload_bytes,
     stream_upload,
 )
 from ..workflow import (
@@ -39,12 +41,58 @@ from .shared import (
 from fastapi import (
     APIRouter,
     File,
+    Form,
     HTTPException,
     UploadFile,
 )
 from typing import Any
 
 router = APIRouter()
+
+
+def _finalize_project_upload(
+    project_id: str,
+    *,
+    safe_name: str,
+    kind: str,
+    purpose: str,
+    temp_path,
+    digest: str,
+    mime: str,
+) -> dict[str, Any]:
+    upload_root = project_dir(project_id) / "uploads"
+    project_material_upload = kind == "asset" and purpose == "project_material"
+    if kind == "asset" and not project_material_upload:
+        duplicate = _find_duplicate_project_upload(project_id, kind, digest)
+        if duplicate:
+            temp_path.unlink(missing_ok=True)
+            duplicate["duplicate"] = True
+            return duplicate
+    destination = _unique_path(upload_root / safe_name)
+    temp_path.replace(destination)
+    if project_material_upload:
+        duplicate = _find_duplicate_project_upload(project_id, kind, digest)
+        if duplicate:
+            destination.unlink(missing_ok=True)
+            duplicate["duplicate"] = True
+            return duplicate
+    if kind in {"term_base", "glossary_final"}:
+        try:
+            guard_complete_language_table_for_glossary_import(destination)
+        except ValueError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+    artifact = db.add_artifact(
+        project_id,
+        safe_name,
+        destination,
+        kind,
+        mime=mime,
+        origin="uploaded",
+        metadata={"sha256": digest, "original_filename": safe_name, **({"purpose": purpose} if purpose else {})},
+    )
+    artifact["duplicate"] = False
+    return artifact
 
 @router.get("/api/projects")
 def get_projects() -> list[dict[str, Any]]:
@@ -196,39 +244,90 @@ def upload_project_file(project_id: str, file: UploadFile = File(...), kind: str
         digest, _ = stream_upload(file.file, temp_path)
     except UploadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=user_facing_error(exc)) from exc
-    project_material_upload = kind == "asset" and purpose == "project_material"
-    if kind == "asset" and not project_material_upload:
-        duplicate = _find_duplicate_project_upload(project_id, kind, digest)
-        if duplicate:
-            temp_path.unlink(missing_ok=True)
-            duplicate["duplicate"] = True
-            return duplicate
-    destination = _unique_path(upload_root / safe_name)
-    temp_path.replace(destination)
-    if project_material_upload:
-        duplicate = _find_duplicate_project_upload(project_id, kind, digest)
-        if duplicate:
-            destination.unlink(missing_ok=True)
-            duplicate["duplicate"] = True
-            return duplicate
-    if kind in {"term_base", "glossary_final"}:
-        try:
-            guard_complete_language_table_for_glossary_import(destination)
-        except ValueError as exc:
-            destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
-    mime = file.content_type or mimetypes.guess_type(str(destination))[0] or "application/octet-stream"
-    artifact = db.add_artifact(
+    mime = file.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+    return _finalize_project_upload(
         project_id,
-        safe_name,
-        destination,
-        kind,
+        safe_name=safe_name,
+        kind=kind,
+        purpose=purpose,
+        temp_path=temp_path,
+        digest=digest,
         mime=mime,
-        origin="uploaded",
-        metadata={"sha256": digest, "original_filename": safe_name, **({"purpose": purpose} if purpose else {})},
     )
-    artifact["duplicate"] = False
-    return artifact
+
+
+@router.post("/api/projects/{project_id}/files/chunk")
+def upload_project_file_chunk(
+    project_id: str,
+    file: UploadFile = File(...),
+    upload_id: str = Form(...),
+    filename: str = Form(...),
+    kind: str = Form(...),
+    purpose: str = Form(""),
+    index: int = Form(...),
+    total: int = Form(...),
+) -> dict[str, Any]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    safe_name = safe_filename(filename or file.filename or "upload.bin")
+    _validate_upload_kind_filename(kind, safe_name)
+    safe_upload_id = "".join(ch for ch in upload_id if ch.isalnum() or ch in "-_")[:80]
+    if not safe_upload_id or safe_upload_id != upload_id:
+        raise HTTPException(status_code=400, detail="invalid upload session")
+    if total < 1 or total > 10000 or index < 0 or index >= total:
+        raise HTTPException(status_code=400, detail="invalid upload chunk")
+    upload_root = project_dir(project_id) / "uploads"
+    chunk_dir = upload_root / ".chunks" / safe_upload_id
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_path = chunk_dir / f"{index:06d}.part"
+    try:
+        stream_upload(file.file, chunk_path, max_bytes=max_upload_bytes())
+    except UploadTooLargeError as exc:
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=user_facing_error(exc)) from exc
+    received = len(list(chunk_dir.glob("*.part")))
+    if received < total:
+        return {"complete": False, "received": received, "total": total}
+
+    temp_path = _unique_path(upload_root / f".{safe_name}.uploading")
+    digest_builder = hashlib.sha256()
+    total_size = 0
+    limit = max_upload_bytes()
+    try:
+        with temp_path.open("wb") as output:
+            for part_index in range(total):
+                part_path = chunk_dir / f"{part_index:06d}.part"
+                if not part_path.exists():
+                    temp_path.unlink(missing_ok=True)
+                    return {"complete": False, "received": received, "total": total}
+                with part_path.open("rb") as part:
+                    for chunk in iter(lambda: part.read(1024 * 1024), b""):
+                        total_size += len(chunk)
+                        if total_size > limit:
+                            raise UploadTooLargeError(limit)
+                        digest_builder.update(chunk)
+                        output.write(chunk)
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        mime = file.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+        artifact = _finalize_project_upload(
+            project_id,
+            safe_name=safe_name,
+            kind=kind,
+            purpose=purpose,
+            temp_path=temp_path,
+            digest=digest_builder.hexdigest(),
+            mime=mime,
+        )
+        return {"complete": True, "artifact": artifact}
+    except UploadTooLargeError as exc:
+        temp_path.unlink(missing_ok=True)
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=user_facing_error(exc)) from exc
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 @router.get("/api/projects/{project_id}/assets")

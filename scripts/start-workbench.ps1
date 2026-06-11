@@ -73,7 +73,8 @@ python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port $Backen
 
 function Start-Frontend {
   $frontendUrl = "http://${HostName}:$FrontendPort/"
-  if (Test-HttpOk "http://127.0.0.1:$FrontendPort/") {
+  $frontendHealthUrl = if ($HostName -eq "0.0.0.0" -or $HostName -eq "::") { "http://127.0.0.1:$FrontendPort/" } else { $frontendUrl }
+  if (Test-HttpOk $frontendHealthUrl) {
     Write-Host "Frontend already healthy: $frontendUrl"
     return
   }
@@ -92,7 +93,7 @@ npx vite --host $HostName --port $FrontendPort *> "$frontendLog"
 "@
   Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command) -WindowStyle Hidden
 
-  if (-not (Wait-HttpOk "http://127.0.0.1:$FrontendPort/" 45)) {
+  if (-not (Wait-HttpOk $frontendHealthUrl 45)) {
     $tail = if (Test-Path $frontendLog) { Get-Content $frontendLog -Tail 80 | Out-String } else { "" }
     throw "Frontend failed to start on $frontendUrl.`n$tail"
   }
@@ -100,7 +101,7 @@ npx vite --host $HostName --port $FrontendPort *> "$frontendLog"
 }
 
 function Test-ApiThroughFrontend {
-  $url = "http://127.0.0.1:$FrontendPort/api/health"
+  $url = if ($HostName -eq "0.0.0.0" -or $HostName -eq "::") { "http://127.0.0.1:$FrontendPort/api/health" } else { "http://${HostName}:$FrontendPort/api/health" }
   if (-not (Test-HttpOk $url)) {
     throw "Frontend API proxy failed: $url. The page may open, but uploads/analyze/import will fail with 'Failed to fetch'."
   }

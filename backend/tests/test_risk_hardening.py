@@ -463,6 +463,34 @@ def test_upload_streaming_rejects_oversized_file_and_sanitizes_name() -> None:
         assert Path(payload["path"]).name == payload["label"]
 
 
+def test_chunked_upload_assembles_file_and_creates_artifact() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Chunk Upload", "type": "QA"}).json()
+        content = b"first chunk\nsecond chunk\nthird chunk\n"
+        chunks = [content[:12], content[12:25], content[25:]]
+        final_payload: dict[str, Any] | None = None
+        for index, chunk in enumerate(chunks):
+            response = client.post(
+                f"/api/projects/{project['id']}/files/chunk",
+                data={
+                    "upload_id": "chunk-test-upload",
+                    "filename": "large_terms.xlsx",
+                    "kind": "asset",
+                    "purpose": "",
+                    "index": str(index),
+                    "total": str(len(chunks)),
+                },
+                files={"file": ("chunk.part", chunk, "application/octet-stream")},
+            )
+            assert response.status_code == 200
+            final_payload = response.json()
+        assert final_payload is not None
+        assert final_payload["complete"] is True
+        artifact = final_payload["artifact"]
+        assert artifact["label"] == "large_terms.xlsx"
+        assert Path(artifact["path"]).read_bytes() == content
+
+
 def test_persistent_long_text_lease_allows_single_running_job_and_cancel() -> None:
     assert db.acquire_job_lease("long_text", "job_a")
     assert not db.acquire_job_lease("long_text", "job_b")
