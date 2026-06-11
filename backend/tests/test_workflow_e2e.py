@@ -533,6 +533,53 @@ def test_announcement_fix_hard_blockers_repairs_missing_token_and_applies(tmp_pa
 
 
 
+
+def test_announcement_inspect_constraints_does_not_regress_completed_steps(tmp_path: Path) -> None:
+    table_path = tmp_path / "language.xlsx"
+    notice_path = tmp_path / "notice.txt"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append(["T1", "??", "Trial Realm"])
+    wb.save(table_path)
+    wb.close()
+    notice_path.write_text("?????", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement No Regression", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": notice_artifact["id"], "language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"], "include_project_archive": False},
+        ).json()
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={"language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"], "include_project_archive": False, "ai_supplement": False},
+        )
+        assert extracted.status_code == 200, extracted.text
+        assert extracted.json()["task"]["status"] == "terms_ready"
+        assert extracted.json()["task"]["current_step"] == 5
+
+        inspected = client.post(
+            f"/api/announcement-tasks/{task['id']}/inspect-constraints",
+            json={"language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"]},
+        )
+        assert inspected.status_code == 200, inspected.text
+        inspected_task = inspected.json()["task"]
+        assert inspected_task["status"] == "terms_ready"
+        assert inspected_task["current_step"] == 5
+        assert inspected_task["selected_languages"] == ["en"]
+
 def test_announcement_extract_rejects_legacy_txt_constraint_with_human_message(tmp_path: Path) -> None:
     bad_constraint = tmp_path / "notice.txt"
     bad_constraint.write_text("this is announcement source, not a language table", encoding="utf-8")

@@ -428,6 +428,9 @@ def inspect_announcement_constraints(task_id: str, request: Any) -> dict[str, An
     confirmed = bool(getattr(request, "confirm_languages", False))
     next_step = ANNOUNCEMENT_STEP["terms"] if confirmed else ANNOUNCEMENT_STEP["languages"]
     next_status = "languages_ready" if confirmed else "constraints_ready" if detected or selected else "missing_constraints"
+    current_step = int(task.get("current_step") or 0)
+    if current_step > next_step:
+        return {"task": _hydrate_announcement_task(task), "detected_languages": detected, "selected_languages": task.get("selected_languages") or selected, "constraints": metadata["language_constraints"]}
     task = db.update_announcement_task(
         task_id,
         status=next_status,

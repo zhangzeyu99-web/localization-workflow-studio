@@ -253,7 +253,7 @@ export function AnnouncementWizard({
       ...extra
     })
     if (result?.task) setTaskId(result.task.id)
-    if (result && nextStep) setStep(nextStep)
+    if (result && nextStep) setStep(Math.max(nextStep, Number(result.task?.current_step || 0)))
   }
 
   async function importExtractedTermsFile(file: File) {
