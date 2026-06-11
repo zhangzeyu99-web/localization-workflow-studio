@@ -127,6 +127,16 @@ def list_improvements(project_id: str) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def create_project_improvement(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    db.get_project(project_id)
+    category = str(payload.get("category") or "soft_rule").strip() or "soft_rule"
+    title = str(payload.get("title") or "手动改进建议").strip() or "手动改进建议"
+    detail = str(payload.get("detail") or "").strip()
+    item = _improvement_item(category, "manual", title, detail)
+    _append_improvement_items(project_id, [item])
+    return item
+
+
 def create_improvement_review(run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     project_id = run["project_id"]

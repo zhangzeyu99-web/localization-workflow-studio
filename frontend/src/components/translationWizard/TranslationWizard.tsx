@@ -4,10 +4,11 @@ import { artifactKindLabel, artifactPickerLabel, artifactRole, newestArtifact, p
 import { formatDate, formatDateTime, shortRunId } from '../../domain/format'
 import { normalizeGlossaryNote, projectPromptForLanguage } from '../../domain/projectAssets'
 import { aiProviderConfigurationReminder, providerLabel } from '../../domain/providerSettings'
-import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, latestRunOfKind, matchesTranslationRun } from '../../domain/translationFlow'
+import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, latestRunOfKind, matchesTranslationRun, translationInputMode, translationNextStep, translationReadinessUserMessage } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, normalizeLanguageCode, type LanguageCode } from '../../languages'
 import { ProjectMetaTable } from '../project/ProjectMeta'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from '../shared/WorkflowPrimitives'
+import { AiInputAuditPanel } from '../shared/AiInputAudit'
 import type { AppSettings, Artifact, DeliverableTask, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, ProjectMaterialAnalysis, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
 
 export const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
@@ -206,6 +207,7 @@ export function formalTranslationBlockReason(settings: AppSettings | null, sourc
 
 export function translationReadinessBlockReason(readiness?: TranslationReadiness | null): string {
   if (!readiness) return ''
+  if (translationInputMode(readiness) === 'invalid') return translationReadinessUserMessage(readiness)
   if (Number(readiness.invalid_id_rows || 0) > 0) {
     const samples = readiness.invalid_id_samples?.length ? ` 示例：${readiness.invalid_id_samples.join(', ')}` : ''
     return `语言表有 ${readiness.invalid_id_rows} 行缺少可回写 ID；请先补齐非空 ID。${samples}`
@@ -226,6 +228,8 @@ export function Wizard(props: {
   assetArtifacts: Artifact[]
   latestRun: Run | null
   translationReadiness: TranslationReadiness | null
+  sourceInputNotice?: TranslationReadiness | null
+  invalidSourceArtifactIds?: string[]
   glossaryBatches: GlossaryBatch[]
   glossaryCandidates: GlossaryCandidate[]
   qualityIssues: QualityIssue[]
@@ -261,6 +265,22 @@ export function Wizard(props: {
   busy: boolean
 }) {
   const { project, step, setStep } = props
+  const sourceReadiness = props.sourceArtifact && props.translationReadiness?.artifact_id === props.sourceArtifact.id ? props.translationReadiness : null
+  const goNext = () => {
+    if (step === 4 && translationInputMode(props.sourceInputNotice) === 'invalid') {
+      setStep(4)
+      return
+    }
+    if (step === 4 && sourceReadiness) {
+      setStep(Math.min(9, translationNextStep(sourceReadiness)))
+      return
+    }
+    if ((step === 5 || step === 7) && translationInputMode(sourceReadiness) === 'ready_for_qa') {
+      setStep(8)
+      return
+    }
+    setStep(Math.min(9, step + 1))
+  }
   return (
     <>
       <div className="proj-head">
@@ -291,7 +311,7 @@ export function Wizard(props: {
       </div>
       <div className="actions">
         <button className="btn btn-ghost" disabled={step === 1} onClick={() => setStep(step - 1)}>← 上一步</button>
-        <button className="btn btn-primary" disabled={props.busy} onClick={() => setStep(Math.min(9, step + 1))}>{step === 9 ? '🏁 完成' : '下一步 →'}</button>
+        <button className="btn btn-primary" disabled={props.busy} onClick={goNext}>{step === 9 ? '🏁 完成' : '下一步 →'}</button>
       </div>
     </>
   )
@@ -357,30 +377,47 @@ function StepAnalyzeMaterialStatus({ project }: { project: Project }) {
   const unsupported = materials.filter((item) => String(item.status || '').startsWith('archived_only') || item.warning).length
   const warnings = materials.map((item) => item.warning).filter(Boolean).slice(0, 3)
   return (
-    <div className="status-grid">
-      <div className="metric-card">
-        <div className="metric-label">资料读取</div>
-        <strong>{summary.parsed ?? 0}/{summary.total ?? 0}</strong>
+    <>
+      <div className="status-grid">
+        <div className="metric-card">
+          <div className="metric-label">资料读取</div>
+          <strong>{summary.parsed ?? 0}/{summary.total ?? 0}</strong>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">语言表识别</div>
+          <strong>{languageTables} 个</strong>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">图片视觉分析</div>
+          <strong>{imageTotal ? `${imageDone}/${imageTotal}` : '-'}</strong>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">视频画面分析</div>
+          <strong>{videoTotal ? `${videoDone}/${videoTotal}` : '-'}</strong>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">未完整分析</div>
+          <strong>{unsupported || '-'}</strong>
+        </div>
+        {analysis.warning ? <div className="inline-warning span-all">{analysis.warning}</div> : null}
+        {warnings.length ? <div className="muted-left span-all">{warnings.join('；')}</div> : null}
       </div>
-      <div className="metric-card">
-        <div className="metric-label">语言表识别</div>
-        <strong>{languageTables} 个</strong>
+      <div className="material-read-list">
+        <div className="ai-header">资料读取明细</div>
+        {materials.length ? materials.slice(0, 8).map((item, index) => {
+          const status = String(item.status || '未解析')
+          const entered = Boolean(item.excerpt) && (status.startsWith('parsed') || status.startsWith('vision_analyzed'))
+          return (
+            <div className="material-read-row" key={`${item.artifact_id || index}`}>
+              <strong>{item.filename || item.label || `资料 ${index + 1}`}</strong>
+              <span>{item.material_type || 'unknown'} · {status}</span>
+              <em>{entered ? '已进入 AI' : '未进入 AI'}</em>
+            </div>
+          )
+        }) : <div className="muted-left">暂无资料读取明细。请先上传资料并运行 AI 分析。</div>}
+        {materials.length > 8 ? <div className="muted-left">还有 {materials.length - 8} 个资料，可在 AI 输入摘要里查看。</div> : null}
       </div>
-      <div className="metric-card">
-        <div className="metric-label">图片视觉分析</div>
-        <strong>{imageTotal ? `${imageDone}/${imageTotal}` : '-'}</strong>
-      </div>
-      <div className="metric-card">
-        <div className="metric-label">视频画面分析</div>
-        <strong>{videoTotal ? `${videoDone}/${videoTotal}` : '-'}</strong>
-      </div>
-      <div className="metric-card">
-        <div className="metric-label">未完整分析</div>
-        <strong>{unsupported || '-'}</strong>
-      </div>
-      {analysis.warning ? <div className="inline-warning span-all">{analysis.warning}</div> : null}
-      {warnings.length ? <div className="muted-left span-all">{warnings.join('；')}</div> : null}
-    </div>
+    </>
   )
 }
 
@@ -404,6 +441,7 @@ export function StepAnalyze({
       <div className="panel-desc">先读取上传资料形成资料包，再调用已配置 AI 分析项目定位、风格和注意事项。当前素材：{assetArtifacts.length} 个。</div>
       <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>🤖 启动 AI 分析</button>
       <StepAnalyzeMaterialStatus project={project} />
+      <AiInputAuditPanel endpoint={`/api/projects/${project.id}/ai-input-summary`} title="项目资料 AI 输入摘要" />
       <div className="ai-card"><div className="ai-header">当前 {lang.short} 提示词</div><pre>{projectPromptForLanguage(project, selectedLanguage) || '尚未生成'}</pre></div>
       <ProjectMetaTable project={project} />
     </>
@@ -456,22 +494,60 @@ export function StepSource({
   onUploadSource,
   sourceArtifact,
   setSourceArtifact,
-  selectedLanguage
+  selectedLanguage,
+  translationReadiness,
+  sourceInputNotice,
+  invalidSourceArtifactIds = [],
+  setQaArtifact,
+  setStep
 }: {
   project: Project
   onUploadSource: (file: File) => void
   sourceArtifact: Artifact | null
   setSourceArtifact: (artifact: Artifact | null) => void
   selectedLanguage: LanguageCode
+  translationReadiness?: TranslationReadiness | null
+  sourceInputNotice?: TranslationReadiness | null
+  invalidSourceArtifactIds?: string[]
+  setQaArtifact: (artifact: Artifact | null) => void
+  setStep: (step: number) => void
 }) {
   const lang = languageSpec(selectedLanguage)
+  const displayProject = invalidSourceArtifactIds.length
+    ? { ...project, artifacts: (project.artifacts || []).filter((artifact) => !invalidSourceArtifactIds.includes(artifact.id)) }
+    : project
+  const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id ? translationReadiness : null
+  const notice = readiness || sourceInputNotice || null
+  const mode = translationInputMode(notice)
+  const tone = mode === 'ready_for_qa' ? 'ready' : mode === 'invalid' ? 'todo' : mode === 'needs_translation' ? 'checking' : 'idle'
+  const modeLabel = mode === 'ready_for_qa'
+    ? '已译校对表'
+    : mode === 'needs_translation'
+      ? '待翻译语言表'
+      : mode === 'invalid'
+        ? '格式需要修正'
+        : '等待检查'
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 4</span>导入待翻译内容</div>
-      <div className="panel-desc">可选择已有语言表，也可上传新的 Excel 语言表；默认字段：ID | cn | {lang.targetHeader}。</div>
+      <div className="panel-title"><span className="badge">STEP 4</span>导入语言表 / 已译表</div>
+      <div className="panel-desc">上传后系统会先判断：空译文走翻译流程，已有完整译文则直接进入校对；默认字段：ID | CN | {lang.targetHeader}。</div>
       <div className="action-card">
-        <AssetSelect label="使用已有语言表" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
+        <AssetSelect label="使用已有语言表" project={displayProject} role="language_source" value={sourceArtifact && invalidSourceArtifactIds.includes(sourceArtifact.id) ? null : sourceArtifact} onChange={setSourceArtifact} />
         <FileBoxWithTemplate label="上传 language.xlsx" onFile={onUploadSource} templateKind="language-table" />
+        {notice ? (
+          <div className={`translation-readiness-box ${tone}`}>
+            <div className="readiness-head">
+              <strong>输入检查：{modeLabel}</strong>
+              <span>{translationReadinessUserMessage(notice)}</span>
+            </div>
+            <p>{notice.source_rows || 0} 行原文 / {notice.translated_rows || 0} 行已有译文 / 空译文 {notice.empty_target_rows || 0} / 中文残留 {notice.cjk_target_rows || 0}</p>
+            {mode === 'ready_for_qa' && sourceArtifact ? (
+              <button className="btn btn-primary btn-sm" onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>去校对</button>
+            ) : null}
+            {mode === 'needs_translation' ? <div className="ok-line">下一步：扫描术语候选，再进入模型翻译。</div> : null}
+            {mode === 'invalid' ? <div className="warn-line">请修正表头或内容后重新上传；本次错误文件不会作为当前语言表继续处理。</div> : null}
+          </div>
+        ) : null}
       </div>
       {sourceArtifact ? <ArtifactNote artifact={sourceArtifact} /> : null}
     </>
@@ -482,6 +558,7 @@ export function StepFreqV2({
   onGlossaryExtract,
   onFreq,
   sourceArtifact,
+  translationReadiness,
   assetArtifacts,
   latestRun,
   glossaryBatches,
@@ -490,12 +567,15 @@ export function StepFreqV2({
   onUpdateCandidate,
   onResolveCandidates,
   onTranslateMissingCandidates,
-  selectedLanguage
+  selectedLanguage,
+  setQaArtifact,
+  setStep
 }: {
   project: Project
   onGlossaryExtract: () => void
   onFreq: () => void
   sourceArtifact: Artifact | null
+  translationReadiness?: TranslationReadiness | null
   assetArtifacts: Artifact[]
   latestRun: Run | null
   glossaryBatches: GlossaryBatch[]
@@ -505,6 +585,8 @@ export function StepFreqV2({
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
   onTranslateMissingCandidates: (batchId: string) => void
   selectedLanguage: LanguageCode
+  setQaArtifact: (artifact: Artifact | null) => void
+  setStep: (step: number) => void
 }) {
   const lang = languageSpec(selectedLanguage)
   const [expanded, setExpanded] = useState(false)
@@ -533,14 +615,33 @@ export function StepFreqV2({
             : '待自动检查'
   const accepted = activeBatch?.counts?.accepted ?? glossaryCandidates.filter((candidate) => candidate.status === 'accepted').length
   const rejected = activeBatch?.counts?.rejected ?? glossaryCandidates.filter((candidate) => candidate.status === 'rejected').length
+  const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id ? translationReadiness : null
+  const inputMode = translationInputMode(readiness)
+  const blocked = !sourceArtifact || inputMode === 'ready_for_qa' || inputMode === 'invalid'
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 5</span>从完整语言表扫描高频术语候选</div>
       <div className="panel-desc">输入是 STEP 4 的完整语言表；项目资料只辅助生成 brief 和提示词。扫描结果先进入候选，人工确认后才加入项目术语库。</div>
+      {inputMode === 'ready_for_qa' ? (
+        <div className="translation-readiness-box ready">
+          <div className="readiness-head">
+            <strong>这份表已有完整译文</strong>
+            <span>不需要扫描术语候选；请直接进入校对，QA 通过后写入译文归档并生成交付。</span>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>去校对</button>
+        </div>
+      ) : inputMode === 'invalid' || !sourceArtifact ? (
+        <div className="translation-readiness-box todo">
+          <div className="readiness-head">
+            <strong>请先回 STEP 4 上传正确语言表</strong>
+            <span>{translationReadinessUserMessage(readiness)}</span>
+          </div>
+        </div>
+      ) : null}
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
         <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
-        <button className="btn btn-primary" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>🔎 扫描术语候选</button>
+        <button className="btn btn-primary" disabled={blocked || busy} onClick={onGlossaryExtract}>🔎 扫描术语候选</button>
         <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补齐缺失译文</button>
         <button className="btn btn-ghost" onClick={onFreq}>💡 查看补充策略</button>
       </div>
@@ -813,6 +914,11 @@ export function StepTranslate({
           <div className="warn-line">上次后台任务被中断；点击“继续后台翻译”可从已落盘批次恢复。</div>
         ) : null}
         {progress?.failed_batch && currentTranslationRun ? <BatchDebugLinks runId={currentTranslationRun.id} batchIndex={progress.failed_batch} /> : null}
+        {currentTranslationRun ? (
+          <AiInputAuditPanel endpoint={`/api/runs/${currentTranslationRun.id}/ai-input-summary`} title={`${lang.short} 本次翻译 AI 输入`} buttonLabel="查看本次 AI 输入" />
+        ) : (
+          <div className="muted-left">开始翻译并生成 workpack 后，可查看本次 AI 实际收到的 prompt、术语命中和样例行。</div>
+        )}
       </div>
       <div className="translation-guard-strip">
         <span>项目术语库 <strong>{glossaryCount} 条</strong></span>
@@ -901,7 +1007,9 @@ export function StepQA({
   const originText = qaArtifact?.run_id && previousTranslationRun?.id === qaArtifact.run_id
     ? `上一翻译结果：${previousTranslationRun.id.slice(0, 8)}`
     : qaRole === 'language_source'
-      ? selectedReadiness
+      ? sourceArtifact?.id === qaArtifact?.id && selectedReadiness
+        ? `来自 STEP 4 已译表：${selectedReadiness.translated_rows}/${selectedReadiness.source_rows} 行已有译文`
+        : selectedReadiness
         ? `此前导入的语言表：${selectedReadiness.translated_rows}/${selectedReadiness.source_rows} 行已有译文`
         : '此前导入的语言表；运行前会按译文表检查'
       : qaArtifact

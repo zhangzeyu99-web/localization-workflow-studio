@@ -3,6 +3,7 @@ import { announcementLanguages, languageChipTitle, languageSpec, normalizeLangua
 import { artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
 import { aiProviderConfigurationReminder, isAiProviderReady, providerLabel } from '../../domain/providerSettings'
 import { ActionStatus, ArtifactNote, FileBox, FileBoxWithTemplate, TranslationProgressBar } from '../shared/WorkflowPrimitives'
+import { AiInputAuditPanel } from '../shared/AiInputAudit'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
 
 export const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译', '校对回填', '交付']
@@ -399,7 +400,10 @@ export function AnnouncementWizard({
           ) : step === 5 ? (
             <AnnouncementActionStep title="译文反查" step={5} desc="按目标语言从项目 QA 归档和语言表反查译文，QA 归档优先；缺失术语会标记但不阻断翻译准备。" activeTask={activeTask} busy={busy} actionLabel="反查术语译文" onAction={() => run('lookup-translations', 6)} />
           ) : step === 6 ? (
-            <AnnouncementActionStep title="翻译准备" step={6} desc="按语言生成中转表、manifest、prompt snapshot 和 workpack。后续可直接调用 AI provider 或下载 workpack 外部翻译。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备包" onAction={() => run('prepare', 7)} />
+            <>
+              <AnnouncementActionStep title="翻译准备" step={6} desc="按语言生成中转表、manifest、prompt snapshot 和 workpack。后续可直接调用 AI provider 或下载 workpack 外部翻译。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备包" onAction={() => run('prepare', 7)} />
+              {activeTask ? <AiInputAuditPanel endpoint={`/api/announcement-tasks/${activeTask.id}/ai-input-summary`} title="公告翻译准备 AI 输入" buttonLabel="查看公告 AI 输入" /> : null}
+            </>
           ) : step === 7 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 7</span>AI 翻译</div>
@@ -428,6 +432,7 @@ export function AnnouncementWizard({
                 </button>
                 <button className="btn btn-ghost" disabled={!activeTask || busy || !['queued', 'running'].includes(activeTask?.status || '')} onClick={() => run('translate/cancel', 7)}>暂停后台翻译</button>
               </div>
+              {activeTask ? <AiInputAuditPanel endpoint={`/api/announcement-tasks/${activeTask.id}/ai-input-summary`} title="公告正文翻译 AI 输入" buttonLabel="查看公告 AI 输入" /> : null}
               <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
               <details className="delivery-advanced">
                 <summary>外部 AI response 导入（备用）</summary>

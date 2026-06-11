@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+import uuid
+from pathlib import Path
+
+from .. import db
 from ..config import (
     DATA_ROOT,
     load_settings,
@@ -10,18 +15,87 @@ from ..import_templates import build_import_template
 from ..languages import language_payload
 from ..schemas import SettingsUpdate
 from ..workflow import user_facing_error
+from ..delivery_naming import safe_filename
+from ..upload_storage import UploadTooLargeError, stream_upload
 from fastapi import (
     APIRouter,
+    File,
     HTTPException,
+    UploadFile,
 )
 from fastapi.responses import FileResponse
 from typing import Any
 
 router = APIRouter()
+INSTANCE_ID = os.environ.get("LWS_INSTANCE_ID") or uuid.uuid4().hex[:12]
+
+
+def _deployment_mode() -> str:
+    mode = (os.environ.get("LWS_DEPLOYMENT_MODE") or "local").strip().lower()
+    return mode if mode in {"local", "cloud"} else "local"
+
+
+def _is_writable(path: Path) -> bool:
+    path.mkdir(parents=True, exist_ok=True)
+    probe = path / ".write-test"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _database_connected() -> bool:
+    try:
+        db.list_projects()
+        return True
+    except Exception:
+        return False
 
 @router.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "data_root": str(DATA_ROOT)}
+    settings = load_settings()
+    provider = str(settings.get("provider") or "")
+    return {
+        "ok": True,
+        "deployment_mode": _deployment_mode(),
+        "instance_id": INSTANCE_ID,
+        "data_root": str(DATA_ROOT),
+        "storage": {
+            "data_root": str(DATA_ROOT),
+            "data_root_writable": _is_writable(DATA_ROOT),
+            "uploads": str(DATA_ROOT / "uploads"),
+            "uploads_writable": _is_writable(DATA_ROOT / "uploads"),
+        },
+        "database": {"connected": _database_connected()},
+        "provider": {
+            "provider": provider,
+            "provider_configured": bool(settings.get("api_key")) and provider not in {"", "mock", "test-fake"},
+        },
+    }
+
+
+@router.post("/api/diagnostics/upload-readability")
+def upload_readability_self_test(file: UploadFile = File(...)) -> dict[str, Any]:
+    safe_name = safe_filename(file.filename or "diagnostic-upload.txt")
+    destination = DATA_ROOT / "uploads" / "diagnostics" / f"{uuid.uuid4().hex[:12]}-{safe_name}"
+    try:
+        digest, size = stream_upload(file.file, destination)
+        preview = destination.read_text(encoding="utf-8", errors="replace")[:500] if destination.suffix.lower() in {".txt", ".md", ".csv", ".json"} else ""
+        return {
+            "ok": True,
+            "filename": safe_name,
+            "sha256": digest,
+            "size": size,
+            "path": str(destination),
+            "readable": destination.exists(),
+            "preview": preview,
+        }
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=user_facing_error(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"上传自检失败：{user_facing_error(exc)}") from exc
 
 
 @router.get("/api/import-templates/{kind}")

@@ -13,7 +13,7 @@ import { MetaTab } from './components/project/ProjectMeta'
 import { DeliveryTab, StepQA, TranslationTab, Wizard, formalTranslationBlockReason } from './components/translationWizard/TranslationWizard'
 import { artifactFileName, artifactKindLabel, artifactPickerLabel, artifactRole, artifactsByRole, artifactsByRoles, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, newestArtifact, pickerArtifacts, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { compactSummary, formatDate, formatDateTime, shortRunId } from './domain/format'
-import { clampBatchSize, effectiveBatchSize, estimateBatches, getTranslationProgress, canSkipModelTranslation, latestRunOfKind, findResumableTranslationRun, isTranslationRunResumable, matchesTranslationRun } from './domain/translationFlow'
+import { clampBatchSize, effectiveBatchSize, estimateBatches, getTranslationProgress, canSkipModelTranslation, latestRunOfKind, findResumableTranslationRun, isTranslationRunResumable, matchesTranslationRun, translationInputMode, translationReadinessUserMessage } from './domain/translationFlow'
 import { altColumnVisible, availableLookupLanguages, displayLanguagesForWideRows, fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, glossaryWideRowMatches, glossaryWideRows, languageFromValue, linesToFixedTerms, linesToList, linesToRules, listToLines, normalizeGlossaryNote, projectPromptForLanguage, profileText, rowRecords, ruleSummary, rulesToLines, scopeProjectToLanguage, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from './domain/projectAssets'
 
 declare global {
@@ -247,6 +247,8 @@ function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [deliverables, setDeliverables] = useState<DeliverableTask[]>([])
   const [translationReadiness, setTranslationReadiness] = useState<TranslationReadiness | null>(null)
+  const [sourceInputNotice, setSourceInputNotice] = useState<TranslationReadiness | null>(null)
+  const [invalidSourceArtifactIds, setInvalidSourceArtifactIds] = useState<string[]>([])
   const translationBatchSize = 90
   const [announcementText, setAnnouncementText] = useState('')
   const [announcementLookupResult, setAnnouncementLookupResult] = useState<AnnouncementLookupResult | null>(null)
@@ -326,6 +328,8 @@ function App() {
       setGlossaryCandidates([])
       setQualityIssues([])
       setDeliverables([])
+      setSourceInputNotice(null)
+      setInvalidSourceArtifactIds([])
       setAnnouncementText('')
       setAnnouncementLookupResult(null)
       return
@@ -340,6 +344,8 @@ function App() {
     setAssetArtifacts(uniqueArtifactsByContent(artifacts.filter((artifact) => artifact.kind === 'asset')))
     setLatestRun(hydratedRun)
     setDeliverables([])
+    setSourceInputNotice(null)
+    setInvalidSourceArtifactIds([])
   }, [current?.id, current?.artifacts?.length, current?.runs?.length])
 
   useEffect(() => {
@@ -728,10 +734,10 @@ function App() {
     }
   }
 
-  async function refreshTranslationReadiness(artifactId: string, projectId = currentIdRef.current) {
+  async function refreshTranslationReadiness(artifactId: string, projectId = currentIdRef.current, language: LanguageCode = selectedLanguage) {
     const batchSize = effectiveBatchSize(settings, translationBatchSize)
     try {
-      const result = await api<TranslationReadiness>(`/api/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(selectedLanguage)}`)
+      const result = await api<TranslationReadiness>(`/api/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
       if (isCurrentProject(projectId)) setTranslationReadiness(result)
       return result
     } catch {
@@ -741,9 +747,16 @@ function App() {
   }
 
   function selectSourceArtifact(artifact: Artifact | null) {
-    setSourceArtifact(artifact)
-    if (artifact && artifactRole(artifact) === 'language_source') {
-      void syncLanguageFromArtifact(artifact)
+    if (!artifact) {
+      setSourceArtifact(null)
+      setSourceInputNotice(null)
+      setTranslationReadiness(null)
+      return
+    }
+    if (artifactRole(artifact) === 'language_source') {
+      void classifySourceArtifact(artifact)
+    } else {
+      setSourceArtifact(artifact)
     }
   }
 
@@ -754,14 +767,42 @@ function App() {
     }
   }
 
-  async function syncLanguageFromArtifact(artifact: Artifact) {
+  async function syncLanguageFromArtifact(artifact: Artifact): Promise<LanguageCode> {
     const projectId = currentIdRef.current
     const targets = await inspectTranslationTargets(artifact.id)
-    if (!isCurrentProject(projectId)) return
+    if (!isCurrentProject(projectId)) return selectedLanguage
     const suggested = targets?.suggested_language
     if (suggested && suggested !== selectedLanguage) {
       setSelectedLanguage(suggested)
       setStatus(`\u5df2\u8bc6\u522b\u8bed\u8a00\u8868\u76ee\u6807\u8bed\u8a00\uff1a${languageSpec(suggested).short}`)
+      return suggested
+    }
+    return suggested || selectedLanguage
+  }
+
+  async function classifySourceArtifact(artifact: Artifact) {
+    const projectId = currentIdRef.current
+    const language = await syncLanguageFromArtifact(artifact)
+    const readiness = await refreshTranslationReadiness(artifact.id, projectId, language)
+    if (!isCurrentProject(projectId) || !readiness) return
+    const mode = translationInputMode(readiness)
+    if (mode === 'invalid') {
+      setInvalidSourceArtifactIds((prev) => prev.includes(artifact.id) ? prev : [...prev, artifact.id])
+      setSourceInputNotice(readiness)
+      setTranslationReadiness(readiness)
+      setSourceArtifact(null)
+      setStatus(`语言表格式需要修正：${translationReadinessUserMessage(readiness)}`)
+      return
+    }
+    setInvalidSourceArtifactIds((prev) => prev.filter((id) => id !== artifact.id))
+    setSourceArtifact(artifact)
+    setSourceInputNotice(null)
+    if (mode === 'ready_for_qa') {
+      setQaArtifact(artifact)
+      setStatus(`检测到已有完整译文：${readiness.translated_rows}/${readiness.source_rows} 行，可直接进入校对。`)
+    } else {
+      setQaArtifact((currentQa) => currentQa && artifactRole(currentQa) === 'language_source' ? null : currentQa)
+      setStatus(`检测到待翻译语言表：${readiness.source_rows} 行，下一步扫描术语候选。`)
     }
   }
 
@@ -1091,6 +1132,12 @@ function App() {
       setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
       setStatus(artifact.duplicate ? `参考素材已存在，已复用：${artifactPickerLabel(artifact)}` : `参考素材已归档：${artifactPickerLabel(artifact)}`)
     }
+    return artifact
+  }
+
+  async function uploadSourceWorkbook(file: File) {
+    const artifact = await upload(file, 'language_table')
+    if (artifact) await classifySourceArtifact(artifact)
     return artifact
   }
 
@@ -1491,7 +1538,7 @@ function App() {
                 setArchiveArtifact={setArchiveArtifact}
                 onSaveMeta={saveProjectMeta}
                 onAnalyze={runAnalysis}
-                onUploadSource={async (file) => { const artifact = await upload(file, 'language_table'); selectSourceArtifact(artifact) }}
+                onUploadSource={uploadSourceWorkbook}
                 onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
                 onGlossaryPreview={previewGlossaryImport}
                 onGlossaryImport={importGlossaryArtifact}
@@ -1573,6 +1620,8 @@ function App() {
                 assetArtifacts={assetArtifacts}
                 latestRun={latestRun}
                 translationReadiness={translationReadiness}
+                sourceInputNotice={sourceInputNotice}
+                invalidSourceArtifactIds={invalidSourceArtifactIds}
                 glossaryBatches={glossaryBatches}
                 glossaryCandidates={glossaryCandidates}
                 qualityIssues={qualityIssues}
@@ -1585,7 +1634,7 @@ function App() {
                 settings={settings}
                 status={status}
                 onBack={() => setView('overview')}
-                onUploadSource={async (file) => { const artifact = await upload(file, 'language_table'); selectSourceArtifact(artifact) }}
+                onUploadSource={uploadSourceWorkbook}
                 onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
                 onUploadAsset={uploadProjectMaterial}
                 onAnalyze={runAnalysis}

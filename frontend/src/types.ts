@@ -223,10 +223,15 @@ export type TranslationReadiness = {
   invalid_id_rows?: number
   invalid_id_samples?: string[]
   needs_translation: boolean
+  ready_for_translation?: boolean
   ready_for_qa: boolean
   reason: string
   batch_size: number
   estimated_batches: number
+  input_mode?: 'needs_translation' | 'ready_for_qa' | 'invalid' | string
+  next_step?: number
+  format_errors?: string[]
+  user_message?: string
 }
 
 export type TranslationTargets = {
@@ -279,12 +284,20 @@ export type ProjectMaterialAnalysis = {
   materials?: {
     artifact_id?: string
     label?: string
+    filename?: string
     material_type?: string
     status?: string
     warning?: string
+    excerpt?: string
+    included_in_ai?: boolean
+    readable?: boolean
+    readable_reason?: string
     language_table_candidate?: boolean
     detected_languages?: string[]
+    chars?: number
     rows?: number
+    pages?: number
+    truncated?: boolean
   }[]
   language_table_candidates?: {
     artifact_id: string

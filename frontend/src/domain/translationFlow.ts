@@ -21,11 +21,43 @@ export function getTranslationProgress(run: Run | null): TranslationProgress | n
 }
 
 export function canSkipModelTranslation(readiness: TranslationReadiness | null | undefined): boolean {
+  if (translationInputMode(readiness) === 'ready_for_qa') return true
   if (!readiness || readiness.source_rows <= 0) return false
-  if (readiness.ready_for_qa) return true
   if (readiness.empty_target_rows > 0 || readiness.translated_rows <= 0) return false
   const cjkLimit = Math.max(5, Math.ceil(readiness.source_rows * 0.01))
   return readiness.translated_rows >= readiness.source_rows * 0.8 && readiness.cjk_target_rows <= cjkLimit
+}
+
+export function translationInputMode(readiness: TranslationReadiness | null | undefined): 'needs_translation' | 'ready_for_qa' | 'invalid' | 'unknown' {
+  if (!readiness) return 'unknown'
+  if (readiness.input_mode === 'needs_translation' || readiness.input_mode === 'ready_for_qa' || readiness.input_mode === 'invalid') {
+    return readiness.input_mode
+  }
+  if (readiness.ready_for_qa) return 'ready_for_qa'
+  if (readiness.needs_translation || readiness.ready_for_translation) return 'needs_translation'
+  if (readiness.reason === 'no_source_rows' || readiness.reason === 'invalid_id_rows' || readiness.reason === 'unsupported_file' || readiness.reason === 'target_column_missing') return 'invalid'
+  return 'unknown'
+}
+
+export function translationNextStep(readiness: TranslationReadiness | null | undefined): number {
+  if (typeof readiness?.next_step === 'number') return readiness.next_step
+  const mode = translationInputMode(readiness)
+  if (mode === 'ready_for_qa') return 8
+  if (mode === 'needs_translation') return 5
+  return 4
+}
+
+export function translationReadinessUserMessage(readiness: TranslationReadiness | null | undefined): string {
+  const message = String(readiness?.user_message || '').trim()
+  if (message) return message
+  const mode = translationInputMode(readiness)
+  if (mode === 'ready_for_qa') return '检测到已有完整译文，可跳过模型翻译，直接进入校对。'
+  if (mode === 'needs_translation') return '检测到待翻译内容，请先扫描术语候选。'
+  if (readiness?.reason === 'invalid_id_rows') return '有行缺少可回写 ID，请修正后重新上传。'
+  if (readiness?.reason === 'target_column_missing') return '未检测到目标语言译文列，请上传包含 ID、CN 和目标语言列的语言表。'
+  if (readiness?.reason === 'no_source_rows') return '未检测到 CN/原文行，请上传包含 ID 和 CN 的语言表。'
+  if (readiness?.reason === 'unsupported_file') return '当前文件类型不适合作为语言表，请重新上传。'
+  return '选择语言表后自动检查。'
 }
 
 export function latestRunOfKind(project: Project, kind: string): Run | null {

@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import shutil
+from pathlib import Path
 from .. import db
+from ..ai_input_audit import project_ai_input_summary
 from ..config import (
     DATA_ROOT,
     load_settings,
@@ -24,6 +26,7 @@ from ..upload_storage import (
 from ..workflow import (
     build_project_material_packet,
     guard_complete_language_table_for_glossary_import,
+    guard_complete_language_table_for_project_material,
     harness_overview,
     inspect_translation_readiness,
     inspect_translation_targets,
@@ -50,6 +53,23 @@ from typing import Any
 router = APIRouter()
 
 
+def _sync_project_prompt_files(project_id: str, profile: dict[str, Any]) -> None:
+    prompts = profile.get("prompts_by_language")
+    if not isinstance(prompts, dict):
+        return
+    prompt_root = project_dir(project_id) / "profile"
+    prompt_root.mkdir(parents=True, exist_ok=True)
+    for raw_language, raw_prompt in prompts.items():
+        try:
+            language = require_supported_language(str(raw_language))
+        except ValueError:
+            continue
+        prompt = str(raw_prompt or "").strip()
+        if not prompt:
+            continue
+        (prompt_root / f"translation_prompt_{language}.txt").write_text(prompt, encoding="utf-8")
+
+
 def _finalize_project_upload(
     project_id: str,
     *,
@@ -71,6 +91,11 @@ def _finalize_project_upload(
     destination = _unique_path(upload_root / safe_name)
     temp_path.replace(destination)
     if project_material_upload:
+        try:
+            guard_complete_language_table_for_project_material(destination)
+        except ValueError as exc:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
         duplicate = _find_duplicate_project_upload(project_id, kind, digest)
         if duplicate:
             destination.unlink(missing_ok=True)
@@ -82,6 +107,12 @@ def _finalize_project_upload(
         except ValueError as exc:
             destination.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+    try:
+        with destination.open("rb") as fh:
+            fh.read(1)
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"上传后文件不可读：{user_facing_error(exc)}") from exc
     artifact = db.add_artifact(
         project_id,
         safe_name,
@@ -89,10 +120,29 @@ def _finalize_project_upload(
         kind,
         mime=mime,
         origin="uploaded",
-        metadata={"sha256": digest, "original_filename": safe_name, **({"purpose": purpose} if purpose else {})},
+        metadata={"sha256": digest, "original_filename": safe_name, "readable": True, **({"purpose": purpose} if purpose else {})},
     )
     artifact["duplicate"] = False
     return artifact
+
+
+def _validate_project_analysis_artifacts(project_id: str, artifact_ids: list[str]) -> None:
+    for artifact_id in artifact_ids:
+        try:
+            artifact = db.get_artifact(artifact_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=f"资料文件不存在：{artifact_id}") from exc
+        if artifact.get("project_id") != project_id:
+            raise HTTPException(status_code=400, detail=f"资料文件不属于当前项目：{artifact.get('label') or artifact_id}")
+        path = Path(artifact["path"])
+        if not path.exists():
+            raise HTTPException(status_code=400, detail=f"资料文件不存在或未挂载到当前后端：{artifact.get('label') or path.name}")
+        try:
+            with path.open("rb") as fh:
+                fh.read(1)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"资料文件不可读：{artifact.get('label') or path.name}；{user_facing_error(exc)}") from exc
+
 
 @router.get("/api/projects")
 def get_projects() -> list[dict[str, Any]]:
@@ -117,6 +167,14 @@ def get_project(project_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="project not found") from exc
 
 
+@router.get("/api/projects/{project_id}/ai-input-summary")
+def get_project_ai_input_summary(project_id: str) -> dict[str, Any]:
+    try:
+        return project_ai_input_summary(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
 @router.patch("/api/projects/{project_id}")
 def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
     try:
@@ -137,6 +195,7 @@ def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
             elif isinstance(profile.get("prompts_by_language"), dict) and str(profile["prompts_by_language"].get("en") or "").strip():
                 updates["prompt_text"] = str(profile["prompts_by_language"].get("en") or "")
             updates["profile"] = profile
+            _sync_project_prompt_files(project_id, profile)
         return _with_project_stats(db.update_project(project_id, updates), include_details=True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
@@ -182,6 +241,7 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
         target_language = require_supported_language(payload.target_language)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+    _validate_project_analysis_artifacts(project_id, payload.asset_artifact_ids)
     settings = load_settings()
     material_packet = build_project_material_packet(project_id, payload.asset_artifact_ids, settings, run_visual_analysis=True)
     notes = [str(material.get("note") or "") for material in material_packet.get("materials", []) if isinstance(material, dict)]

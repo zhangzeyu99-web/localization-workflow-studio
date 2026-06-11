@@ -8,6 +8,7 @@ from ..schemas import (
 from ..workflow import (
     apply_manual_fixes,
     apply_model_fixes,
+    create_project_improvement,
     create_improvement_review,
     create_semantic_qa_context,
     list_improvements,
@@ -75,6 +76,14 @@ def get_project_improvements(project_id: str) -> list[dict[str, Any]]:
     try:
         db.get_project(project_id)
         return list_improvements(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
+@router.post("/api/projects/{project_id}/improvements")
+def add_project_improvement(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return create_project_improvement(project_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
 

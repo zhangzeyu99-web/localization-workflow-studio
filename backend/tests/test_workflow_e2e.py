@@ -109,6 +109,24 @@ def _target_language_workbook(path: Path, target_header: str, targets: list[str]
     wb.close()
 
 
+def _invalid_language_workbook(path: Path, headers: list[str]) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(headers)
+    values = {
+        "ID": "bad-1",
+        "id": "bad-1",
+        "CN": "领取奖励",
+        "cn": "领取奖励",
+        "EN": "Claim",
+        "en": "Claim",
+    }
+    ws.append([values.get(header, "") for header in headers])
+    wb.save(path)
+    wb.close()
+
+
 def _announcement_language_table(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -1774,6 +1792,9 @@ def test_translation_readiness_skips_filled_translation_workbook(tmp_path: Path)
         assert readiness["ready_for_qa"] is True
         assert readiness["ready_for_translation"] is False
         assert readiness["needs_translation"] is False
+        assert readiness["input_mode"] == "ready_for_qa"
+        assert readiness["next_step"] == 8
+        assert "直接进入校对" in readiness["user_message"]
         assert readiness["source_rows"] == 5
         assert readiness["translated_rows"] == 5
 
@@ -1787,6 +1808,53 @@ def test_translation_readiness_skips_filled_translation_workbook(tmp_path: Path)
         assert result["run"]["status"] == "needs_input"
         assert result["run"]["metadata"]["reason"] == "input already contains target translations; run QA instead"
         assert result["artifacts"] == []
+
+
+def test_translation_readiness_classifies_empty_language_table_for_translation(tmp_path: Path) -> None:
+    workbook = tmp_path / "empty-target.xlsx"
+    _sample_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Readiness Needs Translation", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("empty-target.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        readiness = client.get(f"/api/artifacts/{artifact['id']}/translation-readiness?batch_size=90").json()
+        assert readiness["input_mode"] == "needs_translation"
+        assert readiness["next_step"] == 5
+        assert readiness["needs_translation"] is True
+        assert readiness["ready_for_qa"] is False
+        assert "扫描术语候选" in readiness["user_message"]
+
+
+def test_translation_readiness_classifies_invalid_language_table_format(tmp_path: Path) -> None:
+    missing_cn = tmp_path / "missing-cn.xlsx"
+    missing_id = tmp_path / "missing-id.xlsx"
+    missing_target = tmp_path / "missing-target.xlsx"
+    _invalid_language_workbook(missing_cn, ["ID", "EN"])
+    _invalid_language_workbook(missing_id, ["CN", "EN"])
+    _invalid_language_workbook(missing_target, ["ID", "CN"])
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Readiness Invalid", "type": "QA"}).json()
+        for filename, expected_error in (
+            (missing_cn, "missing_source_rows"),
+            (missing_id, "invalid_id_rows"),
+            (missing_target, "target_column_missing"),
+        ):
+            with filename.open("rb") as fh:
+                artifact = client.post(
+                    f"/api/projects/{project['id']}/files?kind=language_table",
+                    files={"file": (filename.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                ).json()
+            readiness = client.get(f"/api/artifacts/{artifact['id']}/translation-readiness?batch_size=90").json()
+            assert readiness["input_mode"] == "invalid"
+            assert readiness["next_step"] == 4
+            assert expected_error in readiness["format_errors"]
+            assert readiness["user_message"]
 
 
 def test_string_ids_run_through_translation_and_qa(tmp_path: Path) -> None:
@@ -2091,32 +2159,20 @@ def test_large_language_table_upload_is_rejected_as_term_base(tmp_path: Path) ->
         assert client.get(f"/api/projects/{project['id']}/assets?role=glossary_source").json() == []
 
 
-def test_large_language_table_project_material_participates_in_analysis_but_does_not_import_terms(tmp_path: Path) -> None:
+def test_large_language_table_project_material_is_rejected_but_language_table_upload_is_allowed(tmp_path: Path) -> None:
     language_table = tmp_path / "full-language-table.xlsx"
     _large_language_table_workbook(language_table)
 
     with TestClient(app) as client:
-        project = client.post("/api/projects", json={"name": "Project Material Analysis", "type": "QA"}).json()
+        project = client.post("/api/projects", json={"name": "Project Material Guard", "type": "QA"}).json()
         with language_table.open("rb") as fh:
             material_response = client.post(
                 f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
                 files={"file": ("full-language-table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             )
-        assert material_response.status_code == 200, material_response.text
-        material_artifact = material_response.json()
-        assert material_artifact["kind"] == "asset"
-
-        analysis_response = client.post(
-            f"/api/projects/{project['id']}/analyze",
-            json={"intro": "Project material can include a full language table.", "asset_artifact_ids": [material_artifact["id"]]},
-        )
-        assert analysis_response.status_code == 200, analysis_response.text
-        payload = analysis_response.json()
-        candidates = payload["analysis"]["language_table_candidates"]
-        assert len(candidates) == 1
-        assert candidates[0]["artifact_id"] == material_artifact["id"]
-        assert payload["analysis"]["summary"]["language_table_candidates"] == 1
-        assert client.get(f"/api/projects/{project['id']}/glossary").json() == []
+        assert material_response.status_code == 400, material_response.text
+        assert "STEP4" in material_response.json()["detail"]
+        assert client.get(f"/api/projects/{project['id']}/assets?role=project_material").json() == []
 
         with language_table.open("rb") as fh:
             language_response = client.post(

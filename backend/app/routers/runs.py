@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .. import db
+from ..ai_input_audit import run_ai_input_summary
 from ..jobs import (
     active_job_id,
     cancel_singleton_job,
@@ -81,6 +82,14 @@ def get_run(run_id: str) -> dict[str, Any]:
         run["events"] = db.list_events(run_id)
         run["artifacts"] = db.list_artifacts(run_id=run_id)
         return run
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+
+
+@router.get("/api/runs/{run_id}/ai-input-summary")
+def get_run_ai_input_summary(run_id: str) -> dict[str, Any]:
+    try:
+        return run_ai_input_summary(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
 

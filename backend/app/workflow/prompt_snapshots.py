@@ -197,14 +197,16 @@ def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir
     output.mkdir(parents=True, exist_ok=True)
     profile = project.get("profile") or {}
     prompt_path = project_dir(project_id) / "profile" / f"translation_prompt_{language}.txt"
-    if not prompt_path.exists():
-        prompt_text = str((profile.get("prompts_by_language") or {}).get(language) or "")
-        if prompt_text:
-            prompt_path.write_text(prompt_text, encoding="utf-8")
-        else:
-            write_project_prompt(project, project.get("description", ""), [], target_language=language)
-    base_prompt = prompt_path.read_text(encoding="utf-8")
     stored_prompt = str((profile.get("prompts_by_language") or {}).get(language) or "")
+    if stored_prompt.strip():
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        if not prompt_path.exists() or prompt_path.read_text(encoding="utf-8") != stored_prompt:
+            prompt_path.write_text(stored_prompt, encoding="utf-8")
+        base_prompt = stored_prompt
+    else:
+        if not prompt_path.exists():
+            write_project_prompt(project, project.get("description", ""), [], target_language=language)
+        base_prompt = prompt_path.read_text(encoding="utf-8")
     if _is_stale_project_prompt_text(base_prompt) or _is_stale_project_prompt_text(stored_prompt):
         base_prompt = _repair_stale_project_prompt(project, language, prompt_path)
     compiled_path, harness_path, compiled_prompt, harness_snapshot = compile_project_harness_prompt(project, base_prompt, output)

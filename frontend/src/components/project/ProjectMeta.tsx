@@ -121,33 +121,6 @@ export function MetaTab({
 
   return (
     <>
-      <div className="card material-card">
-        <div className="card-title">
-          <div className="left">📥 项目资料投放</div>
-          <div className="card-actions">
-            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={saveMaterialInput}>保存资料说明</button>
-            <button className="btn btn-primary btn-sm" disabled={busy} onClick={onAnalyze}>重新分析项目</button>
-          </div>
-        </div>
-        <p className="section-hint">这里放项目 brief、需求文档、语言表、图片或视频素材；重复文件会自动复用，不重复参与分析。</p>
-        <div className="meta-grid material-input-grid">
-          <label><span>项目名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
-          <label><span>题材/分类</span><input value={type} onChange={(event) => setType(event.target.value)} placeholder="体育 / SLG / 休闲 / RPG" /></label>
-          <label className="wide"><span>投进去的信息 / 本次分析补充</span><textarea value={materialNotes} onChange={(event) => { setMaterialNotes(event.target.value); setIntro(event.target.value) }} placeholder="写项目背景、目标用户、风格要求；也可以直接上传 project brief、需求文档、语言表、截图或视频。" /></label>
-        </div>
-        <div className="material-upload-row">
-          <FileBox label="上传项目资料（MD/TXT/DOCX/PDF/XLSX/图片/视频）" onFile={(file) => { void onUploadMaterial(file) }} />
-          <div className="material-list">
-            <strong>已投资料 {assetArtifacts.length} 个</strong>
-            <span className="muted">这些资料会进入下一次项目分析；完整语言表只参与分析和候选扫描，不会直接写入术语库。</span>
-            <div className="material-notes">
-              {assetArtifacts.slice(0, 4).map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
-              {assetArtifacts.length > 4 ? <span className="muted">还有 {assetArtifacts.length - 4} 个资料已归档。</span> : null}
-              {!assetArtifacts.length ? <span className="muted">暂无上传资料。可以先写上方说明，也可以直接上传文件。</span> : null}
-            </div>
-          </div>
-        </div>
-      </div>
       <div className="card reference-card">
         <div className="card-title">
           <div className="left">🤖 当前项目翻译提示词（{lang.short}）</div>
@@ -178,21 +151,53 @@ export function MetaTab({
         onCancel={() => { setMetaDraft(metaDraftFromProject(project)); setEditingMeta(false) }}
         onSave={saveMetaDraft}
       />
-      <div className="card harness-card">
-        <div className="card-title">
-          <div>
-            <div className="left">🧩 项目 Harness / 规则包</div>
-            <div className="muted-left">只影响当前项目；后续翻译、AI 校对和 QA 都会读取这份规则。</div>
+      <details className="advanced-panel meta-secondary-panel">
+        <summary>📥 资料与重新分析</summary>
+        <div className="advanced-body">
+          <div className="card material-card">
+            <div className="card-title">
+              <div className="left">项目资料投放</div>
+              <div className="card-actions">
+                <button className="btn btn-ghost btn-sm" disabled={busy} onClick={saveMaterialInput}>保存资料说明</button>
+                <button className="btn btn-primary btn-sm" disabled={busy} onClick={onAnalyze}>重新分析项目</button>
+              </div>
+            </div>
+            <p className="section-hint">这里放项目 brief、需求文档、语言表、图片或视频素材；重复文件会自动复用，不重复参与分析。</p>
+            <div className="meta-grid material-input-grid">
+              <label><span>项目名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+              <label><span>题材/分类</span><input value={type} onChange={(event) => setType(event.target.value)} placeholder="体育 / SLG / 休闲 / RPG" /></label>
+              <label className="wide"><span>投进去的信息 / 本次分析补充</span><textarea value={materialNotes} onChange={(event) => { setMaterialNotes(event.target.value); setIntro(event.target.value) }} placeholder="写项目背景、目标用户、风格要求；也可以直接上传 project brief、需求文档、语言表、截图或视频。" /></label>
+            </div>
+            <div className="material-upload-row">
+              <FileBox label="上传项目资料（MD/TXT/DOCX/PDF/XLSX/图片/视频）" onFile={(file) => { void onUploadMaterial(file) }} />
+              <div className="material-list">
+                <strong>已投资料 {assetArtifacts.length} 个</strong>
+                <span className="muted">这些资料会进入下一次项目分析；完整语言表只参与分析和候选扫描，不会直接写入术语库。</span>
+                <div className="material-notes">
+                  {assetArtifacts.slice(0, 4).map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
+                  {assetArtifacts.length > 4 ? <span className="muted">还有 {assetArtifacts.length - 4} 个资料已归档。</span> : null}
+                  {!assetArtifacts.length ? <span className="muted">暂无上传资料。可以先写上方说明，也可以直接上传文件。</span> : null}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-        <HarnessEditor project={project} onSave={onSaveHarness} compact />
-        <details className="advanced-panel nested-panel">
-          <summary>持续改进建议</summary>
-          <div className="advanced-body">
-            <ImprovementQueue projectId={project.id} />
+      </details>
+      <details className="advanced-panel meta-secondary-panel">
+        <summary>🧩 高级：项目 Harness / 规则包</summary>
+        <div className="advanced-body">
+          <div className="card harness-card">
+            <div className="card-title">
+              <div>
+                <div className="left">项目 Harness / 规则包</div>
+                <div className="muted-left">只影响当前项目；后续翻译、AI 校对和 QA 都会读取这份规则。</div>
+              </div>
+            </div>
+            <HarnessEditor project={project} onSave={onSaveHarness} compact />
+            <ImprovementQueue project={project} onSaveHarness={onSaveHarness} />
           </div>
-        </details>
-      </div>
+        </div>
+      </details>
     </>
   )
 }
@@ -266,31 +271,132 @@ export function ProjectMetaTable({
   )
 }
 
-export function ImprovementQueue({ projectId }: { projectId: string }) {
+type ImprovementKind = 'style_guidance' | 'fixed_term' | 'forbidden' | 'hard_rule' | 'soft_rule'
+
+function improvementText(item: Record<string, unknown>): string {
+  return [item.title, item.detail].map((value) => String(value || '').trim()).filter(Boolean).join('：')
+}
+
+function harnessUpdateFromImprovement(project: Project, item: Record<string, unknown>, kind: ImprovementKind): Partial<ProjectHarness> {
+  const harness = getProjectHarness(project)
+  const title = String(item.title || '').trim()
+  const detail = String(item.detail || '').trim()
+  const text = improvementText(item)
+  if (kind === 'style_guidance') {
+    return { style_guidance: [harness.style_guidance, text].filter(Boolean).join('\n') }
+  }
+  if (kind === 'fixed_term') {
+    const [source, target] = text.includes('=>') ? text.split('=>').map((part) => part.trim()) : [title || text, '']
+    return { fixed_terms: [...(harness.fixed_terms || []), { source, target, note: detail, severity: 'hard' }] }
+  }
+  if (kind === 'forbidden') {
+    return { forbidden_translations: [...(harness.forbidden_translations || []), text] }
+  }
+  if (kind === 'hard_rule') {
+    return { hard_rules: [...(harness.hard_rules || []), { label: title || '项目规则', description: detail || text, pattern: '', enabled: true }] }
+  }
+  return { soft_rules: [...(harness.soft_rules || []), { label: title || '项目建议', description: detail || text, pattern: '', enabled: true }] }
+}
+
+export function ImprovementQueue({ project, onSaveHarness }: { project: Project; onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void> }) {
+  const projectId = project.id
   const [items, setItems] = useState<Record<string, unknown>[]>([])
+  const [kind, setKind] = useState<ImprovementKind>('soft_rule')
+  const [title, setTitle] = useState('')
+  const [detail, setDetail] = useState('')
+  const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
   async function load() {
     setItems(await api<Record<string, unknown>[]>(`/api/projects/${projectId}/improvements`))
   }
   useEffect(() => {
     load()
   }, [projectId])
+
+  async function addSuggestion(applyNow: boolean) {
+    const cleanTitle = title.trim()
+    const cleanDetail = detail.trim()
+    if (!cleanTitle && !cleanDetail) {
+      setMessage('请先填写建议内容。')
+      return
+    }
+    setSaving(true)
+    try {
+      const item = await api<Record<string, unknown>>(`/api/projects/${projectId}/improvements`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: kind, title: cleanTitle || '手动改进建议', detail: cleanDetail })
+      })
+      setTitle('')
+      setDetail('')
+      await load()
+      if (applyNow) await applySuggestion(item, kind)
+      else setMessage('建议已记录，尚未写入 Harness。')
+    } catch (error) {
+      setMessage(`记录失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function applySuggestion(item: Record<string, unknown>, applyKind: ImprovementKind = 'soft_rule') {
+    setSaving(true)
+    try {
+      await onSaveHarness(harnessUpdateFromImprovement(project, item, applyKind))
+      setMessage('已应用到 Harness；后续翻译、AI 校对和 QA 会读取。')
+    } catch (error) {
+      setMessage(`应用失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <div className="card">
+    <div className="card improvement-card">
       <div className="card-title">
-        <div className="left">持续改进建议队列</div>
+        <div>
+          <div className="left">规则改进建议</div>
+          <div className="muted-left">来自 QA/修复流程，也可以手动新增；只有点击“应用到 Harness”后才会持续影响后续任务。</div>
+        </div>
         <button className="btn btn-sm" onClick={load}>刷新</button>
       </div>
+      <div className="improvement-form">
+        <label>
+          <span>应用类型</span>
+          <select value={kind} onChange={(event) => setKind(event.target.value as ImprovementKind)}>
+            <option value="soft_rule">建议规则</option>
+            <option value="hard_rule">必须规则</option>
+            <option value="fixed_term">固定译名</option>
+            <option value="forbidden">禁用译法</option>
+            <option value="style_guidance">风格补充</option>
+          </select>
+        </label>
+        <label>
+          <span>标题</span>
+          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：按钮文案用动词开头" />
+        </label>
+        <label className="wide">
+          <span>内容</span>
+          <textarea value={detail} onChange={(event) => setDetail(event.target.value)} placeholder="写清楚这条建议如何影响后续翻译或校对。" />
+        </label>
+        <div className="row-actions align-right wide">
+          <button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => { void addSuggestion(false) }}>仅记录建议</button>
+          <button className="btn btn-primary btn-sm" disabled={saving} onClick={() => { void addSuggestion(true) }}>新增并应用到 Harness</button>
+        </div>
+      </div>
+      {message ? <div className={message.includes('失败') ? 'warn-line' : 'ok-line'}>{message}</div> : null}
       <table>
-        <thead><tr><th>类别</th><th>标题</th><th>状态</th></tr></thead>
+        <thead><tr><th>类别</th><th>标题</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>
           {items.map((item) => (
             <tr key={String(item.id)}>
               <td>{String(item.category || '-')}</td>
               <td>{String(item.title || '-')}</td>
               <td><span className="tag tag-new">{String(item.status || 'pending_review')}</span></td>
+              <td><button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => { void applySuggestion(item, 'soft_rule') }}>应用到 Harness</button></td>
             </tr>
           ))}
-          {!items.length ? <tr><td colSpan={3} className="muted">暂无建议；可在翻译历史里从某次 run 生成。</td></tr> : null}
+          {!items.length ? <tr><td colSpan={4} className="muted">暂无建议；可从 QA/模型修复生成，也可以在上方手动新增。</td></tr> : null}
         </tbody>
       </table>
     </div>

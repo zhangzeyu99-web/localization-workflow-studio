@@ -42,6 +42,7 @@ test('user can complete the EN localization workflow from project tabs', async (
   await expect(page.locator('.stat-grid')).toContainText('已归档文本')
   await expect(page.getByRole('button', { name: projectName })).toBeVisible()
 
+  await page.locator('summary', { hasText: '资料与重新分析' }).click()
   const materialCard = page.locator('.material-card')
   await materialCard.getByLabel('题材/分类').fill('飞行射击')
   await materialCard.getByLabel('投进去的信息 / 本次分析补充').fill('来源：synthetic-language.xlsx\n目标语言：英语 EN\n风格：UI 短句清晰，术语统一。')
@@ -389,7 +390,7 @@ wb.close()
   ]))
 })
 
-test('translation workflow accepts full language table as project material and language table input', async ({ page, request }) => {
+test('translation workflow blocks full language table in project material and accepts it in step 4', async ({ page, request }) => {
   const languageTable = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lws-project-material-analysis-')), 'full-language-table.xlsx')
   execFileSync('python', ['-c', `
 from openpyxl import Workbook
@@ -415,10 +416,11 @@ wb.close()
   await page.getByRole('button', { name: /\u542f\u52a8\u65b0\u7ffb\u8bd1\u4efb\u52a1/ }).click()
 
   await page.locator('label.upload-box', { hasText: /\u4e0a\u4f20 Markdown/ }).locator('input[type="file"]').setInputFiles(languageTable)
+  await expect(inlineStatus(page, /\u5b8c\u6574\u8bed\u8a00\u8868|STEP4/)).toBeVisible({ timeout: 20000 })
   await expect.poll(async () => {
-    const assets = await request.get(`${baseURL}/api/projects/${project.id}/assets`).then((response) => response.json())
-    return assets.filter((artifact: { kind: string }) => artifact.kind === 'asset').length
-  }, { timeout: 20000 }).toBe(1)
+    const assets = await request.get(`${baseURL}/api/projects/${project.id}/assets?role=project_material`).then((response) => response.json())
+    return assets.length
+  }, { timeout: 20000 }).toBe(0)
 
   await page.getByRole('button', { name: /4\s+\u8bed\u8a00\u8868/ }).click()
   await page.locator('label.upload-box', { hasText: /\u4e0a\u4f20 language\.xlsx/ }).locator('input[type="file"]').setInputFiles(languageTable)

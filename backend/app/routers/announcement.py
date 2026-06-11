@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .. import db
+from ..ai_input_audit import announcement_ai_input_summary
 from ..jobs import (
     active_job_id,
     cancel_singleton_job,
@@ -153,6 +154,14 @@ def get_project_announcement_task(task_id: str) -> dict[str, Any]:
         return get_announcement_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc
+
+
+@router.get("/api/announcement-tasks/{task_id}/ai-input-summary")
+def get_announcement_task_ai_input_summary(task_id: str) -> dict[str, Any]:
+    try:
+        return announcement_ai_input_summary(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
 
 
 @router.post("/api/announcement-tasks/{task_id}/cancel")

@@ -114,6 +114,14 @@ def _scan_workbook_translation_readiness(path: Path, language: str, summary: dic
     return found_target_column, None
 
 
+def _set_readiness_action(summary: dict[str, Any], *, input_mode: str, next_step: int, user_message: str, format_errors: list[str] | None = None) -> dict[str, Any]:
+    summary["input_mode"] = input_mode
+    summary["next_step"] = next_step
+    summary["user_message"] = user_message
+    summary["format_errors"] = format_errors or []
+    return summary
+
+
 def _finalize_translation_readiness(summary: dict[str, Any], *, found_target_column: bool, effective_batch_size: int) -> dict[str, Any]:
     source_rows = int(summary["source_rows"])
     empty_rows = int(summary["empty_target_rows"])
@@ -122,20 +130,42 @@ def _finalize_translation_readiness(summary: dict[str, Any], *, found_target_col
     summary["estimated_batches"] = math.ceil(source_rows / effective_batch_size) if source_rows else 0
     if not source_rows:
         summary["reason"] = "no_source_rows"
-        return summary
+        return _set_readiness_action(
+            summary,
+            input_mode="invalid",
+            next_step=4,
+            user_message="未检测到 CN/原文行，请上传包含 ID 和 CN 的语言表。",
+            format_errors=["missing_source_rows"],
+        )
     if int(summary["invalid_id_rows"]):
         summary["estimated_batches"] = 0
         summary["reason"] = "invalid_id_rows"
-        return summary
+        return _set_readiness_action(
+            summary,
+            input_mode="invalid",
+            next_step=4,
+            user_message="有行缺少可回写 ID，请修正后重新上传。",
+            format_errors=["invalid_id_rows"],
+        )
     if not found_target_column:
-        summary["needs_translation"] = True
-        summary["ready_for_translation"] = True
         summary["reason"] = "target_column_missing"
-        return summary
+        language = str(summary.get("target_language") or "en").upper()
+        return _set_readiness_action(
+            summary,
+            input_mode="invalid",
+            next_step=4,
+            user_message=f"未检测到 {language} 译文列；请上传包含 ID、CN 和目标语言列的语言表，或先切换目标语言。",
+            format_errors=["target_column_missing"],
+        )
     if empty_rows == 0 and cjk_rows == 0 and translated_rows > 0:
         summary["ready_for_qa"] = True
         summary["reason"] = "existing_target_translation"
-        return summary
+        return _set_readiness_action(
+            summary,
+            input_mode="ready_for_qa",
+            next_step=8,
+            user_message="检测到已有完整译文，可跳过模型翻译，直接进入校对。",
+        )
     summary["needs_translation"] = True
     summary["ready_for_translation"] = True
     if empty_rows and cjk_rows:
@@ -146,7 +176,12 @@ def _finalize_translation_readiness(summary: dict[str, Any], *, found_target_col
         summary["reason"] = "cjk_target_rows"
     else:
         summary["reason"] = "needs_translation"
-    return summary
+    return _set_readiness_action(
+        summary,
+        input_mode="needs_translation",
+        next_step=5,
+        user_message="检测到待翻译内容，请先扫描术语候选。",
+    )
 
 def inspect_translation_readiness(artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
     language = require_supported_language(language)
@@ -169,6 +204,10 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
         "reason": "unsupported_file",
         "batch_size": effective_batch_size,
         "estimated_batches": 0,
+        "input_mode": "invalid",
+        "next_step": 4,
+        "format_errors": ["unsupported_file"],
+        "user_message": "当前文件类型不适合作为语言表，请上传 XLSX/XLS/CSV 语言表。",
     }
     if _is_quick_text_path(path) and path.exists():
         rows = _quick_text_translation_rows(path)
@@ -178,48 +217,34 @@ def inspect_translation_readiness(artifact_id: str, batch_size: int | None = Non
         summary["ready_for_translation"] = bool(rows)
         summary["reason"] = "needs_translation" if rows else "no_source_rows"
         summary["estimated_batches"] = math.ceil(len(rows) / effective_batch_size) if rows else 0
-        return summary
+        if rows:
+            return _set_readiness_action(
+                summary,
+                input_mode="needs_translation",
+                next_step=5,
+                user_message="检测到待翻译文本，可进入翻译。",
+            )
+        return _set_readiness_action(
+            summary,
+            input_mode="invalid",
+            next_step=4,
+            user_message="未检测到可翻译文本，请重新上传。",
+            format_errors=["no_source_rows"],
+        )
     if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"} or not path.exists():
         return summary
 
     found_target_column, scan_error = _scan_workbook_translation_readiness(path, language, summary)
     if scan_error:
         summary["reason"] = scan_error
-        return summary
+        return _set_readiness_action(
+            summary,
+            input_mode="invalid",
+            next_step=4,
+            user_message="语言表读取失败，请确认文件未损坏且表头格式正确。",
+            format_errors=["inspect_failed"],
+        )
     return _finalize_translation_readiness(summary, found_target_column=found_target_column, effective_batch_size=effective_batch_size)
-
-    source_rows = int(summary["source_rows"])
-    empty_rows = int(summary["empty_target_rows"])
-    cjk_rows = int(summary["cjk_target_rows"])
-    translated_rows = int(summary["translated_rows"])
-    summary["estimated_batches"] = math.ceil(source_rows / effective_batch_size) if source_rows else 0
-    if not source_rows:
-        summary["reason"] = "no_source_rows"
-        return summary
-    if int(summary["invalid_id_rows"]):
-        summary["estimated_batches"] = 0
-        summary["reason"] = "invalid_id_rows"
-        return summary
-    if not found_target_column:
-        summary["needs_translation"] = True
-        summary["ready_for_translation"] = True
-        summary["reason"] = "target_column_missing"
-        return summary
-    if empty_rows == 0 and cjk_rows == 0 and translated_rows > 0:
-        summary["ready_for_qa"] = True
-        summary["reason"] = "existing_target_translation"
-        return summary
-    summary["needs_translation"] = True
-    summary["ready_for_translation"] = True
-    if empty_rows and cjk_rows:
-        summary["reason"] = "empty_or_cjk_target_rows"
-    elif empty_rows:
-        summary["reason"] = "empty_target_rows"
-    elif cjk_rows:
-        summary["reason"] = "cjk_target_rows"
-    else:
-        summary["reason"] = "needs_translation"
-    return summary
 
 
 
