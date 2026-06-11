@@ -402,7 +402,13 @@ def test_announcement_force_delivery_with_hard_blockers_generates_package(tmp_pa
     source_path = tmp_path / "notice_force.txt"
     terms_path = tmp_path / "notice_terms.xlsx"
     source_path.write_text("\u82f1\u96c4\u5956\u52b1 {0}\n", encoding="utf-8")
-    _announcement_ko_terms(terms_path)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Terms"
+    ws.append(["ID", "CN", "KR"])
+    ws.append(["term_hero", "\u82f1\u96c4", "\u82f1\u96c4"])
+    wb.save(terms_path)
+    wb.close()
 
     with TestClient(app) as client:
         project = client.post("/api/projects", json={"name": "\u516c\u544a\u5f3a\u5236\u4ea4\u4ed8", "type": "RPG"}).json()
@@ -446,20 +452,17 @@ def test_announcement_force_delivery_with_hard_blockers_generates_package(tmp_pa
         )
         assert imported.status_code == 200, imported.text
 
-        blocked = client.post(f"/api/announcement-tasks/{task_id}/apply", json={"languages": ["ko"]})
-        assert blocked.status_code == 400, blocked.text
-        assert "hard blockers" in blocked.json()["detail"]
+        applied = client.post(f"/api/announcement-tasks/{task_id}/apply", json={"languages": ["ko"]})
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["summary"]["hard_blockers"] > 0
+        assert applied.json()["summary"]["can_deliver"] is True
 
         normal_delivery = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260608"})
-        assert normal_delivery.status_code == 400
-        assert "hard blockers" in normal_delivery.json()["detail"]
-
-        forced = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260608", "force": True})
-        assert forced.status_code == 200, forced.text
-        summary = forced.json()["summary"]
+        assert normal_delivery.status_code == 200, normal_delivery.text
+        summary = normal_delivery.json()["summary"]
         assert summary["forced"] is True
         assert summary["hard_blockers"] > 0
-        package = next(artifact for artifact in forced.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
+        package = next(artifact for artifact in normal_delivery.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         assert package["metadata"]["forced"] is True
         with zipfile.ZipFile(package["path"]) as archive:
             names = sorted(archive.namelist())
@@ -518,16 +521,18 @@ def test_announcement_fix_hard_blockers_repairs_missing_token_and_applies(tmp_pa
             json={"languages": ["ko"], "response_artifact_ids": [response_artifact["id"]]},
         )
         assert imported.status_code == 200, imported.text
-        blocked = client.post(f"/api/announcement-tasks/{task_id}/apply", json={"languages": ["ko"]})
-        assert blocked.status_code == 400, blocked.text
+        applied = client.post(f"/api/announcement-tasks/{task_id}/apply", json={"languages": ["ko"]})
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["summary"]["auto_fixed"] == 1
+        assert applied.json()["summary"]["hard_blockers"] == 0
 
         fixed = client.post(f"/api/announcement-tasks/{task_id}/fix-hard-blockers", json={"languages": ["ko"]})
         assert fixed.status_code == 200, fixed.text
         payload = fixed.json()
-        assert payload["summary"]["fixed"] == 1
+        assert payload["summary"]["fixed"] == 0
         assert payload["summary"]["remaining_hard_blockers"] == 0
         assert payload["task"]["status"] == "applied"
-        output_artifact = next(artifact for artifact in payload["artifacts"] if artifact["kind"] == "announcement_output_file")
+        output_artifact = next(artifact for artifact in applied.json()["artifacts"] if artifact["kind"] == "announcement_output_file")
         assert "{0}" in Path(output_artifact["path"]).read_text(encoding="utf-8")
 
 
@@ -1064,9 +1069,9 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         assert announcement_deliverable["status"] == "delivered"
         assert announcement_deliverable["task_type"] == "公告任务"
         assert announcement_deliverable["language"] == "KR"
-        assert announcement_deliverable["files"]["package"]["download_url"].startswith("/api/artifacts/")
-        assert announcement_deliverable["files"]["qa_summary"]["download_url"].startswith("/api/artifacts/")
-        assert announcement_deliverable["files"]["outputs"][0]["download_url"].startswith("/api/artifacts/")
+        assert announcement_deliverable["files"]["package"]["download_url"].startswith(f"/api/projects/{project['id']}/artifacts/")
+        assert announcement_deliverable["files"]["qa_summary"]["download_url"].startswith(f"/api/projects/{project['id']}/artifacts/")
+        assert announcement_deliverable["files"]["outputs"][0]["download_url"].startswith(f"/api/projects/{project['id']}/artifacts/")
 
         forced = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526", "force": True})
         assert forced.status_code == 200, forced.text
@@ -3179,7 +3184,7 @@ def test_qa_continuation_inherits_translation_delivery_identity(tmp_path: Path) 
         assert re.fullmatch(r"继承任务_EN_\d{12}_A-[0-9a-f]{6}_final\.xlsx", package["files"][0]["filename"])
 
 
-def test_failed_runs_are_not_deliverable(tmp_path: Path) -> None:
+def test_failed_qa_runs_remain_deliverable_with_qa_summary(tmp_path: Path) -> None:
     workbook = tmp_path / "failed.xlsx"
     _project_harness_failed_workbook(workbook)
 
@@ -3198,7 +3203,15 @@ def test_failed_runs_are_not_deliverable(tmp_path: Path) -> None:
         qa_response = client.post(f"/api/runs/{run['id']}/qa")
         assert qa_response.status_code == 200
         assert qa_response.json()["run"]["status"] == "failed"
-        assert client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"] == []
+        assert any(artifact["kind"] == "qa_final_workbook" for artifact in qa_response.json()["artifacts"])
+        deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
+        assert len(deliverables) == 1
+        assert deliverables[0]["qa_status"] == "failed"
+        assert deliverables[0]["qa_hard_errors"] > 0
+        package_response = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}")
+        assert package_response.status_code == 200, package_response.text
+        files = {item["kind"]: item for item in package_response.json()["files"]}
+        assert {"final", "changes"}.issubset(files)
 
 
 def test_failed_qa_exposes_normalized_project_harness_rows(tmp_path: Path) -> None:

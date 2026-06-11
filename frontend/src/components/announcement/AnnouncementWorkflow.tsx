@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
-import { artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
+import { artifactDownloadHref, artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
 import { aiProviderConfigurationReminder, isAiProviderReady, providerLabel } from '../../domain/providerSettings'
 import { ActionStatus, ArtifactNote, FileBox, FileBoxWithTemplate, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
@@ -115,6 +115,30 @@ export function isAnnouncementTranslationResumable(task: AnnouncementTask | null
   if (progress && progress.completed_rows < progress.total_rows) return true
   if (progress?.failed_batch) return true
   return false
+}
+
+function toNumber(value: unknown): number {
+  const parsed = Number(value || 0)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function announcementHardBlockerCount(task: AnnouncementTask | null): number {
+  if (!task) return 0
+  const metadata = task.metadata || {}
+  const counts = [toNumber(metadata.hard_blockers)]
+  const qaIssues = metadata.qa_issues
+  if (Array.isArray(qaIssues)) {
+    counts.push(qaIssues.filter((issue) => String((issue as Record<string, unknown>)?.severity || 'hard').toLowerCase() === 'hard').length)
+  }
+  for (const language of task.languages || []) {
+    counts.push(toNumber(language.metadata?.hard_blockers))
+  }
+  for (const artifact of task.artifacts || []) {
+    if (['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind)) {
+      counts.push(toNumber(artifact.metadata?.hard_blockers))
+    }
+  }
+  return Math.max(...counts)
 }
 
 export function announcementTranslateEndpoint(task: AnnouncementTask | null): 'translate/start' | 'translate/resume' {
@@ -412,15 +436,14 @@ export function AnnouncementWizard({
           ) : step === 7 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 7</span>AI 翻译</div>
-              <div className="panel-desc">主流程是直接调用已配置的 AI provider 翻译；中转表、Workpack 和提示词快照只是兜底下载或审计材料。不会使用谷歌机翻或在线机翻聚合器。</div>
+              <div className="panel-desc">点击“AI翻译”后会在后台调用已配置的 AI 翻译公告正文，进度会显示在下方。不会使用谷歌机翻或在线机翻聚合器。</div>
               {getAnnouncementTranslationProgress(activeTask) ? <TranslationProgressBar progress={getAnnouncementTranslationProgress(activeTask)!} /> : null}
               {providerConfigurationReminder ? <div className="warn-line">需要先配置 API：{providerConfigurationReminder}</div> : null}
-              {activeTask?.metadata?.reason === 'background_job_interrupted' ? <div className="warn-line">后台翻译曾中断；可点击“调用已配置 AI 翻译”继续，已完成批次不会重跑。</div> : null}
-              {activeTask?.metadata?.reason === 'api_budget_confirmation_required' ? <div className="warn-line">预计 API token 超过提醒阈值；请确认预算后再继续后台翻译。</div> : null}
-              <div className="workflow-note-grid">
-                <div><strong>AI provider</strong><span>{providerReady ? `${providerLabel(settings)} 已配置，可直接翻译` : '未配置真实 API，请先到设置填写 API key'}</span></div>
+              {activeTask?.metadata?.reason === 'background_job_interrupted' ? <div className="warn-line">后台翻译曾中断；再点“AI翻译”会从已完成批次继续，不会全部重跑。</div> : null}
+              {activeTask?.metadata?.reason === 'api_budget_confirmation_required' ? <div className="warn-line">预计 API token 超过提醒阈值；确认后可继续后台翻译。</div> : null}
+              <div className="workflow-note-grid compact-grid">
+                <div><strong>AI</strong><span>{providerReady ? `${providerLabel(settings)} 已配置` : '未配置 API key'}</span></div>
                 <div><strong>目标语言</strong><span>{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
-                <div><strong>当前方式</strong><span>{providerReady ? '直接调用 AI' : '等待 API 配置'}</span></div>
               </div>
               <div className="row-actions">
                 <button
@@ -432,36 +455,41 @@ export function AnnouncementWizard({
                     if (needsBudgetConfirm && !confirmed) return
                     run(announcementTranslateEndpoint(activeTask), undefined, { confirm_api_budget: confirmed })
                   }}
-                >
-                  {providerReady ? (activeTask?.status === 'needs_input' ? '确认后继续 AI 翻译' : '调用已配置 AI 翻译') : '请先配置 API key'}
-                </button>
-                <button className="btn btn-ghost" disabled={!activeTask || busy || !['queued', 'running'].includes(activeTask?.status || '')} onClick={() => run('translate/cancel', 7)}>暂停后台翻译</button>
+                >AI翻译</button>
+                {['queued', 'running'].includes(activeTask?.status || '') ? (
+                  <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={() => run('translate/cancel', 7)}>暂停</button>
+                ) : null}
               </div>
-              {hasAnnouncementPreparedAiInput(activeTask) ? (
-                <AiInputAuditPanel endpoint={`/api/announcement-tasks/${activeTask!.id}/ai-input-summary`} title="公告正文翻译 AI 输入" buttonLabel="查看将发送给 AI 的内容" />
-              ) : activeTask ? (
+              {!hasAnnouncementPreparedAiInput(activeTask) && activeTask ? (
                 <div className="muted-empty-card gap-top">还没有翻译准备包。请先回 STEP 6 点击“生成翻译准备包”。</div>
               ) : null}
-              <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
               <details className="delivery-advanced">
-                <summary>外部 AI response 导入（备用）</summary>
-                <div className="panel-desc">只有在没有可用 API、或要把 workpack 发给外部 AI/供应商处理时才需要。当前已配置 API 时不用导入。</div>
-                <div className="upload-row">
-                  <FileBox label="上传 ai_response_<lang>.jsonl" onFile={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setResponseArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
-                  <div className="workflow-note-grid compact-grid">
-                    <div><strong>已上传 response</strong><span>{responseArtifactIds.length} 个</span></div>
+                <summary>过程文件与审计（可选）</summary>
+                <div className="panel-desc">这些是中转表、workpack、prompt 和 AI 输入审计，正常翻译不需要操作。</div>
+                {hasAnnouncementPreparedAiInput(activeTask) ? (
+                  <AiInputAuditPanel endpoint={`/api/announcement-tasks/${activeTask!.id}/ai-input-summary`} title="公告正文翻译 AI 输入" buttonLabel="查看 AI 输入" />
+                ) : null}
+                <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
+                <details className="delivery-advanced">
+                  <summary>外部 AI response 导入（备用）</summary>
+                  <div className="panel-desc">只有在没有可用 API、或要把 workpack 发给外部 AI/供应商处理时才需要。已配置 API 时不用导入。</div>
+                  <div className="upload-row">
+                    <FileBox label="上传 ai_response_<lang>.jsonl" onFile={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setResponseArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
+                    <div className="workflow-note-grid compact-grid">
+                      <div><strong>已上传 response</strong><span>{responseArtifactIds.length} 个</span></div>
+                    </div>
                   </div>
-                </div>
-                <div className="row-actions">
-                  <button className="btn btn-ghost" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入 AI response</button>
-                </div>
+                  <div className="row-actions">
+                    <button className="btn btn-ghost" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入 AI response</button>
+                  </div>
+                </details>
               </details>
             </>
           ) : step === 8 ? (
             <AnnouncementActionStep
               title="校对回填"
               step={8}
-              desc="按语言校验 ID、顺序、变量、标签、术语、中文残留和格式指纹；hard blocker 未清零不生成最终交付包。"
+              desc="按语言校验 ID、顺序、变量、标签、术语、中文残留和格式指纹；系统会先自动修复，未清零的问题会写入 QA 摘要，不再阻塞交付包生成。"
               activeTask={activeTask}
               busy={busy}
               actionLabel="QA 并回填同格式文件"
@@ -615,7 +643,7 @@ export function AnnouncementTermsStep({
         <div className="row-actions wrap">
           <button className="btn btn-primary" disabled={busy || !draftTerms.length} onClick={() => onSaveTerms(draftTerms, languages)}>保存编辑</button>
           <button className="btn btn-ghost" disabled={busy} onClick={addTerm}>+ 新增术语</button>
-          {exportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${exportArtifact.id}/download`}>导出 XLSX</a> : null}
+          {exportArtifact ? <a className="btn btn-ghost" href={artifactDownloadHref(exportArtifact)}>导出 XLSX</a> : null}
         </div>
       </div>
       <details className="asset-list gap-top optional-panel" open={!draftTerms.length || Boolean(aiPacketArtifact || aiReportArtifact)}>
@@ -630,8 +658,8 @@ export function AnnouncementTermsStep({
               <span>默认启用 AI 漏词复查<em>API 已配置时自动复查；没配置时只生成检查包，不阻断本地提取。</em></span>
             </label>
             <div className="row-actions wrap gap-top">
-              {aiPacketArtifact ? <a className="btn btn-ghost btn-sm" href={`/api/artifacts/${aiPacketArtifact.id}/download`}>下载检查包</a> : null}
-              {aiReportArtifact ? <a className="btn btn-ghost btn-sm" href={`/api/artifacts/${aiReportArtifact.id}/download`}>下载 AI 报告</a> : null}
+              {aiPacketArtifact ? <a className="btn btn-ghost btn-sm" href={artifactDownloadHref(aiPacketArtifact)}>下载检查包</a> : null}
+              {aiReportArtifact ? <a className="btn btn-ghost btn-sm" href={artifactDownloadHref(aiReportArtifact)}>下载 AI 报告</a> : null}
             </div>
             <div className="gap-top">
               <FileBox label="上传外部 AI 结果 JSON（可选）" onFile={onUploadAiSupplementResponse} />
@@ -715,7 +743,7 @@ export function announcementTaskCanCancel(task: AnnouncementTask): boolean {
 export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { activeTask: AnnouncementTask | null; busy: boolean; onDeliver: (force?: boolean) => void }) {
   const deliveryArtifacts = (activeTask?.artifacts || []).filter((artifact) => ['announcement_delivery_package', 'announcement_docx_delivery_package'].includes(artifact.kind))
   const delivered = Boolean(activeTask?.status === 'delivered' && deliveryArtifacts.length)
-  const hardBlockers = Number(activeTask?.metadata?.hard_blockers || 0)
+  const hardBlockers = announcementHardBlockerCount(activeTask)
   const qaSummaryArtifacts = pickerArtifacts((activeTask?.artifacts || []).filter((artifact) => ['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind)))
   return (
     <>
@@ -725,12 +753,12 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
       <AnnouncementTaskSnapshot task={activeTask} />
       {hardBlockers > 0 && !delivered ? (
         <div className="warn-line">
-          当前还有 {hardBlockers} 个 Hard blocker。默认不建议交付；如果只是临时验收或先看版面，可以跳过阻断生成带 QA 摘要的交付包。
+          当前还有 {hardBlockers} 个 Hard blocker。系统会把问题写入 QA 摘要；如需继续验收，可以直接生成带 QA 摘要的交付包。
         </div>
       ) : null}
       {qaSummaryArtifacts.length && hardBlockers > 0 ? (
         <div className="row-actions">
-          {qaSummaryArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载 QA 摘要</a>)}
+          {qaSummaryArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact)}>下载 QA 摘要</a>)}
         </div>
       ) : null}
       {delivered ? <div className="ok-line">已生成公告交付包，可在下方下载；不会重复生成新交付。</div> : null}
@@ -741,10 +769,10 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
             className="btn btn-primary"
             disabled={!activeTask || busy}
             onClick={() => {
-              if (window.confirm(`当前还有 ${hardBlockers} 个 Hard blocker。确认跳过阻断并生成交付包？QA 摘要会一起放进交付包。`)) onDeliver(true)
+              if (window.confirm(`当前还有 ${hardBlockers} 个 Hard blocker。确认生成带 QA 摘要的交付包？`)) onDeliver(true)
             }}
           >
-            跳过 Hard blocker 生成交付包
+            生成带 QA 摘要的交付包
           </button>
         ) : null}
       </div>
@@ -787,7 +815,7 @@ export function AnnouncementActionStep({
   fixActionLabel?: string
   onFixAction?: () => void
 }) {
-  const hardBlockers = Number(activeTask?.metadata?.hard_blockers || 0)
+  const hardBlockers = announcementHardBlockerCount(activeTask)
   const qaSummaryArtifacts = pickerArtifacts((activeTask?.artifacts || []).filter((artifact) => ['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind)))
   return (
     <>
@@ -796,11 +824,11 @@ export function AnnouncementActionStep({
       {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
       <AnnouncementTaskSnapshot task={activeTask} />
       {step === 8 && hardBlockers > 0 ? (
-        <div className="warn-line">检测到 {hardBlockers} 个 Hard blocker。可以下载 QA 摘要查看问题；如果只是临时验收，可去 STEP 9 跳过阻断生成交付包。</div>
+        <div className="warn-line">检测到 {hardBlockers} 个 Hard blocker。系统已保留回填文件，可以下载 QA 摘要查看问题；也可以继续到 STEP 9 生成带 QA 摘要的交付包。</div>
       ) : null}
       {step === 8 && qaSummaryArtifacts.length ? (
         <div className="row-actions">
-          {qaSummaryArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载 QA 摘要</a>)}
+          {qaSummaryArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact)}>下载 QA 摘要</a>)}
         </div>
       ) : null}
       <div className="row-actions">
@@ -847,6 +875,7 @@ export function AnnouncementLanguageSubflows({
 export function AnnouncementTaskSnapshot({ task }: { task: AnnouncementTask | null }) {
   if (!task) return null
   const meta = task.metadata || {}
+  const hardBlockers = announcementHardBlockerCount(task)
   return (
     <div className="workflow-note-grid">
       <div><strong>任务状态</strong><span>{task.status} · STEP {task.current_step}/9</span></div>
@@ -854,7 +883,7 @@ export function AnnouncementTaskSnapshot({ task }: { task: AnnouncementTask | nu
       <div><strong>目标语言</strong><span>{(task.selected_languages || []).map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
       <div><strong>术语数</strong><span>{String((meta.terms_summary as Record<string, unknown> | undefined)?.terms ?? '-')}</span></div>
       <div><strong>缺失术语</strong><span>{String((meta.lookup_summary as Record<string, unknown> | undefined)?.missing_terms ?? '-')}</span></div>
-      <div><strong>Hard blocker</strong><span>{String(meta.hard_blockers ?? '-')}</span></div>
+      <div><strong>Hard blocker</strong><span>{hardBlockers ? String(hardBlockers) : String(meta.hard_blockers ?? '-')}</span></div>
     </div>
   )
 }
@@ -885,15 +914,15 @@ export function AnnouncementTaskArtifacts({ task }: { task: AnnouncementTask }) 
           <div><span>交付结果</span><strong>{hasDelivery ? '已生成公告交付包' : '待生成'}</strong></div>
         </div>
         <div className="delivery-actions">
-          {finalArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-primary btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载公告交付包</a>)}
-          {qaArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{announcementDownloadLabel(artifact)}</a>)}
+          {finalArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-primary btn-sm" href={artifactDownloadHref(artifact)}>下载公告交付包</a>)}
+          {qaArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact)}>{announcementDownloadLabel(artifact)}</a>)}
         </div>
       </div>
       {processArtifacts.length ? (
         <details className="asset-list delivery-advanced">
           <summary className="ai-header">高级：过程文件（{processArtifacts.length}）</summary>
           <div className="row-actions wrap">
-            {processArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>)}
+            {processArtifacts.map((artifact) => <a key={artifact.id} className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact)}>{artifactPickerLabel(artifact)}</a>)}
           </div>
         </details>
       ) : null}

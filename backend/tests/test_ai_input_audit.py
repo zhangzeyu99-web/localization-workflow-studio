@@ -129,6 +129,36 @@ def test_upload_readability_self_test_saves_and_reads_file() -> None:
         assert payload["readable"] is True
         assert payload["size"] == len(b"cloud self test")
         assert "cloud self test" in payload["preview"]
+        health = client.get("/api/health").json()
+        assert health["latest_upload_readability"]["sha256"] == payload["sha256"]
+
+
+def test_project_analysis_rejects_materials_that_do_not_enter_ai(tmp_path: Path) -> None:
+    project = db.insert_project("Unsupported Material", "SLG", "", "G")
+    binary = tmp_path / "recording.bin"
+    binary.write_bytes(b"\x00\x01\x02")
+    artifact = db.add_artifact(project["id"], "recording.bin", binary, "asset", mime="application/octet-stream")
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project['id']}/analyze",
+            json={"intro": "unsupported", "asset_artifact_ids": [artifact["id"]], "target_language": "en"},
+        )
+        assert response.status_code == 400
+        assert "没有成功解析进 AI" in response.text
+
+
+def test_project_scoped_artifact_download_rejects_other_project(tmp_path: Path) -> None:
+    project_a = db.insert_project("Download A", "SLG", "", "G")
+    project_b = db.insert_project("Download B", "SLG", "", "G")
+    path = Path(os.environ["LWS_DATA_ROOT"]) / "projects" / project_a["id"] / "uploads" / "brief.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# A", encoding="utf-8")
+    artifact = db.add_artifact(project_a["id"], "brief.md", path, "asset", mime="text/markdown")
+    with TestClient(app) as client:
+        ok = client.get(f"/api/projects/{project_a['id']}/artifacts/{artifact['id']}/download")
+        assert ok.status_code == 200
+        blocked = client.get(f"/api/projects/{project_b['id']}/artifacts/{artifact['id']}/download")
+        assert blocked.status_code == 404
 
 
 def test_translation_ai_input_summary_reports_workpack_and_prompt(tmp_path: Path) -> None:

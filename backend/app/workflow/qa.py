@@ -470,19 +470,23 @@ def run_localization_qa(
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ),
     ]
-    qa_final_artifact = None
-    if passed:
-        qa_final_artifact = db.add_artifact(
-            project["id"],
-            "QA final workbook",
-            qa_workbook,
-            "qa_final_workbook",
-            run_id=run_id,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            origin="generated",
-            metadata={"language": language, "source_workbook": str(workbook_path), "glossary_snapshot": glossary_snapshot["id"]},
-        )
-        artifacts.append(qa_final_artifact)
+    qa_final_artifact = db.add_artifact(
+        project["id"],
+        "QA final workbook",
+        qa_workbook,
+        "qa_final_workbook",
+        run_id=run_id,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        origin="generated",
+        metadata={
+            "language": language,
+            "source_workbook": str(workbook_path),
+            "glossary_snapshot": glossary_snapshot["id"],
+            "qa_passed": passed,
+            "hard_errors": hard_errors,
+        },
+    )
+    artifacts.append(qa_final_artifact)
     return {
         "artifacts": artifacts,
         "qa_final_artifact": qa_final_artifact,

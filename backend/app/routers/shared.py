@@ -37,7 +37,7 @@ def _attach_delivery_downloads(project_id: str, deliverable: dict[str, Any]) -> 
             if item.get("download_url"):
                 continue
             if item.get("artifact_id"):
-                item["download_url"] = f"/api/artifacts/{item['artifact_id']}/download"
+                item["download_url"] = f"/api/projects/{project_id}/artifacts/{item['artifact_id']}/download"
             elif item.get("path"):
                 item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
             else:

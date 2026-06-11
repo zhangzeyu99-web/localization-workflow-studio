@@ -13,12 +13,13 @@ from typing import Any
 
 router = APIRouter()
 
-@router.get("/api/artifacts/{artifact_id}/download")
-def download_artifact(artifact_id: str) -> FileResponse:
+def _artifact_file_response(artifact_id: str, project_id: str | None = None) -> FileResponse:
     try:
         artifact = db.get_artifact(artifact_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
+    if project_id and artifact.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="artifact not found in current project")
     path = Path(artifact["path"])
     if not path.exists():
         raise HTTPException(status_code=404, detail="artifact file missing")
@@ -27,6 +28,16 @@ def download_artifact(artifact_id: str) -> FileResponse:
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="artifact path is outside data root") from exc
     return FileResponse(path, media_type=artifact["mime"], filename=path.name)
+
+
+@router.get("/api/projects/{project_id}/artifacts/{artifact_id}/download")
+def download_project_artifact(project_id: str, artifact_id: str) -> FileResponse:
+    return _artifact_file_response(artifact_id, project_id=project_id)
+
+
+@router.get("/api/artifacts/{artifact_id}/download")
+def download_artifact(artifact_id: str, project_id: str | None = None) -> FileResponse:
+    return _artifact_file_response(artifact_id, project_id=project_id)
 
 
 @router.patch("/api/artifacts/{artifact_id}")

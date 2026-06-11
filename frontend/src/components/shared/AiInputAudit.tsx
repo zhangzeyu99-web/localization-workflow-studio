@@ -41,7 +41,7 @@ function renderProjectAudit(data: AuditRecord) {
             {text(item.warning) || text(item.readable_reason) ? <div className="warn-line slim">{text(item.warning) || text(item.readable_reason)}</div> : null}
             {text(item.excerpt) ? <p>{text(item.excerpt)}</p> : <p className="muted">暂无可展示的 AI 输入摘要</p>}
           </div>
-        )) : <div className="muted">暂无资料读取明细或本次未生成 AI 输入</div>}
+        )) : <div className="muted">暂无资料读取明细，或本次尚未生成 AI 输入。</div>}
       </div>
     </>
   )
@@ -83,7 +83,7 @@ function renderAnnouncementAudit(data: AuditRecord) {
   }
   return (
     <>
-      {warnings.length ? <div className="warn-line slim">{warnings.join('?')}</div> : null}
+      {warnings.length ? <div className="warn-line slim">{warnings.join('；')}</div> : null}
       <div className="audit-kpis">
         <span>段落 {text(data.segments) || 0}</span>
         <span>术语 {text(lookup.terms) || 0}</span>
@@ -97,7 +97,7 @@ function renderAnnouncementAudit(data: AuditRecord) {
             <p>{text(item.prompt_preview) || '暂无 prompt 摘要'}</p>
             {asArray(item.samples).slice(0, 2).map((sample, sampleIndex) => <p className="audit-sample" key={sampleIndex}>{text(sample.source)}</p>)}
           </div>
-        )) : <div className="muted">暂无公告翻译 AI 输入</div>}
+        )) : <div className="muted">暂无公告翻译 AI 输入。</div>}
       </div>
     </>
   )

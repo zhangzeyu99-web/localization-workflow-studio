@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+import json
 from pathlib import Path
 
 from .. import db
@@ -28,6 +29,8 @@ from typing import Any
 
 router = APIRouter()
 INSTANCE_ID = os.environ.get("LWS_INSTANCE_ID") or uuid.uuid4().hex[:12]
+DIAGNOSTICS_ROOT = DATA_ROOT / "diagnostics"
+LATEST_UPLOAD_READABILITY = DIAGNOSTICS_ROOT / "latest_upload_readability.json"
 
 
 def _deployment_mode() -> str:
@@ -53,6 +56,21 @@ def _database_connected() -> bool:
     except Exception:
         return False
 
+
+def _latest_upload_readability() -> dict[str, Any] | None:
+    if not LATEST_UPLOAD_READABILITY.exists():
+        return None
+    try:
+        payload = json.loads(LATEST_UPLOAD_READABILITY.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_latest_upload_readability(payload: dict[str, Any]) -> None:
+    DIAGNOSTICS_ROOT.mkdir(parents=True, exist_ok=True)
+    LATEST_UPLOAD_READABILITY.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
 @router.get("/api/health")
 def health() -> dict[str, Any]:
     settings = load_settings()
@@ -73,6 +91,7 @@ def health() -> dict[str, Any]:
             "provider": provider,
             "provider_configured": bool(settings.get("api_key")) and provider not in {"", "mock", "test-fake"},
         },
+        "latest_upload_readability": _latest_upload_readability(),
     }
 
 
@@ -83,7 +102,7 @@ def upload_readability_self_test(file: UploadFile = File(...)) -> dict[str, Any]
     try:
         digest, size = stream_upload(file.file, destination)
         preview = destination.read_text(encoding="utf-8", errors="replace")[:500] if destination.suffix.lower() in {".txt", ".md", ".csv", ".json"} else ""
-        return {
+        payload = {
             "ok": True,
             "filename": safe_name,
             "sha256": digest,
@@ -91,7 +110,10 @@ def upload_readability_self_test(file: UploadFile = File(...)) -> dict[str, Any]
             "path": str(destination),
             "readable": destination.exists(),
             "preview": preview,
+            "checked_at": db.now_iso(),
         }
+        _write_latest_upload_readability(payload)
+        return payload
     except UploadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=user_facing_error(exc)) from exc
     except OSError as exc:

@@ -946,6 +946,39 @@ a { color: #a5b4fc; text-decoration: none; }
   color: #cbd5e1;
   font-size: 13px;
 }
+.input-source-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+.branch-next-line {
+  color: #86efac;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.step-brief-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  margin: 12px 0;
+  border-radius: 12px;
+  border: 1px solid rgba(110,231,183,.22);
+  background: rgba(16,185,129,.08);
+}
+.step-brief-card div {
+  display: grid;
+  gap: 4px;
+}
+.step-brief-card strong {
+  color: #fff;
+}
+.step-brief-card span {
+  color: #cbd5e1;
+  font-size: 13px;
+}
 .batch-control-head {
   display: flex;
   justify-content: space-between;
@@ -2322,7 +2355,8 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   .sidebar { width: auto; border-right: 0; border-bottom: 1px solid rgba(255,255,255,.08); }
   .steps-nav { grid-template-columns: repeat(3, 1fr); }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
-  .inline-form, .glossary-form, .meta-grid, .meta-summary, .material-upload-row, .improvement-form, .prompt-source-grid, .provider-strip, .workflow-note-grid, .workflow-note-grid.compact-grid, .announcement-lang-grid, .announcement-language-chip-grid, .history-detail-grid, .batch-presets, .settings-grid, .quick-steps, .quick-launch-grid { grid-template-columns: 1fr; }
+  .inline-form, .glossary-form, .meta-grid, .meta-summary, .material-upload-row, .improvement-form, .prompt-source-grid, .provider-strip, .workflow-note-grid, .workflow-note-grid.compact-grid, .announcement-lang-grid, .announcement-language-chip-grid, .history-detail-grid, .batch-presets, .settings-grid, .quick-steps, .quick-launch-grid, .input-source-grid { grid-template-columns: 1fr; }
+  .step-brief-card { align-items: stretch; flex-direction: column; }
   .batch-control-head { flex-direction: column; }
   .batch-control-head em { white-space: normal; }
   .batch-custom-button { flex: 1 1 180px; }

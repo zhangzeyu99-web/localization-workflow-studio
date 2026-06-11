@@ -1,4 +1,4 @@
-import { artifactFileName, artifactPickerLabel, artifactsByRoles, pickerArtifacts } from '../../domain/artifacts'
+import { artifactDownloadHref, artifactFileName, artifactPickerLabel, artifactsByRoles, pickerArtifacts } from '../../domain/artifacts'
 import { altColumnVisible } from '../../domain/projectAssets'
 import { formatDuration } from '../../domain/translationFlow'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
@@ -145,7 +145,7 @@ export function ArtifactNote({ artifact, compact = false }: { artifact: Artifact
     <div className={`ai-card ${compact ? 'compact-note' : ''}`}>
       <div className="ai-header">
         <span>{artifactPickerLabel(artifact)}</span>
-        <a className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>下载</a>
+        <a className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact)}>下载</a>
       </div>
       {!compact ? <div className="muted-left">{artifactFileName(artifact)}</div> : null}
     </div>

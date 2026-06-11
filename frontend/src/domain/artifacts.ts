@@ -30,6 +30,13 @@ export function artifactFileName(artifact: Artifact): string {
   return parts[parts.length - 1] || artifact.label
 }
 
+export function artifactDownloadHref(artifact: Artifact, projectId?: string): string {
+  const owner = projectId || artifact.project_id
+  return owner
+    ? `/api/projects/${owner}/artifacts/${artifact.id}/download`
+    : `/api/artifacts/${artifact.id}/download`
+}
+
 export function stripExtension(name: string): string {
   return name.replace(/\.[^.]+$/, '')
 }

@@ -144,6 +144,35 @@ def _validate_project_analysis_artifacts(project_id: str, artifact_ids: list[str
             raise HTTPException(status_code=400, detail=f"资料文件不可读：{artifact.get('label') or path.name}；{user_facing_error(exc)}") from exc
 
 
+def _material_enters_ai(material: dict[str, Any]) -> bool:
+    status = str(material.get("status") or "")
+    excerpt = str(material.get("excerpt") or "").strip()
+    return bool(excerpt) and status.startswith(("parsed", "vision_analyzed"))
+
+
+def _material_has_nonblocking_fallback(material: dict[str, Any]) -> bool:
+    status = str(material.get("status") or "")
+    excerpt = str(material.get("excerpt") or "").strip()
+    return bool(excerpt) and status.startswith(("archived_only:image_api_key_missing", "archived_only:video_api_key_missing"))
+
+
+def _reject_unreadable_analysis_packet(material_packet: dict[str, Any], artifact_count: int) -> None:
+    if artifact_count <= 0:
+        return
+    materials = [item for item in material_packet.get("materials", []) if isinstance(item, dict)]
+    if any(_material_enters_ai(item) for item in materials):
+        return
+    if any(_material_has_nonblocking_fallback(item) for item in materials):
+        return
+    reasons = []
+    for item in materials:
+        label = str(item.get("label") or item.get("filename") or "资料").strip()
+        reason = str(item.get("warning") or item.get("status") or "未解析").strip()
+        reasons.append(f"{label}：{reason}")
+    detail = "；".join(reasons[:3]) if reasons else "没有资料进入 AI 输入"
+    raise HTTPException(status_code=400, detail=f"上传资料没有成功解析进 AI 分析：{detail}")
+
+
 @router.get("/api/projects")
 def get_projects() -> list[dict[str, Any]]:
     return [_with_project_stats(project) for project in db.list_projects()]
@@ -244,6 +273,7 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
     _validate_project_analysis_artifacts(project_id, payload.asset_artifact_ids)
     settings = load_settings()
     material_packet = build_project_material_packet(project_id, payload.asset_artifact_ids, settings, run_visual_analysis=True)
+    _reject_unreadable_analysis_packet(material_packet, len(payload.asset_artifact_ids))
     notes = [str(material.get("note") or "") for material in material_packet.get("materials", []) if isinstance(material, dict)]
     profile_path, prompt_path, brief_path, packet_path, report_path, prompt = write_project_prompt(
         project,
@@ -275,6 +305,7 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
                     "label": material.get("label"),
                     "material_type": material.get("material_type"),
                     "status": material.get("status"),
+                    "included_in_ai": _material_enters_ai(material),
                     "warning": material.get("warning") or "",
                     "language_table_candidate": bool(material.get("language_table_candidate")),
                     "project_brief_candidate": bool(material.get("project_brief_candidate")),

@@ -6,6 +6,7 @@ import shutil
 import time
 from pathlib import Path
 
+os.environ.setdefault("LWS_DATA_ROOT", str(Path(os.environ.get("TEMP", ".")) / "lws-test-data"))
 os.environ.setdefault("LWS_ENABLE_TEST_PROVIDER", "1")
 
 

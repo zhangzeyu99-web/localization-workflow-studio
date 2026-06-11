@@ -20,7 +20,7 @@ def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
     project = db.get_project(project_id)
     deliverables: list[dict[str, Any]] = []
     for run in db.list_runs(project_id):
-        if run["kind"] not in {"translation", "qa"} or run["status"] != "passed":
+        if run["kind"] not in {"translation", "qa"} or run["status"] in {"created", "running", "queued", "canceled"}:
             continue
         final_artifact = _deliverable_final_artifact(run)
         if not final_artifact or not Path(final_artifact["path"]).exists():
@@ -399,7 +399,7 @@ def _artifact_delivery_file(kind: str, artifact: dict[str, Any]) -> dict[str, st
         "filename": path.name,
         "path": str(path),
         "artifact_id": str(artifact.get("id") or ""),
-        "download_url": f"/api/artifacts/{artifact['id']}/download",
+        "download_url": f"/api/projects/{artifact['project_id']}/artifacts/{artifact['id']}/download",
     }
 
 

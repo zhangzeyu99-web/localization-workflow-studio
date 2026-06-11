@@ -50,6 +50,7 @@ export type ProjectHarness = {
 
 export type Artifact = {
   id: string
+  project_id?: string
   label: string
   kind: string
   role?: string

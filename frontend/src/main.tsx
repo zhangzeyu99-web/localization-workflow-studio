@@ -298,6 +298,7 @@ function App() {
 
   useEffect(() => {
     currentIdRef.current = currentId
+    resetProjectTransientState('准备就绪')
     return () => {
       if (deleteHoldTimer.current !== null) window.clearTimeout(deleteHoldTimer.current)
       if (announcementCancelHoldTimer.current !== null) window.clearTimeout(announcementCancelHoldTimer.current)
@@ -1041,7 +1042,7 @@ function App() {
       const hardCount = Number(result.quality_summary?.hard_errors || 0) || issues.filter((issue) => issue.severity === 'hard').length
       setStatusForProject(projectId, result.run.status === 'passed'
         ? '已有译文 QA 通过，可进入交付。'
-        : `QA 未通过：还有 ${hardCount || '若干'} 个必须处理的问题，暂不会生成交付包。`)
+        : `QA 未完全通过：还有 ${hardCount || '若干'} 个问题；已生成可交付文件，可先修复，也可进入交付。`)
     } catch (error) {
       setStatusForProject(projectId, `已有译文 QA 失败：${errorText(error)}`)
     } finally {
@@ -1104,7 +1105,7 @@ function App() {
         const hardCount = Number(result.qa_result.quality_summary?.hard_errors || 0) || issues.filter((issue) => issue.severity === 'hard').length
         setStatusForProject(projectId, result.qa_result.run.status === 'passed'
           ? `模型已修复 ${result.model_fixes.length} 条，重跑 QA 已通过，可进入交付。`
-          : `模型已修复 ${result.model_fixes.length} 条，但 QA 仍有 ${hardCount || '若干'} 个必须处理的问题，暂不会生成交付包。`)
+          : `模型已修复 ${result.model_fixes.length} 条，但 QA 仍有 ${hardCount || '若干'} 个问题；已生成可交付文件，可继续修或进入交付。`)
       } else {
         setQaArtifact(result.fixed_artifact)
         setStatusForProject(projectId, `模型已修复 ${result.model_fixes.length} 条，等待重新 QA`)

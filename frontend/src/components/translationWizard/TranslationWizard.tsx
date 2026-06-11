@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { API } from '../../apiClient'
-import { artifactKindLabel, artifactPickerLabel, artifactRole, newestArtifact, pickerArtifacts, runArtifacts } from '../../domain/artifacts'
+import { artifactDownloadHref, artifactKindLabel, artifactPickerLabel, artifactRole, newestArtifact, pickerArtifacts, runArtifacts } from '../../domain/artifacts'
 import { formatDate, formatDateTime, shortRunId } from '../../domain/format'
 import { normalizeGlossaryNote, projectPromptForLanguage } from '../../domain/projectAssets'
 import { aiProviderConfigurationReminder, providerLabel } from '../../domain/providerSettings'
@@ -11,7 +11,7 @@ import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, FileBoxWit
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
 import type { AppSettings, Artifact, DeliverableTask, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, ProjectMaterialAnalysis, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
 
-export const steps = ['项目资料', 'AI 分析', '术语表', '语言表', '高频词', '目标语言', '模型翻译', '自动校对', '交付']
+export const steps = ['项目资料', 'AI 分析', '术语表', '判定输入', '术语候选', '目标语言', 'AI 翻译', 'QA 校对', '交付']
 
 export function TranslationTab({
   project,
@@ -180,7 +180,7 @@ export function compactDeliveryInputLabel(value?: string): string {
 export function deliveryStatusLabel(task: DeliverableTask): string {
   if (task.status === 'delivered') return '可交付'
   if (task.status === 'passed' && Number(task.qa_hard_errors || 0) === 0) return '可交付'
-  if (task.status === 'failed') return '未通过'
+  if (task.status === 'failed') return '带问题可交付'
   return task.status || '处理中'
 }
 
@@ -275,7 +275,7 @@ export function Wizard(props: {
       setStep(Math.min(9, translationNextStep(sourceReadiness)))
       return
     }
-    if ((step === 5 || step === 7) && translationInputMode(sourceReadiness) === 'ready_for_qa') {
+    if ((step === 5 || step === 6 || step === 7) && translationInputMode(sourceReadiness) === 'ready_for_qa') {
       setStep(8)
       return
     }
@@ -435,13 +435,23 @@ export function StepAnalyze({
   selectedLanguage: LanguageCode
 }) {
   const lang = languageSpec(selectedLanguage)
+  const hasPrompt = Boolean(projectPromptForLanguage(project, selectedLanguage))
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 2</span>AI 分析与专属提示词生成</div>
-      <div className="panel-desc">先读取上传资料形成资料包，再调用已配置 AI 分析项目定位、风格和注意事项。当前素材：{assetArtifacts.length} 个。</div>
-      <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>🤖 启动 AI 分析</button>
+      <div className="panel-title"><span className="badge">STEP 2</span>AI 分析项目资料</div>
+      <div className="panel-desc">读取 STEP 1 投入的资料，生成项目元信息和翻译提示词。已上传 {assetArtifacts.length} 个资料；重复资料会在资料包里去重。</div>
+      <div className="step-brief-card">
+        <div>
+          <strong>{hasPrompt ? '已生成项目提示词' : '尚未生成项目提示词'}</strong>
+          <span>后续 AI 翻译和 QA 会读取这里生成的项目信息；人工编辑后也会影响后续任务。</span>
+        </div>
+        <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>{hasPrompt ? '重新分析项目资料' : '启动 AI 分析'}</button>
+      </div>
       <StepAnalyzeMaterialStatus project={project} />
-      <AiInputAuditPanel endpoint={`/api/projects/${project.id}/ai-input-summary`} title="项目资料 AI 输入摘要" />
+      <details className="history-collapsed">
+        <summary>查看本次 AI 输入摘要</summary>
+        <AiInputAuditPanel endpoint={`/api/projects/${project.id}/ai-input-summary`} title="项目资料 AI 输入摘要" />
+      </details>
       <div className="ai-card"><div className="ai-header">当前 {lang.short} 提示词</div><pre>{projectPromptForLanguage(project, selectedLanguage) || '尚未生成'}</pre></div>
       <ProjectMetaTable project={project} />
     </>
@@ -527,27 +537,44 @@ export function StepSource({
       : mode === 'invalid'
         ? '格式需要修正'
         : '等待检查'
+  const nextActionText = mode === 'ready_for_qa'
+    ? '下一步：直接进入 STEP 8 校对；QA 通过后写入译文归档并生成交付。'
+    : mode === 'needs_translation'
+      ? '下一步：进入 STEP 5 扫描术语候选，再进入 AI 翻译。'
+      : mode === 'invalid'
+        ? '下一步：重新上传正确文件；这份错误文件已被忽略，不会继续参与流程。'
+        : '上传或选择文件后，系统会判断它是待翻译表还是已译校对表。'
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 4</span>导入语言表 / 已译表</div>
-      <div className="panel-desc">上传后系统会先判断：空译文走翻译流程，已有完整译文则直接进入校对；默认字段：ID | CN | {lang.targetHeader}。</div>
-      <div className="action-card">
-        <AssetSelect label="使用已有语言表" project={displayProject} role="language_source" value={sourceArtifact && invalidSourceArtifactIds.includes(sourceArtifact.id) ? null : sourceArtifact} onChange={setSourceArtifact} />
-        <FileBoxWithTemplate label="上传 language.xlsx" onFile={onUploadSource} templateKind="language-table" />
+      <div className="panel-title"><span className="badge">STEP 4</span>判断输入类型</div>
+      <div className="panel-desc">这里不直接翻译。系统先判断你上传的是“待翻译语言表”还是“已译校对表”，再决定后面走术语候选、AI 翻译，还是直接 QA 校对。</div>
+      <div className="action-card input-type-card">
+        <div className="input-source-grid">
+          <AssetSelect label="使用已有语言表 / 已译表" project={displayProject} role="language_source" value={sourceArtifact && invalidSourceArtifactIds.includes(sourceArtifact.id) ? null : sourceArtifact} onChange={setSourceArtifact} />
+          <FileBoxWithTemplate label={`上传 ID / CN / ${lang.targetHeader} 表`} onFile={onUploadSource} templateKind="language-table" />
+        </div>
         {notice ? (
           <div className={`translation-readiness-box ${tone}`}>
             <div className="readiness-head">
-              <strong>输入检查：{modeLabel}</strong>
+              <strong>判定结果：{modeLabel}</strong>
               <span>{translationReadinessUserMessage(notice)}</span>
             </div>
             <p>{notice.source_rows || 0} 行原文 / {notice.translated_rows || 0} 行已有译文 / 空译文 {notice.empty_target_rows || 0} / 中文残留 {notice.cjk_target_rows || 0}</p>
+            <div className="branch-next-line">{nextActionText}</div>
             {mode === 'ready_for_qa' && sourceArtifact ? (
               <button className="btn btn-primary btn-sm" onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>去校对</button>
             ) : null}
-            {mode === 'needs_translation' ? <div className="ok-line">下一步：扫描术语候选，再进入模型翻译。</div> : null}
-            {mode === 'invalid' ? <div className="warn-line">请修正表头或内容后重新上传；本次错误文件不会作为当前语言表继续处理。</div> : null}
+            {mode === 'invalid' ? <div className="warn-line">请按模板修正后重新上传。旧的错误文件不会继续显示在可选语言表里。</div> : null}
           </div>
-        ) : null}
+        ) : (
+          <div className="translation-readiness-box idle">
+            <div className="readiness-head">
+              <strong>等待上传</strong>
+              <span>支持待翻译表，也支持已译表</span>
+            </div>
+            <p>待翻译表：目标语言列为空或含中文残留，后续会走 STEP 5-7。已译表：目标语言列已有完整译文，后续直接去 STEP 8 校对。</p>
+          </div>
+        )}
       </div>
       {sourceArtifact ? <ArtifactNote artifact={sourceArtifact} /> : null}
     </>
@@ -783,11 +810,36 @@ export function PendingTermReviewRowV2({
   )
 }
 
-export function StepLang({ selectedLanguage, setSelectedLanguage }: { selectedLanguage: LanguageCode; setSelectedLanguage: (language: LanguageCode) => void }) {
+export function StepLang({
+  selectedLanguage,
+  setSelectedLanguage,
+  sourceArtifact,
+  translationReadiness,
+  setQaArtifact,
+  setStep
+}: {
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
+  sourceArtifact?: Artifact | null
+  translationReadiness?: TranslationReadiness | null
+  setQaArtifact?: (artifact: Artifact | null) => void
+  setStep?: (step: number) => void
+}) {
+  const readyForQa = Boolean(sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && canSkipModelTranslation(translationReadiness))
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 6</span>选择目标语言</div>
-      <div className="panel-desc">选择本次任务的目标语言；每次 run 仍按单语言执行，多语言任务会拆成多个单语言流程。</div>
+      <div className="panel-desc">目标语言优先从 STEP 4 的表头自动识别；只有识别错了，才需要手动切换。</div>
+      {readyForQa ? (
+        <div className="translation-readiness-box ready">
+          <div className="readiness-head">
+            <strong>已译表已完成语言判定</strong>
+            <span>无需进入 AI 翻译</span>
+          </div>
+          <p>当前表已经有完整译文，目标语言为 {languageSpec(selectedLanguage).short}。建议直接进入 STEP 8 校对。</p>
+          {sourceArtifact && setQaArtifact && setStep ? <button className="btn btn-primary btn-sm" onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>去校对</button> : null}
+        </div>
+      ) : null}
       <div className="lang-grid">
         {supportedLanguages.map((lang) => (
           <button
@@ -871,8 +923,8 @@ export function StepTranslate({
     || /provider|API|workpack|batch|QA|\u7ffb\u8bd1|\u6821\u5bf9/i.test(status)
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 7</span>{lang.short} 模型翻译</div>
-      <div className="panel-desc">先检查语言表是否已有目标译文；已有译文则跳过模型翻译并进入校对，空译文或中文残留才生成 workpack 分批调用 GPT / Claude。</div>
+      <div className="panel-title"><span className="badge">STEP 7</span>{lang.short} AI 翻译</div>
+      <div className="panel-desc">只有“待翻译语言表”才会调用已配置 AI。已译表不在这里重复翻译，直接进入 STEP 8 QA 校对。</div>
       <div className="action-card">
         <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
         <div className={`translation-readiness-box ${readinessState.tone}`}>
@@ -885,21 +937,21 @@ export function StepTranslate({
         <div className="translation-batch-panel compact">
           <div className="batch-control-head">
             <div>
-              <strong>后台编排</strong>
-              <span>系统按预设自动拆批、限流、重试和断点续跑。</span>
+              <strong>{alreadyTranslated ? '分流结果' : '后台编排'}</strong>
+              <span>{alreadyTranslated ? '已识别为完整译文表，本步骤不调用 AI。' : '系统按预设自动拆批、限流、重试和断点续跑。'}</span>
             </div>
-            <em>{batchSize} 行/批 · 预计 {estimatedBatches || '-'} 批</em>
+            <em>{alreadyTranslated ? '下一步：QA 校对' : `${batchSize} 行/批 · 预计 ${estimatedBatches || '-'} 批`}</em>
           </div>
         </div>
         <div className="translation-actions">
           {alreadyTranslated ? (
             <>
-              <div className="ok-line">检测到这份表已有译文：默认进入 QA，QA 通过后写入译文归档；如确需跳过 QA，可在 STEP 8 使用“临时跳过 QA 直接归档”。</div>
+              <div className="ok-line">检测到这份表已有译文：无需 AI 翻译，默认进入 QA；如确需跳过 QA，可在 STEP 8 使用“临时跳过 QA 直接归档”。</div>
               <button className="btn btn-primary" disabled={busy} onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>跳到校对</button>
             </>
           ) : (
             <>
-              <button className="btn btn-primary" disabled={busy || activeTranslation || Boolean(blockReason)} onClick={onTranslate}>{resumable ? '↻ 继续后台翻译' : `⚡ 开始 ${lang.short} 正式翻译`}</button>
+              <button className="btn btn-primary" disabled={busy || activeTranslation || Boolean(blockReason)} onClick={onTranslate}>{resumable ? '继续 AI 翻译' : `AI 翻译`}</button>
               {activeTranslation ? <button className="btn btn-ghost" disabled={busy} onClick={onCancelTranslate}>暂停/取消后台任务</button> : null}
             </>
           )}
@@ -1063,7 +1115,7 @@ export function StepQA({
         </div>
         {qaStatusRun?.status === 'failed' ? (
           <div className="qa-blocker-line">
-            QA 未通过，所以不会生成交付包。请先用“模型修复并重跑 QA”或展开下方问题手工修复；待处理问题清零后再进入交付。
+            QA 未完全通过，系统已保留可交付文件和 QA 摘要。建议先用“模型修复并重跑 QA”或手工修复；如需临时验收，也可以去交付页生成带问题摘要的交付文件。
           </div>
         ) : null}
       </div>
@@ -1177,7 +1229,9 @@ export function StepDone({
   const artifacts = pickerArtifacts(latestRun?.artifacts?.length ? latestRun.artifacts : runArtifacts(project, latestRun?.id))
     .filter((artifact) => artifact.kind === 'qa_final_workbook' || artifact.kind === 'qa_changes')
   const pendingIssueCount = latestRun?.kind === 'qa' ? qaPendingIssueCount(latestRun, qualityIssues) : 0
-  const deliveryBlocked = latestRun?.kind === 'qa' && latestRun.status !== 'passed'
+  const hasFinalWorkbook = artifacts.some((artifact) => artifact.kind === 'qa_final_workbook')
+  const deliveryBlocked = latestRun?.kind === 'qa' && latestRun.status !== 'passed' && !hasFinalWorkbook
+  const deliveryWarning = latestRun?.kind === 'qa' && latestRun.status === 'failed' && hasFinalWorkbook
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 9</span>最终交付</div>
@@ -1185,15 +1239,22 @@ export function StepDone({
       {deliveryBlocked ? (
         <div className="delivery-blocker">
           <strong>暂不能生成交付包</strong>
-          <span>最近一次 QA 未通过，仍有 {pendingIssueCount || '若干'} 个必须处理的问题。交付包只会在 QA 通过后生成，避免把未校对内容交出去。</span>
+          <span>最近一次 QA 未返回可交付文件，请回到校对页重新运行 QA 或上传译文表。</span>
           <button className="btn btn-primary btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
         </div>
       ) : null}
+      {deliveryWarning ? (
+        <div className="delivery-blocker">
+          <strong>可生成交付，但仍有 QA 问题</strong>
+          <span>还有 {pendingIssueCount || '若干'} 个问题未清零；交付文件会同时保留修改记录和 QA 摘要，方便后续复查。</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
+        </div>
+      ) : null}
       <div className="artifact-grid">
-        {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
+        {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
       </div>
       <div className="muted-left">
-        {deliveryBlocked ? '当前只提供 QA 过程文件用于修复；QA 通过后才能在“交付”页生成最终 workbook。' : '正式交付请回到“交付”页生成最终 workbook 和 QA 修改表。'}
+        {deliveryBlocked ? '当前缺少可交付文件，请先重新运行 QA。' : '正式交付请回到“交付”页生成最终 workbook 和 QA 修改表。'}
       </div>
     </>
   )
@@ -1227,7 +1288,7 @@ export function TaskHistoryTable({ project, kind, title }: { project: Project; k
                 <td>
                   <div className="link-actions">
                     <button className="link-button" onClick={() => setSelectedRunId(selectedRunId === run.id ? null : run.id)}>查看</button>
-                    {download ? <a href={`/api/artifacts/${download.id}/download`}>下载</a> : <span className="muted-inline" title="该任务暂无可下载交付产物">下载</span>}
+                    {download ? <a href={artifactDownloadHref(download, project.id)}>下载</a> : <span className="muted-inline" title="该任务暂无可下载交付产物">下载</span>}
                   </div>
                 </td>
               </tr>
@@ -1286,7 +1347,7 @@ export function RunDetail({ project, run, kind }: { project: Project; run: Run; 
       </div>
       <div className="artifact-links">
         {visibleArtifacts.map((artifact) => (
-          <a key={artifact.id} className="btn btn-ghost btn-sm" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}</a>
+          <a key={artifact.id} className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}</a>
         ))}
         {!visibleArtifacts.length ? <span className="muted-left">暂无可下载交付产物。</span> : null}
       </div>
@@ -1409,7 +1470,7 @@ export function qaRunTagClass(run: Run | null | undefined): string {
 export function qaRunSummaryText(run: Run | null | undefined, pendingIssueCount = 0): string {
   if (!run) return '尚未运行 QA。请选择译文表后点击“运行 QA”。'
   if (run.status === 'passed') return 'QA 已通过，可以进入交付页生成最终文件。'
-  if (run.status === 'failed') return `QA 未通过，还有 ${pendingIssueCount || '若干'} 个必须处理的问题。`
+  if (run.status === 'failed') return `QA 未完全通过，还有 ${pendingIssueCount || '若干'} 个问题；仍可生成带 QA 摘要的交付文件。`
   if (run.status === 'queued' || run.status === 'running') return 'QA 正在运行，请等待当前任务完成。'
   if (run.status === 'needs_input') return 'QA 需要补充输入后继续。'
   return `当前状态：${run.status}`
@@ -1418,7 +1479,7 @@ export function qaRunSummaryText(run: Run | null | undefined, pendingIssueCount 
 export function qaRunActionText(run: Run | null | undefined, pendingIssueCount = 0): string {
   if (!run) return '运行 QA'
   if (run.status === 'passed') return '去交付页生成最终文件'
-  if (run.status === 'failed') return pendingIssueCount ? '先修复问题再交付' : '查看 QA 报告后处理'
+  if (run.status === 'failed') return pendingIssueCount ? '可先修复，也可去交付' : '查看 QA 报告后交付'
   if (run.status === 'queued' || run.status === 'running') return '等待任务完成'
   return '按提示补齐输入'
 }
@@ -1427,7 +1488,7 @@ export function runDeliveryState(run: Run, visibleArtifacts: Artifact[]): string
   if (visibleArtifacts.some((artifact) => artifact.kind === 'qa_final_workbook' || artifact.role === 'translation_workbook')) return '可生成最终交付'
   if (run.status === 'passed') return '已通过，等待生成交付文件'
   if (run.status === 'needs_input') return '需要补充输入'
-  if (run.status === 'failed') return 'QA 未通过'
+  if (run.status === 'failed') return 'QA 未完全通过，可带摘要交付'
   return '处理中'
 }
 
