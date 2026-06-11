@@ -8,6 +8,7 @@ import json
 import os
 import posixpath
 import re
+import sys
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -434,6 +435,12 @@ class PacketOnlyAiSupplementProvider(AiSupplementProvider):
 
     def generate(self, packet: dict[str, object]) -> dict[str, object]:
         return {"supplement_terms": []}
+
+
+def configure_utf8_stdio() -> None:
+    for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 class OpenAiSupplementProvider(AiSupplementProvider):
@@ -3474,6 +3481,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

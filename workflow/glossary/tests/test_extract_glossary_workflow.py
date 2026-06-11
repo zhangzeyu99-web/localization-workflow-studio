@@ -1263,6 +1263,8 @@ class CliIntegrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "cp1252"
             result = subprocess.run(
                 [
                     sys.executable,
@@ -1285,8 +1287,10 @@ class CliIntegrationTests(unittest.TestCase):
                     str(temp_path / "observations.json"),
                 ],
                 cwd=ROOT,
+                env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 check=False,
             )
 
