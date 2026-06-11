@@ -1422,7 +1422,7 @@ export function runTranslationProgressText(run: Run): string {
   const readiness = run.metadata?.translation_readiness as TranslationReadiness | undefined
   if (readiness?.source_rows) {
     return readiness.ready_for_qa
-      ? `输入已含译文 ${readiness.translated_rows}/${readiness.source_rows} 行，跳过模型翻译`
+      ? `输入已含译文 ${readiness.translated_rows}/${readiness.source_rows} 行，跳过 AI 翻译`
       : `${readiness.source_rows} 行待翻译，预计 ${readiness.estimated_batches || 0} 批`
   }
   return run.kind === 'translation' ? '未开始' : '不涉及'

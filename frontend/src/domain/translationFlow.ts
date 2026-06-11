@@ -51,7 +51,7 @@ export function translationReadinessUserMessage(readiness: TranslationReadiness 
   const message = String(readiness?.user_message || '').trim()
   if (message) return message
   const mode = translationInputMode(readiness)
-  if (mode === 'ready_for_qa') return '检测到已有完整译文，可跳过模型翻译，直接进入校对。'
+  if (mode === 'ready_for_qa') return '检测到已有完整译文，可跳过 AI 翻译，直接进入校对。'
   if (mode === 'needs_translation') return '检测到待翻译内容，请先扫描术语候选。'
   if (readiness?.reason === 'invalid_id_rows') return '有行缺少可回写 ID，请修正后重新上传。'
   if (readiness?.reason === 'target_column_missing') return '未检测到目标语言译文列，请上传包含 ID、CN 和目标语言列的语言表。'

@@ -920,7 +920,7 @@ function App() {
     if (readiness && canSkipModelTranslation(readiness)) {
       setQaArtifact(sourceArtifact)
       setStep(8)
-      setStatus(`已检测到 ${readiness.translated_rows}/${readiness.source_rows} 行已有译文，无需模型翻译，请直接运行 QA。`)
+      setStatus(`已检测到 ${readiness.translated_rows}/${readiness.source_rows} 行已有译文，无需 AI 翻译，请直接运行 QA。`)
       return
     }
     const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current, readiness)
@@ -1003,7 +1003,7 @@ function App() {
       if (!canSkipModelTranslation(readiness)) {
         setSourceArtifact(qaArtifact)
         setStep(7)
-        setStatusForProject(projectId, '这份语言表还不像完整译文表：请先进入模型翻译补齐空译文或明显非目标语言内容，再运行 QA。')
+        setStatusForProject(projectId, '这份语言表还不像完整译文表：请先进入 AI 翻译补齐空译文或明显非目标语言内容，再运行 QA。')
         return
       }
     }
