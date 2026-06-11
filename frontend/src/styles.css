@@ -1632,7 +1632,13 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   justify-content: space-between;
   gap: 10px;
 }
-.row-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.row-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.row-actions + .row-actions { margin-top: 10px; }
 .history-card { margin-top: 14px; }
 .history-table th,
 .history-table td {

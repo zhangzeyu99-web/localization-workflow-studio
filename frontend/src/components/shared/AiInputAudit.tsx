@@ -77,8 +77,13 @@ function renderTranslationAudit(data: AuditRecord) {
 function renderAnnouncementAudit(data: AuditRecord) {
   const languages = asArray(data.languages)
   const lookup = asRecord(data.lookup)
+  const warnings = Array.isArray(data.warnings) ? data.warnings.map((item) => text(item)).filter(Boolean) : []
+  if (text(data.status) === 'not_prepared') {
+    return <div className="muted-empty-card">{text(data.message) || '尚未生成翻译准备包；请先完成上一步。'}</div>
+  }
   return (
     <>
+      {warnings.length ? <div className="warn-line slim">{warnings.join('?')}</div> : null}
       <div className="audit-kpis">
         <span>段落 {text(data.segments) || 0}</span>
         <span>术语 {text(lookup.terms) || 0}</span>
@@ -126,7 +131,8 @@ export function AiInputAuditPanel({ endpoint, title, buttonLabel, disabled = fal
     try {
       setData(await api<AuditRecord>(endpoint))
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message === 'Not Found' ? '当前还没有可查看的 AI 输入。请先完成上一步。' : message)
     } finally {
       setLoading(false)
     }

@@ -206,6 +206,39 @@ def test_announcement_ai_input_summary_reports_segments_terms_and_prompt(tmp_pat
         assert "???????" in payload["languages"][0]["prompt_preview"]
 
 
+def test_announcement_ai_input_summary_handles_missing_prepared_artifacts(tmp_path: Path) -> None:
+    project = db.insert_project("Audit Announcement Missing", "SLG", "", "G")
+    source = tmp_path / "notice.txt"
+    source.write_text("notice source", encoding="utf-8")
+    source_artifact = db.add_artifact(project["id"], "notice.txt", source, "asset", mime="text/plain")
+    task = db.insert_announcement_task(
+        project["id"],
+        {
+            "title": "notice.txt",
+            "source_artifact_id": source_artifact["id"],
+            "source_format": "txt",
+            "selected_languages": ["en"],
+            "status": "lookup_ready",
+            "current_step": 6,
+            "metadata": {},
+        },
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/announcement-tasks/{task['id']}/ai-input-summary")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "not_prepared"
+        assert payload["languages"] == []
+
+        db.update_announcement_task(task["id"], metadata={"workpack_artifact_ids": {"en": "missing-artifact"}})
+        stale = client.get(f"/api/announcement-tasks/{task['id']}/ai-input-summary")
+        assert stale.status_code == 200
+        stale_payload = stale.json()
+        assert stale_payload["status"] == "not_prepared"
+        assert stale_payload["warnings"]
+
+
 def test_health_reports_cloud_storage_and_provider_state() -> None:
     with TestClient(app) as client:
         response = client.get("/api/health")

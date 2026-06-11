@@ -16,6 +16,11 @@ export function unfinishedAnnouncementTasks(tasks: AnnouncementTask[]): Announce
   return activeAnnouncementTasks(tasks).filter((task) => task.status !== 'delivered')
 }
 
+export function hasAnnouncementPreparedAiInput(task: AnnouncementTask | null): boolean {
+  const ids = task?.metadata?.workpack_artifact_ids
+  return Boolean(ids && typeof ids === 'object' && !Array.isArray(ids) && Object.keys(ids as Record<string, unknown>).length)
+}
+
 export function AnnouncementProjectPanel({
   tasks,
   holdTaskId,
@@ -402,7 +407,7 @@ export function AnnouncementWizard({
           ) : step === 6 ? (
             <>
               <AnnouncementActionStep title="翻译准备" step={6} desc="按语言生成中转表、manifest、prompt snapshot 和 workpack。后续可直接调用 AI provider 或下载 workpack 外部翻译。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备包" onAction={() => run('prepare', 7)} />
-              {activeTask ? <AiInputAuditPanel endpoint={`/api/announcement-tasks/${activeTask.id}/ai-input-summary`} title="公告翻译准备 AI 输入" buttonLabel="查看公告 AI 输入" /> : null}
+              <div className="muted-empty-card gap-top">译文反查完成后，点击“生成翻译准备包”会生成中转表、prompt 和 workpack。这些是给 AI 和 QA 用的过程材料，正常用户不需要手动查看。</div>
             </>
           ) : step === 7 ? (
             <>
@@ -432,7 +437,11 @@ export function AnnouncementWizard({
                 </button>
                 <button className="btn btn-ghost" disabled={!activeTask || busy || !['queued', 'running'].includes(activeTask?.status || '')} onClick={() => run('translate/cancel', 7)}>暂停后台翻译</button>
               </div>
-              {activeTask ? <AiInputAuditPanel endpoint={`/api/announcement-tasks/${activeTask.id}/ai-input-summary`} title="公告正文翻译 AI 输入" buttonLabel="查看公告 AI 输入" /> : null}
+              {hasAnnouncementPreparedAiInput(activeTask) ? (
+                <AiInputAuditPanel endpoint={`/api/announcement-tasks/${activeTask!.id}/ai-input-summary`} title="公告正文翻译 AI 输入" buttonLabel="查看将发送给 AI 的内容" />
+              ) : activeTask ? (
+                <div className="muted-empty-card gap-top">还没有翻译准备包。请先回 STEP 6 点击“生成翻译准备包”。</div>
+              ) : null}
               <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
               <details className="delivery-advanced">
                 <summary>外部 AI response 导入（备用）</summary>

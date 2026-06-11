@@ -142,11 +142,27 @@ def announcement_ai_input_summary(task_id: str) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
     metadata = task.get("metadata") or {}
     languages: list[dict[str, Any]] = []
+    warnings: list[str] = []
     workpack_ids = metadata.get("workpack_artifact_ids") or {}
     prompt_ids = metadata.get("prompt_artifact_ids") or {}
+    if not isinstance(workpack_ids, dict):
+        workpack_ids = {}
+    if not isinstance(prompt_ids, dict):
+        prompt_ids = {}
+
     for language, artifact_id in sorted(workpack_ids.items()):
-        workpack_artifact = db.get_artifact(str(artifact_id))
-        prompt_artifact = db.get_artifact(str(prompt_ids.get(language))) if prompt_ids.get(language) else None
+        try:
+            workpack_artifact = db.get_artifact(str(artifact_id))
+        except KeyError:
+            warnings.append(f"{language}: 翻译准备包已失效，请在 STEP 6 重新生成")
+            continue
+        prompt_artifact = None
+        prompt_artifact_id = prompt_ids.get(language)
+        if prompt_artifact_id:
+            try:
+                prompt_artifact = db.get_artifact(str(prompt_artifact_id))
+            except KeyError:
+                warnings.append(f"{language}: 提示词快照已失效，请在 STEP 6 重新生成")
         workpack = _workpack_summary(Path(workpack_artifact["path"]))
         prompt_preview = _read_text_preview(Path(prompt_artifact["path"])) if prompt_artifact else ""
         languages.append(
@@ -159,9 +175,15 @@ def announcement_ai_input_summary(task_id: str) -> dict[str, Any]:
                 "prompt_chars": len(prompt_preview),
             }
         )
+
+    status = "ready" if languages else "not_prepared"
+    message = "已生成翻译准备包，可查看将发送给 AI 的内容" if languages else "尚未生成翻译准备包；请先在 STEP 6 点击生成翻译准备包"
     return {
         "task_id": task_id,
         "project_id": task["project_id"],
+        "status": status,
+        "message": message,
+        "warnings": warnings,
         "segments": metadata.get("segments") or 0,
         "lookup": metadata.get("lookup_summary") or {},
         "languages": languages,
