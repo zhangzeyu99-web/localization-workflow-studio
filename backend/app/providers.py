@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from .config import TEST_FAKE_PROVIDER, normalize_provider_name, test_provider_enabled
+from .config import TEST_FAKE_PROVIDER, normalize_api_key, normalize_provider_name, test_provider_enabled
 from .errors import ProviderError
 from .translation_batches import manage_project_prompt_context
 
@@ -43,9 +43,11 @@ def _provider_runtime(
     default_reasoning_effort: str = "",
     api_key_error: str,
 ) -> ProviderRuntime:
-    api_key = str(settings.get("api_key") or "")
+    api_key = normalize_api_key(settings.get("api_key") or "")
     if not api_key:
         raise ProviderError(api_key_error)
+    if "\n" in api_key or "\r" in api_key or any(ord(char) > 127 for char in api_key):
+        raise ProviderError("API key 格式不正确：请只填写密钥本身，不要粘贴账号说明或 Base URL。")
     return ProviderRuntime(
         provider=provider,
         api_key=api_key,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,32 @@ DB_PATH = DATA_ROOT / "studio.sqlite3"
 REAL_PROVIDERS = {"openai", "openai-chat", "anthropic"}
 TEST_FAKE_PROVIDER = "test-fake"
 LEGACY_TEST_PROVIDER_NAMES = {TEST_FAKE_PROVIDER}
+
+
+_API_KEY_PATTERNS = (
+    re.compile(r"(?im)^\s*(?:api\s*key|key|token|密钥|令牌)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{10,})\s*$"),
+    re.compile(r"\b(sk-ant-[A-Za-z0-9._-]{10,}|sk-[A-Za-z0-9._-]{10,}|cr_[A-Za-z0-9._-]{10,})\b"),
+)
+_BASE_URL_PATTERN = re.compile(r"https?://[^\s，,]+", re.I)
+
+
+def normalize_api_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text == "configured":
+        return ""
+    if "\n" not in text and "\r" not in text and all(ord(ch) < 128 for ch in text):
+        return text
+    for pattern in _API_KEY_PATTERNS:
+        matches = pattern.findall(text)
+        if matches:
+            return str(matches[-1]).strip()
+    return text
+
+
+def extract_base_url(value: Any) -> str:
+    text = str(value or "")
+    matches = _BASE_URL_PATTERN.findall(text)
+    return matches[-1].rstrip("/") if matches else ""
 
 
 def test_provider_enabled() -> bool:
@@ -175,6 +202,11 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     payload = dict(settings)
     provider = normalize_provider_name(payload.get("provider"))
     payload["provider"] = provider
+    raw_api_key = payload.get("api_key") or ""
+    extracted_base_url = extract_base_url(raw_api_key)
+    raw_base_url = payload.get("base_url") or ""
+    normalized_base_url = extract_base_url(raw_base_url) or str(raw_base_url).strip()
+    payload["api_key"] = normalize_api_key(raw_api_key)
     if provider == TEST_FAKE_PROVIDER:
         payload["preset"] = payload.get("preset") or "balanced"
         payload["model"] = payload.get("model") or "test-fake-localization"
@@ -191,7 +223,7 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if provider == "openai-chat":
         payload["model"] = str(payload.get("model") or selected["model"]).strip()
         payload["reasoning_effort"] = str(payload.get("reasoning_effort") or selected["reasoning_effort"]).strip()
-        payload["base_url"] = str(payload.get("base_url") or selected["base_url"]).rstrip("/")
+        payload["base_url"] = str(normalized_base_url or extracted_base_url or selected["base_url"]).rstrip("/")
         payload["max_output_tokens"] = int(selected["max_output_tokens"] or 8192)
     else:
         payload["model"] = selected["model"]

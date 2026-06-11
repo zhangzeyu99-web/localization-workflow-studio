@@ -303,6 +303,26 @@ def test_openai_chat_relay_presets_map_to_expected_reasoning_levels() -> None:
         assert settings["reasoning_effort"] == reasoning
 
 
+def test_settings_extracts_api_key_and_base_url_from_pasted_relay_block() -> None:
+    settings = normalize_settings(
+        {
+            **DEFAULT_SETTINGS,
+            "provider": "openai-chat",
+            "preset": "balanced",
+            "base_url": "",
+            "api_key": (
+                "Codex账号：\n"
+                "base_url: https://relay.example.com/api\n"
+                "key： cr_abc1234567890abcdef\n"
+            ),
+            "model": "gpt-5.5",
+        }
+    )
+
+    assert settings["api_key"] == "cr_abc1234567890abcdef"
+    assert settings["base_url"] == "https://relay.example.com/api"
+
+
 def test_openai_chat_relay_uses_chat_completions_body(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
