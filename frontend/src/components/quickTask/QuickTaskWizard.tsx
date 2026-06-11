@@ -70,7 +70,7 @@ export function QuickTaskWizard({
     }
     const batchSize = effectiveBatchSize(settings)
     let canceled = false
-    api<TranslationReadiness>(`/api/artifacts/${inputArtifact.id}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
+    api<TranslationReadiness>(`/api/projects/${project.id}/artifacts/${inputArtifact.id}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
       .then((result) => {
         if (canceled) return
         setReadiness(result)

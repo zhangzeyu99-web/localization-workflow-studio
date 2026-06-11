@@ -161,6 +161,23 @@ def test_project_scoped_artifact_download_rejects_other_project(tmp_path: Path) 
         assert blocked.status_code == 404
 
 
+def test_project_scoped_translation_inspection_rejects_other_project(tmp_path: Path) -> None:
+    project_a = db.insert_project("Inspect A", "SLG", "", "G")
+    project_b = db.insert_project("Inspect B", "SLG", "", "G")
+    workbook = tmp_path / "source.xlsx"
+    _xlsx_language_table(workbook)
+    artifact = db.add_artifact(project_a["id"], "source.xlsx", workbook, "language_table", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with TestClient(app) as client:
+        ok_readiness = client.get(f"/api/projects/{project_a['id']}/artifacts/{artifact['id']}/translation-readiness?batch_size=90")
+        assert ok_readiness.status_code == 200
+        blocked_readiness = client.get(f"/api/projects/{project_b['id']}/artifacts/{artifact['id']}/translation-readiness?batch_size=90")
+        assert blocked_readiness.status_code == 404
+        ok_targets = client.get(f"/api/projects/{project_a['id']}/artifacts/{artifact['id']}/translation-targets")
+        assert ok_targets.status_code == 200
+        blocked_targets = client.get(f"/api/projects/{project_b['id']}/artifacts/{artifact['id']}/translation-targets")
+        assert blocked_targets.status_code == 404
+
+
 def test_translation_ai_input_summary_reports_workpack_and_prompt(tmp_path: Path) -> None:
     project = db.insert_project("Audit Translation", "QA", "", "??")
     workbook = tmp_path / "source.xlsx"

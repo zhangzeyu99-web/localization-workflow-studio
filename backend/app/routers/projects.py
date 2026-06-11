@@ -430,10 +430,41 @@ def list_project_assets(project_id: str, role: str | None = None, origin: str | 
     return db.list_artifacts(project_id=project_id, run_id=run_id, role=role, origin=origin)
 
 
+def _validate_artifact_owner(project_id: str, artifact_id: str) -> None:
+    try:
+        artifact = db.get_artifact(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
+    if artifact.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="artifact not found in current project")
+
+
+@router.get("/api/projects/{project_id}/artifacts/{artifact_id}/translation-readiness")
+def project_artifact_translation_readiness(project_id: str, artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
+    _validate_artifact_owner(project_id, artifact_id)
+    try:
+        return inspect_translation_readiness(artifact_id, batch_size=batch_size, language=require_supported_language(language))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+
+
 @router.get("/api/artifacts/{artifact_id}/translation-readiness")
 def artifact_translation_readiness(artifact_id: str, batch_size: int | None = None, language: str = "en") -> dict[str, Any]:
     try:
         return inspect_translation_readiness(artifact_id, batch_size=batch_size, language=require_supported_language(language))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+
+
+@router.get("/api/projects/{project_id}/artifacts/{artifact_id}/translation-targets")
+def project_artifact_translation_targets(project_id: str, artifact_id: str) -> dict[str, Any]:
+    _validate_artifact_owner(project_id, artifact_id)
+    try:
+        return inspect_translation_targets(artifact_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="artifact not found") from exc
     except ValueError as exc:

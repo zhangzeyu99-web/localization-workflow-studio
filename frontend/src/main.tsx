@@ -738,7 +738,7 @@ function App() {
   async function refreshTranslationReadiness(artifactId: string, projectId = currentIdRef.current, language: LanguageCode = selectedLanguage) {
     const batchSize = effectiveBatchSize(settings, translationBatchSize)
     try {
-      const result = await api<TranslationReadiness>(`/api/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
+      const result = await api<TranslationReadiness>(`/api/projects/${projectId}/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
       if (isCurrentProject(projectId)) setTranslationReadiness(result)
       return result
     } catch {
@@ -770,7 +770,7 @@ function App() {
 
   async function syncLanguageFromArtifact(artifact: Artifact): Promise<LanguageCode> {
     const projectId = currentIdRef.current
-    const targets = await inspectTranslationTargets(artifact.id)
+    const targets = await inspectTranslationTargets(artifact.id, projectId)
     if (!isCurrentProject(projectId)) return selectedLanguage
     const suggested = targets?.suggested_language
     if (suggested && suggested !== selectedLanguage) {
@@ -807,9 +807,9 @@ function App() {
     }
   }
 
-  async function inspectTranslationTargets(artifactId: string): Promise<TranslationTargets | null> {
+  async function inspectTranslationTargets(artifactId: string, projectId = currentIdRef.current): Promise<TranslationTargets | null> {
     try {
-      const result = await api<TranslationTargets>(`/api/artifacts/${artifactId}/translation-targets`)
+      const result = await api<TranslationTargets>(`/api/projects/${projectId}/artifacts/${artifactId}/translation-targets`)
       const languages = normalizeLanguageArray(result.detected_languages)
       return { ...result, detected_languages: languages, suggested_language: normalizeLanguageCode(result.suggested_language) }
     } catch (error) {
@@ -857,7 +857,7 @@ function App() {
         return hydrated
       }
 
-      const readiness = await api<TranslationReadiness>(`/api/artifacts/${inputArtifact.id}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
+      const readiness = await api<TranslationReadiness>(`/api/projects/${projectId}/artifacts/${inputArtifact.id}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
       if (!isCurrentProject(projectId)) return null
       if (canSkipModelTranslation(readiness)) {
         setStatusForProject(projectId, `已检测到 ${readiness.translated_rows}/${readiness.source_rows} 行已有译文；建议切换为“校对”直接跑 QA。`)
