@@ -286,7 +286,7 @@ export function Wizard(props: {
         {step === 5 ? <StepFreqV2 {...props} /> : null}
         {step === 6 ? <StepLang {...props} /> : null}
         {step === 7 ? <StepTranslate {...props} /> : null}
-        {step === 8 ? <StepQA {...props} /> : null}
+        {step === 8 ? <StepQA {...props} showHistory={false} /> : null}
         {step === 9 ? <StepDone {...props} /> : null}
       </div>
       <div className="actions">
@@ -851,7 +851,8 @@ export function StepQA({
   busy,
   status,
   selectedLanguage,
-  setSelectedLanguage
+  setSelectedLanguage,
+  showHistory = true
 }: {
   project: Project
   latestRun: Run | null
@@ -870,6 +871,7 @@ export function StepQA({
   status: string
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  showHistory?: boolean
 }) {
   const latestQaRun = latestRun?.kind === 'qa' ? latestRun : latestRunOfKind(project, 'qa')
   const projectQuality = latestQaRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
@@ -879,6 +881,8 @@ export function StepQA({
   const previousTranslationArtifact = previousTranslationRun
     ? newestArtifact(runArtifacts(project, previousTranslationRun.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
     : null
+  const translationQaRun = previousTranslationRun?.status === 'passed' && previousTranslationArtifact ? previousTranslationRun : null
+  const qaStatusRun = latestQaRun && (!translationQaRun || latestQaRun.created_at >= translationQaRun.created_at) ? latestQaRun : translationQaRun
   const qaRole = qaArtifact ? artifactRole(qaArtifact) : ''
   const selectedReadiness = qaArtifact && translationReadiness?.artifact_id === qaArtifact.id ? translationReadiness : null
   const canArchiveWithoutQA = Boolean(qaArtifact && (qaRole !== 'language_source' || canSkipModelTranslation(selectedReadiness)))
@@ -906,7 +910,9 @@ export function StepQA({
           ? '已检测到当前语言表可进入校对，可直接选择运行'
           : '请选择要校对的译文表'
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
-  const qaStatus = latestQaRun ? latestQaRun.status : '未运行'
+  const pendingIssueCount = qaPendingIssueCount(qaStatusRun, qaIssues)
+  const qaStatus = qaRunSummaryText(qaStatusRun, pendingIssueCount)
+  const qaAction = qaRunActionText(qaStatusRun, pendingIssueCount)
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 8</span>校对任务</div>
@@ -933,15 +939,32 @@ export function StepQA({
           </div>
         </details> : null}
       </div>
-      <div className="check-list">
-        <CheckItem ok={Boolean(qaArtifact)} title="处理文件" detail={qaArtifact ? qaArtifact.label : '未选择'} />
-        <CheckItem ok={Boolean(qaArtifact)} title="来源说明" detail={originText} />
-        <CheckItem ok={glossaryCount > 0} title="项目术语库" detail={`${glossaryCount} 条，运行时生成快照`} />
-        <CheckItem ok={!latestQaRun || latestQaRun.status === 'passed'} title="最近 QA" detail={qaStatus} />
-        <CheckItem ok={qaIssues.length === 0} title="待处理问题" detail={qaIssues.length ? `${qaIssues.length} 条` : '无'} />
+      <div className={`qa-current-card ${qaStatusRun?.status === 'failed' ? 'qa-failed' : qaStatusRun?.status === 'passed' ? 'qa-passed' : ''}`}>
+        <div className="qa-current-head">
+          <div>
+            <strong>当前校对状态</strong>
+            <span>{qaStatus}</span>
+          </div>
+          <span className={`tag ${qaRunTagClass(qaStatusRun)}`}>{qaStatusRun ? qaStatusBadge(qaStatusRun.status) : '未运行'}</span>
+        </div>
+        <div className="qa-current-grid">
+          <div><span>处理文件</span><strong>{qaArtifact ? qaArtifact.label : '未选择'}</strong></div>
+          <div><span>来源</span><strong>{originText}</strong></div>
+          <div><span>项目术语库</span><strong>{glossaryCount} 条，运行时生成快照</strong></div>
+          <div><span>下一步</span><strong>{qaAction}</strong></div>
+        </div>
+        {qaStatusRun?.status === 'failed' ? (
+          <div className="qa-blocker-line">
+            QA 未通过，所以不会生成交付包。请先用“模型修复并重跑 QA”或展开下方问题手工修复；待处理问题清零后再进入交付。
+          </div>
+        ) : null}
       </div>
-      <TaskHistoryTable project={project} kind="qa" title="🕒 校对历史记录" />
-      {latestQaRun ? <TaskRunSummary run={latestQaRun} issues={qaIssues} projectHardErrors={projectHardErrors} /> : null}
+      {showHistory ? (
+        <details className="history-collapsed">
+          <summary>查看历史校对记录</summary>
+          <TaskHistoryTable project={project} kind="qa" title="校对历史记录" />
+        </details>
+      ) : null}
       {qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onModelFix={onModelFixes} onApply={onManualFixes} /> : null}
     </>
   )
@@ -1032,17 +1055,38 @@ export function FailedRowEditor({
   )
 }
 
-export function StepDone({ project, latestRun }: { project: Project; latestRun: Run | null }) {
+export function StepDone({
+  project,
+  latestRun,
+  qualityIssues,
+  setStep
+}: {
+  project: Project
+  latestRun: Run | null
+  qualityIssues: QualityIssue[]
+  setStep: (step: number) => void
+}) {
   const artifacts = pickerArtifacts(latestRun?.artifacts?.length ? latestRun.artifacts : runArtifacts(project, latestRun?.id))
     .filter((artifact) => artifact.kind === 'qa_final_workbook' || artifact.kind === 'qa_changes')
+  const pendingIssueCount = latestRun?.kind === 'qa' ? qaPendingIssueCount(latestRun, qualityIssues) : 0
+  const deliveryBlocked = latestRun?.kind === 'qa' && latestRun.status !== 'passed'
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 9</span>最终交付</div>
-      {latestRun ? <TaskRunSummary run={latestRun} /> : <div className="muted-left">暂无可交付任务。先完成翻译或校对。</div>}
+      {latestRun ? <TaskRunSummary run={latestRun} issues={qualityIssues} /> : <div className="muted-left">暂无可交付任务。先完成翻译或校对。</div>}
+      {deliveryBlocked ? (
+        <div className="delivery-blocker">
+          <strong>暂不能生成交付包</strong>
+          <span>最近一次 QA 未通过，仍有 {pendingIssueCount || '若干'} 个必须处理的问题。交付包只会在 QA 通过后生成，避免把未校对内容交出去。</span>
+          <button className="btn btn-primary btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
+        </div>
+      ) : null}
       <div className="artifact-grid">
         {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={`/api/artifacts/${artifact.id}/download`}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
       </div>
-      <div className="muted-left">正式交付请回到“交付”页生成最终 workbook 和 QA 修改表。</div>
+      <div className="muted-left">
+        {deliveryBlocked ? '当前只提供 QA 过程文件用于修复；QA 通过后才能在“交付”页生成最终 workbook。' : '正式交付请回到“交付”页生成最终 workbook 和 QA 修改表。'}
+      </div>
     </>
   )
 }
@@ -1156,7 +1200,7 @@ export function runTaskSummary(project: Project, run: Run, seen: Set<string> = n
     return { taskCode: code, taskType: code, taskLabel: `${code}-${shortRunId(run.id)}` }
   }
   seen.add(run.id)
-  const sourceId = String(run.metadata?.manual_fix_source_run_id || run.metadata?.source_run_id || '')
+  const sourceId = String(run.metadata?.manual_fix_source_run_id || run.metadata?.model_fix_source_run_id || run.metadata?.source_run_id || '')
   if (sourceId) {
     const sourceRun = (project.runs || []).find((item) => item.id === sourceId)
     if (sourceRun && (run.kind === 'qa' || run.metadata?.task_origin === 'translation_continuation')) {
@@ -1224,10 +1268,51 @@ export function runQaRowsText(run: Run): string {
 }
 
 export function qualityRowsScanned(run: Run): number {
-  const quality = (run.metadata?.quality_summary || {}) as Record<string, unknown>
-  const globalQuality = quality.global_harness_quality as { rows_scanned?: number } | undefined
-  const projectQuality = quality.project_harness_quality as { rows_scanned?: number } | undefined
-  return Number(globalQuality?.rows_scanned || projectQuality?.rows_scanned || 0)
+  const summary = (run.metadata?.quality_summary || {}) as Record<string, unknown>
+  const directQuality = (run.metadata?.quality || {}) as { rows_scanned?: number }
+  const globalQuality = summary.global_harness_quality as { rows_scanned?: number } | undefined
+  const projectQuality = summary.project_harness_quality as { rows_scanned?: number } | undefined
+  return Number(directQuality.rows_scanned || globalQuality?.rows_scanned || projectQuality?.rows_scanned || 0)
+}
+
+export function qaPendingIssueCount(run: Run | null | undefined, issues: QualityIssue[] = []): number {
+  if (!run) return 0
+  const summary = (run.metadata?.quality_summary || {}) as { hard_errors?: number }
+  const hardFromSummary = Number(summary.hard_errors || 0)
+  const visibleHardCount = issues.filter((issue) => issue.severity === 'hard').length
+  return hardFromSummary || visibleHardCount
+}
+
+export function qaStatusBadge(status: string): string {
+  if (status === 'passed') return '已通过'
+  if (status === 'failed') return '未通过'
+  if (status === 'running' || status === 'queued') return '运行中'
+  if (status === 'needs_input') return '需处理'
+  return status || '未运行'
+}
+
+export function qaRunTagClass(run: Run | null | undefined): string {
+  if (!run) return 'tag-doing'
+  if (run.status === 'passed') return 'tag-done'
+  if (run.status === 'failed') return 'tag-warn'
+  return 'tag-doing'
+}
+
+export function qaRunSummaryText(run: Run | null | undefined, pendingIssueCount = 0): string {
+  if (!run) return '尚未运行 QA。请选择译文表后点击“运行 QA”。'
+  if (run.status === 'passed') return 'QA 已通过，可以进入交付页生成最终文件。'
+  if (run.status === 'failed') return `QA 未通过，还有 ${pendingIssueCount || '若干'} 个必须处理的问题。`
+  if (run.status === 'queued' || run.status === 'running') return 'QA 正在运行，请等待当前任务完成。'
+  if (run.status === 'needs_input') return 'QA 需要补充输入后继续。'
+  return `当前状态：${run.status}`
+}
+
+export function qaRunActionText(run: Run | null | undefined, pendingIssueCount = 0): string {
+  if (!run) return '运行 QA'
+  if (run.status === 'passed') return '去交付页生成最终文件'
+  if (run.status === 'failed') return pendingIssueCount ? '先修复问题再交付' : '查看 QA 报告后处理'
+  if (run.status === 'queued' || run.status === 'running') return '等待任务完成'
+  return '按提示补齐输入'
 }
 
 export function runDeliveryState(run: Run, visibleArtifacts: Artifact[]): string {
@@ -1248,10 +1333,10 @@ export function TaskRunSummary({
   projectHardErrors?: number
 }) {
   const title = run.kind === 'qa' ? '最近校对任务' : run.kind === 'translation' ? '最近翻译任务' : '最近任务'
-  const summary = run.metadata?.quality_summary as { hard_errors?: number } | undefined
-  const metadataHardErrors = Number(summary?.hard_errors ?? 0)
-  const issueCount = issues.length || metadataHardErrors
-  const issueText = issueCount ? `待处理问题 ${issueCount} 条` : '无待处理问题'
+  const issueCount = qaPendingIssueCount(run, issues)
+  const issueText = run.kind === 'qa'
+    ? (run.status === 'passed' ? 'QA 已通过，可交付' : issueCount ? `QA 未通过，待处理 ${issueCount} 条` : qaStatusBadge(run.status))
+    : (issueCount ? `待处理问题 ${issueCount} 条` : '无待处理问题')
   const projectGate = typeof projectHardErrors === 'number' ? `，项目规则必须修复 ${projectHardErrors}` : ''
   return (
     <div className="task-summary">
@@ -1260,7 +1345,7 @@ export function TaskRunSummary({
         <span>{new Date(run.created_at).toLocaleString()}</span>
       </div>
       <div>
-        <span className={`tag ${run.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{run.status}</span>
+        <span className={`tag ${qaRunTagClass(run)}`}>{qaStatusBadge(run.status)}</span>
         <span>{issueText}{projectGate}</span>
       </div>
     </div>

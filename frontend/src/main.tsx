@@ -231,6 +231,7 @@ function App() {
   const [freqOpen, setFreqOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('准备就绪')
+  const currentIdRef = useRef('')
   const [intro, setIntro] = useState('')
   const [sourceArtifact, setSourceArtifact] = useState<Artifact | null>(null)
   const [termArtifact, setTermArtifact] = useState<Artifact | null>(null)
@@ -262,12 +263,44 @@ function App() {
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
   const currentLang = languageSpec(selectedLanguage)
 
+  function isCurrentProject(projectId?: string | null): boolean {
+    return Boolean(projectId) && currentIdRef.current === projectId
+  }
+
+  function setStatusForProject(projectId: string, message: string) {
+    if (isCurrentProject(projectId)) setStatus(message)
+  }
+
+  function setBusyForProject(projectId: string, value: boolean) {
+    if (isCurrentProject(projectId)) setBusy(value)
+  }
+
+  function resetProjectTransientState(message = '准备就绪') {
+    setBusy(false)
+    setStatus(message)
+    setSourceArtifact(null)
+    setTermArtifact(null)
+    setQaArtifact(null)
+    setArchiveArtifact(null)
+    setAssetArtifacts([])
+    setLatestRun(null)
+    setGlossaryPreview([])
+    setGlossaryBatches([])
+    setGlossaryCandidates([])
+    setQualityIssues([])
+    setDeliverables([])
+    setTranslationReadiness(null)
+    setAnnouncementText('')
+    setAnnouncementLookupResult(null)
+  }
+
   useEffect(() => {
+    currentIdRef.current = currentId
     return () => {
       if (deleteHoldTimer.current !== null) window.clearTimeout(deleteHoldTimer.current)
       if (announcementCancelHoldTimer.current !== null) window.clearTimeout(announcementCancelHoldTimer.current)
     }
-  }, [])
+  }, [currentId])
 
   useEffect(() => {
     if (currentId) refreshCurrent()
@@ -343,9 +376,11 @@ function App() {
 
   useEffect(() => {
     if (!latestRun || !['queued', 'running'].includes(latestRun.status)) return
+    const runProjectId = latestRun.project_id
     const poller = window.setInterval(async () => {
       try {
         const updated = await api<Run>(`/api/runs/${latestRun.id}`)
+        if (!isCurrentProject(runProjectId)) return
         setLatestRun(updated)
         const latestEvent = updated.events?.[updated.events.length - 1]
         if (updated.kind === 'translation' && updated.status === 'passed') {
@@ -358,7 +393,7 @@ function App() {
           if (tab === 'delivery') await refreshDeliverables()
         }
       } catch (error) {
-        setStatus(`后台任务进度刷新失败：${errorText(error)}`)
+        setStatusForProject(runProjectId, `后台任务进度刷新失败：${errorText(error)}`)
       }
     }, 2000)
     return () => window.clearInterval(poller)
@@ -398,8 +433,11 @@ function App() {
       longPressTriggeredProjectId.current = ''
       return
     }
+    if (project.id !== currentId) resetProjectTransientState()
+    currentIdRef.current = project.id
     setCurrentId(project.id)
     setView('overview')
+    setTab('meta')
   }
 
   async function deleteProject(project: Project) {
@@ -410,6 +448,7 @@ function App() {
       const loaded = await api<Project[]>('/api/projects')
       const nextId = loaded.some((item) => item.id === currentId) ? currentId : loaded[0]?.id || ''
       setProjects(loaded)
+      currentIdRef.current = nextId
       setCurrentId(nextId)
       if (project.id === currentId) {
         setView('overview')
@@ -473,13 +512,17 @@ function App() {
 
   async function refreshProjects(selectId?: string) {
     const loaded = await api<Project[]>('/api/projects')
+    const nextId = selectId || currentIdRef.current || loaded[0]?.id || ''
     setProjects(loaded)
-    setCurrentId(selectId || currentId || loaded[0]?.id || '')
+    currentIdRef.current = nextId
+    setCurrentId(nextId)
   }
 
   async function refreshCurrent() {
     if (!currentId) return
-    const loaded = await api<Project>(`/api/projects/${currentId}`)
+    const projectId = currentId
+    const loaded = await api<Project>(`/api/projects/${projectId}`)
+    if (!isCurrentProject(projectId)) return
     setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
   }
 
@@ -505,12 +548,14 @@ function App() {
     setStatus('项目元信息已保存')
   }
 
-  async function loadQualityIssues(runId: string) {
+  async function loadQualityIssues(runId: string, projectId = currentIdRef.current): Promise<QualityIssue[]> {
     try {
       const result = await api<{ issues: QualityIssue[] }>(`/api/runs/${runId}/quality-issues`)
-      setQualityIssues(result.issues)
+      if (isCurrentProject(projectId)) setQualityIssues(result.issues)
+      return result.issues
     } catch (error) {
-      setStatus(`QA issue load failed: ${errorText(error)}`)
+      setStatusForProject(projectId, `QA 问题加载失败：${errorText(error)}`)
+      return []
     }
   }
 
@@ -683,14 +728,14 @@ function App() {
     }
   }
 
-  async function refreshTranslationReadiness(artifactId: string) {
+  async function refreshTranslationReadiness(artifactId: string, projectId = currentIdRef.current) {
     const batchSize = effectiveBatchSize(settings, translationBatchSize)
     try {
       const result = await api<TranslationReadiness>(`/api/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(selectedLanguage)}`)
-      setTranslationReadiness(result)
+      if (isCurrentProject(projectId)) setTranslationReadiness(result)
       return result
     } catch {
-      setTranslationReadiness(null)
+      if (isCurrentProject(projectId)) setTranslationReadiness(null)
       return null
     }
   }
@@ -710,7 +755,9 @@ function App() {
   }
 
   async function syncLanguageFromArtifact(artifact: Artifact) {
+    const projectId = currentIdRef.current
     const targets = await inspectTranslationTargets(artifact.id)
+    if (!isCurrentProject(projectId)) return
     const suggested = targets?.suggested_language
     if (suggested && suggested !== selectedLanguage) {
       setSelectedLanguage(suggested)
@@ -731,15 +778,16 @@ function App() {
 
   async function startQuickTask(payload: { inputArtifact: Artifact; referenceArtifacts: Artifact[]; objective: 'translate' | 'qa'; language: LanguageCode }): Promise<Run | null> {
     if (!current) return null
+    const projectId = current.id
     const { inputArtifact, referenceArtifacts, objective, language } = payload
     const referenceArtifactIds = referenceArtifacts.map((artifact) => artifact.id)
     const batchSize = effectiveBatchSize(settings, translationBatchSize)
     setBusy(true)
-    setStatus(objective === 'qa' ? `快速校对准备中：${languageSpec(language).short}` : `快速翻译准备中：${languageSpec(language).short}`)
+    setStatusForProject(projectId, objective === 'qa' ? `快速校对准备中：${languageSpec(language).short}` : `快速翻译准备中：${languageSpec(language).short}`)
     try {
       const inputName = `${inputArtifact.label || ''} ${inputArtifact.path || ''}`.toLowerCase()
       if (objective === 'qa' && /\.(txt|md|markdown)(\s|$)/i.test(inputName)) {
-        setStatus('TXT \u5feb\u901f\u4efb\u52a1\u76ee\u524d\u652f\u6301\u7ffb\u8bd1\u5e76\u8f93\u51fa\u540c\u683c\u5f0f\u6587\u672c\uff1b\u6821\u5bf9\u8bf7\u4e0a\u4f20\u5df2\u8bd1\u8bed\u8a00\u8868 workbook\u3002')
+        setStatusForProject(projectId, 'TXT \u5feb\u901f\u4efb\u52a1\u76ee\u524d\u652f\u6301\u7ffb\u8bd1\u5e76\u8f93\u51fa\u540c\u683c\u5f0f\u6587\u672c\uff1b\u6821\u5bf9\u8bf7\u4e0a\u4f20\u5df2\u8bd1\u8bed\u8a00\u8868 workbook\u3002')
         return null
       }
       if (objective === 'qa') {
@@ -758,22 +806,24 @@ function App() {
           })
         })
         const result = await api<{ run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }>(`/api/runs/${run.id}/qa`, { method: 'POST' })
+        if (!isCurrentProject(projectId)) return null
         const hydrated = { ...result.run, artifacts: result.artifacts }
         setLatestRun(hydrated)
         await refreshCurrent()
         if (tab === 'delivery') await refreshDeliverables()
-        setStatus(result.run.status === 'passed' ? '快速校对已通过，可在交付页生成最终文件。' : `快速校对结束：${result.run.status}`)
+        setStatusForProject(projectId, result.run.status === 'passed' ? '快速校对已通过，可在交付页生成最终文件。' : `快速校对结束：${result.run.status}`)
         return hydrated
       }
 
       const readiness = await api<TranslationReadiness>(`/api/artifacts/${inputArtifact.id}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
+      if (!isCurrentProject(projectId)) return null
       if (canSkipModelTranslation(readiness)) {
-        setStatus(`已检测到 ${readiness.translated_rows}/${readiness.source_rows} 行已有译文；建议切换为“校对”直接跑 QA。`)
+        setStatusForProject(projectId, `已检测到 ${readiness.translated_rows}/${readiness.source_rows} 行已有译文；建议切换为“校对”直接跑 QA。`)
         return null
       }
       const blockReason = formalTranslationBlockReason(settings, inputArtifact, current, readiness)
       if (blockReason) {
-        setStatus(`无法开始快速翻译：${blockReason}`)
+        setStatusForProject(projectId, `无法开始快速翻译：${blockReason}`)
         return null
       }
       const resumableRun = (current.runs || []).find((run) =>
@@ -795,6 +845,7 @@ function App() {
             task_code: 'T'
           })
         })
+      if (!isCurrentProject(projectId)) return null
       setLatestRun(run)
       const endpoint = resumableRun ? 'resume' : 'start'
       const started = await api<Run>(`/api/runs/${run.id}/translate/${endpoint}`, {
@@ -802,25 +853,28 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ batch_size: batchSize })
       })
+      if (!isCurrentProject(projectId)) return null
       setLatestRun(started)
-      setStatus(resumableRun
+      setStatusForProject(projectId, resumableRun
         ? `快速翻译已继续：${languageSpec(language).short} · 会从已保存批次接着跑。`
         : `快速翻译已进入后台：${languageSpec(language).short} · ${readiness.source_rows} 行 · 预计 ${readiness.estimated_batches || '-'} 批。`)
       return started
     } catch (error) {
-      setStatus(`快速任务失败：${errorText(error)}`)
+      setStatusForProject(projectId, `快速任务失败：${errorText(error)}`)
       return null
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
   async function runTranslate(taskCode: 'A' | 'T' = 'T') {
     if (!current || !sourceArtifact) return
+    const projectId = current.id
     const selectedBatchSize = effectiveBatchSize(settings, translationBatchSize)
     const readiness = translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === selectedBatchSize
       ? translationReadiness
-      : await refreshTranslationReadiness(sourceArtifact.id)
+      : await refreshTranslationReadiness(sourceArtifact.id, projectId)
+    if (!isCurrentProject(projectId)) return
     if (readiness && canSkipModelTranslation(readiness)) {
       setQaArtifact(sourceArtifact)
       setStep(8)
@@ -833,7 +887,7 @@ function App() {
       return
     }
     setBusy(true)
-    setStatus(`${currentLang.short} 翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
+    setStatusForProject(projectId, `${currentLang.short} 翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
     try {
       const batchSize = selectedBatchSize
       const latestRunMatches = latestRun && matchesTranslationRun(latestRun, selectedLanguage, sourceArtifact.id, 'translation_run')
@@ -855,13 +909,14 @@ function App() {
             task_code: taskCode
           })
         })
+      if (!isCurrentProject(projectId)) return
       setLatestRun(run)
       const needsBudgetConfirm = run.metadata?.reason === 'api_budget_confirmation_required'
       const confirmedBudget = needsBudgetConfirm
         ? window.confirm('该任务预计 API token 用量超过设置的提醒阈值。确认后会从已完成批次继续，不会重跑已落盘批次。是否继续？')
         : false
       if (needsBudgetConfirm && !confirmedBudget) {
-        setStatus('已暂停：等待确认 API 用量预算后继续。')
+        setStatusForProject(projectId, '已暂停：等待确认 API 用量预算后继续。')
         return
       }
       const endpoint = resumableRun ? 'resume' : 'start'
@@ -870,38 +925,43 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget })
       })
+      if (!isCurrentProject(projectId)) return
       setLatestRun(started)
-      setStatus(`${currentLang.short} 翻译已进入后台队列：系统会自动拆批、限流、落盘和续跑。`)
+      setStatusForProject(projectId, `${currentLang.short} 翻译已进入后台队列：系统会自动拆批、限流、落盘和续跑。`)
     } catch (error) {
-      setStatus(`翻译失败：${errorText(error)}`)
+      setStatusForProject(projectId, `翻译失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
   async function cancelTranslateRun() {
     if (!latestRun || latestRun.kind !== 'translation') return
+    const projectId = latestRun.project_id
     setBusy(true)
     setStatus('正在取消后台翻译任务...')
     try {
       const canceled = await api<Run>(`/api/runs/${latestRun.id}/translate/cancel`, { method: 'POST' })
+      if (!isCurrentProject(projectId)) return
       setLatestRun(canceled)
       setStatus('已请求取消：当前已完成批次会保留，后续可继续。')
     } catch (error) {
-      setStatus(`取消翻译失败：${errorText(error)}`)
+      setStatusForProject(projectId, `取消翻译失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
   async function runDirectQA(taskCode: 'QA' = 'QA') {
     if (!current || !qaArtifact) return
+    const projectId = current.id
     if (artifactRole(qaArtifact) === 'language_source') {
-      const readiness = await refreshTranslationReadiness(qaArtifact.id)
+      const readiness = await refreshTranslationReadiness(qaArtifact.id, projectId)
+      if (!isCurrentProject(projectId)) return
       if (!canSkipModelTranslation(readiness)) {
         setSourceArtifact(qaArtifact)
         setStep(7)
-        setStatus('这份语言表还不像完整译文表：请先进入模型翻译补齐空译文或明显非目标语言内容，再运行 QA。')
+        setStatusForProject(projectId, '这份语言表还不像完整译文表：请先进入模型翻译补齐空译文或明显非目标语言内容，再运行 QA。')
         return
       }
     }
@@ -909,7 +969,7 @@ function App() {
       ? qaArtifact.run_id
       : null
     setBusy(true)
-    setStatus('正在对已有译文 workbook 执行 QA...')
+    setStatusForProject(projectId, '正在对已有译文 workbook 执行 QA...')
     try {
       const run = await api<Run>('/api/runs', {
         method: 'POST',
@@ -925,24 +985,34 @@ function App() {
           task_code: taskCode
         })
       })
+      if (!isCurrentProject(projectId)) return
+      setLatestRun({ ...run, status: 'running', artifacts: [] })
+      setQualityIssues([])
+      setStatusForProject(projectId, 'QA 正在运行：正在检查变量、标签、术语、中文残留和格式问题...')
       const result = await api<{ run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }>(`/api/runs/${run.id}/qa`, {
         method: 'POST'
       })
+      if (!isCurrentProject(projectId)) return
       setLatestRun({ ...result.run, artifacts: result.artifacts })
+      const issues = result.run.status === 'passed' ? [] : await loadQualityIssues(result.run.id, projectId)
       await refreshCurrent()
       if (tab === 'delivery') await refreshDeliverables()
-      setStatus(result.run.status === 'passed' ? '已有译文 QA 通过' : `已有译文 QA 结束：${result.run.status}`)
+      const hardCount = Number(result.quality_summary?.hard_errors || 0) || issues.filter((issue) => issue.severity === 'hard').length
+      setStatusForProject(projectId, result.run.status === 'passed'
+        ? '已有译文 QA 通过，可进入交付。'
+        : `QA 未通过：还有 ${hardCount || '若干'} 个必须处理的问题，暂不会生成交付包。`)
     } catch (error) {
-      setStatus(`已有译文 QA 失败：${errorText(error)}`)
+      setStatusForProject(projectId, `已有译文 QA 失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
   async function applyManualFixes(fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) {
     if (!current || !latestRun || !fixes.length) return
+    const projectId = current.id
     setBusy(true)
-    setStatus('正在保存手工修复并重新 QA...')
+    setStatusForProject(projectId, '正在保存手工修复并重新 QA...')
     try {
       const result = await api<{
         fixed_artifact: Artifact
@@ -953,26 +1023,28 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fixes, rerun_qa: true })
       })
+      if (!isCurrentProject(projectId)) return
       if (result.qa_result) {
         setLatestRun({ ...result.qa_result.run, artifacts: result.qa_result.artifacts })
         setQualityIssues([])
-        setStatus(`手工修复已重新 QA：${result.qa_result.run.status}`)
+        setStatusForProject(projectId, `手工修复已重新 QA：${result.qa_result.run.status}`)
       } else {
         setQaArtifact(result.fixed_artifact)
-        setStatus('手工修复已保存，等待重新 QA')
+        setStatusForProject(projectId, '手工修复已保存，等待重新 QA')
       }
       await refreshCurrent()
     } catch (error) {
-      setStatus(`手工修复失败：${errorText(error)}`)
+      setStatusForProject(projectId, `手工修复失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
   async function applyModelFixes() {
     if (!current || !latestRun) return
+    const projectId = current.id
     setBusy(true)
-    setStatus('正在调用模型修复 QA 问题并重新校对...')
+    setStatusForProject(projectId, '模型修复正在运行：系统会先批量修复可定位问题，再自动重跑 QA...')
     try {
       const result = await api<{
         fixed_artifact: Artifact
@@ -983,19 +1055,24 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ max_issues: 80, rerun_qa: true })
       })
+      if (!isCurrentProject(projectId)) return
       if (result.qa_result) {
         setLatestRun({ ...result.qa_result.run, artifacts: result.qa_result.artifacts })
-        setQualityIssues([])
-        setStatus(`模型已修复 ${result.model_fixes.length} 条并重新 QA：${result.qa_result.run.status}`)
+        const issues = result.qa_result.run.status === 'passed' ? [] : await loadQualityIssues(result.qa_result.run.id, projectId)
+        if (result.qa_result.run.status === 'passed') setQualityIssues([])
+        const hardCount = Number(result.qa_result.quality_summary?.hard_errors || 0) || issues.filter((issue) => issue.severity === 'hard').length
+        setStatusForProject(projectId, result.qa_result.run.status === 'passed'
+          ? `模型已修复 ${result.model_fixes.length} 条，重跑 QA 已通过，可进入交付。`
+          : `模型已修复 ${result.model_fixes.length} 条，但 QA 仍有 ${hardCount || '若干'} 个必须处理的问题，暂不会生成交付包。`)
       } else {
         setQaArtifact(result.fixed_artifact)
-        setStatus(`模型已修复 ${result.model_fixes.length} 条，等待重新 QA`)
+        setStatusForProject(projectId, `模型已修复 ${result.model_fixes.length} 条，等待重新 QA`)
       }
       await refreshCurrent()
     } catch (error) {
-      setStatus(`模型修复失败：${errorText(error)}`)
+      setStatusForProject(projectId, `模型修复失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
@@ -1044,50 +1121,54 @@ function App() {
 
   async function createAnnouncementTask(payload: Record<string, unknown>) {
     if (!current) return null
+    const projectId = current.id
     setBusy(true)
-    setStatus('正在创建公告任务...')
+    setStatusForProject(projectId, '正在创建公告任务...')
     try {
-      const task = await api<AnnouncementTask>(`/api/projects/${current.id}/announcement-tasks`, {
+      const task = await api<AnnouncementTask>(`/api/projects/${projectId}/announcement-tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
+      if (!isCurrentProject(projectId)) return null
       await refreshCurrent()
-      setStatus(`公告任务已创建：${task.title || task.id}`)
+      setStatusForProject(projectId, `公告任务已创建：${task.title || task.id}`)
       return task
     } catch (error) {
-      setStatus(`公告任务创建失败：${errorText(error)}`)
+      setStatusForProject(projectId, `公告任务创建失败：${errorText(error)}`)
       return null
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
   async function runAnnouncementTaskAction(taskId: string, endpoint: string, payload: Record<string, unknown> = {}) {
     if (!current) return null
+    const projectId = current.id
     setBusy(true)
-    setStatus(`正在执行公告任务：${endpoint}...`)
+    setStatusForProject(projectId, `正在执行公告任务：${endpoint}...`)
     try {
       const result = await api<AnnouncementTaskResult>(`/api/announcement-tasks/${taskId}/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
+      if (!isCurrentProject(projectId)) return null
       if (result.run) setLatestRun({ ...result.run, artifacts: result.artifacts || [] })
       await refreshCurrent()
       const summary = result.summary ? ` ? ${compactSummary(result.summary)}` : ''
       const taskStatus = String(result.task?.status || '')
       if (endpoint.startsWith('translate/') && ['queued', 'running'].includes(taskStatus)) {
-        setStatus(`\u516c\u544a\u540e\u53f0\u7ffb\u8bd1\u5df2\u542f\u52a8\uff1a${announcementActionLabel(endpoint)}${summary}`)
+        setStatusForProject(projectId, `\u516c\u544a\u540e\u53f0\u7ffb\u8bd1\u5df2\u542f\u52a8\uff1a${announcementActionLabel(endpoint)}${summary}`)
       } else {
-        setStatus(`\u516c\u544a\u6b65\u9aa4\u5df2\u5b8c\u6210\uff1a${announcementActionLabel(endpoint)}${summary}`)
+        setStatusForProject(projectId, `\u516c\u544a\u6b65\u9aa4\u5df2\u5b8c\u6210\uff1a${announcementActionLabel(endpoint)}${summary}`)
       }
       return result
     } catch (error) {
-      setStatus(`公告任务失败：${errorText(error)}`)
+      setStatusForProject(projectId, `公告任务失败：${errorText(error)}`)
       return null
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
@@ -1403,6 +1484,7 @@ function App() {
                 qualityIssues={qualityIssues}
                 glossaryPreview={glossaryPreview}
                 deliverables={deliverables}
+                assetArtifacts={assetArtifacts}
                 setSourceArtifact={selectSourceArtifact}
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={selectQaArtifact}
@@ -1423,6 +1505,7 @@ function App() {
                 onUploadArchive={uploadArchiveWorkbook}
                 onImportArchive={importTranslationArchive}
                 onSaveHarness={saveHarness}
+                onUploadMaterial={uploadProjectMaterial}
                 onTranslate={() => runTranslate('T')}
                 onDirectQA={() => runDirectQA('QA')}
                 onSkipQAArchive={skipQAArchive}
@@ -1564,6 +1647,7 @@ function ProjectOverview({
   qualityIssues,
   glossaryPreview,
   deliverables,
+  assetArtifacts,
   setSourceArtifact,
   setTermArtifact,
   setQaArtifact,
@@ -1584,6 +1668,7 @@ function ProjectOverview({
   onUploadArchive,
   onImportArchive,
   onSaveHarness,
+  onUploadMaterial,
   onTranslate,
   onDirectQA,
   onSkipQAArchive,
@@ -1617,6 +1702,7 @@ function ProjectOverview({
   qualityIssues: QualityIssue[]
   glossaryPreview: GlossaryPreviewRow[]
   deliverables: DeliverableTask[]
+  assetArtifacts: Artifact[]
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
   setQaArtifact: (artifact: Artifact | null) => void
@@ -1637,6 +1723,7 @@ function ProjectOverview({
   onUploadArchive: (file: File) => Promise<Artifact | null>
   onImportArchive: (artifact?: Artifact | null) => Promise<boolean>
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
+  onUploadMaterial: (file: File) => Promise<Artifact | null>
   onTranslate: () => void
   onDirectQA: () => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
@@ -1704,7 +1791,20 @@ function ProjectOverview({
         <button className={`view-tab ${tab === 'archive' ? 'active' : ''}`} onClick={() => setTab('archive')}>🗄️ 译文归档</button>
         <button className={`view-tab ${tab === 'delivery' ? 'active' : ''}`} onClick={() => setTab('delivery')}>📥 交付</button>
       </div>
-      {tab === 'meta' ? <MetaTab project={project} intro={intro} setIntro={setIntro} busy={busy} selectedLanguage={selectedLanguage} onSaveMeta={onSaveMeta} onAnalyze={onAnalyze} onSaveHarness={onSaveHarness} /> : null}
+      {tab === 'meta' ? (
+        <MetaTab
+          project={project}
+          intro={intro}
+          setIntro={setIntro}
+          busy={busy}
+          selectedLanguage={selectedLanguage}
+          onSaveMeta={onSaveMeta}
+          onAnalyze={onAnalyze}
+          onSaveHarness={onSaveHarness}
+          assetArtifacts={assetArtifacts}
+          onUploadMaterial={onUploadMaterial}
+        />
+      ) : null}
       {tab === 'glossary' ? (
         <GlossaryTab
           project={project}

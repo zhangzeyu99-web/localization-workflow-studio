@@ -3,7 +3,41 @@ import { api } from '../../apiClient'
 import { formatDate } from '../../domain/format'
 import { fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, linesToFixedTerms, linesToList, listToLines, linesToRules, projectPromptForLanguage, profileText, ruleSummary, rulesToLines } from '../../domain/projectAssets'
 import { languageSpec, type LanguageCode } from '../../languages'
-import type { Project, ProjectHarness } from '../../types'
+import type { Artifact, Project, ProjectHarness } from '../../types'
+import { ArtifactNote, FileBox } from '../shared/WorkflowPrimitives'
+
+type MetaDraft = {
+  game_type: string
+  target_audience: string
+  content_scope: string
+  translation_style: string
+  language_assets: string
+  source_materials: string
+}
+
+const metaFields: { key: keyof MetaDraft; label: string; placeholder: string }[] = [
+  { key: 'game_type', label: '游戏类型', placeholder: '例如：地狱监狱经营 SLG / 竖屏模拟经营' },
+  { key: 'target_audience', label: '目标用户', placeholder: '例如：欧美移动端 SLG 玩家' },
+  { key: 'content_scope', label: '内容构成', placeholder: '例如：UI、任务、建筑、英雄、联盟、战斗、邮件、剧情' },
+  { key: 'translation_style', label: '翻译风格', placeholder: '例如：短促直接、适配按钮、剧情自然讽刺' },
+  { key: 'language_assets', label: '语言资产', placeholder: '例如：EN 8379 行、术语 485 条、UI 9 条' },
+  { key: 'source_materials', label: '素材来源', placeholder: '例如：项目 brief、语言表、需求文档、截图/视频' }
+]
+
+function metaDraftFromProject(project: Project): MetaDraft {
+  return {
+    game_type: profileText(project, 'game_type', project.type || ''),
+    target_audience: profileText(project, 'target_audience', ''),
+    content_scope: profileText(project, 'content_scope', ''),
+    translation_style: profileText(project, 'translation_style', ''),
+    language_assets: profileText(project, 'language_assets', ''),
+    source_materials: profileText(project, 'source_materials', '')
+  }
+}
+
+function fileSafeName(value: string): string {
+  return (value || 'project').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, '_').replace(/^[_ .]+|[_ .]+$/g, '') || 'project'
+}
 
 export function MetaTab({
   project,
@@ -13,7 +47,9 @@ export function MetaTab({
   selectedLanguage,
   onSaveMeta,
   onAnalyze,
-  onSaveHarness
+  onSaveHarness,
+  assetArtifacts,
+  onUploadMaterial
 }: {
   project: Project
   intro: string
@@ -23,26 +59,48 @@ export function MetaTab({
   onSaveMeta: (updates: Partial<Project>) => Promise<void>
   onAnalyze: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
+  assetArtifacts: Artifact[]
+  onUploadMaterial: (file: File) => Promise<Artifact | null>
 }) {
   const promptText = projectPromptForLanguage(project, selectedLanguage)
   const lang = languageSpec(selectedLanguage)
   const [name, setName] = useState(project.name)
   const [type, setType] = useState(project.type || '')
-  const [description, setDescription] = useState(project.description || '')
+  const [materialNotes, setMaterialNotes] = useState(project.description || '')
+  const [metaDraft, setMetaDraft] = useState<MetaDraft>(() => metaDraftFromProject(project))
+  const [editingMeta, setEditingMeta] = useState(false)
   const [promptDraft, setPromptDraft] = useState(promptText)
   const [editingPrompt, setEditingPrompt] = useState(false)
 
   useEffect(() => {
     setName(project.name)
     setType(project.type || '')
-    setDescription(project.description || '')
+    setMaterialNotes(project.description || '')
+    setMetaDraft(metaDraftFromProject(project))
+    setEditingMeta(false)
     setPromptDraft(projectPromptForLanguage(project, selectedLanguage))
     setEditingPrompt(false)
   }, [project.id, project.name, project.type, project.description, project.prompt_text, project.profile, selectedLanguage])
 
-  async function submit() {
-    await onSaveMeta({ name: name.trim() || project.name, type, description })
-    setIntro(description)
+  async function saveMaterialInput() {
+    await onSaveMeta({ name: name.trim() || project.name, type, description: materialNotes })
+    setIntro(materialNotes)
+  }
+
+  async function saveMetaDraft() {
+    const profile = { ...(project.profile || {}) }
+    profile.display_game_type = metaDraft.game_type
+    profile.display_target_audience = metaDraft.target_audience
+    profile.display_content_scope = metaDraft.content_scope
+    profile.display_translation_style = metaDraft.translation_style
+    profile.game_type = metaDraft.game_type
+    profile.target_audience = metaDraft.target_audience
+    profile.content_scope = metaDraft.content_scope
+    profile.translation_style = metaDraft.translation_style
+    profile.language_assets = metaDraft.language_assets
+    profile.source_materials = metaDraft.source_materials
+    await onSaveMeta({ type, profile })
+    setEditingMeta(false)
   }
 
   async function savePrompt() {
@@ -63,9 +121,36 @@ export function MetaTab({
 
   return (
     <>
+      <div className="card material-card">
+        <div className="card-title">
+          <div className="left">📥 项目资料投放</div>
+          <div className="card-actions">
+            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={saveMaterialInput}>保存资料说明</button>
+            <button className="btn btn-primary btn-sm" disabled={busy} onClick={onAnalyze}>重新分析项目</button>
+          </div>
+        </div>
+        <p className="section-hint">这里放项目 brief、需求文档、语言表、图片或视频素材；重复文件会自动复用，不重复参与分析。</p>
+        <div className="meta-grid material-input-grid">
+          <label><span>项目名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+          <label><span>题材/分类</span><input value={type} onChange={(event) => setType(event.target.value)} placeholder="体育 / SLG / 休闲 / RPG" /></label>
+          <label className="wide"><span>投进去的信息 / 本次分析补充</span><textarea value={materialNotes} onChange={(event) => { setMaterialNotes(event.target.value); setIntro(event.target.value) }} placeholder="写项目背景、目标用户、风格要求；也可以直接上传 project brief、需求文档、语言表、截图或视频。" /></label>
+        </div>
+        <div className="material-upload-row">
+          <FileBox label="上传项目资料（MD/TXT/DOCX/PDF/XLSX/图片/视频）" onFile={(file) => { void onUploadMaterial(file) }} />
+          <div className="material-list">
+            <strong>已投资料 {assetArtifacts.length} 个</strong>
+            <span className="muted">这些资料会进入下一次项目分析；完整语言表只参与分析和候选扫描，不会直接写入术语库。</span>
+            <div className="material-notes">
+              {assetArtifacts.slice(0, 4).map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
+              {assetArtifacts.length > 4 ? <span className="muted">还有 {assetArtifacts.length - 4} 个资料已归档。</span> : null}
+              {!assetArtifacts.length ? <span className="muted">暂无上传资料。可以先写上方说明，也可以直接上传文件。</span> : null}
+            </div>
+          </div>
+        </div>
+      </div>
       <div className="card reference-card">
         <div className="card-title">
-          <div className="left">🤖 AI 生成的专属翻译提示词（{lang.short}）</div>
+          <div className="left">🤖 当前项目翻译提示词（{lang.short}）</div>
           <div className="card-actions">
             <button className="btn btn-ghost btn-sm" disabled={!promptText} onClick={copyPrompt}>📋 复制</button>
             <button className="btn btn-ghost btn-sm" onClick={() => setEditingPrompt((value) => !value)}>✏️ 编辑</button>
@@ -84,58 +169,99 @@ export function MetaTab({
           <pre>{promptText || `尚未生成 ${lang.short} 提示词。点击“重新生成”后会自动保存到当前项目。`}</pre>
         )}
       </div>
-      <ProjectMetaTable project={project} />
-      <details className="advanced-panel edit-panel">
-        <summary>编辑项目元信息 / 重新生成输入</summary>
-        <div className="advanced-body">
-          <div className="card">
-            <div className="card-title">
-              <div className="left">项目元信息编辑</div>
-              <button className="btn btn-primary btn-sm" onClick={submit}>保存元信息</button>
-            </div>
-            <div className="meta-grid">
-              <label><span>主项目名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
-              <label><span>题材/分类</span><input value={type} onChange={(event) => setType(event.target.value)} placeholder="飞行射击 / 休闲战斗" /></label>
-              <label className="wide"><span>来源标注、目标语言、风格要求、素材来源</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={`来源：语言表、术语表、校对表\n目标语言：${lang.label}\n风格：短句准确，按钮和任务文案清晰，核心术语统一`} /></label>
-              <label className="wide"><span>重新生成提示词输入</span><textarea className="compact-textarea" value={intro} onChange={(event) => setIntro(event.target.value)} placeholder="补充本次分析需要的上下文；留空时使用项目描述。" /></label>
-            </div>
+      <ProjectMetaTable
+        project={project}
+        editing={editingMeta}
+        draft={metaDraft}
+        onDraftChange={(key, value) => setMetaDraft((prev) => ({ ...prev, [key]: value }))}
+        onEdit={() => setEditingMeta(true)}
+        onCancel={() => { setMetaDraft(metaDraftFromProject(project)); setEditingMeta(false) }}
+        onSave={saveMetaDraft}
+      />
+      <div className="card harness-card">
+        <div className="card-title">
+          <div>
+            <div className="left">🧩 项目 Harness / 规则包</div>
+            <div className="muted-left">只影响当前项目；后续翻译、AI 校对和 QA 都会读取这份规则。</div>
           </div>
         </div>
-      </details>
-      <details className="advanced-panel">
-        <summary>高级：项目规则与持续改进</summary>
-        <div className="advanced-body">
-          <HarnessEditor project={project} onSave={onSaveHarness} compact />
-          <ImprovementQueue projectId={project.id} />
-        </div>
-      </details>
+        <HarnessEditor project={project} onSave={onSaveHarness} compact />
+        <details className="advanced-panel nested-panel">
+          <summary>持续改进建议</summary>
+          <div className="advanced-body">
+            <ImprovementQueue projectId={project.id} />
+          </div>
+        </details>
+      </div>
     </>
   )
 }
 
-export function ProjectMetaTable({ project }: { project: Project }) {
+export function ProjectMetaTable({
+  project,
+  editing = false,
+  draft,
+  onDraftChange,
+  onEdit,
+  onCancel,
+  onSave
+}: {
+  project: Project
+  editing?: boolean
+  draft?: MetaDraft
+  onDraftChange?: (key: keyof MetaDraft, value: string) => void
+  onEdit?: () => void
+  onCancel?: () => void
+  onSave?: () => void
+}) {
   const harness = getProjectHarness(project)
   const forbidden = fieldText(harness.forbidden_translations, '未设置')
   const fixedTerms = fixedTermsSummary(project)
   const rules = ruleSummary(project)
   const ruleUpdated = harness.updated_at ? `保存于 ${formatDate(harness.updated_at)}` : '未单独保存'
+  const rowValue = (key: keyof MetaDraft, fallback = '未生成') => draft?.[key] ?? profileText(project, key, fallback)
   return (
     <div className="card reference-card">
       <div className="card-title">
         <div className="left">📌 项目元信息</div>
+        <div className="card-actions">
+          {editing ? (
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={onCancel}>取消</button>
+              <button className="btn btn-primary btn-sm" onClick={onSave}>保存元信息</button>
+            </>
+          ) : (
+            <button className="btn btn-ghost btn-sm" onClick={onEdit}>✏️ 编辑元信息</button>
+          )}
+        </div>
       </div>
-      <table className="meta-table">
-        <tbody>
-          <tr><th>游戏类型</th><td>{profileText(project, 'game_type', project.type || '未填写')}</td></tr>
-          <tr><th>目标用户</th><td>{profileText(project, 'target_audience')}</td></tr>
-          <tr><th>内容构成</th><td>{profileText(project, 'content_scope')}</td></tr>
-          <tr><th>翻译风格</th><td>{profileText(project, 'translation_style')}</td></tr>
-          <tr><th>语言资产</th><td>{profileText(project, 'language_assets')}</td></tr>
-          <tr><th>素材来源</th><td>{profileText(project, 'source_materials')}</td></tr>
-          <tr><th>质量规则摘要</th><td>固定译名：{fixedTerms}；禁用译法：{forbidden}；项目规则：{rules}。{ruleUpdated}</td></tr>
-          <tr><th>生成日期</th><td>{profileText(project, 'generated_date', formatDate(project.updated_at))}</td></tr>
-        </tbody>
-      </table>
+      {editing ? (
+        <div className="meta-grid meta-edit-grid">
+          {metaFields.map((field) => (
+            <label key={field.key} className={field.key === 'content_scope' || field.key === 'translation_style' ? 'wide' : ''}>
+              <span>{field.label}</span>
+              <textarea
+                value={draft?.[field.key] || ''}
+                onChange={(event) => onDraftChange?.(field.key, event.target.value)}
+                placeholder={field.placeholder}
+              />
+            </label>
+          ))}
+        </div>
+      ) : (
+        <table className="meta-table">
+          <tbody>
+            <tr><th>游戏类型</th><td>{rowValue('game_type', project.type || '未填写')}</td></tr>
+            <tr><th>目标用户</th><td>{rowValue('target_audience')}</td></tr>
+            <tr><th>内容构成</th><td>{rowValue('content_scope')}</td></tr>
+            <tr><th>翻译风格</th><td>{rowValue('translation_style')}</td></tr>
+            <tr><th>语言资产</th><td>{rowValue('language_assets')}</td></tr>
+            <tr><th>素材来源</th><td>{rowValue('source_materials')}</td></tr>
+            <tr><th>项目规则摘要</th><td>固定译名：{fixedTerms}；禁用译法：{forbidden}；项目规则：{rules}。{ruleUpdated}</td></tr>
+            <tr><th>生成日期</th><td>{profileText(project, 'generated_date', formatDate(project.updated_at))}</td></tr>
+          </tbody>
+        </table>
+      )}
     </div>
   )
 }
@@ -189,6 +315,7 @@ export function HarnessEditor({
   const [hardRules, setHardRules] = useState(rulesToLines(harness.hard_rules))
   const [softRules, setSoftRules] = useState(rulesToLines(harness.soft_rules))
   const [saving, setSaving] = useState(false)
+  const [importMessage, setImportMessage] = useState('')
 
   useEffect(() => {
     setStyleGuidance(harness.style_guidance || '')
@@ -217,12 +344,66 @@ export function HarnessEditor({
     }
   }
 
+  async function importHarness(file: File) {
+    setImportMessage('')
+    const text = (await file.text()).trim()
+    if (!text) {
+      setImportMessage('导入失败：文件内容为空。')
+      return
+    }
+    try {
+      let updates: Partial<ProjectHarness>
+      if (/\.json$/i.test(file.name)) {
+        const parsed = JSON.parse(text) as Record<string, unknown>
+        const source = (parsed.project_harness || parsed.harness || parsed) as Record<string, unknown>
+        updates = {
+          style_guidance: typeof source.style_guidance === 'string' ? source.style_guidance : styleGuidance,
+          target_audience: typeof source.target_audience === 'string' ? source.target_audience : targetAudience,
+          tone: typeof source.tone === 'string' ? source.tone : tone,
+          forbidden_translations: Array.isArray(source.forbidden_translations) ? source.forbidden_translations.map(String) : linesToList(forbidden),
+          fixed_terms: Array.isArray(source.fixed_terms) ? source.fixed_terms as ProjectHarness['fixed_terms'] : linesToFixedTerms(fixedTerms),
+          hard_rules: Array.isArray(source.hard_rules) ? source.hard_rules as ProjectHarness['hard_rules'] : linesToRules(hardRules),
+          soft_rules: Array.isArray(source.soft_rules) ? source.soft_rules as ProjectHarness['soft_rules'] : linesToRules(softRules)
+        }
+      } else {
+        updates = { style_guidance: text }
+      }
+      await onSave(updates)
+      setImportMessage('Harness 已导入并保存。')
+    } catch (error) {
+      setImportMessage(`导入失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  function exportHarness() {
+    const blob = new Blob([JSON.stringify(getProjectHarness(project), null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${fileSafeName(project.name)}_project_harness.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className={`card ${compact ? 'compact-harness' : ''}`}>
       <div className="card-title">
-        <div className="left">项目规则编辑</div>
-        <button className="btn btn-primary btn-sm" disabled={saving} onClick={submit}>{saving ? '保存中...' : '保存项目规则'}</button>
+        <div>
+          <div className="left">项目规则编辑</div>
+          <div className="muted-left">可以手动维护，也可以导入 JSON / Markdown 规则文本。</div>
+        </div>
+        <div className="card-actions">
+          <label className="btn btn-ghost btn-sm file-button">
+            导入 Harness
+            <input type="file" hidden accept=".json,.md,.markdown,.txt" onChange={(event) => event.target.files?.[0] ? void importHarness(event.target.files[0]) : null} />
+          </label>
+          <button className="btn btn-ghost btn-sm" onClick={exportHarness}>导出 JSON</button>
+          <button className="btn btn-primary btn-sm" disabled={saving} onClick={submit}>{saving ? '保存中...' : '保存项目规则'}</button>
+        </div>
       </div>
+      {importMessage ? <div className={importMessage.startsWith('导入失败') ? 'warn-line' : 'ok-line'}>{importMessage}</div> : null}
       <div className="harness-editor">
         <label><span>目标受众</span><input value={targetAudience} onChange={(event) => setTargetAudience(event.target.value)} placeholder="欧美移动端玩家 / 核心策略用户" /></label>
         <label><span>语气</span><input value={tone} onChange={(event) => setTone(event.target.value)} placeholder="冷静、现代、军事化 / 轻松、活泼" /></label>
