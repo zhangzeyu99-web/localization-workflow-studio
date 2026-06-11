@@ -134,6 +134,39 @@ test('real project formal translation is blocked without configured API key', as
   await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeDisabled()
   await expect(page.locator('.warn-line', { hasText: 'API' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: '右上角“设置”填写 API key' })).toBeVisible()
+})
+
+test('announcement AI translation shows API reminder when provider is not configured', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: { provider: 'openai', protocol: 'responses', api_key: '', model: 'gpt-5.5', batch_size: 24 },
+  })
+  const projectName = `E2E Announcement API Reminder ${Date.now()}`
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: '公告', description: '公告翻译缺少 API key 时需要给人话提醒。' },
+  })
+  const project = await createResponse.json()
+  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=asset`, {
+    multipart: {
+      file: {
+        name: 'api_reminder_notice.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('本次更新新增活动和奖励。', 'utf-8'),
+      },
+    },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: /公告翻译/ }).click()
+  await page.locator('.check-row', { hasText: 'api_reminder_notice.txt' }).locator('input').check()
+  await page.getByRole('button', { name: '创建公告任务' }).click()
+  await expect(page.locator('.panel-title', { hasText: '约束来源' })).toBeVisible({ timeout: 20000 })
+  await page.locator('.announcement-steps .step-item').nth(6).click()
+  await expect(page.locator('.panel-title', { hasText: 'AI 翻译' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: '需要先配置 API' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: '右上角“设置”填写 API key' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '请先配置 API key' })).toBeDisabled()
 })
 
 test('new translation task exposes the full supported language set', async ({ page, request }) => {
@@ -863,6 +896,4 @@ wb.close()
   await skipPanel.locator('summary').click()
   await expect(skipPanel.getByRole('button', { name: '\u786e\u8ba4\u8df3\u8fc7 QA \u5e76\u5f52\u6863' })).toBeEnabled({ timeout: 15000 })
 })
-
-
 

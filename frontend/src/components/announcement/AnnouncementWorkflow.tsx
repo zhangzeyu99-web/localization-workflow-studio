@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
+import { aiProviderConfigurationReminder, isAiProviderReady, providerLabel } from '../../domain/providerSettings'
 import { ActionStatus, ArtifactNote, FileBox, FileBoxWithTemplate, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
 
@@ -178,7 +179,8 @@ export function AnnouncementWizard({
   const activeMeta = (activeTask?.metadata || {}) as Record<string, unknown>
   const detectedLanguages = normalizeLanguageArray(activeMeta.detected_languages)
   const effectiveLanguages = selectedLanguages
-  const providerReady = Boolean(settings && ((['openai', 'openai-chat', 'anthropic'].includes(String(settings.provider)) && settings.api_key === 'configured') || settings.provider === 'test-fake'))
+  const providerConfigurationReminder = aiProviderConfigurationReminder(settings)
+  const providerReady = isAiProviderReady(settings)
   const showLanguageSubflows = Boolean(activeTask && step >= 6 && step <= 8)
 
   useEffect(() => {
@@ -403,10 +405,11 @@ export function AnnouncementWizard({
               <div className="panel-title"><span className="badge">STEP 7</span>AI 翻译</div>
               <div className="panel-desc">主流程是直接调用已配置的 AI provider 翻译；中转表、Workpack 和提示词快照只是兜底下载或审计材料。不会使用谷歌机翻或在线机翻聚合器。</div>
               {getAnnouncementTranslationProgress(activeTask) ? <TranslationProgressBar progress={getAnnouncementTranslationProgress(activeTask)!} /> : null}
+              {providerConfigurationReminder ? <div className="warn-line">需要先配置 API：{providerConfigurationReminder}</div> : null}
               {activeTask?.metadata?.reason === 'background_job_interrupted' ? <div className="warn-line">后台翻译曾中断；可点击“调用已配置 AI 翻译”继续，已完成批次不会重跑。</div> : null}
               {activeTask?.metadata?.reason === 'api_budget_confirmation_required' ? <div className="warn-line">预计 API token 超过提醒阈值；请确认预算后再继续后台翻译。</div> : null}
               <div className="workflow-note-grid">
-                <div><strong>AI provider</strong><span>{providerReady ? `${settings?.provider} 已配置，可直接翻译` : '未配置真实 API，请先到设置填写 API key'}</span></div>
+                <div><strong>AI provider</strong><span>{providerReady ? `${providerLabel(settings)} 已配置，可直接翻译` : '未配置真实 API，请先到设置填写 API key'}</span></div>
                 <div><strong>目标语言</strong><span>{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
                 <div><strong>当前方式</strong><span>{providerReady ? '直接调用 AI' : '等待 API 配置'}</span></div>
               </div>

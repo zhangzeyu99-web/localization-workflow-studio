@@ -3,6 +3,7 @@ import { API } from '../../apiClient'
 import { artifactKindLabel, artifactPickerLabel, artifactRole, newestArtifact, pickerArtifacts, runArtifacts } from '../../domain/artifacts'
 import { formatDate, formatDateTime, shortRunId } from '../../domain/format'
 import { normalizeGlossaryNote, projectPromptForLanguage } from '../../domain/projectAssets'
+import { aiProviderConfigurationReminder, providerLabel } from '../../domain/providerSettings'
 import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, latestRunOfKind, matchesTranslationRun } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, normalizeLanguageCode, type LanguageCode } from '../../languages'
 import { ProjectMetaTable } from '../project/ProjectMeta'
@@ -191,20 +192,15 @@ export function deliveryProgressLabel(task: DeliverableTask): string {
 }
 
 export function providerName(settings: AppSettings | null): string {
-  if (!settings) return '未加载'
-  if (settings.provider === 'openai') return 'GPT'
-  if (settings.provider === 'anthropic') return 'Claude'
-  if (settings.provider === 'test-fake') return 'Test Fake'
-  return settings.provider || '未配置'
+  return providerLabel(settings)
 }
 
 export function formalTranslationBlockReason(settings: AppSettings | null, sourceArtifact: Artifact | null, project?: Project, readiness?: TranslationReadiness | null): string {
   if (!sourceArtifact) return '请先上传或选择待翻译语言表。'
-  if (!settings) return '模型配置尚未加载。'
   const readinessBlock = translationReadinessBlockReason(readiness)
   if (readinessBlock) return readinessBlock
-  if (!['openai', 'openai-chat', 'anthropic', 'test-fake'].includes(String(settings.provider))) return '请先在设置里选择 GPT、GPT 中转站或 Claude。'
-  if (settings.provider !== 'test-fake' && !settings.api_key) return `${providerName(settings)} API key 未配置，正式翻译已阻断。`
+  const configurationReminder = aiProviderConfigurationReminder(settings)
+  if (configurationReminder) return configurationReminder
   return ''
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../apiClient'
 import { artifactPickerLabel, uniqueArtifactsByContent } from '../../domain/artifacts'
+import { aiProviderConfigurationReminder } from '../../domain/providerSettings'
 import { canSkipModelTranslation, effectiveBatchSize, isTranslationRunResumable, matchesTranslationRun } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { ActionStatus, ArtifactNote, FileBox } from '../shared/WorkflowPrimitives'
@@ -110,6 +111,7 @@ export function QuickTaskWizard({
   const readySummary = readiness
     ? `${readiness.source_rows} 行源文 / 已译 ${readiness.translated_rows} / 空译文 ${readiness.empty_target_rows} / 预计 ${readiness.estimated_batches || '-'} 批`
     : '上传后自动检查'
+  const apiConfigurationReminder = objective === 'translate' ? aiProviderConfigurationReminder(settings) : ''
   const canStart = Boolean(inputArtifact && !busy)
   const resumableQuickRun = inputArtifact ? quickTaskRuns(project).find((run) =>
     matchesTranslationRun(run, language, inputArtifact.id, 'quick_task')
@@ -210,7 +212,7 @@ export function QuickTaskWizard({
               </div>
             </div>
             {readiness && canSkipModelTranslation(readiness) ? <div className="warn-line">这份表已有可校对译文，系统已建议切换为校对。</div> : null}
-            {objective === 'translate' && ((settings?.provider !== 'test-fake' && !settings?.api_key) || !['openai', 'openai-chat', 'anthropic', 'test-fake'].includes(String(settings?.provider))) ? <div className="warn-line">请先配置 GPT / GPT 中转站 / Claude API key，快速翻译才会启动正式模型。</div> : null}
+            {apiConfigurationReminder ? <div className="warn-line">需要先配置 API：{apiConfigurationReminder}</div> : null}
             <div className="row-actions">
               <button className="btn btn-ghost" onClick={() => setQuickStep(2)}>← 上一步</button>
               <button className="btn btn-primary" data-testid="quick-task-start" disabled={!canStart} onClick={start}>{launchLabel}</button>
