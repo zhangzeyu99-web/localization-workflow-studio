@@ -523,6 +523,9 @@ export function AnnouncementTermsStep({
   const aiReportArtifact = activeTask?.artifacts?.find((artifact) => artifact.kind === 'announcement_ai_supplement_report')
   const aiMeta = (meta.ai_supplement && typeof meta.ai_supplement === 'object' ? meta.ai_supplement : {}) as Record<string, unknown>
   const languageText = languages.map((lang) => languageSpec(lang).short).join(' / ') || '-'
+  const extracted = activeTask?.status === 'terms_ready' || Number(activeTask?.current_step || 0) >= 5 || Boolean(meta.terms_summary)
+  const hasTerms = draftTerms.length > 0
+  const termsResultText = hasTerms ? `${draftTerms.length} 条` : extracted ? '未命中，可手动补充' : '未提取'
   const aiStatus = aiSupplement
     ? aiMeta.provider_status === 'provider_response'
       ? 'API 已复查'
@@ -572,24 +575,36 @@ export function AnnouncementTermsStep({
       <div className="panel-desc">本步只做一件事：从公告原文生成任务内临时术语表。检查表格后保存，下一步再反查译文；不会写回项目术语库。</div>
       <div className="announcement-terms-guide">
         <div>
-          <strong>操作顺序</strong>
-          <span>1. 提取术语 → 2. 检查/删改下方表格 → 3. 保存或导出 → 进入 STEP 5 译文反查。</span>
+          <strong>生成临时公告术语表</strong>
+          <span>先从公告原文提取术语；如果没有命中，也可以手动新增或导入已有结果。</span>
         </div>
         <button className="btn btn-primary" disabled={busy} onClick={() => onExtract(aiSupplement, aiSupplementResponseArtifactId)}>{aiSupplement ? '提取术语并 AI 复查' : '仅本地提取术语'}</button>
       </div>
       <div className="announcement-terms-summary">
         <div><strong>源格式</strong><span>{activeTask.source_format?.toUpperCase() || '-'}</span></div>
         <div><strong>目标语言</strong><span>{languageText}</span></div>
-        <div><strong>术语</strong><span>{draftTerms.length ? `${draftTerms.length} 条` : '未提取'}</span></div>
+        <div><strong>提取结果</strong><span>{termsResultText}</span></div>
         <div><strong>AI 复查</strong><span>{aiStatus}</span></div>
       </div>
+      {!hasTerms && extracted ? (
+        <div className="announcement-terms-empty">
+          <div>
+            <strong>没有命中可确认术语</strong>
+            <span>这不是失败。可以手动新增术语、导入已提取术语表，或直接进入 STEP 5 做译文反查。</span>
+          </div>
+          <div className="row-actions wrap">
+            <button className="btn btn-primary" disabled={busy} onClick={addTerm}>+ 新增术语</button>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => onExtract(aiSupplement, aiSupplementResponseArtifactId)}>重新提取</button>
+          </div>
+        </div>
+      ) : null}
       <div className="announcement-terms-editor-head">
         <div>
           <strong>临时术语表</strong>
-          <span>可直接改表格。保存后会重新生成导出表，不会污染项目术语库。</span>
+          <span>{hasTerms ? '可直接编辑下方表格；保存后会重新生成导出表，不会写入项目术语库。' : '暂无术语行；可新增、导入，或直接继续下一步。'}</span>
         </div>
         <div className="row-actions wrap">
-          <button className="btn btn-ghost" disabled={busy || !draftTerms.length} onClick={() => onSaveTerms(draftTerms, languages)}>保存编辑</button>
+          <button className="btn btn-primary" disabled={busy || !draftTerms.length} onClick={() => onSaveTerms(draftTerms, languages)}>保存编辑</button>
           <button className="btn btn-ghost" disabled={busy} onClick={addTerm}>+ 新增术语</button>
           {exportArtifact ? <a className="btn btn-ghost" href={`/api/artifacts/${exportArtifact.id}/download`}>导出 XLSX</a> : null}
         </div>
@@ -616,7 +631,7 @@ export function AnnouncementTermsStep({
         </div>
       </details>
       {!draftTerms.length ? (
-        <div className="warn-line gap-top">暂无术语。点击上方主按钮提取；如果已有 announcement_terms.xlsx，可在“更多操作”里上传。</div>
+        <div className="muted-empty-card gap-top">暂无术语表行。可点击“新增术语”补充，或在“更多操作”里上传 announcement_terms.xlsx。</div>
       ) : (
         <div className="announcement-terms-table-wrap gap-top">
           <table className="announcement-terms-table">
