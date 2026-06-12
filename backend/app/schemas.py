@@ -302,6 +302,16 @@ class TranslateRequest(BaseModel):
     confirm_api_budget: bool = False
 
 
+class MultilingualQueueRequest(BaseModel):
+    input_artifact_id: str
+    languages: list[str] = Field(default_factory=list)
+    batch_size: int | None = None
+    task_code: str | None = None
+    term_artifact_id: str | None = None
+    reference_artifact_ids: list[str] = Field(default_factory=list)
+    confirm_api_budget: bool = False
+
+
 class SettingsUpdate(BaseModel):
     provider: str | None = None
     preset: str | None = None

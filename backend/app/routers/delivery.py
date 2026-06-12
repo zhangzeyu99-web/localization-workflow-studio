@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from .. import db
 from ..workflow import (
+    build_merged_delivery_package,
     build_delivery_package,
     list_project_deliverables,
     project_dir,
     user_facing_error,
 )
+from ..schemas import MultilingualQueueRequest
 from .shared import (
     _attach_delivery_downloads,
     _safe_filename,
@@ -42,6 +44,24 @@ def create_project_delivery(project_id: str, run_id: str | None = None) -> dict[
     for item in package["files"]:
         item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
     _attach_delivery_downloads(project_id, package["deliverable"])
+    return package
+
+
+@router.post("/api/projects/{project_id}/delivery-package/merged")
+def create_project_merged_delivery(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
+    try:
+        package = build_merged_delivery_package(project_id, payload.input_artifact_id, payload.languages)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
+    for item in package["files"]:
+        if item.get("artifact_id"):
+            item["download_url"] = f"/api/projects/{project_id}/artifacts/{item['artifact_id']}/download"
+        else:
+            item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
+    if package.get("deliverable"):
+        _attach_delivery_downloads(project_id, package["deliverable"])
     return package
 
 

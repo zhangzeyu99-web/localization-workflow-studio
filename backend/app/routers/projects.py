@@ -232,15 +232,17 @@ def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
 
 @router.delete("/api/projects/{project_id}")
 def delete_project(project_id: str) -> dict[str, bool]:
+    run_ids: list[str] = []
+    existed = True
     try:
         run_ids = [run["id"] for run in db.list_runs(project_id)]
         db.delete_project(project_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="project not found") from exc
+    except KeyError:
+        existed = False
     shutil.rmtree(DATA_ROOT / "projects" / project_id, ignore_errors=True)
     for run_id in run_ids:
         shutil.rmtree(DATA_ROOT / "runs" / run_id, ignore_errors=True)
-    return {"deleted": True}
+    return {"deleted": existed}
 
 
 @router.get("/api/projects/{project_id}/harness")

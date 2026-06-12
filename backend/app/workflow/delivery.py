@@ -15,6 +15,7 @@ from .announcement_outputs import _announcement_task_source_stem, _artifact_disp
 from .announcement_segments import _normalize_announcement_languages
 from .common import project_dir
 from .qa import _first_col, _row_cell, write_qa_changes_report
+from .subprocess_runner import user_facing_error
 
 def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
     project = db.get_project(project_id)
@@ -26,8 +27,63 @@ def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
         if not final_artifact or not Path(final_artifact["path"]).exists():
             continue
         deliverables.append(_deliverable_summary(project, run, final_artifact))
+    deliverables.extend(_merged_deliverable_summaries(project))
     deliverables.extend(_announcement_deliverable_summaries(project))
     return deliverables
+
+
+def _merged_deliverable_summaries(project: dict[str, Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for artifact in db.list_artifacts(project_id=project["id"]):
+        if artifact.get("kind") != "merged_delivery_workbook":
+            continue
+        path = Path(str(artifact.get("path") or ""))
+        if not path.exists():
+            continue
+        metadata = artifact.get("metadata") or {}
+        summary_artifact = None
+        summary_id = str(metadata.get("summary_artifact_id") or "")
+        if summary_id:
+            try:
+                candidate = db.get_artifact(summary_id)
+                if Path(candidate["path"]).exists():
+                    summary_artifact = candidate
+            except KeyError:
+                summary_artifact = None
+        languages = metadata.get("merged_languages") if isinstance(metadata.get("merged_languages"), list) else []
+        skipped = metadata.get("skipped_languages") if isinstance(metadata.get("skipped_languages"), list) else []
+        summaries.append(
+            {
+                "run_id": artifact["id"],
+                "task_code": "ALL",
+                "task_id": _short_run_id(artifact["id"]),
+                "task_label": f"ALL-{_short_run_id(artifact['id'])}",
+                "task_type": "多语言合并交付",
+                "language": " / ".join(languages) or "ALL",
+                "created_at": artifact.get("created_at", ""),
+                "updated_at": artifact.get("created_at", ""),
+                "status": "delivered",
+                "processed_rows": int(metadata.get("processed_rows") or 0),
+                "source_rows": int(metadata.get("source_rows") or 0),
+                "translated_rows": int(metadata.get("translated_rows") or 0),
+                "provider": "-",
+                "model": "-",
+                "input_label": str(metadata.get("input_label") or "多语言合并交付"),
+                "qa_status": "mixed" if skipped else "passed",
+                "qa_hard_errors": int(metadata.get("qa_hard_errors") or 0),
+                "qa_soft_warnings": 0,
+                "files": {
+                    "final": _artifact_delivery_file("merged_final", artifact),
+                    "qa_summary": _artifact_delivery_file("qa_summary", summary_artifact) if summary_artifact else None,
+                    "outputs": [],
+                },
+                "source_artifacts": {
+                    "merged_delivery_workbook": artifact["id"],
+                    "merged_delivery_summary": summary_id,
+                },
+            }
+        )
+    return summaries
 
 
 def _announcement_deliverable_summaries(project: dict[str, Any]) -> list[dict[str, Any]]:
@@ -148,6 +204,92 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
         "changes": _delivery_file("changes", changes_path),
     }
     return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values())}
+
+
+def build_merged_delivery_package(project_id: str, input_artifact_id: str, languages: list[str]) -> dict[str, Any]:
+    project = db.get_project(project_id)
+    source_artifact = db.get_artifact(input_artifact_id)
+    if source_artifact.get("project_id") != project_id:
+        raise ValueError("输入文件不属于当前项目")
+    source_path = Path(str(source_artifact.get("path") or ""))
+    if source_path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise ValueError("多语言合并交付当前只支持 XLSX 语言表")
+    if not source_path.exists():
+        raise ValueError("原始语言表文件不可读，无法生成合并交付")
+    selected_languages = _normalize_delivery_languages(languages)
+    output_dir = project_dir(project_id) / "delivery"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d%H%M")
+    output_path = output_dir / f"{_safe_delivery_name(project['name'])}_ALL_{timestamp}_final.xlsx"
+    shutil.copy2(source_path, output_path)
+
+    merged: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for language in selected_languages:
+        run = _find_merge_source_run(project_id, input_artifact_id, language)
+        if not run:
+            skipped.append({"language": _visible_language_code(language), "reason": "未找到可交付的翻译/QA 结果"})
+            continue
+        final_artifact = _deliverable_final_artifact(run)
+        if not final_artifact or not Path(final_artifact["path"]).exists():
+            skipped.append({"language": _visible_language_code(language), "run_id": run["id"], "reason": "缺少最终译文文件"})
+            continue
+        try:
+            copied = _merge_language_column(output_path, Path(final_artifact["path"]), language)
+            if copied <= 0:
+                skipped.append({"language": _visible_language_code(language), "run_id": run["id"], "reason": "没有可合并的译文列"})
+                continue
+            quality = run.get("metadata", {}).get("quality_summary") or {}
+            merged.append(
+                {
+                    "language": _visible_language_code(language),
+                    "run_id": run["id"],
+                    "rows": copied,
+                    "status": "passed" if run.get("status") == "passed" else "deliverable_with_issues",
+                    "hard_errors": int(quality.get("hard_errors") or 0),
+                }
+            )
+        except Exception as exc:
+            skipped.append({"language": _visible_language_code(language), "run_id": run["id"], "reason": user_facing_error(exc)})
+    if not merged:
+        raise ValueError("没有可合并的已完成语言，请先完成翻译或 QA")
+
+    summary_path = _write_merged_delivery_summary(output_dir, merged, skipped, output_path)
+    summary_artifact = db.add_artifact(
+        project_id,
+        f"{project['name']} ALL QA摘要",
+        summary_path,
+        "merged_delivery_summary",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        metadata={"merged_languages": [item["language"] for item in merged], "skipped_languages": [item["language"] for item in skipped]},
+    )
+    final_artifact = db.add_artifact(
+        project_id,
+        f"{project['name']} ALL 合并交付",
+        output_path,
+        "merged_delivery_workbook",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        metadata={
+            "input_artifact_id": input_artifact_id,
+            "input_label": _artifact_display_label(source_artifact),
+            "summary_artifact_id": summary_artifact["id"],
+            "merged_languages": [item["language"] for item in merged],
+            "skipped_languages": [item["language"] for item in skipped],
+            "source_rows": _workbook_processed_rows(output_path)["source_rows"],
+            "translated_rows": sum(int(item.get("rows") or 0) for item in merged),
+            "processed_rows": sum(int(item.get("rows") or 0) for item in merged),
+            "qa_hard_errors": sum(int(item.get("hard_errors") or 0) for item in merged),
+        },
+    )
+    files = [_artifact_delivery_file("merged_final", final_artifact), _artifact_delivery_file("qa_summary", summary_artifact)]
+    return {
+        "project_id": project_id,
+        "project_name": project["name"],
+        "merged_languages": [item["language"] for item in merged],
+        "skipped_languages": [item["language"] for item in skipped],
+        "files": files,
+        "deliverable": _merged_deliverable_summaries(project)[0] if _merged_deliverable_summaries(project) else {},
+    }
 
 
 def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_artifact: dict[str, Any]) -> dict[str, Any]:
@@ -422,6 +564,141 @@ def _latest_artifact(project_id: str, role: str | None = None, kind: str | None 
     if kind:
         artifacts = [artifact for artifact in artifacts if artifact["kind"] == kind]
     return artifacts[0] if artifacts else None
+
+
+def _normalize_delivery_languages(languages: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for item in languages:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        code = require_supported_language(value)
+        if code not in normalized:
+            normalized.append(code)
+    if not normalized:
+        raise ValueError("请选择至少一种目标语言")
+    return normalized
+
+
+def _find_merge_source_run(project_id: str, input_artifact_id: str, language: str) -> dict[str, Any] | None:
+    accepted_status = {"passed", "failed", "needs_input"}
+    for run in db.list_runs(project_id):
+        if run.get("kind") not in {"qa", "translation"}:
+            continue
+        if require_supported_language(run.get("language") or "en") != language:
+            continue
+        if run.get("status") not in accepted_status:
+            continue
+        metadata = run.get("metadata") or {}
+        candidates = {
+            str(metadata.get("input_artifact_id") or ""),
+            str(metadata.get("parent_input_artifact_id") or ""),
+            str(metadata.get("multilingual_source_artifact_id") or ""),
+        }
+        input_artifacts = metadata.get("input_artifacts") if isinstance(metadata.get("input_artifacts"), dict) else {}
+        candidates.update(str(value) for value in input_artifacts.values() if value)
+        if input_artifact_id not in candidates:
+            continue
+        if _deliverable_final_artifact(run):
+            return run
+    return None
+
+
+def _merge_language_column(target_path: Path, source_path: Path, language: str) -> int:
+    code = require_supported_language(language)
+    visible = _visible_language_code(code)
+    wb = load_workbook(target_path)
+    source_wb = load_workbook(source_path, data_only=False)
+    copied = 0
+    try:
+        for target_ws in wb.worksheets:
+            source_ws = source_wb[target_ws.title] if target_ws.title in source_wb.sheetnames else (source_wb.worksheets[0] if len(source_wb.worksheets) == 1 else None)
+            if source_ws is None:
+                continue
+            target_headers = _header_map(target_ws)
+            source_headers = _header_map(source_ws)
+            target_id_col = _first_header_index(target_headers, ["id"])
+            source_id_col = _first_header_index(source_headers, ["id"])
+            source_lang_col = _first_header_index(source_headers, [visible, *target_aliases(code)])
+            if source_lang_col is None:
+                continue
+            target_lang_col = _first_header_index(target_headers, [visible, *target_aliases(code)])
+            if target_lang_col is None:
+                target_lang_col = target_ws.max_column + 1
+                target_ws.cell(row=1, column=target_lang_col).value = visible
+            if target_id_col and source_id_col:
+                source_by_id = {
+                    _cell_text(source_ws.cell(row=row_index, column=source_id_col).value): source_ws.cell(row=row_index, column=source_lang_col).value
+                    for row_index in range(2, source_ws.max_row + 1)
+                }
+                for row_index in range(2, target_ws.max_row + 1):
+                    row_id = _cell_text(target_ws.cell(row=row_index, column=target_id_col).value)
+                    if not row_id or row_id not in source_by_id:
+                        continue
+                    value = source_by_id[row_id]
+                    if value not in (None, ""):
+                        target_ws.cell(row=row_index, column=target_lang_col).value = value
+                        copied += 1
+            else:
+                max_row = min(target_ws.max_row, source_ws.max_row)
+                for row_index in range(2, max_row + 1):
+                    value = source_ws.cell(row=row_index, column=source_lang_col).value
+                    if value not in (None, ""):
+                        target_ws.cell(row=row_index, column=target_lang_col).value = value
+                        copied += 1
+        wb.save(target_path)
+    finally:
+        wb.close()
+        source_wb.close()
+    return copied
+
+
+def _header_map(ws: Any) -> dict[str, int]:
+    headers: dict[str, int] = {}
+    for cell in ws[1]:
+        value = _cell_text(cell.value).lower()
+        if value:
+            headers[value] = int(cell.column)
+    return headers
+
+
+def _first_header_index(headers: dict[str, int], aliases: list[str]) -> int | None:
+    for alias in aliases:
+        key = _cell_text(alias).lower()
+        if key in headers:
+            return headers[key]
+    return None
+
+
+def _cell_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _write_merged_delivery_summary(output_dir: Path, merged: list[dict[str, Any]], skipped: list[dict[str, Any]], final_path: Path) -> Path:
+    path = output_dir / f"{final_path.stem}_QA摘要.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    ws.append(["项目", "值"])
+    ws.append(["合并语言数", len(merged)])
+    ws.append(["跳过/失败语言数", len(skipped)])
+    ws.append(["输出文件", final_path.name])
+    ws.append([])
+    ws.append(["language", "status", "run_id", "rows", "hard_errors", "note"])
+    for item in merged:
+        ws.append([item.get("language"), item.get("status"), item.get("run_id"), item.get("rows"), item.get("hard_errors"), "已写入合并交付"])
+    for item in skipped:
+        ws.append([item.get("language"), "skipped", item.get("run_id", ""), 0, "", item.get("reason", "")])
+    issues = wb.create_sheet("Issues")
+    issues.append(["severity", "language", "run_id", "message"])
+    for item in skipped:
+        issues.append(["warning", item.get("language"), item.get("run_id", ""), item.get("reason", "")])
+    outputs = wb.create_sheet("Outputs")
+    outputs.append(["kind", "filename", "path"])
+    outputs.append(["merged_final", final_path.name, str(final_path)])
+    wb.save(path)
+    wb.close()
+    return path
 
 
 

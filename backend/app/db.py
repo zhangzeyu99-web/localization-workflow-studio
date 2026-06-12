@@ -55,6 +55,8 @@ ARTIFACT_ROLE_BY_KIND = {
     "quality_summary": "qa_report",
     "semantic_qa_context": "qa_report",
     "delivery_file": "delivery",
+    "merged_delivery_workbook": "delivery",
+    "merged_delivery_summary": "delivery",
     "translation_prompt": "prompt",
     "compiled_style_hint": "prompt",
     "project_profile": "profile",

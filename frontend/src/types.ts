@@ -271,6 +271,31 @@ export type DeliveryFile = {
   artifact_id?: string
 }
 
+export type MultilingualQueueLanguage = {
+  language: LanguageCode
+  visible_language: string
+  run_id?: string | null
+  translation_run_id?: string | null
+  qa_run_id?: string | null
+  status: string
+  step: 'pending' | 'translation' | 'qa' | 'delivery' | string
+  can_continue?: boolean
+  error?: string
+  progress?: Partial<TranslationProgress>
+  quality_summary?: Record<string, unknown>
+}
+
+export type MultilingualQueueStatus = {
+  project_id: string
+  input_artifact_id: string
+  overall_status: string
+  active_job_id?: string | null
+  languages: MultilingualQueueLanguage[]
+  created_run_ids?: string[]
+  queue_started?: boolean
+  active_conflict?: string
+}
+
 export type ProjectMaterialAnalysis = {
   source?: string
   warning?: string

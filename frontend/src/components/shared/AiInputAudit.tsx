@@ -132,7 +132,7 @@ export function AiInputAuditPanel({ endpoint, title, buttonLabel, disabled = fal
       setData(await api<AuditRecord>(endpoint))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      setError(message === 'Not Found' ? '当前还没有可查看的 AI 输入。请先完成上一步。' : message)
+      setError(/not found|找不到|不存在|缺失/i.test(message) ? '当前还没有可查看的 AI 输入。请先完成上一步。' : message)
     } finally {
       setLoading(false)
     }

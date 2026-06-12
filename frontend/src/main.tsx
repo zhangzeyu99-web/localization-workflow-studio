@@ -22,7 +22,7 @@ declare global {
   }
 }
 
-import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, Project, ProjectAnalysisResponse, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
+import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, MultilingualQueueStatus, Project, ProjectAnalysisResponse, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
 
 
 const CHUNKED_UPLOAD_THRESHOLD_BYTES = 768 * 1024
@@ -338,6 +338,13 @@ function App() {
   }, [currentId])
 
   useEffect(() => {
+    if (deleteProjectTarget && !projects.some((project) => project.id === deleteProjectTarget.id)) {
+      longPressTriggeredProjectId.current = ''
+      setDeleteProjectTarget(null)
+    }
+  }, [deleteProjectTarget?.id, projects.map((project) => project.id).join('|')])
+
+  useEffect(() => {
     if (!current) return
     setIntro(current.description || '')
     setAnnouncementText('')
@@ -478,24 +485,34 @@ function App() {
   }
 
   async function deleteProject(project: Project) {
+    const targetId = project.id
+    const targetName = project.name
     setBusy(true)
-    setStatus(`正在删除项目“${project.name}”...`)
+    setStatus(`\u6b63\u5728\u5220\u9664\u9879\u76ee\u201c${targetName}\u201d...`)
     try {
-      await api(`/api/projects/${project.id}`, { method: 'DELETE' })
+      await api(`/api/projects/${targetId}`, { method: 'DELETE' })
       const loaded = await api<Project[]>('/api/projects')
-      const nextId = loaded.some((item) => item.id === currentId) ? currentId : loaded[0]?.id || ''
+      const activeId = currentIdRef.current
+      const nextId = loaded.some((item) => item.id === activeId && item.id !== targetId) ? activeId : loaded[0]?.id || ''
       setProjects(loaded)
       currentIdRef.current = nextId
       setCurrentId(nextId)
-      if (project.id === currentId) {
+      if (targetId === activeId) {
         setView('overview')
         setTab('meta')
       }
       longPressTriggeredProjectId.current = ''
       setDeleteProjectTarget(null)
-      setStatus(`项目“${project.name}”已删除`)
+      setStatus(`\u9879\u76ee\u201c${targetName}\u201d\u5df2\u5220\u9664`)
     } catch (error) {
-      setStatus(`删除项目失败：${errorText(error)}`)
+      if (/not found/i.test(errorText(error))) {
+        await refreshProjects()
+        longPressTriggeredProjectId.current = ''
+        setDeleteProjectTarget(null)
+        setStatus(`\u9879\u76ee\u201c${targetName}\u201d\u5df2\u4e0d\u5b58\u5728\uff0c\u5217\u8868\u5df2\u5237\u65b0\u3002`)
+      } else {
+        setStatus(`\u5220\u9664\u9879\u76ee\u5931\u8d25\uff1a${errorText(error)}`)
+      }
     } finally {
       setBusy(false)
     }
@@ -531,7 +548,8 @@ function App() {
   }
 
   async function cancelAnnouncementTask(task: AnnouncementTask) {
-    setBusy(true)
+    const projectId = task.project_id || currentIdRef.current
+    setBusyForProject(projectId, true)
     setStatus(`正在取消公告任务“${task.title || task.id}”...`)
     try {
       await api(`/api/announcement-tasks/${task.id}/cancel`, { method: 'POST' })
@@ -543,24 +561,38 @@ function App() {
     } catch (error) {
       setStatus(`取消公告任务失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
   async function refreshProjects(selectId?: string) {
     const loaded = await api<Project[]>('/api/projects')
-    const nextId = selectId || currentIdRef.current || loaded[0]?.id || ''
+    const preferred = selectId && loaded.some((item) => item.id === selectId)
+      ? selectId
+      : (loaded.some((item) => item.id === currentIdRef.current) ? currentIdRef.current : '')
+    const nextId = preferred || loaded[0]?.id || ''
     setProjects(loaded)
     currentIdRef.current = nextId
     setCurrentId(nextId)
   }
 
-  async function refreshCurrent() {
-    if (!currentId) return
-    const projectId = currentId
+  async function refreshCurrent(projectId = currentIdRef.current) {
+    if (!projectId) return
     const loaded = await api<Project>(`/api/projects/${projectId}`)
     if (!isCurrentProject(projectId)) return
     setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
+  }
+
+  async function refreshProjectSnapshot(projectId: string) {
+    if (!projectId) return null
+    try {
+      const loaded = await api<Project>(`/api/projects/${projectId}`)
+      setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
+      return loaded
+    } catch (error) {
+      if (/not found/i.test(errorText(error))) await refreshProjects()
+      return null
+    }
   }
 
   async function refreshGlossaryBatches(projectId = currentId) {
@@ -685,6 +717,10 @@ function App() {
     if (!sourceArtifact || sourceArtifact.id !== artifact.id) {
       setSourceArtifact(artifact)
     }
+    const extractionLanguage = artifact.id === translationReadiness?.artifact_id
+      ? normalizeLanguageCode(translationReadiness.target_language) || selectedLanguage
+      : selectedLanguage
+    const extractionLang = languageSpec(extractionLanguage)
     setBusy(true)
     setStatus('正在从待翻译语言表扫描术语候选...')
     try {
@@ -710,8 +746,8 @@ function App() {
           source_only: false,
           id_column: 'ID',
           source_column: 'cn',
-          target_column: currentLang.targetHeader,
-          language: selectedLanguage,
+          target_column: extractionLang.targetHeader,
+          language: extractionLanguage,
           project_material_artifact_ids: assetArtifacts.map((artifact) => artifact.id),
           project_notes: [intro.trim() || current.description || `${current.name} ${current.type}`].filter(Boolean),
           include_empty_final_terms: true,
@@ -754,21 +790,24 @@ function App() {
 
   async function importGlossaryArtifact() {
     if (!current || !termArtifact) return
-    setBusy(true)
-    setStatus('正在导入术语表...')
+    const projectId = current.id
+    const artifactId = termArtifact.id
+    const language = selectedLanguage
+    setBusyForProject(projectId, true)
+    setStatusForProject(projectId, '\u6b63\u5728\u5bfc\u5165\u672f\u8bed\u8868...')
     try {
-      const result = await api<{ imported_count: number; languages?: LanguageCode[] }>(`/api/projects/${current.id}/glossary/import`, {
+      const result = await api<{ imported_count: number; languages?: LanguageCode[] }>(`/api/projects/${projectId}/glossary/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ artifact_id: termArtifact.id, language: selectedLanguage })
+        body: JSON.stringify({ artifact_id: artifactId, language })
       })
-      await refreshCurrent()
-      const languageText = result.languages?.length ? `（${result.languages.map((item) => item.toUpperCase()).join('/')}）` : ''
-      setStatus(`术语表已导入：${result.imported_count} 条${languageText}`)
+      await refreshProjectSnapshot(projectId)
+      const languageText = result.languages?.length ? `（${result.languages.map((item) => languageSpec(item).short).join('/')}）` : ''
+      setStatusForProject(projectId, `\u672f\u8bed\u8868\u5df2\u5bfc\u5165\uff1a${result.imported_count} \u6761${languageText}`)
     } catch (error) {
-      setStatus(`术语表导入失败：${errorText(error)}`)
+      setStatusForProject(projectId, `\u672f\u8bed\u8868\u5bfc\u5165\u5931\u8d25\uff1a${errorText(error)}`)
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
@@ -776,6 +815,20 @@ function App() {
     const batchSize = effectiveBatchSize(settings, translationBatchSize)
     try {
       const result = await api<TranslationReadiness>(`/api/projects/${projectId}/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
+      if (
+        isCurrentProject(projectId) &&
+        result.reason === 'target_column_missing' &&
+        result.format_errors?.includes('target_column_missing')
+      ) {
+        const targets = await inspectTranslationTargets(artifactId, projectId)
+        const suggested = targets?.suggested_language
+        if (suggested && suggested !== language) {
+          setPrimaryLanguages(targets.detected_languages?.length ? targets.detected_languages : [suggested], suggested)
+          const corrected = await api<TranslationReadiness>(`/api/projects/${projectId}/artifacts/${artifactId}/translation-readiness?batch_size=${batchSize}&${languageQuery(suggested)}`)
+          if (isCurrentProject(projectId)) setTranslationReadiness(corrected)
+          return corrected
+        }
+      }
       if (isCurrentProject(projectId)) setTranslationReadiness(result)
       return result
     } catch {
@@ -952,6 +1005,11 @@ function App() {
     }
   }
 
+  function selectedQueueLanguages() {
+    const languages = selectedLanguages.length ? selectedLanguages : [selectedLanguage]
+    return languages.filter((language, index) => languages.indexOf(language) === index)
+  }
+
   async function runTranslate(taskCode: 'A' | 'T' = 'T') {
     if (!current || !sourceArtifact) return
     const projectId = current.id
@@ -1015,6 +1073,52 @@ function App() {
       setStatusForProject(projectId, `${currentLang.short} 翻译已进入后台队列：系统会自动拆批、限流、落盘和续跑。`)
     } catch (error) {
       setStatusForProject(projectId, `翻译失败：${errorText(error)}`)
+    } finally {
+      setBusyForProject(projectId, false)
+    }
+  }
+
+
+
+  async function startMultilingualTranslationQueue(taskCode: 'A' | 'T' = 'T') {
+    if (!current || !sourceArtifact) return
+    const projectId = current.id
+    const languages = selectedQueueLanguages()
+    const selectedBatchSize = effectiveBatchSize(settings, translationBatchSize)
+    const readiness = translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === selectedBatchSize
+      ? translationReadiness
+      : await refreshTranslationReadiness(sourceArtifact.id, projectId)
+    if (!isCurrentProject(projectId)) return
+    const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current, readiness)
+    if (blockReason) {
+      setStatusForProject(projectId, `\u65e0\u6cd5\u5f00\u59cb\u591a\u8bed\u8a00\u7ffb\u8bd1\uff1a${blockReason}`)
+      return
+    }
+    setBusyForProject(projectId, true)
+    setStatusForProject(projectId, `\u6b63\u5728\u542f\u52a8\u591a\u8bed\u8a00\u7ffb\u8bd1\u961f\u5217\uff1a${languages.map((language) => languageSpec(language).short).join(' / ')}`)
+    try {
+      const result = await api<MultilingualQueueStatus>(`/api/projects/${current.id}/multilingual/translate/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input_artifact_id: sourceArtifact.id,
+          languages,
+          batch_size: selectedBatchSize,
+          task_code: taskCode,
+          term_artifact_id: termArtifact?.id || null,
+          confirm_api_budget: false
+        })
+      })
+      if (!isCurrentProject(projectId)) return
+      const firstRunId = result.languages.find((item) => item.translation_run_id || item.run_id)?.translation_run_id || result.languages.find((item) => item.run_id)?.run_id
+      if (firstRunId) {
+        const run = await api<Run>(`/api/runs/${firstRunId}`)
+        if (isCurrentProject(projectId)) setLatestRun(run)
+      }
+      await refreshCurrent()
+      setStatusForProject(projectId, `\u591a\u8bed\u8a00\u7ffb\u8bd1\u961f\u5217\u5df2\u542f\u52a8\uff1a${result.languages.map((item) => item.visible_language).join(' / ')}`)
+    } catch (error) {
+      setStatusForProject(projectId, `\u591a\u8bed\u8a00\u7ffb\u8bd1\u542f\u52a8\u5931\u8d25\uff1a${errorText(error)}`)
     } finally {
       setBusyForProject(projectId, false)
     }
@@ -1088,6 +1192,46 @@ function App() {
         : `QA 未完全通过：还有 ${hardCount || '若干'} 个问题；已生成可交付文件，可先修复，也可进入交付。`)
     } catch (error) {
       setStatusForProject(projectId, `已有译文 QA 失败：${errorText(error)}`)
+    } finally {
+      setBusyForProject(projectId, false)
+    }
+  }
+
+
+
+  async function startMultilingualQAQueue(taskCode: 'QA' = 'QA') {
+    if (!current) return
+    const projectId = current.id
+    const inputArtifact = sourceArtifact || qaArtifact
+    if (!inputArtifact) {
+      setStatusForProject(projectId, '\u8bf7\u5148\u9009\u62e9\u8bed\u8a00\u8868\u6216\u5df2\u8bd1 workbook\uff0c\u518d\u8fd0\u884c\u591a\u8bed\u8a00 QA\u3002')
+      return
+    }
+    const languages = selectedQueueLanguages()
+    setBusyForProject(projectId, true)
+    setStatusForProject(projectId, `\u6b63\u5728\u542f\u52a8\u591a\u8bed\u8a00 QA \u961f\u5217\uff1a${languages.map((language) => languageSpec(language).short).join(' / ')}`)
+    try {
+      const result = await api<MultilingualQueueStatus>(`/api/projects/${current.id}/multilingual/qa/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input_artifact_id: inputArtifact.id,
+          languages,
+          task_code: taskCode,
+          term_artifact_id: termArtifact?.id || null
+        })
+      })
+      if (!isCurrentProject(projectId)) return
+      const firstRunId = result.languages.find((item) => item.qa_run_id || item.run_id)?.qa_run_id || result.languages.find((item) => item.run_id)?.run_id
+      if (firstRunId) {
+        const run = await api<Run>(`/api/runs/${firstRunId}`)
+        if (isCurrentProject(projectId)) setLatestRun(run)
+      }
+      await refreshCurrent()
+      if (tab === 'delivery') await refreshDeliverables()
+      setStatusForProject(projectId, `\u591a\u8bed\u8a00 QA \u961f\u5217\u5df2\u542f\u52a8\uff1a${result.languages.map((item) => item.visible_language).join(' / ')}`)
+    } catch (error) {
+      setStatusForProject(projectId, `\u591a\u8bed\u8a00 QA \u542f\u52a8\u5931\u8d25\uff1a${errorText(error)}`)
     } finally {
       setBusyForProject(projectId, false)
     }
@@ -1296,7 +1440,8 @@ function App() {
 
   async function addGlossaryTerm(form: FormData) {
     if (!current) return
-    await api(`/api/projects/${current.id}/glossary`, {
+    const projectId = current.id
+    await api(`/api/projects/${projectId}/glossary`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1311,19 +1456,20 @@ function App() {
         confirmed: true
       })
     })
-    await refreshCurrent()
-    setStatus('词条已新增')
+    await refreshProjectSnapshot(projectId)
+    setStatusForProject(projectId, '\u8bcd\u6761\u5df2\u65b0\u589e')
   }
 
   async function updateGlossaryTerm(term: GlossaryTerm, updates: Partial<GlossaryTerm>) {
     if (!current) return
-    await api(`/api/projects/${current.id}/glossary/${term.id}`, {
+    const projectId = current.id
+    await api(`/api/projects/${projectId}/glossary/${term.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     })
-    await refreshCurrent()
-    setStatus('词条已保存')
+    await refreshProjectSnapshot(projectId)
+    setStatusForProject(projectId, '\u8bcd\u6761\u5df2\u4fdd\u5b58')
   }
 
   async function updateGlossaryCandidate(candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) {
@@ -1356,29 +1502,31 @@ function App() {
 
   async function resolveGlossaryCandidates(batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') {
     if (!current || !batchId || !candidates.length) return
+    const projectId = current.id
     setBusy(true)
-    setStatus(action === 'accept' ? `正在确认加入 ${candidates.length} 条术语...` : `正在跳过 ${candidates.length} 条候选...`)
+    setStatusForProject(projectId, action === 'accept' ? `\u6b63\u5728\u786e\u8ba4\u52a0\u5165 ${candidates.length} \u6761\u672f\u8bed...` : `\u6b63\u5728\u8df3\u8fc7 ${candidates.length} \u6761\u5019\u9009...`)
     try {
-      await api(`/api/projects/${current.id}/glossary/batches/${batchId}/${action}`, {
+      await api(`/api/projects/${projectId}/glossary/batches/${batchId}/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ candidate_ids: candidates.map((candidate) => candidate.id) })
       })
-      await refreshCurrent()
-      await refreshGlossaryBatches(current.id)
-      setStatus(action === 'accept' ? `已加入 ${candidates.length} 条术语，后续翻译和 QA 会使用项目术语库。` : `已跳过 ${candidates.length} 条候选，不会进入项目术语库。`)
+      await refreshProjectSnapshot(projectId)
+      await refreshGlossaryBatches(projectId)
+      setStatusForProject(projectId, action === 'accept' ? `\u5df2\u52a0\u5165 ${candidates.length} \u6761\u672f\u8bed\uff0c\u540e\u7eed\u7ffb\u8bd1\u548c QA \u4f1a\u4f7f\u7528\u9879\u76ee\u672f\u8bed\u5e93\u3002` : `\u5df2\u8df3\u8fc7 ${candidates.length} \u6761\u5019\u9009\uff0c\u4e0d\u4f1a\u8fdb\u5165\u9879\u76ee\u672f\u8bed\u5e93\u3002`)
     } catch (error) {
-      setStatus(`术语批次处理失败：${errorText(error)}`)
+      setStatusForProject(projectId, `\u672f\u8bed\u6279\u6b21\u5904\u7406\u5931\u8d25\uff1a${errorText(error)}`)
     } finally {
-      setBusy(false)
+      setBusyForProject(projectId, false)
     }
   }
 
   async function deleteGlossaryTerm(term: GlossaryTerm) {
     if (!current) return
-    await api(`/api/projects/${current.id}/glossary/${term.id}`, { method: 'DELETE' })
-    await refreshCurrent()
-    setStatus('词条已删除')
+    const projectId = current.id
+    await api(`/api/projects/${projectId}/glossary/${term.id}`, { method: 'DELETE' })
+    await refreshProjectSnapshot(projectId)
+    setStatusForProject(projectId, '\u8bcd\u6761\u5df2\u5220\u9664')
   }
 
   async function addTranslationEntry(form: FormData) {
@@ -1507,6 +1655,35 @@ function App() {
     }
   }
 
+
+
+  async function createMergedDeliveryPackage() {
+    if (!current || !sourceArtifact) return
+    const projectId = current.id
+    const languages = selectedQueueLanguages()
+    setBusyForProject(projectId, true)
+    setStatusForProject(projectId, `\u6b63\u5728\u751f\u6210\u591a\u8bed\u8a00\u5408\u5e76\u4ea4\u4ed8\uff1a${languages.map((language) => languageSpec(language).short).join(' / ')}`)
+    try {
+      const result = await api<{ files: DeliveryFile[]; merged_languages?: string[]; skipped_languages?: string[] }>(`/api/projects/${current.id}/delivery-package/merged`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input_artifact_id: sourceArtifact.id,
+          languages
+        })
+      })
+      if (!isCurrentProject(projectId)) return
+      await refreshDeliverables()
+      await refreshCurrent()
+      const skipped = result.skipped_languages?.length ? `\uff0c\u8df3\u8fc7 ${result.skipped_languages.length} \u79cd\u672a\u5b8c\u6210\u8bed\u8a00` : ''
+      setStatusForProject(projectId, `\u591a\u8bed\u8a00\u5408\u5e76\u4ea4\u4ed8\u5df2\u751f\u6210\uff1a${result.files.length} \u4e2a\u6587\u4ef6${skipped}`)
+    } catch (error) {
+      setStatusForProject(projectId, `\u591a\u8bed\u8a00\u5408\u5e76\u4ea4\u4ed8\u5931\u8d25\uff1a${errorText(error)}`)
+    } finally {
+      setBusyForProject(projectId, false)
+    }
+  }
+
   return (
     <div className="shell">
       <div className="app">
@@ -1598,12 +1775,15 @@ function App() {
                 onSaveHarness={saveHarness}
                 onUploadMaterial={uploadProjectMaterial}
                 onTranslate={() => runTranslate('T')}
+                onTranslateQueue={() => startMultilingualTranslationQueue('T')}
                 onDirectQA={() => runDirectQA('QA')}
+                onDirectQAQueue={() => startMultilingualQAQueue('QA')}
                 onSkipQAArchive={skipQAArchive}
                 onManualFixes={applyManualFixes}
                 onModelFixes={applyModelFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
                 onCreateDelivery={createDeliveryPackage}
+                onCreateMergedDelivery={createMergedDeliveryPackage}
                 onStartTask={() => setView('wizard')}
                 onStartAnnouncement={() => openAnnouncementTask()}
                 onStartAnnouncementTask={openAnnouncementTask}
@@ -1690,13 +1870,16 @@ function App() {
                 onGlossaryPreview={previewGlossaryImport}
                 onGlossaryImport={importGlossaryArtifact}
                 onTranslate={() => runTranslate('A')}
+                onTranslateQueue={() => startMultilingualTranslationQueue('T')}
                 onCancelTranslate={cancelTranslateRun}
                 onDirectQA={() => runDirectQA('QA')}
+                onDirectQAQueue={() => startMultilingualQAQueue('QA')}
                 onSkipQAArchive={skipQAArchive}
                 allowSkipQAArchive
                 onManualFixes={applyManualFixes}
                 onModelFixes={applyModelFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
+                onCreateMergedDelivery={createMergedDeliveryPackage}
                 onFreq={() => setFreqOpen(true)}
                 onSaveHarness={saveHarness}
                 onUpdateCandidate={updateGlossaryCandidate}
@@ -1767,12 +1950,15 @@ function ProjectOverview({
   onSaveHarness,
   onUploadMaterial,
   onTranslate,
+  onTranslateQueue,
   onDirectQA,
+  onDirectQAQueue,
   onSkipQAArchive,
   onManualFixes,
   onModelFixes,
   onUploadTranslation,
   onCreateDelivery,
+  onCreateMergedDelivery,
   onStartTask,
   onStartAnnouncement,
   onStartAnnouncementTask,
@@ -1824,12 +2010,15 @@ function ProjectOverview({
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onUploadMaterial: (file: File) => Promise<Artifact | null>
   onTranslate: () => void
+  onTranslateQueue?: () => void
   onDirectQA: () => void
+  onDirectQAQueue?: () => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
   onCreateDelivery: (runId: string) => void
+  onCreateMergedDelivery?: () => void
   onStartTask: () => void
   onStartAnnouncement: () => void
   onStartAnnouncementTask: (task: AnnouncementTask) => void
@@ -1955,6 +2144,7 @@ function ProjectOverview({
           qaArtifact={qaArtifact}
           setQaArtifact={setQaArtifact}
           onDirectQA={onDirectQA}
+          onDirectQAQueue={onDirectQAQueue}
           onSkipQAArchive={onSkipQAArchive}
           onManualFixes={onManualFixes}
           onModelFixes={onModelFixes}

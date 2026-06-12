@@ -4,6 +4,7 @@ from .. import db
 from ..schemas import (
     ManualFixRequest,
     ModelFixRequest,
+    MultilingualQueueRequest,
 )
 from ..workflow import (
     apply_manual_fixes,
@@ -14,6 +15,7 @@ from ..workflow import (
     list_improvements,
     list_quality_issues,
     run_qa_sync,
+    start_multilingual_qa_queue,
     user_facing_error,
 )
 from fastapi import (
@@ -32,6 +34,16 @@ def qa(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="run or artifact not found") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
+
+
+@router.post("/api/projects/{project_id}/multilingual/qa/start")
+def start_multilingual_qa(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
+    try:
+        return start_multilingual_qa_queue(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @router.get("/api/runs/{run_id}/quality-issues")

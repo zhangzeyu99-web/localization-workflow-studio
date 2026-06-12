@@ -46,3 +46,59 @@
 - Step 6 选择多个语言后，Step 7 一键按队列执行：EN -> KR -> JP...；每个语言独立断点续跑。
 - Step 8 一键按队列 QA；每个语言独立 QA/修复/归档，失败只卡对应语言。
 - Step 9 新增普通语言包 ALL 合并交付：以原始 workbook 为底稿，按语言把各 run 的 final workbook 对应语言列回填，生成一个完整多语言 final workbook；同时保留每语言 changes/report。
+
+## 2026-06-12 断点交接
+
+### 当前 Git / 工作区状态
+- 当前分支：`master`，本地领先远程 1 个提交。
+- 本轮多语言编排尚未完成；目前只落了两个后端预备改动：
+  - `backend/app/db.py`：新增 `merged_delivery_workbook`、`merged_delivery_summary` 两类交付 artifact 角色映射。
+  - `backend/app/schemas.py`：新增 `MultilingualQueueRequest` 请求结构。
+- 当前还未新增队列服务、路由、合并交付实现、前端按钮、测试。
+- 当前未纳入本计划的无关未跟踪文件：`docs/PRODUCTION_DEPLOYMENT_PLAN.md`，暂不混入多语言编排提交。
+
+### 本轮继续实现的最小闭环
+1. 后端新增普通语言包多语言编排层：按选中语言创建/复用单语言 translation run，顺序执行，失败语言不影响其他语言。
+2. 后端新增多语言 QA 编排：按选中语言创建/复用 QA run，已通过语言跳过。
+3. 后端新增普通语言包 ALL 合并交付：以原始语言表为底稿，将已通过或已允许交付的语言列合并到同一个 workbook。
+4. 前端 Step 7/8 从“当前语言单独跑”改成“多语言队列卡片 + 一键启动队列”。
+5. 前端 Step 9 增加“生成多语言合并交付”，保留单语言下载。
+
+### 需要避免的误区
+- 不改公告任务流程。
+- 不把多语言合并成一个模型请求；仍是多个单语言 run。
+- 不修改现有 `/api/runs` 单语言接口行为，避免回归快速任务、单语言任务和旧 E2E。
+- 不把失败语言强行写入合并交付；失败语言只进入 QA 摘要。
+
+### 旁路待处理问题（不混入本计划，除非用户要求）
+- 术语表导入后状态显示“已导入”但概览术语表仍为空：疑似前端刷新/宽表来源或导入字段识别问题。
+- 删除项目提示 `project not found`：疑似选中项目已被删除、列表状态滞后或删除接口/当前项目状态不同步。
+
+### 下一步执行顺序
+1. 补 `backend/app/workflow/multilingual.py`，先实现状态查询、子 run 创建/复用、队列启动。
+2. 补后端路由：`/multilingual/status`、`/multilingual/translate/start`、`/multilingual/qa/start`、`/delivery-package/merged`。
+3. 补合并交付实现和后端单测。
+4. 接前端 Step 7/8/9。
+5. 跑后端测试、前端 build/E2E、禁机翻扫描。
+
+
+## 2026-06-12 完成收口
+
+### 已落地
+- 新增普通语言包多语言编排后端：按目标语言创建/复用单语言 translation run，后台队列逐个执行。
+- 新增多语言 QA 编排后端：按目标语言创建/复用 QA run；没有翻译产物且原表该语言未 ready_for_qa 时不会误建 QA。
+- 新增普通语言包 ALL 合并交付：以原始语言表为底稿，将已完成/可交付语言列合并回同一 workbook，并生成 QA 摘要。
+- 前端 Step 7 改为多语言翻译队列入口；Step 8 改为多语言 QA 队列入口；Step 9 增加“多语言合并交付”。
+- 保留单语言 run、单语言交付、快速任务、公告流程，不改变旧接口行为。
+
+### 验证结果
+- `python -m pytest -q`：138 passed。
+- `python -m compileall -q backend workflow`：通过。
+- `python -m ruff check backend/app backend/tests --select E9,F`：通过。
+- `cd frontend; npm run build`：通过。
+- `cd frontend; npm run e2e -- --workers=1`：18 passed。
+- 禁 Google/机翻扫描未新增命中；既有 provider 兼容路径里仍存在 `chat/completions` 字符串，不属于本轮新增。
+
+### 仍需后续单独处理
+- `docs/PRODUCTION_DEPLOYMENT_PLAN.md` 仍是无关未跟踪文件，未纳入本轮。
+- 工作区还包含前面未提交的术语导入刷新、项目删除状态同步等修复；它们与本轮一起待提交或另拆提交。

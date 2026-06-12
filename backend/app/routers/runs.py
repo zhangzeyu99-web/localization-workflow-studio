@@ -9,12 +9,15 @@ from ..jobs import (
 )
 from ..languages import require_supported_language
 from ..schemas import (
+    MultilingualQueueRequest,
     RunCreate,
     TranslateRequest,
 )
 from ..workflow import (
     cancel_translation_run,
+    multilingual_status,
     run_translate_sync,
+    start_multilingual_translation_queue,
     translation_batch_file,
     translation_run_progress,
     user_facing_error,
@@ -73,6 +76,26 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
 @router.get("/api/runs")
 def list_runs(project_id: str | None = None) -> list[dict[str, Any]]:
     return db.list_runs(project_id)
+
+
+@router.get("/api/projects/{project_id}/multilingual/status")
+def get_multilingual_status(project_id: str, input_artifact_id: str, languages: str) -> dict[str, Any]:
+    try:
+        return multilingual_status(project_id, input_artifact_id, languages)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+
+
+@router.post("/api/projects/{project_id}/multilingual/translate/start")
+def start_multilingual_translation(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
+    try:
+        return start_multilingual_translation_queue(project_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project or artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 
 @router.get("/api/runs/{run_id}")

@@ -17,12 +17,12 @@ def _artifact_file_response(artifact_id: str, project_id: str | None = None) -> 
     try:
         artifact = db.get_artifact(artifact_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="artifact not found") from exc
+        raise HTTPException(status_code=404, detail="找不到这个文件记录，请刷新项目后重试。") from exc
     if project_id and artifact.get("project_id") != project_id:
-        raise HTTPException(status_code=404, detail="artifact not found in current project")
+        raise HTTPException(status_code=404, detail="这个文件不属于当前项目，请回到项目页重新选择下载。")
     path = Path(artifact["path"])
     if not path.exists():
-        raise HTTPException(status_code=404, detail="artifact file missing")
+        raise HTTPException(status_code=404, detail="文件记录还在，但本地文件已缺失。请重新生成交付文件，或重新上传来源文件。")
     try:
         path.resolve().relative_to(DATA_ROOT.resolve())
     except ValueError as exc:
@@ -45,4 +45,4 @@ def patch_artifact(artifact_id: str, payload: ArtifactUpdate) -> dict[str, Any]:
     try:
         return db.update_artifact(artifact_id, payload.model_dump(exclude_none=True))
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="artifact not found") from exc
+        raise HTTPException(status_code=404, detail="找不到这个文件记录，请刷新项目后重试。") from exc

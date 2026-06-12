@@ -252,13 +252,16 @@ export function Wizard(props: {
   onGlossaryPreview: () => void
   onGlossaryImport: () => void
   onTranslate: () => void
+  onTranslateQueue?: () => void
   onCancelTranslate: () => void
   onDirectQA: () => void
+  onDirectQAQueue?: () => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
   allowSkipQAArchive?: boolean
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
+  onCreateMergedDelivery?: () => void
   onFreq: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
@@ -697,9 +700,15 @@ export function StepFreqV2({
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
         <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
         <button className="btn btn-primary" disabled={blocked || busy} onClick={() => onGlossaryExtract(sourceArtifact)}>🔎 扫描术语候选</button>
-        <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补译空候选</button>
-        <button className="btn btn-ghost" onClick={onFreq}>💡 查看补充策略</button>
       </div>
+      <details className="manual-maintenance compact-maintenance">
+        <summary>高级：候选补译 / 扫描规则</summary>
+        <div className="language-inline-select">
+          <span>正常情况下只需要点击“扫描术语候选”。空译文候选可在人工审核前补译；扫描规则用于排查候选过多或过少。</span>
+          <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补译空候选</button>
+          <button className="btn btn-ghost" onClick={onFreq}>查看扫描规则</button>
+        </div>
+      </details>
       {backfill ? (
         <>
           <div className="scan-explain">
@@ -901,6 +910,7 @@ export function StepTranslate({
   settings,
   status,
   onTranslate,
+  onTranslateQueue,
   onCancelTranslate,
   busy,
   latestRun,
@@ -919,6 +929,7 @@ export function StepTranslate({
   settings: AppSettings | null
   status: string
   onTranslate: () => void
+  onTranslateQueue?: () => void
   onCancelTranslate: () => void
   busy: boolean
   latestRun: Run | null
@@ -935,11 +946,14 @@ export function StepTranslate({
 }) {
   const lang = languageSpec(selectedLanguage)
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
+  const multiLanguageMode = selectedLanguages.length > 1
+  const translateAction = multiLanguageMode && onTranslateQueue ? onTranslateQueue : onTranslate
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   const batchSize = effectiveBatchSize(settings)
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === batchSize ? translationReadiness : null
   const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project, readiness)
-  const alreadyTranslated = canSkipModelTranslation(readiness)
+  const currentLanguageAlreadyTranslated = canSkipModelTranslation(readiness)
+  const alreadyTranslated = currentLanguageAlreadyTranslated && !multiLanguageMode
   const estimatedBatches = estimateBatches(readiness?.source_rows, batchSize)
   const latestMatchingRun = latestRun && matchesTranslationRun(latestRun, selectedLanguage, sourceArtifact?.id, 'translation_run') ? latestRun : null
   const currentTranslationRun = latestMatchingRun || findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run')
@@ -991,7 +1005,7 @@ export function StepTranslate({
           <div className="section-head">
             <div>
               <strong>多语言处理进度</strong>
-              <span>已选 {selectedLanguageText}；当前执行 {lang.short}。每种语言独立保存进度和交付，失败后只续跑对应语言。</span>
+              <span>已选 {selectedLanguageText}；点击一次后工作台会按语言排队执行。每种语言独立保存进度，失败后只续跑对应语言。</span>
             </div>
           </div>
           <div className="translation-language-grid">
@@ -1003,7 +1017,7 @@ export function StepTranslate({
               </div>
             ))}
           </div>
-          <div className="info-line compact">操作方式：先完成当前语言；再回 STEP 6 切换下一种语言继续。不要把不同语言合成一个交付文件。</div>
+          <div className="info-line compact">操作方式：点击“开始多语言翻译”，工作台会自动逐个处理已选语言；无需反复回 STEP 6 手动切换。</div>
         </div>
       ) : null}
       <div className="action-card">
@@ -1033,7 +1047,7 @@ export function StepTranslate({
           ) : (
             <>
               <button className="btn btn-primary" disabled={busy || activeTranslation || Boolean(blockReason)} onClick={onTranslate}>{resumable ? '继续 AI 翻译' : `AI 翻译`}</button>
-              {activeTranslation ? <button className="btn btn-ghost" disabled={busy} onClick={onCancelTranslate}>暂停/取消后台任务</button> : null}
+              {activeTranslation ? <button className="btn btn-ghost" disabled={busy} onClick={onCancelTranslate}>暂停</button> : null}
             </>
           )}
           {blockReason && !alreadyTranslated ? <div className="warn-line inline-warning">{blockReason}</div> : null}
@@ -1082,6 +1096,7 @@ export function StepQA({
   qaArtifact,
   setQaArtifact,
   onDirectQA,
+  onDirectQAQueue,
   onSkipQAArchive,
   allowSkipQAArchive = false,
   onManualFixes,
@@ -1103,6 +1118,7 @@ export function StepQA({
   qaArtifact: Artifact | null
   setQaArtifact: (artifact: Artifact | null) => void
   onDirectQA: () => void
+  onDirectQAQueue?: () => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
   allowSkipQAArchive?: boolean
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
@@ -1157,8 +1173,11 @@ export function StepQA({
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   const pendingIssueCount = qaPendingIssueCount(qaStatusRun, qaIssues)
   const qaStatus = qaRunSummaryText(qaStatusRun, pendingIssueCount)
-  const qaAction = qaRunActionText(qaStatusRun, pendingIssueCount)
+  const qaNextAction = qaRunActionText(qaStatusRun, pendingIssueCount)
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
+  const multiQaMode = selectedLanguages.length > 1
+  const qaAction = multiQaMode && onDirectQAQueue ? onDirectQAQueue : onDirectQA
+  const qaCanRun = Boolean(qaArtifact || (multiQaMode && sourceArtifact))
   const currentLanguageText = languageSpec(selectedLanguage).short
   return (
     <>
@@ -1193,7 +1212,7 @@ export function StepQA({
               )
             })}
           </div>
-          {selectedLanguages.length > 1 ? <div className="info-line compact">已选 {selectedLanguageText}；当前只运行 {currentLanguageText} QA，其他语言切换后继续。</div> : null}
+          {selectedLanguages.length > 1 ? <div className="info-line compact">已选 {selectedLanguageText}；点击一次后工作台会按语言逐个 QA，已通过语言自动跳过。</div> : null}
         </section>
 
         <section className="qa-step-card">
@@ -1241,7 +1260,7 @@ export function StepQA({
           <div><span>处理文件</span><strong>{qaArtifact ? qaArtifact.label : '未选择'}</strong></div>
           <div><span>来源</span><strong>{originText}</strong></div>
           <div><span>项目术语库</span><strong>{glossaryCount} 条，运行时生成快照</strong></div>
-          <div><span>下一步</span><strong>{qaAction}</strong></div>
+          <div><span>下一步</span><strong>{qaNextAction}</strong></div>
         </div>
         {qaStatusRun?.status === 'failed' ? (
           <div className="qa-blocker-line">
@@ -1349,12 +1368,20 @@ export function StepDone({
   project,
   latestRun,
   qualityIssues,
-  setStep
+  setStep,
+  sourceArtifact,
+  selectedLanguages,
+  busy,
+  onCreateMergedDelivery
 }: {
   project: Project
   latestRun: Run | null
   qualityIssues: QualityIssue[]
   setStep: (step: number) => void
+  sourceArtifact: Artifact | null
+  selectedLanguages: LanguageCode[]
+  busy: boolean
+  onCreateMergedDelivery?: () => void
 }) {
   const artifacts = pickerArtifacts(latestRun?.artifacts?.length ? latestRun.artifacts : runArtifacts(project, latestRun?.id))
     .filter((artifact) => artifact.kind === 'qa_final_workbook' || artifact.kind === 'qa_changes')
@@ -1362,6 +1389,8 @@ export function StepDone({
   const hasFinalWorkbook = artifacts.some((artifact) => artifact.kind === 'qa_final_workbook')
   const deliveryBlocked = latestRun?.kind === 'qa' && latestRun.status !== 'passed' && !hasFinalWorkbook
   const deliveryWarning = latestRun?.kind === 'qa' && latestRun.status === 'failed' && hasFinalWorkbook
+  const multiDelivery = selectedLanguages.length > 1
+  const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 9</span>最终交付</div>
@@ -1378,6 +1407,13 @@ export function StepDone({
           <strong>可生成交付，但仍有 QA 问题</strong>
           <span>还有 {pendingIssueCount || '若干'} 个问题未清零；交付文件会同时保留修改记录和 QA 摘要，方便后续复查。</span>
           <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
+        </div>
+      ) : null}
+      {multiDelivery ? (
+        <div className="delivery-blocker">
+          <strong>多语言合并交付</strong>
+          <span>已选 {selectedLanguageText}。系统会把已完成或已允许交付的语言列合并回同一个语言表；未完成语言会写入 QA 摘要，不会强行混入。</span>
+          <button className="btn btn-primary btn-sm" disabled={busy || !sourceArtifact || !onCreateMergedDelivery} onClick={onCreateMergedDelivery}>生成多语言合并交付</button>
         </div>
       ) : null}
       <div className="artifact-grid">

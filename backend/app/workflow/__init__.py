@@ -29,6 +29,7 @@ from . import (
     qa_model_fixes as qa_model_fixes,
     semantic_qa as semantic_qa,
     quick_task as quick_task,
+    multilingual as multilingual,
     translation as translation,
 )
 
@@ -58,6 +59,7 @@ _MODULES = [
     qa_model_fixes,
     semantic_qa,
     quick_task,
+    multilingual,
     translation,
 ]
 
