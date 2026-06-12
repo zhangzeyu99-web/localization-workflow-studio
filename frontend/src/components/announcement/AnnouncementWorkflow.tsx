@@ -212,6 +212,17 @@ export function AnnouncementWizard({
   const providerConfigurationReminder = aiProviderConfigurationReminder(settings)
   const providerReady = isAiProviderReady(settings)
   const showLanguageSubflows = Boolean(activeTask && step >= 6 && step <= 8)
+  const announcementProgress = getAnnouncementTranslationProgress(activeTask)
+  const announcementResumable = isAnnouncementTranslationResumable(activeTask)
+  const announcementLanguageProgress = effectiveLanguages.map((language) => {
+    const child = activeTask?.languages?.find((item) => item.language === language)
+    const status = child?.status || (activeTask?.status === 'translated' || activeTask?.status === 'delivered' ? 'translated' : 'pending')
+    const done = ['translated', 'applied', 'delivered', 'passed'].includes(status)
+    const blocked = ['failed', 'needs_input', 'canceled'].includes(status) || Boolean(announcementProgress?.failed_batch)
+    const active = ['queued', 'running'].includes(status) || (['queued', 'running'].includes(activeTask?.status || '') && effectiveLanguages[0] === language)
+    const label = blocked ? '需继续/修复' : active ? '翻译中' : done ? '已完成' : '待处理'
+    return { language, child, status, done, blocked, active, label }
+  })
 
   useEffect(() => {
     if (initialTaskId && allTasks.some((task) => task.id === initialTaskId)) {
@@ -430,17 +441,35 @@ export function AnnouncementWizard({
             <AnnouncementActionStep title="译文反查" step={5} desc="按目标语言从项目 QA 归档和语言表反查译文，QA 归档优先；缺失术语会标记但不阻断翻译准备。" activeTask={activeTask} busy={busy} actionLabel="反查术语译文" onAction={() => run('lookup-translations', 6)} />
           ) : step === 6 ? (
             <>
-              <AnnouncementActionStep title="翻译准备" step={6} desc="按语言生成中转表、manifest、prompt snapshot 和 workpack。后续可直接调用 AI provider 或下载 workpack 外部翻译。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备包" onAction={() => run('prepare', 7)} />
-              <div className="muted-empty-card gap-top">译文反查完成后，点击“生成翻译准备包”会生成中转表、prompt 和 workpack。这些是给 AI 和 QA 用的过程材料，正常用户不需要手动查看。</div>
+              <AnnouncementActionStep title="翻译准备" step={6} desc="按目标语言生成正文分段表和 AI 翻译上下文。正常流程下一步直接点 AI翻译，不需要手动下载过程文件。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备" onAction={() => run('prepare', 7)} />
+              <div className="muted-empty-card gap-top">译文反查完成后，点击“生成翻译准备”即可进入 AI 翻译前的准备状态。过程文件只用于审计或外部协作。</div>
             </>
           ) : step === 7 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 7</span>AI 翻译</div>
-              <div className="panel-desc">点击“AI翻译”后会在后台调用已配置的 AI 翻译公告正文，进度会显示在下方。不会使用谷歌机翻或在线机翻聚合器。</div>
-              {getAnnouncementTranslationProgress(activeTask) ? <TranslationProgressBar progress={getAnnouncementTranslationProgress(activeTask)!} /> : null}
+              <div className="panel-desc">点击后会调用已配置 AI 翻译公告正文。每种语言独立保存进度；失败或刷新后，再点“继续 AI 翻译”会断点续跑。不会使用谷歌机翻或在线机翻聚合器。</div>
+              <div className="translation-language-progress">
+                <div className="section-head">
+                  <div>
+                    <strong>多语言处理进度</strong>
+                    <span>目标语言：{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}。交付时会按语言分目录输出，避免串语言。</span>
+                  </div>
+                </div>
+                <div className="translation-language-grid">
+                  {announcementLanguageProgress.map((item) => (
+                    <div key={item.language} className={`translation-language-card ${item.active ? 'current' : ''} ${item.blocked ? 'blocked' : ''} ${item.done ? 'done' : ''}`}>
+                      <strong>{languageSpec(item.language).short}</strong>
+                      <span>{item.label}</span>
+                      <em>{item.child ? `STEP ${item.child.current_step}/9 · ${announcementStatusLabel(item.status)}` : announcementProgress ? `${announcementProgress.completed_rows}/${announcementProgress.total_rows} 行` : '尚未开始'}</em>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {announcementProgress ? <TranslationProgressBar progress={announcementProgress} languageLabel={effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '公告'} /> : null}
               {providerConfigurationReminder ? <div className="warn-line">需要先配置 API：{providerConfigurationReminder}</div> : null}
-              {activeTask?.metadata?.reason === 'background_job_interrupted' ? <div className="warn-line">后台翻译曾中断；再点“AI翻译”会从已完成批次继续，不会全部重跑。</div> : null}
+              {activeTask?.metadata?.reason === 'background_job_interrupted' ? <div className="warn-line">后台翻译曾中断；再点“继续 AI 翻译”会从已完成批次继续，不会全部重跑。</div> : null}
               {activeTask?.metadata?.reason === 'api_budget_confirmation_required' ? <div className="warn-line">预计 API token 超过提醒阈值；确认后可继续后台翻译。</div> : null}
+              {announcementProgress?.failed_batch ? <div className="warn-line">当前卡在第 {announcementProgress.failed_batch} 批。先检查 API/格式问题，再点“继续 AI 翻译”；系统会复用已保存批次，避免污染交付文件。</div> : null}
               <div className="workflow-note-grid compact-grid">
                 <div><strong>AI</strong><span>{providerReady ? `${providerLabel(settings)} 已配置` : '未配置 API key'}</span></div>
                 <div><strong>目标语言</strong><span>{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
@@ -455,32 +484,32 @@ export function AnnouncementWizard({
                     if (needsBudgetConfirm && !confirmed) return
                     run(announcementTranslateEndpoint(activeTask), undefined, { confirm_api_budget: confirmed })
                   }}
-                >AI翻译</button>
+                >{announcementResumable ? '继续 AI 翻译' : 'AI 翻译'}</button>
                 {['queued', 'running'].includes(activeTask?.status || '') ? (
                   <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={() => run('translate/cancel', 7)}>暂停</button>
                 ) : null}
               </div>
               {!hasAnnouncementPreparedAiInput(activeTask) && activeTask ? (
-                <div className="muted-empty-card gap-top">还没有翻译准备包。请先回 STEP 6 点击“生成翻译准备包”。</div>
+                <div className="muted-empty-card gap-top">还没有完成翻译准备。请先回 STEP 6 点击“生成翻译准备”。</div>
               ) : null}
               <details className="delivery-advanced">
                 <summary>过程文件与审计（可选）</summary>
-                <div className="panel-desc">这些是中转表、workpack、prompt 和 AI 输入审计，正常翻译不需要操作。</div>
+                <div className="panel-desc">这些是系统给 AI 和 QA 使用的过程材料，正常翻译不需要操作。</div>
                 {hasAnnouncementPreparedAiInput(activeTask) ? (
                   <AiInputAuditPanel endpoint={`/api/announcement-tasks/${activeTask!.id}/ai-input-summary`} title="公告正文翻译 AI 输入" buttonLabel="查看 AI 输入" />
                 ) : null}
                 <ArtifactLinks artifacts={activeTask?.artifacts || []} kinds={["announcement_workpack", "prompt_snapshot", "announcement_translation_workbook"]} />
                 <details className="delivery-advanced">
-                  <summary>外部 AI response 导入（备用）</summary>
-                  <div className="panel-desc">只有在没有可用 API、或要把 workpack 发给外部 AI/供应商处理时才需要。已配置 API 时不用导入。</div>
+                  <summary>外部 AI 结果导入（备用）</summary>
+                  <div className="panel-desc">只有在不用工作台 API、改由外部 AI 或供应商处理时才需要。已配置 API 时不用导入。</div>
                   <div className="upload-row">
-                    <FileBox label="上传 ai_response_<lang>.jsonl" onFile={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setResponseArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
+                    <FileBox label="上传外部 AI 结果 JSONL" onFile={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setResponseArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} />
                     <div className="workflow-note-grid compact-grid">
-                      <div><strong>已上传 response</strong><span>{responseArtifactIds.length} 个</span></div>
+                      <div><strong>已上传外部结果</strong><span>{responseArtifactIds.length} 个</span></div>
                     </div>
                   </div>
                   <div className="row-actions">
-                    <button className="btn btn-ghost" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入 AI response</button>
+                    <button className="btn btn-ghost" disabled={!activeTask || busy || !responseArtifactIds.length} onClick={() => run('import-ai', 8)}>导入外部 AI 结果</button>
                   </div>
                 </details>
               </details>
@@ -748,7 +777,7 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 9</span>交付</div>
-      <div className="panel-desc">生成公告交付总包：只包含按语言分目录的成品和 QA 摘要；中转表、manifest、workpack 留在过程产物区。</div>
+      <div className="panel-desc">生成公告交付总包：只包含按语言分目录的成品和 QA 摘要；过程文件留在高级区域，不放进最终交付。</div>
       {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
       <AnnouncementTaskSnapshot task={activeTask} />
       {hardBlockers > 0 && !delivered ? (
@@ -938,7 +967,7 @@ export function announcementArtifactTypeLabel(artifact: Artifact): string {
   if (artifact.kind.includes('manifest')) return '过程文件'
   if (artifact.kind.includes('prompt')) return '过程文件'
   if (artifact.kind.includes('ai_supplement_packet')) return 'AI 补充包'
-  if (artifact.kind.includes('ai_supplement_response')) return 'AI 补充响应'
+  if (artifact.kind.includes('ai_supplement_response')) return 'AI 补充结果'
   if (artifact.kind.includes('ai_supplement_report')) return 'AI 补充报告'
   if (artifact.kind.includes('translation_workbook')) return '中转表'
   if (artifact.kind.includes('terms')) return '公告术语表'

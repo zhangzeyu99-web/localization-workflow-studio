@@ -36,7 +36,7 @@ wb.close()
   await page.getByRole('button', { name: '🔧 校对' }).click()
   await expect(page.getByText('校对任务')).toBeVisible()
 
-  await page.locator('label.upload-box', { hasText: '上传新的译文 workbook' }).locator('input[type="file"]').setInputFiles(badWorkbook)
+  await page.locator('label.upload-box', { hasText: '上传新的译文表格' }).locator('input[type="file"]').setInputFiles(badWorkbook)
   await page.getByTestId('run-qa').click()
   await expect(page.getByTestId('failed-row-editor')).toBeVisible({ timeout: 60000 })
   await page.getByTestId('failed-row-editor').locator('summary').click()

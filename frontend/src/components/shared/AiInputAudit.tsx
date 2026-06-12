@@ -54,13 +54,13 @@ function renderTranslationAudit(data: AuditRecord) {
   return (
     <>
       <div className="audit-kpis">
-        <span>Workpack {text(workpack.rows) || 0} 行</span>
+        <span>翻译分段 {text(workpack.rows) || 0} 行</span>
         <span>术语命中行 {text(workpack.term_hit_rows) || 0}</span>
         <span>预计 {text(workpack.estimated_batches) || 0} 批</span>
       </div>
       <div className="audit-item">
-        <div className="audit-item-head"><strong>项目 Prompt 摘要</strong><span>{prompt.available ? '已进入 AI' : '未生成'}</span></div>
-        <p>{text(prompt.preview) || '暂无 prompt 摘要'}</p>
+        <div className="audit-item-head"><strong>项目提示词摘要</strong><span>{prompt.available ? '已进入 AI' : '未生成'}</span></div>
+        <p>{text(prompt.preview) || '暂无提示词摘要'}</p>
       </div>
       <div className="audit-list compact">
         {samples.map((item, index) => (
@@ -79,7 +79,7 @@ function renderAnnouncementAudit(data: AuditRecord) {
   const lookup = asRecord(data.lookup)
   const warnings = Array.isArray(data.warnings) ? data.warnings.map((item) => text(item)).filter(Boolean) : []
   if (text(data.status) === 'not_prepared') {
-    return <div className="muted-empty-card">{text(data.message) || '尚未生成翻译准备包；请先完成上一步。'}</div>
+    return <div className="muted-empty-card">{text(data.message) || '尚未完成翻译准备；请先完成上一步。'}</div>
   }
   return (
     <>
@@ -94,7 +94,7 @@ function renderAnnouncementAudit(data: AuditRecord) {
         {languages.length ? languages.map((item, index) => (
           <div className="audit-item" key={`${text(item.language)}-${index}`}>
             <div className="audit-item-head"><strong>{text(item.language).toUpperCase() || `文件 ${index + 1}`}</strong><span>{text(item.workpack_rows) || 0} 行 · 术语命中 {text(item.term_hits) || 0}</span></div>
-            <p>{text(item.prompt_preview) || '暂无 prompt 摘要'}</p>
+            <p>{text(item.prompt_preview) || '暂无提示词摘要'}</p>
             {asArray(item.samples).slice(0, 2).map((sample, sampleIndex) => <p className="audit-sample" key={sampleIndex}>{text(sample.source)}</p>)}
           </div>
         )) : <div className="muted">暂无公告翻译 AI 输入。</div>}

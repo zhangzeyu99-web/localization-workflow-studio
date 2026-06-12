@@ -202,9 +202,9 @@ function announcementActionLabel(endpoint: string): string {
     translate: 'AI \u7ffb\u8bd1',
     'translate/start': 'AI \u7ffb\u8bd1',
     'translate/resume': '\u7ee7\u7eed AI \u7ffb\u8bd1',
-    'import-ai': '\u5bfc\u5165 AI response',
+    'import-ai': '\u5bfc\u5165\u5916\u90e8 AI \u7ed3\u679c',
     apply: '\u6821\u5bf9\u56de\u586b',
-    'fix-hard-blockers': 'Hard blocker \u81ea\u52a8\u4fee\u590d',
+    'fix-hard-blockers': '\u81ea\u52a8\u4fee\u590d\u95ee\u9898',
     deliver: '\u4ea4\u4ed8'
   }
   return labels[endpoint] || endpoint
@@ -872,7 +872,7 @@ function App() {
     try {
       const inputName = `${inputArtifact.label || ''} ${inputArtifact.path || ''}`.toLowerCase()
       if (objective === 'qa' && /\.(txt|md|markdown)(\s|$)/i.test(inputName)) {
-        setStatusForProject(projectId, 'TXT \u5feb\u901f\u4efb\u52a1\u76ee\u524d\u652f\u6301\u7ffb\u8bd1\u5e76\u8f93\u51fa\u540c\u683c\u5f0f\u6587\u672c\uff1b\u6821\u5bf9\u8bf7\u4e0a\u4f20\u5df2\u8bd1\u8bed\u8a00\u8868 workbook\u3002')
+        setStatusForProject(projectId, 'TXT 快速任务目前支持翻译并输出同格式文本；校对请上传已译语言表。')
         return null
       }
       if (objective === 'qa') {
@@ -1054,7 +1054,7 @@ function App() {
       ? qaArtifact.run_id
       : null
     setBusy(true)
-    setStatusForProject(projectId, '正在对已有译文 workbook 执行 QA...')
+    setStatusForProject(projectId, '正在对已有译文表格执行 QA...')
     try {
       const run = await api<Run>('/api/runs', {
         method: 'POST',
@@ -1189,7 +1189,7 @@ function App() {
     const artifact = await upload(file, 'asset')
     if (artifact) {
       setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
-      setStatus(artifact.duplicate ? `AI response 已存在，已复用：${artifactPickerLabel(artifact)}` : `AI response 已上传：${artifactPickerLabel(artifact)}`)
+      setStatus(artifact.duplicate ? `外部 AI 结果已存在，已复用：${artifactPickerLabel(artifact)}` : `外部 AI 结果已上传：${artifactPickerLabel(artifact)}`)
     }
     return artifact
   }
@@ -1237,7 +1237,7 @@ function App() {
     if (!current) return null
     const projectId = current.id
     setBusy(true)
-    setStatusForProject(projectId, `正在执行公告任务：${endpoint}...`)
+    setStatusForProject(projectId, `\u6b63\u5728\u6267\u884c\u516c\u544a\u4efb\u52a1\uff1a${announcementActionLabel(endpoint)}...`)
     try {
       const result = await api<AnnouncementTaskResult>(`/api/announcement-tasks/${taskId}/${endpoint}`, {
         method: 'POST',
@@ -1247,7 +1247,7 @@ function App() {
       if (!isCurrentProject(projectId)) return null
       if (result.run) setLatestRun({ ...result.run, artifacts: result.artifacts || [] })
       await refreshCurrent()
-      const summary = result.summary ? ` ? ${compactSummary(result.summary)}` : ''
+      const summary = result.summary ? `\uff1a${compactSummary(result.summary)}` : ''
       const taskStatus = String(result.task?.status || '')
       if (endpoint.startsWith('translate/') && ['queued', 'running'].includes(taskStatus)) {
         setStatusForProject(projectId, `\u516c\u544a\u540e\u53f0\u7ffb\u8bd1\u5df2\u542f\u52a8\uff1a${announcementActionLabel(endpoint)}${summary}`)
@@ -2181,7 +2181,7 @@ function FrequencyModal({ onClose }: { onClose: () => void }) {
     <div className="modal-mask show">
       <div className="modal">
         <h3>💡 高频词补充策略</h3>
-        <p>系统会从完整语言表中提取高频、易混淆和需要统一维护的中文术语，生成候选批次、project brief 和 prompt。</p>
+        <p>系统会从完整语言表中提取高频、易混淆和需要统一维护的中文术语，生成候选批次、项目说明和翻译提示词。</p>
         <ul className="strategy-list">
           <li>筛选：先按中文提取候选，再按项目术语库中文去重。</li>
           <li>跳过：项目术语表已存在的中文不会进入候选，也不会跨语言自动补译。</li>

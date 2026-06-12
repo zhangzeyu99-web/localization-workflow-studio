@@ -296,13 +296,13 @@ export function GlossaryToolsPanel({
         <div className="row-actions">
           <button type="button" className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语模板</button>
           <button type="button" className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入已确认术语</button>
-          <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>生成 {lang.short} 候选</button>
+          <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>从翻译语言表生成候选</button>
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出全部 XLSX</a>
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=csv`}>导出全部 CSV</a>
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=json`}>导出全部 JSON</a>
         </div>
         {!sourceArtifact ? <div className="warn-line">需要从完整语言表生成术语时，先在“翻译”页上传语言表。</div> : null}
-        <div className="muted-left">完整语言表会被拦截，不会直接写入项目术语库；请先生成候选并人工确认。</div>
+        <div className="muted-left">完整语言表不会直接写入项目术语库；只能先生成候选，再人工确认加入。</div>
       </div>
     </div>
   )
@@ -603,8 +603,8 @@ export function TranslationArchiveImportModal({
           <h3>导入译文归档</h3>
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy || importing} onClick={onClose}>关闭</button>
         </div>
-        <p>上传已翻译 workbook / csv，系统自动识别语言列并写入归档。</p>
-        <FileBox label="上传译文 workbook/csv" onFile={uploadAndImport} />
+        <p>上传已翻译表格（XLSX/CSV），系统自动识别语言列并写入归档。</p>
+        <FileBox label="上传译文表格 XLSX/CSV" onFile={uploadAndImport} />
         <div className="archive-import-summary">
           <span>当前文件</span>
           <strong>{selectedArtifact ? artifactPickerLabel(selectedArtifact) : '未上传'}</strong>

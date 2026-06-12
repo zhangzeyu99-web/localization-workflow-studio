@@ -169,12 +169,20 @@ export function LanguageSelector({ selectedLanguage, setSelectedLanguage }: { se
   )
 }
 
-export function TranslationProgressBar({ progress }: { progress: TranslationProgress }) {
+export function TranslationProgressBar({ progress, languageLabel = '' }: { progress: TranslationProgress; languageLabel?: string }) {
   const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)))
+  const completed = progress.completed_rows >= progress.total_rows && progress.total_rows > 0
+  const stateText = progress.failed_batch
+    ? `卡在第 ${progress.failed_batch} 批：修复配置或下载错误报告后，点“继续 AI 翻译”会从已保存批次续跑。`
+    : completed
+      ? '翻译已完成：下一步进入 QA 校对，交付文件会从已保存结果生成。'
+      : progress.rate_limit_wait_seconds
+        ? `正在等限流窗口：约 ${formatDuration(progress.rate_limit_wait_seconds)} 后继续。`
+        : '后台处理中：已完成批次会实时保存，刷新页面后仍可继续。'
   return (
     <div className="translation-progress">
       <div className="progress-head">
-        <strong>翻译进度</strong>
+        <strong>{languageLabel ? `${languageLabel} 翻译进度` : '翻译进度'}</strong>
         <span>{progress.completed_batches}/{progress.total_batches} 批 · {progress.completed_rows}/{progress.total_rows} 行 · ETA {formatDuration(progress.eta_seconds)}</span>
       </div>
       <div className="progress-track"><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
@@ -183,6 +191,7 @@ export function TranslationProgressBar({ progress }: { progress: TranslationProg
         <span>{progress.failed_batch ? `失败批次：${progress.failed_batch}` : `当前批次：${progress.current_batch || '-'}`}</span>
         {progress.rate_limit_wait_seconds ? <span>限流等待 {formatDuration(progress.rate_limit_wait_seconds)}</span> : null}
       </div>
+      <div className={`progress-guidance ${progress.failed_batch ? 'blocked' : completed ? 'done' : ''}`}>{stateText}</div>
     </div>
   )
 }
