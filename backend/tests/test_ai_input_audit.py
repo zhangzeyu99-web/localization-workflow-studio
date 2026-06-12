@@ -34,21 +34,21 @@ def _xlsx_language_table(path: Path) -> None:
     ws = wb.active
     ws.title = "lang"
     ws.append(["ID", "CN", "EN"])
-    ws.append([1, "????", ""])
-    ws.append([2, "????", ""])
+    ws.append([1, "开始游戏", ""])
+    ws.append([2, "领取奖励", ""])
     wb.save(path)
 
 
 def test_project_ai_input_summary_reports_uploaded_materials(tmp_path: Path) -> None:
-    project = db.insert_project("Audit Project", "SLG", "dark fantasy SLG", "??")
+    project = db.insert_project("Audit Project", "SLG", "dark fantasy SLG", "国服")
     note_path = tmp_path / "brief.md"
-    note_path.write_text("# ??SLG\n\n??????? SLG??????", encoding="utf-8")
+    note_path.write_text("# 暗黑SLG\n\n这是一份暗黑题材 SLG 项目资料", encoding="utf-8")
     artifact = db.add_artifact(project["id"], "brief.md", note_path, "asset", mime="text/markdown")
 
     with TestClient(app) as client:
         response = client.post(
             f"/api/projects/{project['id']}/analyze",
-            json={"intro": "??SLG", "asset_artifact_ids": [artifact["id"]], "target_language": "en"},
+            json={"intro": "暗黑SLG", "asset_artifact_ids": [artifact["id"]], "target_language": "en"},
         )
         assert response.status_code == 200
 
@@ -59,15 +59,15 @@ def test_project_ai_input_summary_reports_uploaded_materials(tmp_path: Path) -> 
         material = payload["analysis"]["materials"][0]
         assert material["filename"] == "brief.md"
         assert material["included_in_ai"] is True
-        assert "????" in material["excerpt"]
+        assert "暗黑题材" in material["excerpt"]
         assert material["readable"] is True
 
 
 def test_project_analysis_rejects_cross_project_artifact(tmp_path: Path) -> None:
-    project_a = db.insert_project("Project A", "SLG", "", "??")
-    project_b = db.insert_project("Project B", "SLG", "", "??")
+    project_a = db.insert_project("Project A", "SLG", "", "国服")
+    project_b = db.insert_project("Project B", "SLG", "", "国服")
     note_path = tmp_path / "brief.md"
-    note_path.write_text("# A ????", encoding="utf-8")
+    note_path.write_text("# A 项目资料", encoding="utf-8")
     artifact = db.add_artifact(project_a["id"], "brief.md", note_path, "asset", mime="text/markdown")
 
     with TestClient(app) as client:
@@ -80,9 +80,9 @@ def test_project_analysis_rejects_cross_project_artifact(tmp_path: Path) -> None
 
 
 def test_project_analysis_rejects_missing_artifact_file(tmp_path: Path) -> None:
-    project = db.insert_project("Missing File", "SLG", "", "??")
+    project = db.insert_project("Missing File", "SLG", "", "国服")
     note_path = tmp_path / "missing.md"
-    note_path.write_text("# ????", encoding="utf-8")
+    note_path.write_text("# 缺失资料", encoding="utf-8")
     artifact = db.add_artifact(project["id"], "missing.md", note_path, "asset", mime="text/markdown")
     note_path.unlink()
 
@@ -96,7 +96,7 @@ def test_project_analysis_rejects_missing_artifact_file(tmp_path: Path) -> None:
 
 
 def test_uploaded_project_material_is_readable_and_enters_analysis() -> None:
-    project = db.insert_project("Upload Audit", "SLG", "", "??")
+    project = db.insert_project("Upload Audit", "SLG", "", "国服")
     with TestClient(app) as client:
         upload = client.post(
             f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
@@ -179,7 +179,7 @@ def test_project_scoped_translation_inspection_rejects_other_project(tmp_path: P
 
 
 def test_translation_ai_input_summary_reports_workpack_and_prompt(tmp_path: Path) -> None:
-    project = db.insert_project("Audit Translation", "QA", "", "??")
+    project = db.insert_project("Audit Translation", "QA", "", "国服")
     workbook = tmp_path / "source.xlsx"
     _xlsx_language_table(workbook)
     artifact = db.add_artifact(project["id"], "source.xlsx", workbook, "language_table", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -187,13 +187,13 @@ def test_translation_ai_input_summary_reports_workpack_and_prompt(tmp_path: Path
     work_dir = Path(os.environ["LWS_DATA_ROOT"]) / "runs" / run["id"] / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
     (work_dir / "translation_workpack.jsonl").write_text(
-        '{"id":1,"source":"????","term_hits":[{"source":"??","target":"Start"}]}\n'
-        '{"id":2,"source":"????","term_hits":[]}\n',
+        '{"id":1,"source":"开始游戏","term_hits":[{"source":"开始","target":"Start"}]}\n'
+        '{"id":2,"source":"领取奖励","term_hits":[]}\n',
         encoding="utf-8",
     )
     snapshot = work_dir / "snapshots" / "compiled_project_harness_prompt.txt"
     snapshot.parent.mkdir(parents=True, exist_ok=True)
-    snapshot.write_text("???????????UI ???", encoding="utf-8")
+    snapshot.write_text("请严格保留变量和 UI 文案", encoding="utf-8")
     db.add_artifact(project["id"], "Prompt snapshot", snapshot, "prompt_snapshot", run_id=run["id"], mime="text/plain")
 
     with TestClient(app) as client:
@@ -203,15 +203,15 @@ def test_translation_ai_input_summary_reports_workpack_and_prompt(tmp_path: Path
         assert payload["workpack"]["rows"] == 2
         assert payload["workpack"]["term_hit_rows"] == 1
         assert payload["prompt"]["available"] is True
-        assert "????" in payload["prompt"]["preview"]
+        assert "UI 文案" in payload["prompt"]["preview"]
         assert payload["workpack"]["samples"][0]["term_hits_count"] == 1
         assert payload["workpack"]["estimated_batches"] == 1
 
 
 def test_announcement_ai_input_summary_reports_segments_terms_and_prompt(tmp_path: Path) -> None:
-    project = db.insert_project("Audit Announcement", "SLG", "", "??")
+    project = db.insert_project("Audit Announcement", "SLG", "", "国服")
     source = tmp_path / "notice.txt"
-    source.write_text("??????????", encoding="utf-8")
+    source.write_text("英雄集结活动开启", encoding="utf-8")
     source_artifact = db.add_artifact(project["id"], "notice.txt", source, "asset", mime="text/plain")
     task = db.insert_announcement_task(
         project["id"],
@@ -227,11 +227,11 @@ def test_announcement_ai_input_summary_reports_segments_terms_and_prompt(tmp_pat
     )
     run = db.insert_run(project["id"], "announcement_lookup", "en", metadata={"task_id": task["id"]})
     workpack = tmp_path / "notice_workpack_EN.jsonl"
-    workpack.write_text('{"id":"seg-1","source":"????","term_hits":[{"source":"??","target":"Hero"}]}\n', encoding="utf-8")
+    workpack.write_text('{"id":"seg-1","source":"英雄集结","term_hits":[{"source":"英雄","target":"Hero"}]}\n', encoding="utf-8")
     prompt = tmp_path / "notice_prompt_EN.txt"
-    prompt.write_text("?????????????????", encoding="utf-8")
-    workpack_artifact = db.add_artifact(project["id"], "?? workpack (EN)", workpack, "announcement_workpack", run_id=run["id"], mime="application/jsonl", metadata={"task_id": task["id"], "language": "en"})
-    prompt_artifact = db.add_artifact(project["id"], "??????? (EN)", prompt, "prompt_snapshot", run_id=run["id"], mime="text/plain", metadata={"task_id": task["id"], "language": "en"})
+    prompt.write_text("请参考术语表翻译公告文本", encoding="utf-8")
+    workpack_artifact = db.add_artifact(project["id"], "公告 workpack (EN)", workpack, "announcement_workpack", run_id=run["id"], mime="application/jsonl", metadata={"task_id": task["id"], "language": "en"})
+    prompt_artifact = db.add_artifact(project["id"], "公告提示词 (EN)", prompt, "prompt_snapshot", run_id=run["id"], mime="text/plain", metadata={"task_id": task["id"], "language": "en"})
     db.update_announcement_task(
         task["id"],
         metadata={
@@ -250,7 +250,7 @@ def test_announcement_ai_input_summary_reports_segments_terms_and_prompt(tmp_pat
         assert payload["lookup"]["terms"] == 1
         assert payload["languages"][0]["workpack_rows"] == 1
         assert payload["languages"][0]["term_hits"] == 1
-        assert "???????" in payload["languages"][0]["prompt_preview"]
+        assert "术语表" in payload["languages"][0]["prompt_preview"]
 
 
 def test_announcement_ai_input_summary_handles_missing_prepared_artifacts(tmp_path: Path) -> None:

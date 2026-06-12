@@ -48,7 +48,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="settings-grid">
           <label>
-            <span>Provider</span>
+            <span>AI 服务商</span>
             <select name="provider" value={provider} onChange={(event) => setProvider(event.target.value)}>
               <option value="openai">GPT</option>
               <option value="openai-chat">GPT 中转站</option>
@@ -65,7 +65,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             </select>
           </label>
           <label className="settings-wide">
-            <span>Base URL</span>
+            <span>接口地址</span>
             <input name="base_url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder={provider === 'openai-chat' ? 'https://your-relay.example.com/api' : '使用官方默认地址'} />
           </label>
           <label>
@@ -73,7 +73,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             <input name="model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-5.5" />
           </label>
           <label>
-            <span>Reasoning</span>
+            <span>推理强度</span>
             <select name="reasoning_effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>
               <option value="">跟随预设</option>
               <option value="low">low</option>
@@ -83,14 +83,13 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             </select>
           </label>
           <label className="settings-wide">
-            <span>API key</span>
+            <span>API 密钥</span>
             <input name="api_key" type="password" placeholder={apiKeyPlaceholder} />
           </label>
-          <p className="settings-wide settings-note">只填 Provider、预设和 API key 即可；中转站需要额外填写 Base URL。长文本拆批、限流、重试和预算提醒由系统按预设自动管理。</p>
+          <p className="settings-wide settings-note">通常只填 AI 服务商、预设和 API 密钥即可；中转站需要额外填写接口地址。长文本拆批、限流、重试和预算提醒由系统按预设自动管理。</p>
         </div>
         <div className="settings-actions"><button className="btn btn-primary">保存设置</button></div>
       </form>
     </div>
   )
 }
-

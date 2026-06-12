@@ -546,10 +546,10 @@ def test_announcement_inspect_constraints_does_not_regress_completed_steps(tmp_p
     ws = wb.active
     ws.title = "Language"
     ws.append(["ID", "CN", "EN"])
-    ws.append(["T1", "??", "Trial Realm"])
+    ws.append(["T1", "试炼之境", "Trial Realm"])
     wb.save(table_path)
     wb.close()
-    notice_path.write_text("?????", encoding="utf-8")
+    notice_path.write_text("试炼开启", encoding="utf-8")
 
     with TestClient(app) as client:
         project = client.post("/api/projects", json={"name": "Announcement No Regression", "type": "RPG"}).json()

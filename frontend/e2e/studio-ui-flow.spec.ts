@@ -120,13 +120,13 @@ test('user can complete the EN localization workflow from project tabs', async (
   await expect(page.getByRole('link', { name: '下载修改记录' })).toBeVisible()
 })
 
-test('real project formal translation is blocked without configured API key', async ({ page, request }) => {
+test('real project formal translation is blocked without configured API credential', async ({ page, request }) => {
   await request.patch(`${baseURL}/api/settings`, {
     data: { provider: 'openai', protocol: 'responses', api_key: '', model: 'gpt-5.5', batch_size: 24 },
   })
   const projectName = `小小战机 UI 阻断 ${Date.now()}`
   await request.post(`${baseURL}/api/projects`, {
-    data: { name: projectName, type: 'QA', description: '真实项目缺少 API key 时必须阻断正式翻译。' },
+    data: { name: projectName, type: 'QA', description: '真实项目缺少 API 密钥时必须阻断正式翻译。' },
   })
 
   await page.goto(baseURL)
@@ -136,7 +136,7 @@ test('real project formal translation is blocked without configured API key', as
   await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeDisabled()
   await expect(page.locator('.warn-line', { hasText: 'API' })).toBeVisible()
-  await expect(page.locator('.warn-line', { hasText: '右上角“设置”填写 API key' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: '右上角“设置”填写 API 密钥' })).toBeVisible()
 })
 
 test('announcement AI translation shows API reminder when provider is not configured', async ({ page, request }) => {
@@ -145,7 +145,7 @@ test('announcement AI translation shows API reminder when provider is not config
   })
   const projectName = `E2E Announcement API Reminder ${Date.now()}`
   const createResponse = await request.post(`${baseURL}/api/projects`, {
-    data: { name: projectName, type: '公告', description: '公告翻译缺少 API key 时需要给人话提醒。' },
+    data: { name: projectName, type: '公告', description: '公告翻译缺少 API 密钥时需要给人话提醒。' },
   })
   const project = await createResponse.json()
   await request.post(`${baseURL}/api/projects/${project.id}/files?kind=asset`, {
@@ -167,7 +167,7 @@ test('announcement AI translation shows API reminder when provider is not config
   await page.locator('.announcement-steps .step-item').nth(6).click()
   await expect(page.locator('.panel-title', { hasText: 'AI 翻译' })).toBeVisible()
   await expect(page.locator('.warn-line', { hasText: '需要先配置 API' })).toBeVisible()
-  await expect(page.locator('.warn-line', { hasText: '右上角“设置”填写 API key' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: '右上角“设置”填写 API 密钥' })).toBeVisible()
   await expect(page.getByRole('button', { name: /^AI\s?\u7ffb\u8bd1$/ })).toBeDisabled()
 })
 

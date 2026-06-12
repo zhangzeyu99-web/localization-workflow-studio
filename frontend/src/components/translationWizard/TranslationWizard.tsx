@@ -1383,9 +1383,7 @@ export function StepDone({
       <div className="artifact-grid">
         {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
       </div>
-      <div className="muted-left">
-        ? '直接导入的译文表格'
-      </div>
+      <div className="muted-left">这里显示最近任务的已译表和修改记录；标准最终交付文件请到项目概览的“交付”页生成和下载。</div>
     </>
   )
 }
@@ -1418,7 +1416,7 @@ export function TaskHistoryTable({ project, kind, title }: { project: Project; k
                 <td>
                   <div className="link-actions">
                     <button className="link-button" onClick={() => setSelectedRunId(selectedRunId === run.id ? null : run.id)}>查看</button>
-                    {download ? <a href={artifactDownloadHref(download, project.id)}>下载</a> : <span className="muted-inline" title="该任务暂无可下载交付产物">下载</span>}
+                    {download ? <a href={artifactDownloadHref(download, project.id)}>{kind === 'qa' ? '下载校对结果' : '下载已译表'}</a> : <span className="muted-inline" title="该任务暂无可下载结果">无下载</span>}
                   </div>
                 </td>
               </tr>
@@ -1479,7 +1477,7 @@ export function RunDetail({ project, run, kind }: { project: Project; run: Run; 
         {visibleArtifacts.map((artifact) => (
           <a key={artifact.id} className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}</a>
         ))}
-        {!visibleArtifacts.length ? <span className="muted-left">暂无可下载交付产物。</span> : null}
+        {!visibleArtifacts.length ? <span className="muted-left">暂无可下载结果；若任务已通过，请到“交付”页生成最终交付文件。</span> : null}
       </div>
       {inputItems.length ? (
         <div className="run-inputs">

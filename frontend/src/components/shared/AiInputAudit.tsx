@@ -65,7 +65,7 @@ function renderTranslationAudit(data: AuditRecord) {
       <div className="audit-list compact">
         {samples.map((item, index) => (
           <div className="audit-item" key={`${text(item.id)}-${index}`}>
-            <div className="audit-item-head"><strong>{text(item.id) || `行 ${index + 1}`}</strong><span>term_hits {text(item.term_hits_count) || 0}</span></div>
+            <div className="audit-item-head"><strong>{text(item.id) || `行 ${index + 1}`}</strong><span>术语命中 {text(item.term_hits_count) || 0}</span></div>
             <p>{text(item.source)}</p>
           </div>
         ))}
@@ -89,7 +89,7 @@ function renderAnnouncementAudit(data: AuditRecord) {
         <span>术语 {text(lookup.terms) || 0}</span>
         <span>译文参考 {text(lookup.translations) || 0}</span>
       </div>
-      {!Number(lookup.terms || 0) && !Number(lookup.translations || 0) ? <div className="warn-line slim">当前没有命中术语或译文参考；AI 将只基于项目 prompt 和公告正文翻译。</div> : null}
+      {!Number(lookup.terms || 0) && !Number(lookup.translations || 0) ? <div className="warn-line slim">当前没有命中术语或译文参考；AI 将只基于项目提示词和公告正文翻译。</div> : null}
       <div className="audit-list">
         {languages.length ? languages.map((item, index) => (
           <div className="audit-item" key={`${text(item.language)}-${index}`}>

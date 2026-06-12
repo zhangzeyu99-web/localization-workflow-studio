@@ -471,7 +471,7 @@ export function AnnouncementWizard({
               {activeTask?.metadata?.reason === 'api_budget_confirmation_required' ? <div className="warn-line">预计 API token 超过提醒阈值；确认后可继续后台翻译。</div> : null}
               {announcementProgress?.failed_batch ? <div className="warn-line">当前卡在第 {announcementProgress.failed_batch} 批。先检查 API/格式问题，再点“继续 AI 翻译”；系统会复用已保存批次，避免污染交付文件。</div> : null}
               <div className="workflow-note-grid compact-grid">
-                <div><strong>AI</strong><span>{providerReady ? `${providerLabel(settings)} 已配置` : '未配置 API key'}</span></div>
+                <div><strong>AI</strong><span>{providerReady ? `${providerLabel(settings)} 已配置` : '未配置 API 密钥'}</span></div>
                 <div><strong>目标语言</strong><span>{effectiveLanguages.map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
               </div>
               <div className="row-actions">
