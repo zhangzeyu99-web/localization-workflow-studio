@@ -1746,9 +1746,34 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   padding: 12px;
   border-radius: 10px;
   text-align: center;
+  position: relative;
 }
 .lang-chip.selected { border-color: #8b5cf6; background: rgba(139,92,246,.28); color: #fff; }
+.lang-chip.current { box-shadow: 0 0 0 1px rgba(255,255,255,.32) inset; }
+.lang-chip small {
+  display: block;
+  margin-top: 4px;
+  color: #c4b5fd;
+  font-size: 11px;
+}
+.lang-check {
+  display: inline-block;
+  width: 16px;
+  margin-right: 6px;
+  color: #6ee7b7;
+  font-weight: 700;
+}
 .lang-chip.disabled { opacity: .52; }
+.info-line {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(110,231,183,.22);
+  background: rgba(20,184,166,.08);
+  border-radius: 10px;
+  color: #c7d2fe;
+  font-size: 13px;
+  line-height: 1.45;
+}
 .announcement-lang-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

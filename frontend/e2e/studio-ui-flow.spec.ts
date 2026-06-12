@@ -200,6 +200,15 @@ test('new translation task exposes the full supported language set', async ({ pa
   }
   await expect(page.getByRole('button', { name: 'AR 阿拉伯语' })).toHaveCount(0)
   await expect(page.getByText('其他语言未开放')).toHaveCount(0)
+  const enButton = page.getByRole('button', { name: /EN 英语/ })
+  const krButton = page.getByRole('button', { name: /KR 韩语/ })
+  const jpButton = page.getByRole('button', { name: /JP 日语/ })
+  await krButton.click()
+  await jpButton.click()
+  await expect(enButton).toHaveClass(/selected/)
+  await expect(krButton).toHaveClass(/selected/)
+  await expect(jpButton).toHaveClass(/selected/)
+  await expect(jpButton).toHaveClass(/current/)
 })
 
 
@@ -400,7 +409,7 @@ ws = wb.active
 ws.title = "Language"
 ws.append(["ID", "CN", "KR"])
 for i in range(1, 1003):
-    ws.append([i, f"source {i}", f"target {i}"])
+    ws.append([i, f"source {i}", ""])
 wb.save(sys.argv[1])
 wb.close()
 `, languageTable])
@@ -428,6 +437,27 @@ wb.close()
     const assets = await request.get(`${baseURL}/api/projects/${project.id}/assets?role=language_source`).then((response) => response.json())
     return assets.some((artifact: { kind: string }) => artifact.kind === 'language_table')
   }, { timeout: 20000 }).toBeTruthy()
+
+  const languageAssets = await request.get(`${baseURL}/api/projects/${project.id}/assets?role=language_source`).then((response) => response.json())
+  const uploadedLanguageTable = languageAssets.find((artifact: { kind: string }) => artifact.kind === 'language_table')
+  expect(uploadedLanguageTable?.id).toBeTruthy()
+  let extractPayload: any = null
+  await page.route(`**/api/projects/${project.id}/glossary/extract`, async (route) => {
+    extractPayload = route.request().postDataJSON()
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        run: { id: 'run-e2e-glossary', project_id: project.id, kind: 'glossary', language: 'ko', status: 'passed', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), metadata: {} },
+        artifacts: [],
+        glossary_backfill: { candidates: 1, unique_candidates: 1, skipped_existing: 0, pending_confirmation: 1, skipped_duplicate: 0 },
+      }),
+    })
+  })
+  await page.getByTestId('step-5').click()
+  await page.getByRole('button', { name: /扫描术语候选/ }).click()
+  await expect.poll(() => extractPayload?.input_artifact_id || '', { timeout: 10000 }).toBe(uploadedLanguageTable.id)
+  expect(extractPayload.language).toBe('ko')
 })
 
 test('project tabs show multilingual wide glossary and archive assets', async ({ page, request }) => {

@@ -30,6 +30,14 @@ export function apiErrorText(text: string, fallback: string): string {
   try {
     const payload = JSON.parse(text) as { detail?: unknown; message?: unknown; error?: unknown }
     const detail = payload.detail ?? payload.message ?? payload.error
+    if (Array.isArray(detail)) {
+      const missingFields = detail
+        .filter((item) => item && typeof item === 'object' && String((item as { type?: unknown }).type || '').includes('missing'))
+        .map((item) => ((item as { loc?: unknown }).loc || []))
+      const flat = missingFields.flatMap((loc) => Array.isArray(loc) ? loc.map(String) : [])
+      if (flat.includes('input_artifact_id')) return '请先选择或上传语言表，再继续当前步骤。'
+      if (flat.length) return `请求缺少必要信息：${Array.from(new Set(flat.filter((item) => item !== 'body'))).join(' / ')}`
+    }
     if (typeof detail === 'string' && detail.trim()) return sanitizeUserFacingError(detail, fallback)
   } catch {
     // Keep the original text when the backend returns plain text.

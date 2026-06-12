@@ -237,6 +237,8 @@ export function Wizard(props: {
   status: string
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  selectedLanguages: LanguageCode[]
+  toggleSelectedLanguage: (language: LanguageCode) => void
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
   setQaArtifact: (artifact: Artifact | null) => void
@@ -246,7 +248,7 @@ export function Wizard(props: {
   onUploadTerm: (file: File) => void
   onUploadAsset: (file: File) => void
   onAnalyze: () => void
-  onGlossaryExtract: () => void
+  onGlossaryExtract: (artifact?: Artifact | null) => void
   onGlossaryPreview: () => void
   onGlossaryImport: () => void
   onTranslate: () => void
@@ -599,7 +601,7 @@ export function StepFreqV2({
   setStep
 }: {
   project: Project
-  onGlossaryExtract: () => void
+  onGlossaryExtract: (artifact?: Artifact | null) => void
   onFreq: () => void
   sourceArtifact: Artifact | null
   translationReadiness?: TranslationReadiness | null
@@ -647,8 +649,8 @@ export function StepFreqV2({
   const blocked = !sourceArtifact || inputMode === 'ready_for_qa' || inputMode === 'invalid'
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 5</span>从完整语言表扫描高频术语候选</div>
-      <div className="panel-desc">输入是 STEP 4 的完整语言表；项目资料只辅助生成 brief 和提示词。扫描结果先进入候选，人工确认后才加入项目术语库。</div>
+      <div className="panel-title"><span className="badge">STEP 5</span>从待翻译语言表扫描高频术语候选</div>
+      <div className="panel-desc">输入是 STEP 4 判定为“待翻译”的语言表；项目资料只辅助生成 brief 和提示词。扫描结果先进入候选，人工确认后才加入项目术语库。</div>
       {inputMode === 'ready_for_qa' ? (
         <div className="translation-readiness-box ready">
           <div className="readiness-head">
@@ -668,7 +670,7 @@ export function StepFreqV2({
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
         <span className="asset-meta">参考素材：{assetArtifacts.length} 个</span>
-        <button className="btn btn-primary" disabled={blocked || busy} onClick={onGlossaryExtract}>🔎 扫描术语候选</button>
+        <button className="btn btn-primary" disabled={blocked || busy} onClick={() => onGlossaryExtract(sourceArtifact)}>🔎 扫描术语候选</button>
         <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补齐缺失译文</button>
         <button className="btn btn-ghost" onClick={onFreq}>💡 查看补充策略</button>
       </div>
@@ -813,6 +815,8 @@ export function PendingTermReviewRowV2({
 export function StepLang({
   selectedLanguage,
   setSelectedLanguage,
+  selectedLanguages,
+  toggleSelectedLanguage,
   sourceArtifact,
   translationReadiness,
   setQaArtifact,
@@ -820,23 +824,26 @@ export function StepLang({
 }: {
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  selectedLanguages: LanguageCode[]
+  toggleSelectedLanguage: (language: LanguageCode) => void
   sourceArtifact?: Artifact | null
   translationReadiness?: TranslationReadiness | null
   setQaArtifact?: (artifact: Artifact | null) => void
   setStep?: (step: number) => void
 }) {
   const readyForQa = Boolean(sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && canSkipModelTranslation(translationReadiness))
+  const selectedLabels = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 6</span>选择目标语言</div>
-      <div className="panel-desc">目标语言优先从 STEP 4 的表头自动识别；只有识别错了，才需要手动切换。</div>
+      <div className="panel-desc">目标语言优先从 STEP 4 的表头自动识别；识别到的语言会默认勾选。后续翻译 / QA 仍按语言拆成单语言任务执行。</div>
       {readyForQa ? (
         <div className="translation-readiness-box ready">
           <div className="readiness-head">
             <strong>已译表已完成语言判定</strong>
             <span>无需进入 AI 翻译</span>
           </div>
-          <p>当前表已经有完整译文，目标语言为 {languageSpec(selectedLanguage).short}。建议直接进入 STEP 8 校对。</p>
+          <p>当前表已经有完整译文，已选目标语言为 {selectedLabels || languageSpec(selectedLanguage).short}。建议直接进入 STEP 8 校对。</p>
           {sourceArtifact && setQaArtifact && setStep ? <button className="btn btn-primary btn-sm" onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>去校对</button> : null}
         </div>
       ) : null}
@@ -844,10 +851,15 @@ export function StepLang({
         {supportedLanguages.map((lang) => (
           <button
             key={lang.code}
-            className={`lang-chip ${selectedLanguage === lang.code ? 'selected' : ''}`}
-            onClick={() => setSelectedLanguage(lang.code)}
+            type="button"
+            className={`lang-chip ${selectedLanguages.includes(lang.code) ? 'selected' : ''} ${selectedLanguage === lang.code ? 'current' : ''}`}
+            onClick={() => toggleSelectedLanguage(lang.code)}
+            onDoubleClick={() => setSelectedLanguage(lang.code)}
+            title={selectedLanguage === lang.code ? '当前预览 / 当前执行语言' : '点击勾选并设为当前语言'}
           >
+            <span className="lang-check">{selectedLanguages.includes(lang.code) ? '✓' : ''}</span>
             {lang.label}
+            {selectedLanguage === lang.code ? <small>当前</small> : null}
           </button>
         ))}
         {unsupportedLanguages.map((lang) => (
@@ -874,7 +886,8 @@ export function StepTranslate({
   setTermArtifact,
   setQaArtifact,
   setStep,
-  selectedLanguage
+  selectedLanguage,
+  selectedLanguages
 }: {
   project: Project
   settings: AppSettings | null
@@ -892,8 +905,10 @@ export function StepTranslate({
   setQaArtifact: (artifact: Artifact | null) => void
   setStep: (step: number) => void
   selectedLanguage: LanguageCode
+  selectedLanguages: LanguageCode[]
 }) {
   const lang = languageSpec(selectedLanguage)
+  const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   const batchSize = effectiveBatchSize(settings)
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === batchSize ? translationReadiness : null
@@ -925,6 +940,9 @@ export function StepTranslate({
     <>
       <div className="panel-title"><span className="badge">STEP 7</span>{lang.short} AI 翻译</div>
       <div className="panel-desc">只有“待翻译语言表”才会调用已配置 AI。已译表不在这里重复翻译，直接进入 STEP 8 QA 校对。</div>
+      {selectedLanguages.length > 1 ? (
+        <div className="info-line">已选语言：{selectedLanguageText}。当前先处理 {lang.short}；其他语言切回 STEP 6 选择对应语言后继续。后台仍保持单语言长任务，避免多个长任务互相抢占。</div>
+      ) : null}
       <div className="action-card">
         <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
         <div className={`translation-readiness-box ${readinessState.tone}`}>
@@ -1010,6 +1028,8 @@ export function StepQA({
   status,
   selectedLanguage,
   setSelectedLanguage,
+  selectedLanguages,
+  toggleSelectedLanguage,
   showHistory = true
 }: {
   project: Project
@@ -1029,6 +1049,8 @@ export function StepQA({
   status: string
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  selectedLanguages: LanguageCode[]
+  toggleSelectedLanguage: (language: LanguageCode) => void
   showHistory?: boolean
 }) {
   const latestQaRun = latestRun?.kind === 'qa' ? latestRun : latestRunOfKind(project, 'qa')
@@ -1073,6 +1095,7 @@ export function StepQA({
   const pendingIssueCount = qaPendingIssueCount(qaStatusRun, qaIssues)
   const qaStatus = qaRunSummaryText(qaStatusRun, pendingIssueCount)
   const qaAction = qaRunActionText(qaStatusRun, pendingIssueCount)
+  const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 8</span>校对任务</div>
@@ -1080,8 +1103,23 @@ export function StepQA({
       <div className="action-card">
         <div className="language-inline-select">
           <span>校对目标语言：</span>
-          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+          <div className="lang-grid compact-lang-grid">
+            {supportedLanguages.map((lang) => (
+              <button
+                key={lang.code}
+                type="button"
+                className={`lang-chip ${selectedLanguages.includes(lang.code) ? 'selected' : ''} ${selectedLanguage === lang.code ? 'current' : ''}`}
+                onClick={() => toggleSelectedLanguage(lang.code)}
+                onDoubleClick={() => setSelectedLanguage(lang.code)}
+                title={selectedLanguage === lang.code ? '当前 QA 语言' : '点击勾选并设为当前语言'}
+              >
+                <span className="lang-check">{selectedLanguages.includes(lang.code) ? '✓' : ''}</span>
+                {lang.label}
+              </button>
+            ))}
+          </div>
         </div>
+        {selectedLanguages.length > 1 ? <div className="info-line">已选语言：{selectedLanguageText}。当前按钮会运行 {languageSpec(selectedLanguage).short} QA；其他语言切换后继续运行，结果会分别归档。</div> : null}
         <div className="qa-entry-row">
           <button className="btn btn-ghost" disabled={!previousTranslationArtifact || busy} onClick={() => setQaArtifact(previousTranslationArtifact)}>使用上一翻译结果</button>
           <button className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={() => sourceArtifact && setQaArtifact(sourceArtifact)}>使用当前语言表</button>

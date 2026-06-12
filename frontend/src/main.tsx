@@ -240,6 +240,7 @@ function App() {
   const [assetArtifacts, setAssetArtifacts] = useState<Artifact[]>([])
   const [latestRun, setLatestRun] = useState<Run | null>(null)
   const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>('en')
+  const [selectedLanguages, setSelectedLanguages] = useState<LanguageCode[]>(['en'])
   const [glossaryPreview, setGlossaryPreview] = useState<GlossaryPreviewRow[]>([])
   const [glossaryBatches, setGlossaryBatches] = useState<GlossaryBatch[]>([])
   const [glossaryCandidates, setGlossaryCandidates] = useState<GlossaryCandidate[]>([])
@@ -265,6 +266,31 @@ function App() {
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
   const currentLang = languageSpec(selectedLanguage)
 
+  function setPrimaryLanguage(language: LanguageCode) {
+    setSelectedLanguage(language)
+    setSelectedLanguages((prev) => prev.includes(language) ? prev : [...prev, language])
+  }
+
+  function setPrimaryLanguages(languages: LanguageCode[], primary?: LanguageCode | null) {
+    const normalized = languages.length ? languages : [primary || selectedLanguage]
+    const nextPrimary = primary && normalized.includes(primary) ? primary : normalized[0]
+    setSelectedLanguages(normalized)
+    setSelectedLanguage(nextPrimary)
+  }
+
+  function toggleTargetLanguage(language: LanguageCode) {
+    setSelectedLanguages((prev) => {
+      const wasSelected = prev.includes(language)
+      const next = wasSelected
+        ? prev.filter((item) => item !== language)
+        : [...prev, language]
+      const normalized = next.length ? next : [language]
+      if (wasSelected && selectedLanguage === language) setSelectedLanguage(normalized[0])
+      if (!wasSelected) setSelectedLanguage(language)
+      return normalized
+    })
+  }
+
   function isCurrentProject(projectId?: string | null): boolean {
     return Boolean(projectId) && currentIdRef.current === projectId
   }
@@ -286,6 +312,8 @@ function App() {
     setArchiveArtifact(null)
     setAssetArtifacts([])
     setLatestRun(null)
+    setSelectedLanguage('en')
+    setSelectedLanguages(['en'])
     setGlossaryPreview([])
     setGlossaryBatches([])
     setGlossaryCandidates([])
@@ -324,6 +352,8 @@ function App() {
       setArchiveArtifact(null)
       setAssetArtifacts([])
       setLatestRun(null)
+      setSelectedLanguage('en')
+      setSelectedLanguages(['en'])
       setGlossaryPreview([])
       setGlossaryBatches([])
       setGlossaryCandidates([])
@@ -645,11 +675,18 @@ function App() {
     }
   }
 
-  async function runGlossaryExtract(inputArtifact?: Artifact) {
+  async function runGlossaryExtract(inputArtifact?: Artifact | null) {
     const artifact = inputArtifact || sourceArtifact
-    if (!current || !artifact) return
+    if (!current) return
+    if (!artifact) {
+      setStatus('请先在 STEP 4 选择或上传语言表，再扫描术语候选。')
+      return
+    }
+    if (!sourceArtifact || sourceArtifact.id !== artifact.id) {
+      setSourceArtifact(artifact)
+    }
     setBusy(true)
-    setStatus('正在从完整语言表扫描术语候选...')
+    setStatus('正在从待翻译语言表扫描术语候选...')
     try {
       const result = await api<{
         run: Run
@@ -773,8 +810,14 @@ function App() {
     const targets = await inspectTranslationTargets(artifact.id, projectId)
     if (!isCurrentProject(projectId)) return selectedLanguage
     const suggested = targets?.suggested_language
+    const detected = targets?.detected_languages || []
+    if (detected.length) {
+      setPrimaryLanguages(detected, suggested || detected[0])
+      setStatus(`已识别语言表目标语言：${detected.map((item) => languageSpec(item).short).join(' / ')}`)
+      return suggested || detected[0]
+    }
     if (suggested && suggested !== selectedLanguage) {
-      setSelectedLanguage(suggested)
+      setPrimaryLanguage(suggested)
       setStatus(`\u5df2\u8bc6\u522b\u8bed\u8a00\u8868\u76ee\u6807\u8bed\u8a00\uff1a${languageSpec(suggested).short}`)
       return suggested
     }
@@ -1568,7 +1611,9 @@ function App() {
                 onCancelAnnouncementHold={cancelAnnouncementCancelHold}
                 announcementCancelHoldTaskId={announcementCancelHoldTaskId}
                 selectedLanguage={selectedLanguage}
-                setSelectedLanguage={setSelectedLanguage}
+                setSelectedLanguage={setPrimaryLanguage}
+                selectedLanguages={selectedLanguages}
+                toggleSelectedLanguage={toggleTargetLanguage}
               />
             ) : view === 'quick' ? (
               <QuickTaskWizard
@@ -1627,7 +1672,9 @@ function App() {
                 glossaryCandidates={glossaryCandidates}
                 qualityIssues={qualityIssues}
                 selectedLanguage={selectedLanguage}
-                setSelectedLanguage={setSelectedLanguage}
+                setSelectedLanguage={setPrimaryLanguage}
+                selectedLanguages={selectedLanguages}
+                toggleSelectedLanguage={toggleTargetLanguage}
                 setSourceArtifact={selectSourceArtifact}
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={selectQaArtifact}
@@ -1733,7 +1780,9 @@ function ProjectOverview({
   onCancelAnnouncementHold,
   announcementCancelHoldTaskId,
   selectedLanguage,
-  setSelectedLanguage
+  setSelectedLanguage,
+  selectedLanguages,
+  toggleSelectedLanguage
 }: {
   project: Project
   tab: ProjectTab
@@ -1789,6 +1838,8 @@ function ProjectOverview({
   announcementCancelHoldTaskId: string
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  selectedLanguages: LanguageCode[]
+  toggleSelectedLanguage: (language: LanguageCode) => void
 }) {
   const glossaryRows = glossaryWideRows(project)
   const archiveRows = translationWideRows(project)
@@ -1912,6 +1963,8 @@ function ProjectOverview({
           status={status}
           selectedLanguage={selectedLanguage}
           setSelectedLanguage={setSelectedLanguage}
+          selectedLanguages={selectedLanguages}
+          toggleSelectedLanguage={toggleSelectedLanguage}
         />
       ) : null}
       {tab === 'archive' ? (
