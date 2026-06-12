@@ -303,6 +303,22 @@ function App() {
     if (isCurrentProject(projectId)) setBusy(value)
   }
 
+  function preferredTranslationResultArtifact(project: Project | null | undefined, run?: Run | null): Artifact | null {
+    if (!project) return null
+    const pickFromRun = (candidate?: Run | null): Artifact | null => {
+      if (!candidate || !['translation', 'qa'].includes(candidate.kind)) return null
+      return newestArtifact(runArtifacts(project, candidate.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
+    }
+    const direct = pickFromRun(run)
+    if (direct) return direct
+    for (const candidate of project.runs || []) {
+      if (!['passed', 'failed'].includes(candidate.status)) continue
+      const artifact = pickFromRun(candidate)
+      if (artifact) return artifact
+    }
+    return null
+  }
+
   function resetProjectTransientState(message = '准备就绪') {
     setBusy(false)
     setStatus(message)
@@ -377,8 +393,9 @@ function App() {
     const hydratedRun = latestProjectRun ? { ...latestProjectRun, artifacts: runArtifacts(current, latestProjectRun.id) } : null
     setSourceArtifact(artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['language_table']))
     setTermArtifact(artifactsByRole(current, 'glossary_curated')[0] || artifactsByRole(current, 'glossary_source')[0] || newestArtifact(artifacts, ['glossary_final', 'term_base']))
-    setQaArtifact(artifactsByRole(current, 'translation_workbook')[0] || newestArtifact(artifacts, ['final_workbook']))
-    setArchiveArtifact(artifactsByRole(current, 'translation_workbook')[0] || artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['final_workbook', 'language_table']))
+    const preferredQa = preferredTranslationResultArtifact(current, hydratedRun)
+    setQaArtifact(preferredQa || artifactsByRole(current, 'translation_workbook')[0] || newestArtifact(artifacts, ['final_workbook']))
+    setArchiveArtifact(preferredQa || artifactsByRole(current, 'translation_workbook')[0] || artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['final_workbook', 'language_table']))
     setAssetArtifacts(uniqueArtifactsByContent(artifacts.filter((artifact) => artifact.kind === 'asset')))
     setLatestRun(hydratedRun)
     setDeliverables([])
@@ -411,6 +428,12 @@ function App() {
   }, [qaArtifact?.id, sourceArtifact?.id, translationReadiness?.artifact_id, translationReadiness?.ready_for_qa, translationReadiness?.translated_rows, translationReadiness?.empty_target_rows, translationReadiness?.cjk_target_rows])
 
   useEffect(() => {
+    if (!current || qaArtifact) return
+    const artifact = preferredTranslationResultArtifact(current, latestRun)
+    if (artifact) setQaArtifact(artifact)
+  }, [current?.id, current?.artifacts?.length, current?.runs?.length, latestRun?.id, latestRun?.status, qaArtifact?.id])
+
+  useEffect(() => {
     if (!latestRun || !['failed', 'needs_input'].includes(latestRun.status)) {
       setQualityIssues([])
       return
@@ -429,10 +452,14 @@ function App() {
         const latestEvent = updated.events?.[updated.events.length - 1]
         if (updated.kind === 'translation' && updated.status === 'passed') {
           setStatus(`${languageSpec(normalizeLanguageCode(updated.language) || selectedLanguage).short} 翻译和 QA 已通过，最终产物已归档。`)
+          const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
+          if (resultArtifact) setQaArtifact(resultArtifact)
+          setStep((prev) => (prev < 8 ? 8 : prev))
         } else if (latestEvent?.message) {
           setStatus(`后台任务${humanTaskStatus(updated.status)}：${humanBackendEvent(latestEvent.message)}`)
         }
         if (!['queued', 'running'].includes(updated.status)) {
+          setBusyForProject(runProjectId, false)
           await refreshCurrent()
           if (tab === 'delivery') await refreshDeliverables()
         }
@@ -1141,22 +1168,24 @@ function App() {
     }
   }
 
-  async function runDirectQA(taskCode: 'QA' = 'QA') {
-    if (!current || !qaArtifact) return
+  async function runDirectQA(taskCode: 'QA' = 'QA', overrideArtifact?: Artifact | null) {
+    const inputQaArtifact = overrideArtifact || qaArtifact
+    if (!current || !inputQaArtifact) return
     const projectId = current.id
-    if (artifactRole(qaArtifact) === 'language_source') {
-      const readiness = await refreshTranslationReadiness(qaArtifact.id, projectId)
+    if (artifactRole(inputQaArtifact) === 'language_source') {
+      const readiness = await refreshTranslationReadiness(inputQaArtifact.id, projectId)
       if (!isCurrentProject(projectId)) return
       if (!canSkipModelTranslation(readiness)) {
-        setSourceArtifact(qaArtifact)
+        setSourceArtifact(inputQaArtifact)
         setStep(7)
         setStatusForProject(projectId, '这份语言表还不像完整译文表：请先进入 AI 翻译补齐空译文或明显非目标语言内容，再运行 QA。')
         return
       }
     }
-    const sourceRunId = qaArtifact.run_id && (current.runs || []).some((run) => run.id === qaArtifact.run_id && run.kind === 'translation')
-      ? qaArtifact.run_id
+    const sourceRunId = inputQaArtifact.run_id && (current.runs || []).some((run) => run.id === inputQaArtifact.run_id && run.kind === 'translation')
+      ? inputQaArtifact.run_id
       : null
+    if (overrideArtifact) setQaArtifact(overrideArtifact)
     setBusy(true)
     setStatusForProject(projectId, '正在对已有译文表格执行 QA...')
     try {
@@ -1167,7 +1196,7 @@ function App() {
           project_id: current.id,
           kind: 'qa',
           language: selectedLanguage,
-          input_artifact_id: qaArtifact.id,
+          input_artifact_id: inputQaArtifact.id,
           term_artifact_id: termArtifact?.id || null,
           task_origin: sourceRunId ? 'translation_continuation' : 'direct_import',
           source_run_id: sourceRunId,
@@ -1776,7 +1805,7 @@ function App() {
                 onUploadMaterial={uploadProjectMaterial}
                 onTranslate={() => runTranslate('T')}
                 onTranslateQueue={() => startMultilingualTranslationQueue('T')}
-                onDirectQA={() => runDirectQA('QA')}
+                onDirectQA={(artifact) => runDirectQA('QA', artifact)}
                 onDirectQAQueue={() => startMultilingualQAQueue('QA')}
                 onSkipQAArchive={skipQAArchive}
                 onManualFixes={applyManualFixes}
@@ -1872,13 +1901,14 @@ function App() {
                 onTranslate={() => runTranslate('A')}
                 onTranslateQueue={() => startMultilingualTranslationQueue('T')}
                 onCancelTranslate={cancelTranslateRun}
-                onDirectQA={() => runDirectQA('QA')}
+                onDirectQA={(artifact) => runDirectQA('QA', artifact)}
                 onDirectQAQueue={() => startMultilingualQAQueue('QA')}
                 onSkipQAArchive={skipQAArchive}
                 allowSkipQAArchive
                 onManualFixes={applyManualFixes}
                 onModelFixes={applyModelFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
+                onCreateDelivery={createDeliveryPackage}
                 onCreateMergedDelivery={createMergedDeliveryPackage}
                 onFreq={() => setFreqOpen(true)}
                 onSaveHarness={saveHarness}
@@ -2011,7 +2041,7 @@ function ProjectOverview({
   onUploadMaterial: (file: File) => Promise<Artifact | null>
   onTranslate: () => void
   onTranslateQueue?: () => void
-  onDirectQA: () => void
+  onDirectQA: (artifact?: Artifact | null) => void
   onDirectQAQueue?: () => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
