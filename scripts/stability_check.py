@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import requests
+import httpx
 from openpyxl import Workbook
 
 
@@ -18,7 +18,7 @@ class StabilityCheck:
     def __init__(self, base_url: str, keep_project: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
         self.keep_project = keep_project
-        self.session = requests.Session()
+        self.session = httpx.Client(follow_redirects=True)
         self.results: list[dict[str, Any]] = []
         self.project_id = ""
         self.project_name = f"STABILITY-{time.strftime('%Y%m%d%H%M%S')}"

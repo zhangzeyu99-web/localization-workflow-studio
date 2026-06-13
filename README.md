@@ -54,7 +54,7 @@ D:\project\localization-workflow-project
 
 这两个仓库只作为底层技术源仓库/上游开发仓库使用。工作台运行时以主仓库内置副本为准。
 
-当前安装形态仍是源码级安装：需要启动 Python 后端和 Node/Vite 前端两个进程；还不是一键安装包或 Windows exe。
+当前安装形态仍是源码级安装或发布包部署：开发环境需要启动 Python 后端和 Node/Vite 前端两个进程；线上环境使用构建后的 `frontend/dist` 加后端单实例服务。
 
 ## 项目主流程
 
@@ -332,6 +332,37 @@ QA摘要.xlsx
 
 过程产物、workpack、manifest、prompt、AI response 不进入最终 ZIP，只在工作台产物区下载。
 
+## Linux / 线上部署快速验收
+
+源码部署时需要自行构建前端：
+
+```bash
+cd /data/web/lwstudio
+python3.11 -m pip install -r backend/requirements.txt
+python3.11 -m pip install -r workflow/glossary/requirements.txt
+python3.11 -m pip install -r workflow/localization/requirements.txt
+cd frontend && npm install && npm run build && cd ..
+```
+
+后端推荐用发布包内置脚本启动：
+
+```bash
+APP_HOME=/data/web/lwstudio \
+LWS_DATA_ROOT=/data/web/lwstudio/lws-data \
+LWS_DEPLOYMENT_MODE=cloud \
+LWS_MAX_UPLOAD_MB=1024 \
+./start-lws.sh
+```
+
+上线后先跑部署自检，再跑业务冒烟：
+
+```bash
+python3.11 scripts/deployment_check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider
+python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
+```
+
+详细说明见 `docs/CLOUD_DEPLOYMENT.md`。
+
 ## 测试
 
 后端与集成测试：
@@ -395,7 +426,7 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 ## 版本
 
 
-当前版本：`1.0.0`
+当前版本：`1.0.1`
 
 - `VERSION`
 - `backend/app/main.py`
