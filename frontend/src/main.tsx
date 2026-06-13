@@ -604,10 +604,11 @@ function App() {
   }
 
   async function refreshCurrent(projectId = currentIdRef.current) {
-    if (!projectId) return
+    if (!projectId) return null
     const loaded = await api<Project>(`/api/projects/${projectId}`)
-    if (!isCurrentProject(projectId)) return
+    if (!isCurrentProject(projectId)) return loaded
     setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
+    return loaded
   }
 
   async function refreshProjectSnapshot(projectId: string) {
@@ -710,7 +711,9 @@ function App() {
           target_language: selectedLanguage
         })
       })
-      await refreshCurrent()
+      if (isCurrentProject(current.id)) {
+        setProjects((prev) => prev.map((p) => (p.id === result.project.id ? result.project : p)))
+      }
       const summary = result.analysis?.summary || {}
       const warning = result.analysis?.warning
       setStatus(`${currentLang.short} 项目分析完成：已读取 ${summary.parsed ?? 0}/${summary.total ?? 0} 个资料${warning ? `；${warning}` : ''}`)
@@ -744,9 +747,22 @@ function App() {
     if (!sourceArtifact || sourceArtifact.id !== artifact.id) {
       setSourceArtifact(artifact)
     }
-    const extractionLanguage = artifact.id === translationReadiness?.artifact_id
-      ? normalizeLanguageCode(translationReadiness.target_language) || selectedLanguage
-      : selectedLanguage
+    const detectedLanguage = await syncLanguageFromArtifact(artifact)
+    const readiness = await refreshTranslationReadiness(artifact.id, current.id, detectedLanguage)
+    if (!isCurrentProject(current.id)) return
+    const inputMode = translationInputMode(readiness)
+    if (inputMode === 'invalid') {
+      setStatus(`语言表格式需要修正：${translationReadinessUserMessage(readiness)}`)
+      setStep(4)
+      return
+    }
+    if (inputMode === 'ready_for_qa') {
+      setQaArtifact(artifact)
+      setStep(8)
+      setStatus(`这份表已有完整译文：${readiness?.translated_rows || 0}/${readiness?.source_rows || 0} 行。无需扫描术语候选，请直接运行 QA。`)
+      return
+    }
+    const extractionLanguage = normalizeLanguageCode(readiness?.target_language) || detectedLanguage || selectedLanguage
     const extractionLang = languageSpec(extractionLanguage)
     setBusy(true)
     setStatus('正在从待翻译语言表扫描术语候选...')

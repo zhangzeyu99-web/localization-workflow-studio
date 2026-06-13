@@ -1506,7 +1506,7 @@ export function downloadableArtifact(artifacts: Artifact[], kind: HistoryKind): 
   const accepted = kind === 'translation'
     ? ['qa_final_workbook']
     : ['qa_changes', 'qa_final_workbook']
-  return artifacts.find((artifact) => accepted.includes(artifact.role || '') || accepted.includes(artifact.kind)) || null
+  return artifacts.find((artifact) => artifact.exists !== false && (accepted.includes(artifact.role || '') || accepted.includes(artifact.kind))) || null
 }
 
 export function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: HistoryKind }) {

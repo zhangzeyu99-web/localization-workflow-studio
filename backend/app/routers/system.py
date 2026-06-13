@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 import json
+import subprocess
 from pathlib import Path
 
 from .. import db
@@ -31,6 +32,7 @@ router = APIRouter()
 INSTANCE_ID = os.environ.get("LWS_INSTANCE_ID") or uuid.uuid4().hex[:12]
 DIAGNOSTICS_ROOT = DATA_ROOT / "diagnostics"
 LATEST_UPLOAD_READABILITY = DIAGNOSTICS_ROOT / "latest_upload_readability.json"
+APP_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _deployment_mode() -> str:
@@ -70,6 +72,49 @@ def _latest_upload_readability() -> dict[str, Any] | None:
 def _write_latest_upload_readability(payload: dict[str, Any]) -> None:
     DIAGNOSTICS_ROOT.mkdir(parents=True, exist_ok=True)
     LATEST_UPLOAD_READABILITY.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _version_text() -> str:
+    try:
+        return (APP_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "unknown"
+
+
+def _git_sha() -> str:
+    env_sha = os.environ.get("LWS_GIT_SHA") or os.environ.get("GIT_COMMIT")
+    if env_sha:
+        return env_sha[:12]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=APP_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _frontend_assets() -> list[str]:
+    assets_dir = APP_ROOT / "frontend" / "dist" / "assets"
+    if not assets_dir.exists():
+        return []
+    return sorted(path.name for path in assets_dir.glob("*") if path.is_file())[:20]
+
+
+@router.get("/api/version")
+def version() -> dict[str, Any]:
+    return {
+        "version": _version_text(),
+        "git_sha": _git_sha(),
+        "deployment_mode": _deployment_mode(),
+        "data_root": str(DATA_ROOT),
+        "frontend_assets": _frontend_assets(),
+    }
 
 @router.get("/api/health")
 def health() -> dict[str, Any]:

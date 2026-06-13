@@ -300,11 +300,10 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     project = db.get_project(run["project_id"])
     metadata = run.get("metadata", {})
-    input_artifact_id = metadata.get("input_artifact_id")
-    if not input_artifact_id:
-        raise KeyError("input_artifact_id")
-    workbook_artifact = db.get_artifact(input_artifact_id)
+    workbook_artifact = _workbook_artifact_for_quality_run(run)
     workbook_path = Path(workbook_artifact["path"])
+    if not workbook_path.exists():
+        raise ValueError("译文表文件不存在，请重新上传或重新生成翻译结果后再运行 QA。")
     db.update_run(run_id, status="running")
 
     output_dir = run_dir(run_id) / "qa"
@@ -688,11 +687,38 @@ def _normalize_quality_issues(source_key: str, payload: dict[str, Any]) -> list[
 
 def _workbook_artifact_for_quality_run(run: dict[str, Any]) -> dict[str, Any]:
     metadata = run.get("metadata", {})
-    input_artifact_id = metadata.get("input_artifacts", {}).get("translation_workbook") or metadata.get("input_artifact_id")
-    if input_artifact_id:
-        artifact = db.get_artifact(input_artifact_id)
+    input_artifacts = metadata.get("input_artifacts") if isinstance(metadata.get("input_artifacts"), dict) else {}
+    candidate_ids: list[Any] = []
+    if run.get("kind") == "translation":
+        candidate_ids.extend(
+            [
+                input_artifacts.get("qa_final_workbook"),
+                input_artifacts.get("raw_translated_workbook"),
+                input_artifacts.get("translation_workbook"),
+            ]
+        )
+    else:
+        candidate_ids.extend(
+            [
+                input_artifacts.get("qa_final_workbook"),
+                input_artifacts.get("translation_workbook"),
+                metadata.get("input_artifact_id"),
+            ]
+        )
+
+    for input_artifact_id in candidate_ids:
+        if not input_artifact_id:
+            continue
+        artifact = db.get_artifact(str(input_artifact_id))
+        if artifact["project_id"] != run["project_id"]:
+            continue
         if artifact["role"] in {"translation_workbook", "translation_draft", "language_source", "quick_input"}:
             return artifact
+    if run.get("kind") == "translation":
+        artifacts = db.list_artifacts(run_id=run["id"], role="translation_workbook") or db.list_artifacts(run_id=run["id"], role="translation_draft")
+        if artifacts:
+            return artifacts[0]
+        raise ValueError("请先完成 AI 翻译，再运行 QA。")
     artifacts = db.list_artifacts(run_id=run["id"], role="translation_workbook") or db.list_artifacts(run_id=run["id"], role="language_source")
     if artifacts:
         return artifacts[0]

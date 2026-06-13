@@ -370,6 +370,10 @@ def artifact_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     payload["metadata"] = json.loads(payload.pop("metadata_json", "{}") or "{}")
     payload["role"] = payload.get("role") or infer_artifact_role(str(payload.get("kind", "")))
     payload["origin"] = payload.get("origin") or infer_artifact_origin(str(payload.get("kind", "")))
+    try:
+        payload["exists"] = Path(str(payload.get("path") or "")).exists()
+    except OSError:
+        payload["exists"] = False
     return payload
 
 

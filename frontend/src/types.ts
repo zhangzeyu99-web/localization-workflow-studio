@@ -61,6 +61,7 @@ export type Artifact = {
   created_at: string
   run_id?: string | null
   duplicate?: boolean
+  exists?: boolean
 }
 
 export type Run = {

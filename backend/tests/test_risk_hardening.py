@@ -128,6 +128,107 @@ def test_import_templates_download_readable_workbooks() -> None:
                 wb.close()
 
 
+def _write_qa_source_workbook(path: Path, translated: bool) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append([1, "开始游戏", "Start Game" if translated else ""])
+    ws.append([2, "领取奖励", "Claim Rewards" if translated else ""])
+    wb.save(path)
+    wb.close()
+
+
+def test_translation_qa_uses_translated_artifact_instead_of_original_input(tmp_path: Path) -> None:
+    project = db.insert_project("QA source selection", "QA", "", "🎮")
+    run = db.insert_run(project["id"], "translation", "en", metadata={})
+    original_path = tmp_path / "original.xlsx"
+    translated_path = tmp_path / "translated.xlsx"
+    _write_qa_source_workbook(original_path, translated=False)
+    _write_qa_source_workbook(translated_path, translated=True)
+    original = db.add_artifact(project["id"], "original", original_path, "language_table", run_id=run["id"])
+    translated = db.add_artifact(project["id"], "translated", translated_path, "raw_translated_workbook", run_id=run["id"])
+    run = db.update_run(
+        run["id"],
+        metadata={
+            "input_artifact_id": original["id"],
+            "input_artifacts": {
+                "source_workbook": original["id"],
+                "raw_translated_workbook": translated["id"],
+            },
+        },
+    )
+
+    selected = workflow._workbook_artifact_for_quality_run(run)
+
+    assert selected["id"] == translated["id"]
+
+
+def test_translation_qa_without_translated_output_is_rejected(tmp_path: Path) -> None:
+    project = db.insert_project("QA source missing output", "QA", "", "🎮")
+    run = db.insert_run(project["id"], "translation", "en", metadata={})
+    original_path = tmp_path / "original.xlsx"
+    _write_qa_source_workbook(original_path, translated=False)
+    original = db.add_artifact(project["id"], "original", original_path, "language_table", run_id=run["id"])
+    run = db.update_run(
+        run["id"],
+        metadata={
+            "input_artifact_id": original["id"],
+            "input_artifacts": {"source_workbook": original["id"]},
+        },
+    )
+
+    with pytest.raises(ValueError, match="先完成 AI 翻译"):
+        workflow._workbook_artifact_for_quality_run(run)
+
+
+def test_delivery_skips_empty_workbook_but_keeps_failed_review_artifact(tmp_path: Path) -> None:
+    project = db.insert_project("Delivery guard", "QA", "", "🎮")
+    failed_run = db.insert_run(project["id"], "qa", "en", metadata={"quality_summary": {"passed": False}})
+    failed_path = tmp_path / "failed.xlsx"
+    _write_qa_source_workbook(failed_path, translated=True)
+    db.add_artifact(project["id"], "failed final", failed_path, "qa_final_workbook", run_id=failed_run["id"])
+    db.update_run(failed_run["id"], status="failed", metadata={"quality_summary": {"passed": False}})
+
+    empty_run = db.insert_run(project["id"], "qa", "en", metadata={"quality_summary": {"passed": True}})
+    empty_path = tmp_path / "empty.xlsx"
+    _write_qa_source_workbook(empty_path, translated=False)
+    db.add_artifact(project["id"], "empty final", empty_path, "qa_final_workbook", run_id=empty_run["id"])
+    db.update_run(empty_run["id"], status="passed", metadata={"quality_summary": {"passed": True}})
+
+    passed_run = db.insert_run(project["id"], "qa", "en", metadata={"quality_summary": {"passed": True}})
+    passed_path = tmp_path / "passed.xlsx"
+    _write_qa_source_workbook(passed_path, translated=True)
+    db.add_artifact(project["id"], "passed final", passed_path, "qa_final_workbook", run_id=passed_run["id"])
+    db.update_run(passed_run["id"], status="passed", metadata={"quality_summary": {"passed": True}})
+
+    deliverables = workflow.list_project_deliverables(project["id"])
+
+    assert [item["run_id"] for item in deliverables] == [passed_run["id"], failed_run["id"]]
+
+
+def test_artifact_payload_exposes_file_existence(tmp_path: Path) -> None:
+    project = db.insert_project("Artifact exists", "QA", "", "🎮")
+    existing_path = tmp_path / "existing.xlsx"
+    _write_qa_source_workbook(existing_path, translated=True)
+    existing = db.add_artifact(project["id"], "existing", existing_path, "final_workbook")
+    missing = db.add_artifact(project["id"], "missing", tmp_path / "missing.xlsx", "final_workbook")
+
+    assert db.get_artifact(existing["id"])["exists"] is True
+    assert db.get_artifact(missing["id"])["exists"] is False
+
+
+def test_version_endpoint_returns_runtime_version() -> None:
+    with TestClient(app) as client:
+        response = client.get("/api/version")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["version"]
+    assert "data_root" in payload
+    assert isinstance(payload.get("frontend_assets"), list)
+
+
 def test_context_cap_keeps_project_prompt_under_batch_budget() -> None:
     rows = [{"id": 1, "source": "开始游戏"}]
     long_prompt = "项目规则开始\n" + ("超长项目背景 " * 2000) + "\n输出协议：只返回 JSONL"

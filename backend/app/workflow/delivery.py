@@ -10,7 +10,7 @@ from openpyxl import Workbook, load_workbook
 
 from .. import db
 from ..delivery_naming import safe_delivery_name
-from ..languages import require_supported_language, target_aliases
+from ..languages import PROJECT_LANGUAGE_ORDER, require_supported_language, target_aliases
 from .announcement_outputs import _announcement_task_source_stem, _artifact_display_label, _visible_language_code
 from .announcement_segments import _normalize_announcement_languages
 from .common import project_dir
@@ -26,7 +26,10 @@ def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
         final_artifact = _deliverable_final_artifact(run)
         if not final_artifact or not Path(final_artifact["path"]).exists():
             continue
-        deliverables.append(_deliverable_summary(project, run, final_artifact))
+        summary = _deliverable_summary(project, run, final_artifact)
+        if final_artifact["kind"] != "final_text" and int(summary.get("translated_rows") or 0) <= 0:
+            continue
+        deliverables.append(summary)
     deliverables.extend(_merged_deliverable_summaries(project))
     deliverables.extend(_announcement_deliverable_summaries(project))
     return deliverables
@@ -178,6 +181,8 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     final_source = _deliverable_final_artifact(run)
     if not final_source or not Path(final_source["path"]).exists():
         raise ValueError("暂无最终交付文件")
+    if final_source["kind"] != "final_text" and _workbook_processed_rows(Path(final_source["path"]), run.get("language") or "en")["translated_rows"] <= 0:
+        raise ValueError("最终译文为空，不能生成交付。请先完成翻译或 QA。")
     changes_source = _run_artifact(run["id"], "qa_changes")
 
     output_dir = project_dir(project_id) / "delivery"
@@ -305,7 +310,7 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
     processed = (
         {"processed_rows": int(metadata.get("translated_rows") or metadata.get("source_rows") or 0), "source_rows": int(metadata.get("source_rows") or 0), "translated_rows": int(metadata.get("translated_rows") or 0)}
         if final_artifact["kind"] == "final_text"
-        else _workbook_processed_rows(Path(final_artifact["path"]))
+        else _workbook_processed_rows(Path(final_artifact["path"]), run.get("language") or "en")
     )
     files = {"final": _delivery_file("final", final_path) if final_path.exists() else _expected_delivery_file("final", final_path)}
     if final_artifact["kind"] != "final_text":
@@ -473,7 +478,7 @@ def _input_artifact_label(run: dict[str, Any], project_id: str, seen: set[str] |
     return "-"
 
 
-def _workbook_processed_rows(path: Path) -> dict[str, int]:
+def _workbook_processed_rows(path: Path, language: Any | None = None) -> dict[str, int]:
     stats = {"source_rows": 0, "translated_rows": 0, "processed_rows": 0}
     try:
         wb = load_workbook(path, read_only=True, data_only=True)
@@ -486,7 +491,7 @@ def _workbook_processed_rows(path: Path) -> dict[str, int]:
                     if value is not None and str(value).strip()
                 }
                 source_col = _first_col(headers, ["cn", "source", "original", "原文", "中文"])
-                target_col = _first_col(headers, ["en", "target", "translation", "译文", "英文"])
+                target_col = _first_col(headers, _target_headers_for_processed_rows(language))
                 if source_col is None or target_col is None:
                     continue
                 for row in ws.iter_rows(min_row=2, values_only=True):
@@ -503,6 +508,17 @@ def _workbook_processed_rows(path: Path) -> dict[str, int]:
     except Exception:
         return stats
     return stats
+
+
+def _target_headers_for_processed_rows(language: Any | None = None) -> list[str]:
+    if language:
+        code = require_supported_language(language)
+        return [*target_aliases(code), _visible_language_code(code), "target", "translation", "译文"]
+    headers: list[str] = ["target", "translation", "译文"]
+    for code in PROJECT_LANGUAGE_ORDER:
+        headers.extend(target_aliases(code))
+        headers.append(_visible_language_code(code))
+    return headers
 
 
 def _soft_warning_count(summary: dict[str, Any]) -> int:

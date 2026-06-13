@@ -3,8 +3,13 @@ import type { Artifact, Project } from '../types'
 
 export function newestArtifact(artifacts: Artifact[] | undefined, kinds: string[]): Artifact | null {
   return [...(artifacts || [])]
+    .filter(artifactExists)
     .filter((artifact) => kinds.includes(artifact.kind))
     .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] || null
+}
+
+export function artifactExists(artifact: Artifact): boolean {
+  return artifact.exists !== false
 }
 
 export function artifactContentKey(artifact: Artifact): string {
@@ -134,6 +139,7 @@ export function pickerArtifacts(artifacts: Artifact[]): Artifact[] {
   const seen = new Set<string>()
   return [...artifacts]
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .filter(artifactExists)
     .filter((artifact) => !isPickerProcessArtifact(artifact))
     .filter((artifact) => {
       const key = artifactPickerKey(artifact)
@@ -190,10 +196,10 @@ export function artifactRole(artifact: Artifact): string {
 }
 
 export function artifactsByRole(project: Project, role: string): Artifact[] {
-  return (project.artifacts || []).filter((artifact) => artifactRole(artifact) === role)
+  return (project.artifacts || []).filter(artifactExists).filter((artifact) => artifactRole(artifact) === role)
 }
 
 export function artifactsByRoles(project: Project, roles: string | string[]): Artifact[] {
   const accepted = Array.isArray(roles) ? roles : [roles]
-  return (project.artifacts || []).filter((artifact) => accepted.includes(artifactRole(artifact)))
+  return (project.artifacts || []).filter(artifactExists).filter((artifact) => accepted.includes(artifactRole(artifact)))
 }
