@@ -233,8 +233,11 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     deliverable_count = len([
         run for run in runs
         if run["kind"] in {"translation", "qa"}
-        and run["status"] == "passed"
-        and any(artifact["run_id"] == run["id"] and artifact["kind"] == "qa_final_workbook" for artifact in artifacts)
+        and any(
+            artifact["run_id"] == run["id"]
+            and artifact["kind"] == "qa_final_workbook"
+            for artifact in artifacts
+        )
     ])
     announcement_deliverable_count = len([
         task for task in active_announcement_tasks
