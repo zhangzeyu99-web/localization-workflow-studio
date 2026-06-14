@@ -3214,6 +3214,50 @@ def test_failed_qa_runs_remain_deliverable_with_qa_summary(tmp_path: Path) -> No
         assert {"final", "changes"}.issubset(files)
 
 
+def test_semantic_qa_duplicate_hard_blocks_do_not_double_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workbook = tmp_path / "project-failed.xlsx"
+    _project_harness_failed_workbook(workbook)
+
+    def fake_semantic_qa_report(*args: object, **kwargs: object) -> dict[str, object]:
+        return {
+            "source": "semantic_qa",
+            "status": "model_reviewed",
+            "passed": False,
+            "hard_errors": 1,
+            "soft_warnings": 0,
+            "issues": [
+                {
+                    "severity": "hard",
+                    "sheet": "Language",
+                    "row": 2,
+                    "message": "Translation contains forbidden phrase: Forbidden Brand",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(workflow, "run_semantic_qa_report", fake_semantic_qa_report)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Semantic duplicate QA", "type": "QA"}).json()
+        client.patch(f"/api/projects/{project['id']}/harness", json={"forbidden_translations": ["Forbidden Brand"]})
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("project-failed.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"], "task_code": "QA"},
+        ).json()
+
+        qa_response = client.post(f"/api/runs/{run['id']}/qa")
+        assert qa_response.status_code == 200, qa_response.text
+        assert qa_response.json()["quality_summary"]["hard_errors"] == 1
+        issues = client.get(f"/api/runs/{run['id']}/quality-issues").json()["issues"]
+        assert len(issues) == 1
+        assert issues[0]["rule_source"] == "project_harness"
+
+
 def test_failed_qa_exposes_normalized_project_harness_rows(tmp_path: Path) -> None:
     workbook = tmp_path / "project-failed.xlsx"
     _project_harness_failed_workbook(workbook)

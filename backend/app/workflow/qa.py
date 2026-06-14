@@ -186,6 +186,7 @@ def list_quality_issues(run_id: str) -> dict[str, Any]:
         ("semantic_qa", metadata.get("semantic_qa") or summary.get("semantic_qa") or {}),
     ):
         issues.extend(_normalize_quality_issues(source_key, payload))
+    issues = _dedupe_quality_issues(issues)
     hard_errors = len([issue for issue in issues if issue["severity"] == "hard"])
     return {
         "run_id": run_id,
@@ -194,6 +195,55 @@ def list_quality_issues(run_id: str) -> dict[str, Any]:
         "hard_errors": hard_errors,
         "issues": issues,
     }
+
+
+def _dedupe_semantic_qa_against_deterministic(semantic_qa: dict[str, Any], *deterministic_payloads: dict[str, Any]) -> dict[str, Any]:
+    semantic_issues = semantic_qa.get("issues") if isinstance(semantic_qa.get("issues"), list) else []
+    if not semantic_issues:
+        return semantic_qa
+
+    deterministic_signatures: set[tuple[str, int, str, str]] = set()
+    for index, payload in enumerate(deterministic_payloads):
+        source_key = "global_harness" if index == 0 else "project_harness"
+        for issue in _normalize_quality_issues(source_key, payload):
+            deterministic_signatures.add(_quality_issue_signature(issue))
+
+    filtered = [issue for issue in semantic_issues if _quality_issue_signature(issue) not in deterministic_signatures]
+    if len(filtered) == len(semantic_issues):
+        return semantic_qa
+
+    hard_errors = len([issue for issue in filtered if str(issue.get("severity", "hard")).lower() == "hard"])
+    soft_warnings = len([issue for issue in filtered if str(issue.get("severity", "")).lower() == "soft"])
+    return {
+        **semantic_qa,
+        "issues": filtered,
+        "hard_errors": hard_errors,
+        "soft_warnings": soft_warnings,
+        "passed": hard_errors == 0,
+    }
+
+
+def _dedupe_quality_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, int, str, str]] = set()
+    result: list[dict[str, Any]] = []
+    for issue in issues:
+        signature = _quality_issue_signature(issue)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        result.append(issue)
+    return result
+
+
+def _quality_issue_signature(issue: dict[str, Any]) -> tuple[str, int, str, str]:
+    sheet = str(issue.get("sheet") or "").strip()
+    try:
+        row = int(issue.get("row") or 0)
+    except (TypeError, ValueError):
+        row = 0
+    severity = str(issue.get("severity") or "hard").strip().lower()
+    message = re.sub(r"\s+", " ", str(issue.get("message") or "").strip().lower())
+    return sheet, row, severity, message
 
 
 def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
@@ -413,6 +463,7 @@ def run_localization_qa(
     quality = _run_quality_json(quality_args, run_id)
     project_harness_quality = run_project_harness_qa(qa_workbook, harness_snapshot["project_harness"], language=language)
     semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality, language=language)
+    semantic_qa = _dedupe_semantic_qa_against_deterministic(semantic_qa, quality, project_harness_quality)
     hard_errors = _hard_error_count(quality) + int(project_harness_quality.get("hard_errors", 0)) + int(semantic_qa.get("hard_errors", 0))
     passed = hard_errors == 0
     summary = {
