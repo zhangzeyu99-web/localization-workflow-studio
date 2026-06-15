@@ -390,6 +390,27 @@ function App() {
   }, [currentId])
 
   useEffect(() => {
+    if (!currentId) return
+    const poller = window.setInterval(async () => {
+      if (document.hidden) return
+      const loaded = await refreshProjectSnapshot(currentIdRef.current)
+      const activeRun = latestProjectActivityRun(loaded || undefined)
+      if (!activeRun || !isCurrentProject(activeRun.project_id)) return
+      const progress = getTranslationProgress(activeRun)
+      if (['queued', 'running'].includes(activeRun.status)) {
+        setLatestRun({ ...activeRun, artifacts: runArtifacts(loaded!, activeRun.id) })
+        setBusy(true)
+        setStatus(`后台任务处理中：${projectRunStatusText(activeRun)}`)
+      } else if (progress && progress.completed_rows >= progress.total_rows && activeRun.status === 'failed') {
+        setLatestRun({ ...activeRun, artifacts: runArtifacts(loaded!, activeRun.id) })
+        setBusy(false)
+        setStatus(`后台任务已结束但未通过 QA：${projectRunStatusText(activeRun)}`)
+      }
+    }, 6000)
+    return () => window.clearInterval(poller)
+  }, [currentId])
+
+  useEffect(() => {
     if (deleteProjectTarget && !projects.some((project) => project.id === deleteProjectTarget.id)) {
       longPressTriggeredProjectId.current = ''
       setDeleteProjectTarget(null)
@@ -491,6 +512,16 @@ function App() {
           const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
           if (resultArtifact) setQaArtifact(resultArtifact)
           setStep((prev) => (prev < 8 ? 8 : prev))
+        } else if (updated.kind === 'translation' && updated.status === 'failed') {
+          const progress = getTranslationProgress(updated)
+          if (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows) {
+            setStatus(`翻译已完成，但 QA 未通过：${projectRunStatusText(updated)}。请进入 STEP 8 查看问题、修复或生成带问题交付。`)
+            const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
+            if (resultArtifact) setQaArtifact(resultArtifact)
+            setStep((prev) => (prev < 8 ? 8 : prev))
+          } else {
+            setStatus(`翻译中断：${projectRunStatusText(updated)}。可在 STEP 7 点击继续 AI 翻译。`)
+          }
         } else if (latestEvent?.message) {
           setStatus(`后台任务${humanTaskStatus(updated.status)}：${humanBackendEvent(latestEvent.message)}`)
         }
@@ -1810,6 +1841,7 @@ function App() {
                 >
                   <span className="pname">{project.icon ? `${project.icon} ` : ''}{project.name}</span>
                   <span className="pmeta">语言包 {project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))} · 公告 {visibleAnnouncementTaskCount(project)} · 归档 {project.stats.archived_rows || 0}</span>
+                  {projectActiveTaskCount(project) ? <span className="ptag ptag-live">后台 {projectActiveTaskCount(project)}</span> : null}
                   {project.type ? <span className="ptag">{project.type}</span> : null}
                 </button>
               ))}
@@ -2006,6 +2038,51 @@ function visibleAnnouncementTaskCount(project: Project): number {
   return project.announcement_tasks ? activeAnnouncementTasks(project.announcement_tasks).length : (project.stats.announcement_tasks || 0)
 }
 
+function projectActivityRuns(project: Project | null | undefined): Run[] {
+  if (!project) return []
+  return (project.runs || [])
+    .filter((run) => ['queued', 'running', 'needs_input', 'failed'].includes(run.status))
+    .slice(0, 4)
+}
+
+function latestProjectActivityRun(project: Project | null | undefined): Run | null {
+  return projectActivityRuns(project)[0] || null
+}
+
+function projectActiveTaskCount(project: Project | null | undefined): number {
+  if (!project) return 0
+  const activeRuns = (project.runs || []).filter((run) => ['queued', 'running'].includes(run.status)).length
+  const activeAnnouncements = activeAnnouncementTasks(project.announcement_tasks || [])
+    .filter((task) => ['queued', 'running'].includes(task.status)).length
+  return activeRuns + activeAnnouncements
+}
+
+function projectRunTitle(run: Run): string {
+  const lang = languageSpec(normalizeLanguageCode(run.language) || 'en').short
+  if (run.kind === 'qa') return `${lang} QA 校对`
+  if (run.kind === 'translation') return `${lang} AI 翻译`
+  return `${lang} ${run.kind}`
+}
+
+function projectRunStatusText(run: Run): string {
+  const progress = getTranslationProgress(run)
+  const quality = (run.metadata?.quality_summary || run.metadata?.quality || {}) as { hard_errors?: number; issues?: number; passed?: boolean }
+  if (progress?.total_rows) {
+    const percent = typeof progress.percent === 'number' ? `${Math.round(progress.percent)}%` : `${progress.completed_rows || 0}/${progress.total_rows} 行`
+    if (['queued', 'running'].includes(run.status)) return `进行中 · ${percent}`
+    if (run.status === 'failed' && progress.completed_rows >= progress.total_rows) {
+      const hard = Number(quality.hard_errors || quality.issues || 0)
+      return hard ? `翻译已完成，QA 未通过 · ${hard} 个问题` : '翻译已完成，等待处理 QA 结果'
+    }
+    if (run.status === 'failed') return `中断 · ${progress.completed_rows || 0}/${progress.total_rows} 行`
+  }
+  if (run.status === 'queued') return '排队中'
+  if (run.status === 'running') return '进行中'
+  if (run.status === 'needs_input') return '等待补充输入'
+  if (run.status === 'failed') return '失败待处理'
+  return humanTaskStatus(run.status)
+}
+
 function ProjectOverview({
   project,
   tab,
@@ -2137,6 +2214,7 @@ function ProjectOverview({
     && (project.artifacts || []).some((artifact) => artifact.run_id === run.id && artifact.kind === 'qa_final_workbook')
   ).length
   const deliverableCount = project.stats.deliverables ?? fallbackDeliverableCount
+  const activityRuns = projectActivityRuns(project)
   return (
     <>
       <div className="proj-head">
@@ -2162,6 +2240,29 @@ function ProjectOverview({
           <div className="num">{archiveRows.length}</div><div className="lbl">已归档文本</div><div className="stat-hint">查看归档</div>
         </button>
       </div>
+      {activityRuns.length ? (
+        <div className="project-activity-panel">
+          <div className="section-head">
+            <div>
+              <strong>后台任务</strong>
+              <span>刷新或换浏览器后也会从服务器同步；正在跑、失败待处理的任务会显示在这里。</span>
+            </div>
+          </div>
+          <div className="activity-list">
+            {activityRuns.map((run) => (
+              <div key={run.id} className={`activity-item ${run.status}`}>
+                <div>
+                  <strong>{projectRunTitle(run)}</strong>
+                  <span>{projectRunStatusText(run)}</span>
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={() => {
+                  setTab(run.kind === 'qa' ? 'qa' : 'translation')
+                }}>{run.status === 'failed' ? '去处理' : '查看'}</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <AnnouncementProjectPanel
         tasks={project.announcement_tasks || []}
         holdTaskId={announcementCancelHoldTaskId}

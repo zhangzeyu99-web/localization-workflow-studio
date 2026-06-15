@@ -180,6 +180,8 @@ def inspect_project_announcement_constraints(task_id: str, payload: Announcement
         raise HTTPException(status_code=404, detail="announcement task or artifact not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
 @router.post("/api/announcement-tasks/{task_id}/extract-terms")

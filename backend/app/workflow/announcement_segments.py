@@ -185,7 +185,10 @@ def _detect_language_columns(path: Path) -> list[str]:
     found: set[str] = set()
     try:
         for ws in wb.worksheets:
-            headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            try:
+                headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            except StopIteration:
+                continue
             normalized = _header_index(headers, prefer_last=True)
             reserved_indices = set(_reserved_language_table_indices(headers))
             for code in ANNOUNCEMENT_LANGUAGE_ORDER:

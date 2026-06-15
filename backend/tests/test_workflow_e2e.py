@@ -139,6 +139,18 @@ def _announcement_language_table(path: Path) -> None:
     wb.close()
 
 
+def _announcement_language_table_with_empty_first_sheet(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Empty"
+    lang = wb.create_sheet("Language")
+    lang.append(["ID", "CN", "EN"])
+    lang.append(["1001", "秘境", "Trial Realm"])
+    lang.append(["1002", "纹章", "Emblem"])
+    wb.save(path)
+    wb.close()
+
+
 def _announcement_docx(path: Path, text: str = "英雄觉醒 2026/5/20") -> None:
     doc = Document()
     doc.add_paragraph(text)
@@ -584,6 +596,38 @@ def test_announcement_inspect_constraints_does_not_regress_completed_steps(tmp_p
         assert inspected_task["status"] == "terms_ready"
         assert inspected_task["current_step"] == 5
         assert inspected_task["selected_languages"] == ["en"]
+
+
+def test_announcement_constraints_skip_empty_first_sheet(tmp_path: Path) -> None:
+    table_path = tmp_path / "language_with_empty_first_sheet.xlsx"
+    notice_path = tmp_path / "announcement.txt"
+    _announcement_language_table_with_empty_first_sheet(table_path)
+    notice_path.write_text("秘境和纹章上线。", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement empty sheet", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language_with_empty_first_sheet.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("announcement.txt", fh, "text/plain")},
+            ).json()
+        created = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": notice_artifact["id"], "language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"], "include_project_archive": False},
+        )
+        assert created.status_code == 200, created.text
+        inspected = client.post(
+            f"/api/announcement-tasks/{created.json()['id']}/inspect-constraints",
+            json={"language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"], "include_project_archive": False},
+        )
+        assert inspected.status_code == 200, inspected.text
+        assert inspected.json()["constraints"]["en"]["language_table"] == 2
+
 
 def test_announcement_extract_rejects_legacy_txt_constraint_with_human_message(tmp_path: Path) -> None:
     bad_constraint = tmp_path / "notice.txt"

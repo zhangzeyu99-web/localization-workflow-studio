@@ -130,6 +130,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   color: #c4b5fd;
   margin-top: 5px;
 }
+.ptag-live {
+  margin-right: 5px;
+  background: rgba(16,185,129,.18);
+  color: #6ee7b7;
+}
 .new-project-btn {
   width: 100%;
   margin-top: 10px;
@@ -232,6 +237,48 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   color: #c4b5fd;
   font-size: 12px;
   margin-top: 10px;
+}
+.project-activity-panel {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid rgba(110,231,183,.18);
+  border-radius: 12px;
+  background: rgba(16,185,129,.06);
+}
+.activity-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.activity-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  background: rgba(15,23,42,.46);
+}
+.activity-item strong {
+  display: block;
+  color: #fff;
+  font-size: 14px;
+}
+.activity-item span {
+  display: block;
+  color: #a1a1aa;
+  font-size: 12px;
+  margin-top: 3px;
+}
+.activity-item.running,
+.activity-item.queued {
+  border-color: rgba(16,185,129,.36);
+}
+.activity-item.failed,
+.activity-item.needs_input {
+  border-color: rgba(245,158,11,.36);
+  background: rgba(245,158,11,.07);
 }
 .view-tabs {
   display: flex;
