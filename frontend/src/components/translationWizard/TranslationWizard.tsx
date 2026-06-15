@@ -992,8 +992,13 @@ export function StepTranslate({
   const finishingTranslation = Boolean(activeTranslation && progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows)
   const resumable = Boolean(currentTranslationRun && isTranslationRunResumable(currentTranslationRun))
   const invalidIdText = readiness?.invalid_id_rows ? ` / 空 ID ${readiness.invalid_id_rows}` : ''
+  const readinessBatchText = progress?.total_batches
+    ? ` / 后台实际拆分 ${progress.total_batches} 批`
+    : readiness
+      ? ` / 启动前估算 ${readiness.estimated_batches} 批`
+      : ''
   const readinessText = readiness
-    ? `${readiness.source_rows} 行原文 / ${readiness.translated_rows} 行已有译文 / 空译文 ${readiness.empty_target_rows} / 中文残留 ${readiness.cjk_target_rows}${invalidIdText} / 预计 ${readiness.estimated_batches} 批`
+    ? `${readiness.source_rows} 行原文 / ${readiness.translated_rows} 行已有译文 / 空译文 ${readiness.empty_target_rows} / 中文残留 ${readiness.cjk_target_rows}${invalidIdText}${readinessBatchText}`
     : '选择语言表后自动检查'
   const readinessState = !sourceArtifact
     ? { label: '未选择语言表', tone: 'idle' }
@@ -1046,7 +1051,7 @@ export function StepTranslate({
               <strong>{alreadyTranslated ? '分流结果' : '后台编排'}</strong>
               <span>{alreadyTranslated ? '已识别为完整译文表，本步骤不调用 AI。' : '系统按预设自动拆批、限流、重试和断点续跑。'}</span>
             </div>
-            <em>{alreadyTranslated ? '下一步：QA 校对' : `${batchSize} 行/批 · 预计 ${estimatedBatches || '-'} 批`}</em>
+            <em>{alreadyTranslated ? '下一步：QA 校对' : progress?.total_batches ? `后台实际 ${progress.total_batches} 批 · 当前第 ${progress.current_batch || '-'} 批` : `${batchSize} 行/批 · 启动前估算 ${estimatedBatches || '-'} 批`}</em>
           </div>
         </div>
         <div className="translation-actions">

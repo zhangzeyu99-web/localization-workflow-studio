@@ -83,9 +83,9 @@ def _scan_workbook_translation_readiness(path: Path, language: str, summary: dic
                     headers = _header_map(ws)
                 except Exception:
                     continue
-                source_col = _first_col(headers, ["cn", "source", "original", "zh", "chinese", "??", "??"])
+                source_col = _first_col(headers, ["cn", "source", "original", "zh", "chinese", "原文", "中文"])
                 target_col = _first_col(headers, target_aliases(language))
-                id_col = _first_col(headers, ["id", "??", "??"])
+                id_col = _first_col(headers, ["id", "编号", "序号"])
                 if source_col is None:
                     continue
                 if target_col is not None:
