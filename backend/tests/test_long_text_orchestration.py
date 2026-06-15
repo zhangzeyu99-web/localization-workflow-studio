@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 import time
@@ -227,6 +228,46 @@ def test_failed_batch_keeps_request_raw_response_and_error(tmp_path: Path, monke
     assert (batch_dir / "batch_00001.request.jsonl").exists()
     assert (batch_dir / "batch_00001.raw_response.jsonl").exists()
     assert (batch_dir / "batch_00001.error.json").exists()
+
+
+def test_provider_call_timeout_marks_batch_failed_and_keeps_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = db.insert_project("E2E Timeout Batch", "QA", "", "🎃")
+    run = db.insert_run(project["id"], "translation", "en", metadata={})
+    rows = [{"id": 1, "source": "按钮 {count}"}]
+    settings = {
+        **DEFAULT_SETTINGS,
+        "provider": "test-fake",
+        "provider_timeout_seconds": 1,
+        "max_batch_attempts": 1,
+        "api_budget_warning_tokens": 20_000_000,
+    }
+
+    async def never_return_translate_batch(batch, provider_settings, project_prompt):
+        _ = batch, provider_settings, project_prompt
+        await asyncio.sleep(10)
+        return [TranslationItem(id=1, translation="Button {count}")]
+
+    monkeypatch.setattr(workflow, "translate_batch", never_return_translate_batch)
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(
+            workflow._translate_rows_with_orchestration(
+                run_id=run["id"],
+                rows=rows,
+                settings=settings,
+                project_prompt="Translate.",
+                work_dir=tmp_path,
+                batch_size=1,
+                language="en",
+                confirm_api_budget=True,
+            )
+        )
+
+    batch_dir = tmp_path / "batches_1"
+    error_path = batch_dir / "batch_00001.error.json"
+    assert error_path.exists()
+    payload = json.loads(error_path.read_text(encoding="utf-8"))
+    assert payload["batch_index"] == 1
+    assert db.get_run(run["id"])["status"] == "failed"
 
 
 def test_reconcile_interrupted_background_jobs_marks_resume_state() -> None:

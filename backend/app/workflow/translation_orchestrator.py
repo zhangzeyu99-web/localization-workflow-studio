@@ -53,6 +53,14 @@ def _write_batch_error(path: Path, batch_index: int, attempt: int, exc: Exceptio
     )
 
 
+def _provider_call_timeout_seconds(settings: dict[str, Any]) -> float:
+    try:
+        configured = float(settings.get("provider_timeout_seconds") or 120)
+    except (TypeError, ValueError):
+        configured = 120.0
+    return max(1.0, configured)
+
+
 def _translation_progress(
     *,
     total_rows: int,
@@ -308,7 +316,10 @@ async def _translate_rows_with_orchestration(
                 prompt = provider_prompt
                 if attempt > 1:
                     prompt = f"{provider_prompt}\n\nRepair request: previous output for this batch failed local validation. Return the full corrected batch only, preserving IDs, order, placeholders, tags, entities, and newlines."
-                items = await translate_batch(batch, settings, prompt)
+                items = await asyncio.wait_for(
+                    translate_batch(batch, settings, prompt),
+                    timeout=_provider_call_timeout_seconds(settings),
+                )
                 batch_output = [{"id": item.id, "translation": item.translation} for item in items]
                 write_jsonl(raw_response_path, batch_output)
                 batch_meta["raw_response_path"] = str(raw_response_path)

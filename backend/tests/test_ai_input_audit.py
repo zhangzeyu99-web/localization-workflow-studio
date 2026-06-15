@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import app.db as db
+import app.routers.system as system_router
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
 from app.workflow.prompt_snapshots import create_prompt_and_harness_snapshots
@@ -295,6 +296,14 @@ def test_health_reports_cloud_storage_and_provider_state(monkeypatch: pytest.Mon
         assert payload["storage"]["uploads_writable"] is True
         assert payload["database"]["connected"] is True
         assert "provider_configured" in payload["provider"]
+
+
+def test_deployment_mode_defaults_to_cloud_under_data_web(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LWS_DEPLOYMENT_MODE", raising=False)
+    monkeypatch.setattr(system_router, "DATA_ROOT", Path("/data/web/lwstudio/lws-data"))
+    monkeypatch.setattr(system_router, "APP_ROOT", Path("/data/web/lwstudio"))
+
+    assert system_router._deployment_mode() == "cloud"
 
 
 def test_saved_project_prompt_overrides_stale_prompt_file(tmp_path: Path) -> None:

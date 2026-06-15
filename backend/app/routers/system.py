@@ -36,7 +36,10 @@ APP_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _deployment_mode() -> str:
-    mode = (os.environ.get("LWS_DEPLOYMENT_MODE") or "local").strip().lower()
+    raw_mode = os.environ.get("LWS_DEPLOYMENT_MODE")
+    if raw_mode is None and (str(DATA_ROOT).replace("\\", "/").startswith("/data/web/") or str(APP_ROOT).replace("\\", "/").startswith("/data/web/")):
+        raw_mode = "cloud"
+    mode = (raw_mode or "local").strip().lower()
     return mode if mode in {"local", "cloud"} else "local"
 
 

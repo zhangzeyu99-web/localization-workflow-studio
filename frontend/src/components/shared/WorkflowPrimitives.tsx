@@ -188,7 +188,7 @@ export function TranslationProgressBar({ progress, languageLabel = '' }: { progr
       <div className="progress-track"><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
       <div className="progress-foot">
         <span>{percent.toFixed(1)}%</span>
-        <span>{progress.failed_batch ? `失败批次：${progress.failed_batch}` : `当前批次：${progress.current_batch || '-'}`}</span>
+        <span>{progress.failed_batch ? `失败批次：${progress.failed_batch}` : completed ? '批次已完成' : `当前批次：${progress.current_batch || '-'}`}</span>
         {progress.rate_limit_wait_seconds ? <span>限流等待 {formatDuration(progress.rate_limit_wait_seconds)}</span> : null}
       </div>
       <div className={`progress-guidance ${progress.failed_batch ? 'blocked' : completed ? 'done' : ''}`}>{stateText}</div>

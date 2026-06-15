@@ -178,6 +178,24 @@ def _normalize_announcement_languages(raw: Any, fallback: list[str] | tuple[str,
     return [code for code in ANNOUNCEMENT_LANGUAGE_ORDER if code in normalized]
 
 
+_SOURCE_HEADER_ALIASES = [
+    "cn",
+    "zh",
+    "zh-cn",
+    "zh_cn",
+    "zhcn",
+    "cnzh",
+    "cn-zh",
+    "source",
+    "chinese",
+    "中文",
+    "原文",
+    "简体中文",
+    "term",
+    "术语",
+]
+
+
 def _detect_language_columns(path: Path) -> list[str]:
     if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
         return []
@@ -185,15 +203,11 @@ def _detect_language_columns(path: Path) -> list[str]:
     found: set[str] = set()
     try:
         for ws in wb.worksheets:
-            try:
-                headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            except StopIteration:
+            layout = _language_table_header_layout(ws, ANNOUNCEMENT_LANGUAGE_ORDER)
+            if not layout:
                 continue
-            normalized = _header_index(headers, prefer_last=True)
-            reserved_indices = set(_reserved_language_table_indices(headers))
-            for code in ANNOUNCEMENT_LANGUAGE_ORDER:
-                index = _language_column_index(normalized, code)
-                if index is not None and index not in reserved_indices:
+            for code, index in layout["language_indices"].items():
+                if index is not None:
                     found.add(code)
     finally:
         wb.close()
@@ -223,7 +237,7 @@ def _reserved_language_table_indices(headers: list[str]) -> list[int]:
     normalized_first = _header_index(headers)
     indices = [
         _column_by_alias(normalized_first, ["id", "key", "编号", "序号"]),
-        _column_by_alias(normalized_first, ["cn", "zh", "source", "chinese", "中文", "原文", "简体中文", "term", "术语"]),
+        _column_by_alias(normalized_first, _SOURCE_HEADER_ALIASES),
     ]
     return [index for index in indices if index is not None]
 
@@ -336,28 +350,17 @@ def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str
     rows: list[dict[str, Any]] = []
     try:
         for ws in wb.worksheets:
-            iterator = ws.iter_rows(values_only=True)
-            try:
-                headers = [str(value or "").strip() for value in next(iterator)]
-            except StopIteration:
+            layout = _language_table_header_layout(ws, languages)
+            if not layout:
                 continue
-            normalized_first = _header_index(headers)
-            normalized_last = _header_index(headers, prefer_last=True)
-            id_idx = _column_by_alias(normalized_first, ["id", "key", "编号", "序号"])
-            source_idx = _column_by_alias(normalized_first, ["cn", "zh", "source", "chinese", "中文", "原文", "简体中文", "term", "术语"])
-            if source_idx is None:
-                continue
-            reserved_indices = set(index for index in (id_idx, source_idx) if index is not None)
-            lang_indices = {
-                language: index if index not in reserved_indices else None
-                for language in languages
-                for index in [_language_column_index(normalized_last, language)]
-            }
-            if not any(index is not None for index in lang_indices.values()):
-                continue
-            for values in iterator:
+            id_idx = layout["id_index"]
+            source_idx = layout["source_index"]
+            lang_indices = layout["language_indices"]
+            for values in ws.iter_rows(min_row=int(layout["header_row"]) + 1, values_only=True):
                 source = str(values[source_idx] or "").strip() if source_idx < len(values) else ""
                 if not source:
+                    continue
+                if source.lower() in {"string", "text", "c", "s", "int", "float", "number", "bool", "#ignore"}:
                     continue
                 translations = {}
                 for language, index in lang_indices.items():
@@ -369,6 +372,39 @@ def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str
     finally:
         wb.close()
     return rows
+
+
+def _language_table_header_layout(ws: Any, languages: list[str], *, max_scan_rows: int = 12) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    max_row = min(int(ws.max_row or max_scan_rows), max_scan_rows)
+    for row_number, values in enumerate(ws.iter_rows(min_row=1, max_row=max_row, values_only=True), start=1):
+        headers = [str(value or "").strip() for value in values]
+        normalized_first = _header_index(headers)
+        normalized_last = _header_index(headers, prefer_last=True)
+        id_idx = _column_by_alias(normalized_first, ["id", "key", "编号", "序号"])
+        source_idx = _column_by_alias(normalized_first, _SOURCE_HEADER_ALIASES)
+        if source_idx is None:
+            continue
+        reserved_indices = set(index for index in (id_idx, source_idx) if index is not None)
+        language_indices = {
+            language: index if index is not None and index not in reserved_indices else None
+            for language in languages
+            for index in [_language_column_index(normalized_last, language)]
+        }
+        language_count = sum(1 for index in language_indices.values() if index is not None)
+        if language_count <= 0:
+            continue
+        score = language_count * 10 + (1 if id_idx is not None else 0) + row_number / 100
+        candidate = {
+            "header_row": row_number,
+            "id_index": id_idx,
+            "source_index": source_idx,
+            "language_indices": language_indices,
+            "score": score,
+        }
+        if not best or score > float(best["score"]):
+            best = candidate
+    return best
 
 
 def _select_announcement_constraint_rows(text: str, candidates: list[dict[str, Any]], languages: list[str], *, min_hit: int) -> list[dict[str, Any]]:

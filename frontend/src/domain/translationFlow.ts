@@ -125,10 +125,10 @@ export function findVisibleTranslationRun(
   taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run'
 ): Run | null {
   const runs = matchingTranslationRuns(project, language, inputArtifactId, taskOrigin)
-  return runs.find((run) => ['queued', 'running'].includes(run.status))
-    || runs.find(isTranslationRunResumable)
-    || runs[0]
-    || null
+  // Runs are returned newest first. The visible task must follow the user's
+  // latest attempt; an older stale running run must not hide a newer passed or
+  // failed result.
+  return runs[0] || null
 }
 
 export function formatDuration(seconds: number | null | undefined): string {

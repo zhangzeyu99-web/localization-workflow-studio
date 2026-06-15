@@ -151,6 +151,22 @@ def _announcement_language_table_with_empty_first_sheet(path: Path) -> None:
     wb.close()
 
 
+def _announcement_language_table_with_multirow_headers(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "out_language"
+    ws.append([None, None, 1, "英语", None, None, None, None, "韩语", "法语", "德语", "葡萄牙", "俄语", "阿拉伯语"])
+    ws.append(["#ignore", None, None, None, None, None, None, None, None, None, None, None, None, None])
+    ws.append(["id", None, "zh-CN", "en", "jp", None, None, None, "kr", "fr", "de", "pt", "ru", "ar"])
+    ws.append(["string", None, "string", "string", "string", None, None, None, "string", "string", "string", "string", "string", "string"])
+    ws.append(["c", None, "c", "c", "c", None, None, None, "c", "c", "c", "c", "c", "c"])
+    ws.append(["1001", None, "晶石", "Diamond", "ダイヤ", None, None, None, "다이아", "Diamant", "Diamant", "Diamante", "Алмаз", "ألماس"])
+    ws.append(["1002", None, "沙海猎金", "Sand Sea Hunt", "砂海ハント", None, None, None, "모래 바다 사냥", "Chasse des sables", "Sandmeer-Jagd", "Caça no mar de areia", "Охота в песчаном море", "صيد بحر الرمال"])
+    ws.append(["1003", None, "塞拉", "Sera", "セラ", None, None, None, "세라", "Sera", "Sera", "Sera", "Сера", "سيرا"])
+    wb.save(path)
+    wb.close()
+
+
 def _announcement_docx(path: Path, text: str = "英雄觉醒 2026/5/20") -> None:
     doc = Document()
     doc.add_paragraph(text)
@@ -627,6 +643,49 @@ def test_announcement_constraints_skip_empty_first_sheet(tmp_path: Path) -> None
         )
         assert inspected.status_code == 200, inspected.text
         assert inspected.json()["constraints"]["en"]["language_table"] == 2
+
+
+def test_announcement_constraints_read_multirow_language_table_headers(tmp_path: Path) -> None:
+    table_path = tmp_path / "language_multirow_headers.xlsx"
+    notice_path = tmp_path / "announcement.txt"
+    _announcement_language_table_with_multirow_headers(table_path)
+    notice_path.write_text("晶石补偿，沙海猎金活动开启，塞拉登场。", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement multirow header", "type": "SLG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language_multirow_headers.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("announcement.txt", fh, "text/plain")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": notice_artifact["id"], "language_table_artifact_ids": [table_artifact["id"]], "languages": ["en", "fr", "de", "ru", "ar"], "include_project_archive": False},
+        ).json()
+        inspected = client.post(
+            f"/api/announcement-tasks/{task['id']}/inspect-constraints",
+            json={"language_table_artifact_ids": [table_artifact["id"]], "languages": ["en", "fr", "de", "ru", "ar"], "include_project_archive": False},
+        )
+        assert inspected.status_code == 200, inspected.text
+        constraints = inspected.json()["constraints"]
+        assert constraints["en"]["language_table"] == 3
+        assert constraints["fr"]["language_table"] == 3
+        assert constraints["ar"]["language_table"] == 3
+
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={"language_table_artifact_ids": [table_artifact["id"]], "languages": ["en", "fr", "de", "ru", "ar"], "include_project_archive": False, "ai_supplement": False},
+        )
+        assert extracted.status_code == 200, extracted.text
+        terms = {row["source"]: row for row in extracted.json()["manifest"]["terms"]}
+        assert terms["晶石"]["translations"]["en"] == "Diamond"
+        assert terms["沙海猎金"]["translations"]["fr"] == "Chasse des sables"
+        assert terms["塞拉"]["translations"]["ar"] == "سيرا"
 
 
 def test_announcement_extract_rejects_legacy_txt_constraint_with_human_message(tmp_path: Path) -> None:

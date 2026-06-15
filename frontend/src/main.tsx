@@ -12,7 +12,7 @@ import { activeAnnouncementTasks, AnnouncementProjectPanel, AnnouncementWizard }
 import { MetaTab } from './components/project/ProjectMeta'
 import { DeliveryTab, StepQA, TranslationTab, Wizard, formalTranslationBlockReason } from './components/translationWizard/TranslationWizard'
 import { artifactFileName, artifactKindLabel, artifactPickerLabel, artifactRole, artifactsByRole, artifactsByRoles, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, newestArtifact, pickerArtifacts, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
-import { compactSummary, formatDate, formatDateTime, shortRunId } from './domain/format'
+import { formatDate, formatDateTime, shortRunId } from './domain/format'
 import { clampBatchSize, effectiveBatchSize, estimateBatches, getTranslationProgress, canSkipModelTranslation, latestRunOfKind, findResumableTranslationRun, isTranslationRunResumable, matchesTranslationRun, translationInputMode, translationReadinessUserMessage } from './domain/translationFlow'
 import { altColumnVisible, availableLookupLanguages, displayLanguagesForWideRows, fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, glossaryWideRowMatches, glossaryWideRows, languageFromValue, linesToFixedTerms, linesToList, linesToRules, listToLines, normalizeGlossaryNote, projectPromptForLanguage, profileText, rowRecords, ruleSummary, rulesToLines, scopeProjectToLanguage, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from './domain/projectAssets'
 
@@ -148,8 +148,13 @@ function structuredQaStatusText(payload: Record<string, unknown>): string | null
 }
 
 function parseStructuredStatusText(text: string): Record<string, unknown> | null {
-  const trimmed = text.trim()
-  if (!trimmed.startsWith('{')) return null
+  let trimmed = text.trim()
+  if (!trimmed.startsWith('{')) {
+    const start = trimmed.indexOf('{')
+    const end = trimmed.lastIndexOf('}')
+    if (start < 0 || end <= start) return null
+    trimmed = trimmed.slice(start, end + 1)
+  }
   try {
     return JSON.parse(trimmed) as Record<string, unknown>
   } catch {
@@ -199,11 +204,9 @@ function humanBackendEvent(message: unknown): string {
   if (!message) return '处理中...'
   if (typeof message !== 'string') return eventStatusText(message)
   const text = message.trim()
-  if (text.startsWith('{')) {
-    const parsed = parseStructuredStatusText(text)
-    const structured = parsed ? structuredQaStatusText(parsed) : null
-    if (structured) return structured
-  }
+  const parsed = parseStructuredStatusText(text)
+  const structured = parsed ? structuredQaStatusText(parsed) : null
+  if (structured) return structured
   const sanitized = sanitizeUserFacingError(text, '')
   if (sanitized && sanitized !== text) return sanitized
   let match = text.match(/^translating batch (\d+)\/(\d+): rows=(\d+), attempt=(\d+)\/(\d+)/i)
@@ -242,6 +245,41 @@ function announcementActionLabel(endpoint: string): string {
     deliver: '\u4ea4\u4ed8'
   }
   return labels[endpoint] || endpoint
+}
+
+function announcementActionSummary(endpoint: string, summary?: Record<string, unknown>): string {
+  if (!summary) return ''
+  const count = (key: string) => Number(summary[key] || 0)
+  if (endpoint === 'inspect-constraints') {
+    return '约束来源已识别，请确认目标语言。'
+  }
+  if (endpoint === 'extract-terms') {
+    const terms = count('terms')
+    const ai = summary.ai_supplement as Record<string, unknown> | undefined
+    const added = Number(ai?.added_to_main || 0)
+    return `已提取 ${terms} 条公告术语${added ? `，AI 补充 ${added} 条` : ''}。`
+  }
+  if (endpoint === 'lookup-translations') {
+    return `译文反查完成，缺失术语 ${count('missing_terms')} 条。`
+  }
+  if (endpoint === 'prepare') {
+    return `翻译准备完成，共 ${count('segments')} 段。`
+  }
+  if (endpoint.startsWith('translate/')) {
+    return '后台翻译已启动，完成后会自动进入下一步。'
+  }
+  if (endpoint === 'import-ai') {
+    return '外部 AI 译文已导入。'
+  }
+  if (endpoint === 'apply') {
+    const blockers = count('hard_blockers')
+    const fixed = count('auto_fixed_hard_blockers')
+    return blockers ? `已回填并自动修复 ${fixed} 个问题，仍有 ${blockers} 个问题会写入 QA 摘要。` : `已回填并完成校验${fixed ? `，自动修复 ${fixed} 个问题` : ''}。`
+  }
+  if (endpoint === 'deliver') {
+    return '已生成公告交付包，可在下方下载。'
+  }
+  return ''
 }
 
 function App() {
@@ -1546,12 +1584,12 @@ function App() {
       if (!isCurrentProject(projectId)) return null
       if (result.run) setLatestRun({ ...result.run, artifacts: result.artifacts || [] })
       await refreshCurrent()
-      const summary = result.summary ? `\uff1a${compactSummary(result.summary)}` : ''
+      const summary = announcementActionSummary(endpoint, result.summary)
       const taskStatus = String(result.task?.status || '')
       if (endpoint.startsWith('translate/') && ['queued', 'running'].includes(taskStatus)) {
-        setStatusForProject(projectId, `\u516c\u544a\u540e\u53f0\u7ffb\u8bd1\u5df2\u542f\u52a8\uff1a${announcementActionLabel(endpoint)}${summary}`)
+        setStatusForProject(projectId, summary || `公告后台翻译已启动：${announcementActionLabel(endpoint)}`)
       } else {
-        setStatusForProject(projectId, `\u516c\u544a\u6b65\u9aa4\u5df2\u5b8c\u6210\uff1a${announcementActionLabel(endpoint)}${summary}`)
+        setStatusForProject(projectId, summary || `公告步骤已完成：${announcementActionLabel(endpoint)}`)
       }
       return result
     } catch (error) {
@@ -2080,7 +2118,9 @@ function projectActivityRuns(project: Project | null | undefined): Run[] {
 }
 
 function latestProjectActivityRun(project: Project | null | undefined): Run | null {
-  return projectActivityRuns(project)[0] || null
+  const latest = (project?.runs || [])[0] || null
+  if (!latest) return null
+  return ['queued', 'running', 'needs_input', 'failed'].includes(latest.status) ? latest : null
 }
 
 function projectActiveTaskCount(project: Project | null | undefined): number {

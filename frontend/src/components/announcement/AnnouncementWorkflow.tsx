@@ -887,12 +887,12 @@ export function AnnouncementLanguageSubflows({
         {announcementLanguages.map((lang) => {
           const child = task.languages?.find((item) => item.language === lang.code)
           const selected = effectiveLanguages.includes(lang.code)
-          if (!selected && !child) return null
+          if (!selected) return null
           return (
             <button key={lang.code} className={`announcement-subflow-card ${selected ? 'selected' : ''} ${child ? child.status : 'is-empty'}`} onClick={() => onToggleLanguage(lang.code)}>
               <strong>{lang.label}</strong>
               <span>{child ? `STEP ${child.current_step}/9` : selected ? '已选择' : '未选择'}</span>
-              <em>{child?.status || (detectedLanguages.includes(lang.code) ? '检测到约束' : '待选择')}</em>
+              <em>{child ? announcementStatusLabel(child.status) : (detectedLanguages.includes(lang.code) ? '检测到约束' : '待选择')}</em>
             </button>
           )
         })}
@@ -907,12 +907,12 @@ export function AnnouncementTaskSnapshot({ task }: { task: AnnouncementTask | nu
   const hardBlockers = announcementHardBlockerCount(task)
   return (
     <div className="workflow-note-grid">
-      <div><strong>任务状态</strong><span>{task.status} · STEP {task.current_step}/9</span></div>
+      <div><strong>任务状态</strong><span>{announcementStatusLabel(task.status)} · STEP {task.current_step}/9</span></div>
       <div><strong>源格式</strong><span>{task.source_format?.toUpperCase() || '-'}</span></div>
       <div><strong>目标语言</strong><span>{(task.selected_languages || []).map((lang) => languageSpec(lang).short).join(' / ') || '-'}</span></div>
       <div><strong>术语数</strong><span>{String((meta.terms_summary as Record<string, unknown> | undefined)?.terms ?? '-')}</span></div>
       <div><strong>缺失术语</strong><span>{String((meta.lookup_summary as Record<string, unknown> | undefined)?.missing_terms ?? '-')}</span></div>
-      <div><strong>Hard blocker</strong><span>{hardBlockers ? String(hardBlockers) : String(meta.hard_blockers ?? '-')}</span></div>
+      <div><strong>严重问题</strong><span>{hardBlockers ? String(hardBlockers) : String(meta.hard_blockers ?? '-')}</span></div>
     </div>
   )
 }
