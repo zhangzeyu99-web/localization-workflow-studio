@@ -155,7 +155,23 @@ def _safe_subprocess_event_output(text: str) -> str:
         return ""
     if any(marker in stripped for marker in ["Traceback", "File \", line", "command failed", "python.exe", "run_translation_harness.py"]):
         return "\u672c\u5730 workflow \u8fd4\u56de\u4e86\u9519\u8bef\u8be6\u60c5\uff0c\u5df2\u5199\u5165\u8fd0\u884c\u65e5\u5fd7\u3002"
-    return stripped if len(stripped) <= 1000 else stripped[:997] + "..."
+    if "'passed':" in stripped or '"passed":' in stripped or "issue_counts" in stripped:
+        return _summarize_structured_qa_output(stripped)
+    return stripped if len(stripped) <= 240 else stripped[:237] + "..."
+
+
+def _summarize_structured_qa_output(text: str) -> str:
+    passed_match = re.search(r"['\"]passed['\"]\s*:\s*(true|false|True|False)", text)
+    passed = passed_match.group(1).lower() == "true" if passed_match else False
+    total_match = re.search(r"['\"]total_cases['\"]\s*:\s*(\d+)", text)
+    total_cases = int(total_match.group(1)) if total_match else 0
+    issue_total = 0
+    counts_match = re.search(r"['\"]issue_counts['\"]\s*:\s*\{([^}]*)\}", text)
+    if counts_match:
+        issue_total = sum(int(value) for value in re.findall(r":\s*(\d+)", counts_match.group(1)))
+    if passed:
+        return "QA \u5df2\u901a\u8fc7\uff0c\u6b63\u5728\u6574\u7406\u4ea4\u4ed8\u6587\u4ef6\u3002"
+    return f"QA \u672a\u901a\u8fc7\uff1a\u53d1\u73b0 {issue_total or total_cases} \u4e2a\u95ee\u9898\uff0c\u8be6\u60c5\u5df2\u5199\u5165 QA \u6458\u8981\u3002"
 
 def copy_upload(project_id: str, source_path: Path, label: str, kind: str) -> dict[str, Any]:
     destination_dir = project_dir(project_id) / "uploads"

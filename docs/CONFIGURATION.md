@@ -45,20 +45,25 @@ python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 
 ## 推荐配置方式
 
-优先通过网页右上角设置弹窗配置：
+本地调试可以通过网页右上角设置弹窗配置：
 
 ```text
 http://127.0.0.1:5173
 ```
 
-可配置项：
+线上 Web 版不显示设置按钮，必须直接写入：
 
-- Provider：`GPT` 或 `Claude`
-- 预设：`快速响应` / `平衡` / `深度思考`
+```text
+<LWS_DATA_ROOT>/settings.local.json
+```
+
+本地可配置项：
+
+- Provider：`GPT` / `GPT 中转站` / `Claude`
+- 预设：`快速` / `平衡` / `深度` / `关键校对`
 - API key
-- Batch size
 
-保存后，后端会写入仓库外的 `settings.local.json`。
+保存后，后端会写入仓库外的 `settings.local.json`。线上修改配置后建议重启后端。
 
 ## Provider 配置
 
@@ -67,10 +72,11 @@ http://127.0.0.1:5173
 | 页面显示 | 配置值 | 协议 |
 |---|---|---|
 | GPT | `openai` | `responses` |
+| GPT 中转站 | `openai-chat` | `chat-completions` |
 | Claude | `anthropic` | `messages` |
 | Test Fake | `test-fake` | `test-fake` |
 
-当前只保留 GPT 和 Claude 作为正式 provider。`test-fake` 只用于 CI、E2E 和无 key 回归测试。
+当前正式 provider 为 GPT、GPT 中转站和 Claude。`test-fake` 只用于 CI、E2E 和无 key 回归测试。
 
 ## 预设模型
 
@@ -98,6 +104,26 @@ GPT 平衡档：
   "protocol": "responses",
   "base_url": "https://api.openai.com",
   "api_key": "sk-...",
+  "model": "gpt-5.5",
+  "reasoning_effort": "medium",
+  "multimodal": {
+    "images": true,
+    "pdf": true,
+    "video": false,
+    "audio": false
+  }
+}
+```
+
+GPT 中转站平衡档：
+
+```json
+{
+  "provider": "openai-chat",
+  "preset": "balanced",
+  "protocol": "chat-completions",
+  "base_url": "https://aicode-api3.gz4399.com/api",
+  "api_key": "<your-api-key>",
   "model": "gpt-5.5",
   "reasoning_effort": "medium",
   "multimodal": {

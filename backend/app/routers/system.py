@@ -190,6 +190,8 @@ def get_languages() -> dict[str, Any]:
 
 @router.patch("/api/settings")
 def patch_settings(payload: SettingsUpdate) -> dict[str, Any]:
+    if _deployment_mode() == "cloud":
+        raise HTTPException(status_code=403, detail="\u7ebf\u4e0a\u73af\u5883\u4e0d\u652f\u6301\u524d\u7aef\u4fee\u6539 API \u914d\u7f6e\uff0c\u8bf7\u7f16\u8f91 settings.local.json \u540e\u91cd\u542f\u540e\u7aef\u3002")
     current = load_settings()
     updates = payload.model_dump(exclude_none=True)
     if "api_key" in updates and updates["api_key"] in {"", "configured"}:

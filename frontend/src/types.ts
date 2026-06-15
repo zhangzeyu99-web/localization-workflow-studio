@@ -198,6 +198,14 @@ export type QualityIssue = {
   current_translation: string
 }
 
+export type AppRuntimeVersion = {
+  version: string
+  git_sha?: string
+  deployment_mode?: 'local' | 'cloud' | string
+  data_root?: string
+  frontend_assets?: string[]
+}
+
 export type AppSettings = {
   provider?: string
   preset?: string

@@ -22,7 +22,7 @@ declare global {
   }
 }
 
-import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, MultilingualQueueStatus, Project, ProjectAnalysisResponse, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
+import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppRuntimeVersion, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, MultilingualQueueStatus, Project, ProjectAnalysisResponse, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
 
 
 const CHUNKED_UPLOAD_THRESHOLD_BYTES = 768 * 1024
@@ -131,16 +131,57 @@ function errorText(error: unknown): string {
   return sanitizeUserFacingError(String(error))
 }
 
+function issueCountFromPayload(payload: Record<string, unknown>): number {
+  if (Array.isArray(payload.issues)) return payload.issues.length
+  const counts = payload.issue_counts
+  if (counts && typeof counts === 'object') {
+    return Object.values(counts as Record<string, unknown>).reduce<number>((sum, value) => sum + Number(value || 0), 0)
+  }
+  return Number(payload.total_cases || 0)
+}
+
+function structuredQaStatusText(payload: Record<string, unknown>): string | null {
+  if (!('passed' in payload) && !('issue_counts' in payload) && !('total_cases' in payload)) return null
+  if (payload.passed === true) return '\u0051\u0041 \u5df2\u901a\u8fc7\uff0c\u6b63\u5728\u6574\u7406\u4ea4\u4ed8\u6587\u4ef6\u3002'
+  const issueCount = issueCountFromPayload(payload)
+  return `QA \u672a\u901a\u8fc7\uff1a\u53d1\u73b0 ${issueCount} \u4e2a\u95ee\u9898\uff0c\u8bf7\u8fdb\u5165\u6821\u5bf9\u6b65\u9aa4\u67e5\u770b QA \u6458\u8981\u5e76\u5904\u7406\u3002`
+}
+
+function parseStructuredStatusText(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('{')) return null
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>
+  } catch {
+    // Some local Python harnesses print dict-like text with single quotes.
+  }
+  const normalized = trimmed
+    .replace(/'/g, '"')
+    .replace(/\bTrue\b/g, 'true')
+    .replace(/\bFalse\b/g, 'false')
+    .replace(/\bNone\b/g, 'null')
+  try {
+    return JSON.parse(normalized) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
 function eventStatusText(message: unknown): string {
-  if (!message) return '处理中...'
-  if (typeof message === 'string') return message
+  if (!message) return '\u5904\u7406\u4e2d...'
+  if (typeof message === 'string') {
+    const parsed = parseStructuredStatusText(message)
+    const structured = parsed ? structuredQaStatusText(parsed) : null
+    return structured || message
+  }
   if (typeof message === 'object') {
     const payload = message as Record<string, unknown>
-    if (payload.passed === true) return 'QA 已完成，正在归档产物。'
+    const structured = structuredQaStatusText(payload)
+    if (structured) return structured
     if (payload.status) return String(payload.status)
     if (payload.summary) return String(payload.summary)
   }
-  return '处理中...'
+  return '\u5904\u7406\u4e2d...'
 }
 
 function humanTaskStatus(status: string): string {
@@ -158,20 +199,13 @@ function humanBackendEvent(message: unknown): string {
   if (!message) return '处理中...'
   if (typeof message !== 'string') return eventStatusText(message)
   const text = message.trim()
+  if (text.startsWith('{')) {
+    const parsed = parseStructuredStatusText(text)
+    const structured = parsed ? structuredQaStatusText(parsed) : null
+    if (structured) return structured
+  }
   const sanitized = sanitizeUserFacingError(text, '')
   if (sanitized && sanitized !== text) return sanitized
-  if (text.startsWith('{')) {
-    try {
-      const payload = JSON.parse(text) as { passed?: boolean; total_cases?: number; issues?: unknown[]; issue_counts?: Record<string, unknown> }
-      if (payload.passed === false) {
-        const issueCount = Array.isArray(payload.issues) ? payload.issues.length : Object.values(payload.issue_counts || {}).reduce((sum: number, value) => sum + Number(value || 0), 0)
-        return `QA 未通过：发现 ${issueCount || payload.total_cases || 0} 个问题，请进入校对步骤处理。`
-      }
-      if (payload.passed === true) return 'QA 已通过，正在整理交付文件。'
-    } catch {
-      // Fall through to the normal message mapping.
-    }
-  }
   let match = text.match(/^translating batch (\d+)\/(\d+): rows=(\d+), attempt=(\d+)\/(\d+)/i)
   if (match) return `正在翻译：第 ${match[1]}/${match[2]} 批，本批 ${match[3]} 行，第 ${match[4]} 次尝试。`
   match = text.match(/^translation preflight: source_rows=(\d+), translated_rows=(\d+), empty_target_rows=(\d+), .*estimated_batches=(\d+)/i)
@@ -228,6 +262,7 @@ function App() {
   const longPressTriggeredAnnouncementTaskId = useRef('')
   const [announcementFocusTaskId, setAnnouncementFocusTaskId] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [runtimeVersion, setRuntimeVersion] = useState<AppRuntimeVersion | null>(null)
   const [freqOpen, setFreqOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('准备就绪')
@@ -257,6 +292,7 @@ function App() {
   useEffect(() => {
     refreshProjects()
     refreshSettings()
+    refreshRuntimeVersion()
     refreshLanguageOptions(API)
       .then(() => setLanguageVersion((value) => value + 1))
       .catch(() => undefined)
@@ -628,6 +664,15 @@ function App() {
     const loaded = await api<{ batches: GlossaryBatch[]; active_batch: GlossaryBatch | null; candidates: GlossaryCandidate[] }>(`/api/projects/${projectId}/glossary/batches?${languageQuery(selectedLanguage)}`)
     setGlossaryBatches(loaded.batches || [])
     setGlossaryCandidates(loaded.candidates || [])
+  }
+
+  async function refreshRuntimeVersion() {
+    try {
+      const payload = await api<AppRuntimeVersion>('/api/version')
+      setRuntimeVersion(payload)
+    } catch {
+      setRuntimeVersion({ version: 'unknown', deployment_mode: 'unknown' })
+    }
   }
 
   async function refreshSettings() {
@@ -1729,6 +1774,10 @@ function App() {
     }
   }
 
+  const isCloudDeployment = runtimeVersion?.deployment_mode === 'cloud'
+  const showSettingsButton = runtimeVersion?.deployment_mode === 'local'
+  const visibleVersion = runtimeVersion?.version || 'unknown'
+
   return (
     <div className="shell">
       <div className="app">
@@ -1739,7 +1788,7 @@ function App() {
           </div>
           <div className="header-actions">
             <span className={`status ${busy ? 'running' : ''}`}>{busy ? <span className="loading" /> : null}{status}</span>
-            <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}>⚙ 设置</button>
+            {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}>⚙ 设置</button> : null}
           </div>
         </header>
 
@@ -1937,6 +1986,8 @@ function App() {
           </main>
         </div>
       </div>
+
+      <div className="runtime-version-badge" title={runtimeVersion?.git_sha ? `commit ${runtimeVersion.git_sha}` : 'current deployment version'}>v{visibleVersion}</div>
 
       {newProjectOpen ? <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreate={createProject} /> : null}
       {deleteProjectTarget ? <DeleteProjectModal project={deleteProjectTarget} busy={busy} onClose={() => { longPressTriggeredProjectId.current = ''; setDeleteProjectTarget(null) }} onDelete={deleteProject} /> : null}

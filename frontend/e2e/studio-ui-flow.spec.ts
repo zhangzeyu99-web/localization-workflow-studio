@@ -136,7 +136,7 @@ test('real project formal translation is blocked without configured API credenti
   await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeDisabled()
   await expect(page.locator('.warn-line', { hasText: 'API' })).toBeVisible()
-  await expect(page.locator('.warn-line', { hasText: '右上角“设置”填写 API 密钥' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: 'settings.local.json' })).toBeVisible()
 })
 
 test('announcement AI translation shows API reminder when provider is not configured', async ({ page, request }) => {
@@ -167,7 +167,7 @@ test('announcement AI translation shows API reminder when provider is not config
   await page.locator('.announcement-steps .step-item').nth(6).click()
   await expect(page.locator('.panel-title', { hasText: 'AI 翻译' })).toBeVisible()
   await expect(page.locator('.warn-line', { hasText: '需要先配置 API' })).toBeVisible()
-  await expect(page.locator('.warn-line', { hasText: '右上角“设置”填写 API 密钥' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: 'settings.local.json' })).toBeVisible()
   await expect(page.getByRole('button', { name: /^AI\s?\u7ffb\u8bd1$/ })).toBeDisabled()
 })
 

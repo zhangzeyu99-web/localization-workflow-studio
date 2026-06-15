@@ -6,11 +6,22 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+
 import httpx
 
 
 def _print_step(name: str, ok: bool, payload: Any) -> None:
     print(json.dumps({"step": name, "ok": ok, "result": payload}, ensure_ascii=False))
+
+
+def _expected_version(value: str | None = None) -> str:
+    if value:
+        return value.strip()
+    try:
+        return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def _get_json(client: httpx.Client, base_url: str, path: str) -> dict[str, Any]:
@@ -19,12 +30,21 @@ def _get_json(client: httpx.Client, base_url: str, path: str) -> dict[str, Any]:
     return response.json()
 
 
-def run(base_url: str, *, require_cloud: bool = False, require_provider: bool = False) -> int:
+def run(base_url: str, *, require_cloud: bool = False, require_provider: bool = False, expect_version: str | None = None) -> int:
     failed = False
     with httpx.Client(timeout=60, follow_redirects=True) as client:
         try:
             version = _get_json(client, base_url, "/api/version")
-            _print_step("version", True, version)
+            expected = _expected_version(expect_version)
+            actual = str(version.get("version") or "").strip()
+            version_ok = bool(actual)
+            if expected and actual != expected:
+                version_ok = False
+                version["expected_version"] = expected
+                version["error"] = f"deployed version {actual or '<empty>'} does not match expected {expected}"
+            if not version_ok:
+                failed = True
+            _print_step("version", version_ok, version)
         except Exception as exc:
             failed = True
             _print_step("version", False, str(exc))
@@ -88,8 +108,9 @@ def main() -> int:
     parser.add_argument("--base-url", required=True, help="Example: https://ai-lwstudio.example.com")
     parser.add_argument("--require-cloud", action="store_true", help="Fail if /api/health deployment_mode is not cloud.")
     parser.add_argument("--require-provider", action="store_true", help="Fail if provider API key is not configured.")
+    parser.add_argument("--expect-version", default=None, help="Expected /api/version value. Defaults to local VERSION file.")
     args = parser.parse_args()
-    return run(args.base_url, require_cloud=args.require_cloud, require_provider=args.require_provider)
+    return run(args.base_url, require_cloud=args.require_cloud, require_provider=args.require_provider, expect_version=args.expect_version)
 
 
 if __name__ == "__main__":

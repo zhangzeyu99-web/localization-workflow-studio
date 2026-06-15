@@ -166,13 +166,14 @@ location /api/ {{
 上线自检：
 
 ```bash
-python3.11 scripts/deployment_check.py --base-url https://your-domain.example.com --require-cloud --require-provider
+python3.11 check.py --base-url https://your-domain.example.com --require-cloud --require-provider --expect-version $(cat VERSION)
 python3.11 scripts/stability_check.py --base-url https://your-domain.example.com
 ```
 
 关键验收：
 
-- /api/version 能返回当前版本和提交号。
+- /api/version 能返回当前版本和提交号，且版本号与部署包 VERSION 一致。
+- 前端右下角显示当前版本号。
 - /api/health 的 deployment_mode 是 cloud。
 - data_root_writable、uploads_writable、database.connected 都是 true。
 - provider_configured 是 true。
@@ -194,8 +195,8 @@ cd ..
 
 ## 配置提醒
 
-- 正式翻译、项目 AI 分析、公告 AI 翻译需要在网页右上角“设置”配置可用 API。
-- 私有配置写入 LWS_DATA_ROOT/settings.local.json，不进入仓库和发布包。
+- 线上 Web 版不显示 API 设置入口，Provider/API key 直接写入 LWS_DATA_ROOT/settings.local.json。
+- 私有配置不进入仓库和发布包。
 - 不使用 Google Translate、deep_translator、googletrans 或浏览器机翻。
 - 线上第一版固定单后端实例、单 worker；不要用多个 uvicorn worker 直接共享 SQLite。
 """
@@ -214,7 +215,7 @@ def _write_manifest(target_root: Path, version: str, sha: str, files: list[Path]
         "entrypoints": {
             "linux_backend": "start-lws.sh",
             "windows_local": "start-workbench.cmd",
-            "deployment_check": "scripts/deployment_check.py",
+            "deployment_check": "check.py",
             "stability_check": "scripts/stability_check.py",
         },
     }

@@ -85,6 +85,26 @@ server {
 }
 ```
 
+## Provider 配置
+
+线上 Web 版不在前端显示 API 设置入口。Provider、Base URL、API key 直接写入私有数据目录：
+
+```bash
+cat > /data/web/lwstudio/lws-data/settings.local.json <<'JSON'
+{
+  "provider": "openai-chat",
+  "preset": "balanced",
+  "protocol": "chat-completions",
+  "base_url": "https://aicode-api3.gz4399.com/api",
+  "api_key": "<your-api-key>",
+  "model": "gpt-5.5",
+  "reasoning_effort": "medium"
+}
+JSON
+```
+
+不要把 `settings.local.json` 放进代码目录、Git 仓库或前端静态目录。
+
 ## 必须设置的环境变量
 
 ```bash
@@ -103,12 +123,13 @@ export LWS_GIT_SHA=$(git rev-parse --short=12 HEAD)
 ## 上线前自检
 
 ```bash
-python3.11 scripts/deployment_check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider
+python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider --expect-version $(cat VERSION)
 ```
 
 必须看到：
 
-- `/api/version` 返回当前版本和提交号。
+- `/api/version` 返回当前版本和提交号，且版本号必须和部署包 `VERSION` 一致。
+- 前端右下角显示同一版本号。
 - `/api/health` 返回 `deployment_mode=cloud`。
 - `data_root_writable=true`。
 - `uploads_writable=true`。
@@ -131,7 +152,7 @@ python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 | `/api/version` 404 | 后端不是最新代码 | 重启后端，确认部署目录和启动命令 |
 | `/api/health` 是 local | 没设 `LWS_DEPLOYMENT_MODE=cloud` | 补环境变量后重启 |
 | 上传 413 | Nginx 或后端上传上限不一致 | 同时设置 `client_max_body_size` 和 `LWS_MAX_UPLOAD_MB` |
-| 页面能开但上传/分析失败 | 前端和后端不是同一版本，或 `/api/` 反代错 | 看 `/api/version` 和浏览器 network |
+| 页面能开但上传/分析失败 | 前端和后端不是同一版本，或 `/api/` 反代错 | 看右下角版本号、`/api/version` 和浏览器 network |
 | 下载 Not Found | 数据目录变了或旧 artifact 文件不存在 | 确认 `LWS_DATA_ROOT` 持久且未被覆盖 |
 | 多人同时跑任务混乱 | 多 worker/多实例共用 SQLite | 第一版固定单 worker 单实例 |
 
@@ -139,6 +160,7 @@ python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 
 - 不要把 `lws-data` 放进 Git。
 - 不要把 `settings.local.json`、API key、真实项目文件放进发布包。
+- 不要在云端前端暴露 API 设置按钮；线上只通过数据目录配置文件管理密钥。
 - 不要用 `npm run dev` 做线上服务。
 - 不要开多个 uvicorn worker 直接共享 SQLite。
 - 不要让 Nginx 直接暴露 `lws-data`。

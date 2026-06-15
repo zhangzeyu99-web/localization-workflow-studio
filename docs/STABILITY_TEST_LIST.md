@@ -5,14 +5,14 @@
 ## 本地 / 局域网
 
 ```powershell
-python scripts\deployment_check.py --base-url http://127.0.0.1:5174
+python scripts\deployment_check.py --base-url http://127.0.0.1:5174 --expect-version (Get-Content VERSION)
 python scripts\stability_check.py --base-url http://127.0.0.1:5174
 ```
 
 ## Linux / 线上
 
 ```bash
-python3.11 scripts/deployment_check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider
+python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider --expect-version $(cat VERSION)
 python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 ```
 

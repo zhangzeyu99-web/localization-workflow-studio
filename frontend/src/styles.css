@@ -2670,3 +2670,20 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   font-style: normal;
   white-space: nowrap;
 }
+
+
+.runtime-version-badge {
+  position: fixed;
+  right: 14px;
+  bottom: 10px;
+  z-index: 30;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(15,23,42,.72);
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}

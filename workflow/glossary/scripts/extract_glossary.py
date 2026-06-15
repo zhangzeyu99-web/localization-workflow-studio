@@ -3227,7 +3227,7 @@ def build_announcement_validation_markdown(
     lines = [
         "# Announcement Glossary Validation",
         "",
-        f"status: ok",
+        "status: ok",
         f"term_count: {len(rows)}",
         f"languages: {', '.join(language_headers) if language_headers else 'none'}",
         f"duplicate_cn: {duplicate_cn}",

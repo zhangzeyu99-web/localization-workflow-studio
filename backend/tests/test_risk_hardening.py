@@ -57,6 +57,19 @@ def test_subprocess_failure_writes_structured_backend_error_without_raw_user_tex
     assert (log_dir / "subprocess_events.jsonl").exists()
 
 
+
+
+def test_subprocess_event_output_summarizes_qa_dict() -> None:
+    from app.workflow.subprocess_runner import _safe_subprocess_event_output
+
+    raw = "{'passed': False, 'total_cases': 61, 'issue_counts': {'title_case_overuse': 13, 'clipped_word': 25}}"
+
+    summary = _safe_subprocess_event_output(raw)
+
+    assert summary == "QA \u672a\u901a\u8fc7\uff1a\u53d1\u73b0 38 \u4e2a\u95ee\u9898\uff0c\u8be6\u60c5\u5df2\u5199\u5165 QA \u6458\u8981\u3002"
+    assert "issue_counts" not in summary
+    assert "title_case_overuse" not in summary
+
 def test_subprocess_reads_structured_result_key_output(tmp_path: Path) -> None:
     project = db.insert_project("Subprocess Structured Result", "QA", "", "🎮")
     run = db.insert_run(project["id"], "glossary", "en", metadata={})

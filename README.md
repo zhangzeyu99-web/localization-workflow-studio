@@ -10,7 +10,7 @@ Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web �
 - 工作台是本地桌面 Web 应用：后端默认只应绑定本机地址，公网或局域网共享前需要额外认证和网络隔离。
 - 长文本翻译由后端编排器负责拆批、限流、断点续跑、取消和失败恢复；Codex/Agent 不是运行依赖。
 - 正式模型路径只支持 OpenAI/GPT、GPT 中转站与 Claude；测试环境使用隐藏 test-fake，不作为产品 provider。
-- API key 写入私有 `settings.local.json`，不要提交到仓库；前端设置页只保留 provider、preset 和 key。
+- API key 写入私有 `settings.local.json`，不要提交到仓库；线上 Web 版不显示前端设置入口。
 - 项目明确禁止 Google Translate、`deep_translator`、`googletrans`、浏览器机翻和在线机翻聚合器。
 - 上传文件默认上限 200 MiB，可用 `LWS_MAX_UPLOAD_MB` 调整；超限会返回 413。
 
@@ -250,7 +250,7 @@ artifacts/
 uploads/
 ```
 
-如果不想迁移 API key，可以不复制 `settings.local.json`，然后在网页右上角“设置”里重新配置 provider 和 key。
+如果不想迁移 API key，可以不复制 `settings.local.json`；本地调试可在设置里重新配置，线上部署必须由运维写入配置文件。
 
 ## Provider 配置
 
@@ -260,10 +260,10 @@ uploads/
 <LWS_DATA_ROOT>\settings.local.json
 ```
 
-网页右上角“设置”支持配置：
+本地网页“设置”支持配置；线上 Web 版不显示设置按钮，直接编辑配置文件：
 
-- Provider：OpenAI/GPT 或 Claude。
-- 预设：快速、平衡、深度。
+- Provider：OpenAI/GPT、GPT 中转站或 Claude。
+- 预设：快速、平衡、深度、关键校对。
 - API key。
 - 长文本拆批、限流、重试和预算提醒由系统按预设自动管理，不需要人工调参。
 
@@ -357,7 +357,7 @@ LWS_MAX_UPLOAD_MB=1024 \
 上线后先跑部署自检，再跑业务冒烟：
 
 ```bash
-python3.11 scripts/deployment_check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider
+python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider --expect-version $(cat VERSION)
 python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 ```
 
