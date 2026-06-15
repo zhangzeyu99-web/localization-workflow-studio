@@ -1296,6 +1296,12 @@ a { color: #a5b4fc; text-decoration: none; }
   font-size: 13px;
   line-height: 1.55;
 }
+.qa-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
 .progress-guidance {
   padding: 9px 10px;
   border-radius: 9px;

@@ -1112,6 +1112,22 @@ function App() {
       })
       if (!isCurrentProject(projectId)) return null
       setLatestRun(started)
+      if (started.status === 'passed') {
+        const resultArtifact = newestArtifact(started.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook', 'final_text'])
+        if (resultArtifact) setQaArtifact(resultArtifact)
+        await refreshCurrent()
+        if (tab === 'delivery') await refreshDeliverables()
+        setStatusForProject(projectId, `快速翻译已完成并通过 QA：${languageSpec(language).short}。可到交付页下载。`)
+        return started
+      }
+      if (started.status === 'failed') {
+        const resultArtifact = newestArtifact(started.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook', 'final_text'])
+        if (resultArtifact) setQaArtifact(resultArtifact)
+        await refreshCurrent()
+        if (tab === 'delivery') await refreshDeliverables()
+        setStatusForProject(projectId, `快速翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请到校对页处理或到交付页生成带问题交付。`)
+        return started
+      }
       setStatusForProject(projectId, resumableRun
         ? `快速翻译已继续：${languageSpec(language).short} · 会从已保存批次接着跑。`
         : `快速翻译已进入后台：${languageSpec(language).short} · ${readiness.source_rows} 行 · 预计 ${readiness.estimated_batches || '-'} 批。`)
@@ -1189,6 +1205,24 @@ function App() {
       })
       if (!isCurrentProject(projectId)) return
       setLatestRun(started)
+      if (started.status === 'passed') {
+        const resultArtifact = newestArtifact(started.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
+        if (resultArtifact) setQaArtifact(resultArtifact)
+        setStep((prev) => (prev < 8 ? 8 : prev))
+        setStatusForProject(projectId, `${currentLang.short} 翻译和 QA 已通过，最终产物已归档。`)
+        await refreshCurrent()
+        if (tab === 'delivery') await refreshDeliverables()
+        return
+      }
+      if (started.status === 'failed') {
+        const resultArtifact = newestArtifact(started.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
+        if (resultArtifact) setQaArtifact(resultArtifact)
+        setStep((prev) => (prev < 8 ? 8 : prev))
+        setStatusForProject(projectId, `翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请进入 STEP 8 查看问题、修复或生成带问题交付。`)
+        await refreshCurrent()
+        if (tab === 'delivery') await refreshDeliverables()
+        return
+      }
       setStatusForProject(projectId, `${currentLang.short} 翻译已进入后台队列：系统会自动拆批、限流、落盘和续跑。`)
     } catch (error) {
       setStatusForProject(projectId, `翻译失败：${errorText(error)}`)
@@ -2353,6 +2387,7 @@ function ProjectOverview({
           setSelectedLanguage={setSelectedLanguage}
           selectedLanguages={selectedLanguages}
           toggleSelectedLanguage={toggleSelectedLanguage}
+          onGoDelivery={() => setTab('delivery')}
         />
       ) : null}
       {tab === 'archive' ? (

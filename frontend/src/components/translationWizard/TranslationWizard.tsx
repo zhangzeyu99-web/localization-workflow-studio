@@ -129,6 +129,7 @@ export function DeliveryTab({
           const hasChanges = Boolean(changesFile?.download_url)
           const hasPackage = Boolean(packageFile?.download_url)
           const hasDelivery = hasFinal || hasPackage
+          const hasQaIssues = task.status === 'failed' || task.qa_status === 'failed' || Number(task.qa_hard_errors || 0) > 0
           const resultLabel = hasPackage ? '已生成公告交付包' : hasDelivery ? (hasChanges ? '已生成最终译文 + 修改记录' : '已生成最终译文') : '待生成'
           return (
             <div key={task.run_id} className="delivery-card delivery-line">
@@ -137,8 +138,13 @@ export function DeliveryTab({
                   <strong>{deliveryTaskTitle(task)}</strong>
                   <span>{deliveryTaskSubtitle(task)}</span>
                 </div>
-                <span className={`tag ${task.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{deliveryStatusLabel(task)}</span>
+                <span className={`tag ${hasQaIssues ? 'tag-warn' : task.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{deliveryStatusLabel(task)}</span>
               </div>
+              {hasQaIssues ? (
+                <div className="warn-line" data-testid="delivery-problem-warning">
+                  这份任务还有 QA 问题；可以先下载修改记录复查，也可以生成带问题说明的交付文件。
+                </div>
+              ) : null}
               <div className="delivery-line-info">
                 <div><span>任务进度</span><strong>{deliveryProgressLabel(task)}</strong></div>
                 <div><span>交付结果</span><strong>{resultLabel}</strong></div>
@@ -149,7 +155,7 @@ export function DeliveryTab({
                 {qaSummaryFile?.download_url ? <a className="btn btn-ghost btn-sm" href={qaSummaryFile.download_url}>下载 QA 摘要</a> : null}
                 {finalFile?.download_url ? <a className="btn btn-primary btn-sm" href={finalFile.download_url}>下载最终译文</a> : null}
                 {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>下载修改记录</a> : null}
-                {!hasDelivery ? <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成交付文件</button> : null}
+                {!hasDelivery ? <button className="btn btn-primary btn-sm" data-testid={`delivery-generate-${task.run_id}`} disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成交付文件</button> : null}
               </div>
             </div>
           )
@@ -315,7 +321,7 @@ export function Wizard(props: {
         {step === 5 ? <StepFreqV2 {...props} /> : null}
         {step === 6 ? <StepLang {...props} /> : null}
         {step === 7 ? <StepTranslate {...props} /> : null}
-        {step === 8 ? <StepQA {...props} showHistory={false} /> : null}
+        {step === 8 ? <StepQA {...props} showHistory={false} onGoDelivery={() => props.setStep(9)} /> : null}
         {step === 9 ? <StepDone {...props} /> : null}
       </div>
       <div className="actions">
@@ -1114,6 +1120,7 @@ export function StepQA({
   setSelectedLanguage,
   selectedLanguages,
   toggleSelectedLanguage,
+  onGoDelivery,
   showHistory = true
 }: {
   project: Project
@@ -1136,6 +1143,7 @@ export function StepQA({
   setSelectedLanguage: (language: LanguageCode) => void
   selectedLanguages: LanguageCode[]
   toggleSelectedLanguage: (language: LanguageCode) => void
+  onGoDelivery?: () => void
   showHistory?: boolean
 }) {
   const latestQaRun = latestRun?.kind === 'qa' ? latestRun : latestRunOfKind(project, 'qa')
@@ -1147,8 +1155,11 @@ export function StepQA({
     ? newestArtifact(runArtifacts(project, previousTranslationRun.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
     : null
   const effectiveQaArtifact = qaArtifact || previousTranslationArtifact || null
-  const translationQaRun = previousTranslationRun?.status === 'passed' && previousTranslationArtifact ? previousTranslationRun : null
+  const translationQaRun = previousTranslationRun && previousTranslationArtifact ? previousTranslationRun : null
   const qaStatusRun = latestQaRun && (!translationQaRun || latestQaRun.created_at >= translationQaRun.created_at) ? latestQaRun : translationQaRun
+  const qaStatusArtifacts = qaStatusRun ? pickerArtifacts(qaStatusRun.artifacts?.length ? qaStatusRun.artifacts : runArtifacts(project, qaStatusRun.id)) : []
+  const qaFinalDownload = newestArtifact(qaStatusArtifacts, ['qa_final_workbook'])
+  const qaChangesDownload = newestArtifact(qaStatusArtifacts, ['qa_changes'])
   const qaRole = effectiveQaArtifact ? artifactRole(effectiveQaArtifact) : ''
   const selectedReadiness = effectiveQaArtifact && translationReadiness?.artifact_id === effectiveQaArtifact.id ? translationReadiness : null
   const canArchiveWithoutQA = Boolean(effectiveQaArtifact && (qaRole !== 'language_source' || canSkipModelTranslation(selectedReadiness)))
@@ -1274,6 +1285,17 @@ export function StepQA({
         {qaStatusRun?.status === 'failed' ? (
           <div className="qa-blocker-line">
             QA 未完全通过，系统已保留可交付文件和 QA 摘要。建议先用“模型修复并重跑 QA”或手工修复；如需临时验收，也可以去交付页生成带问题摘要的交付文件。
+          </div>
+        ) : null}
+        {(qaFinalDownload || qaChangesDownload || (qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) && onGoDelivery)) ? (
+          <div className="qa-result-actions">
+            {qaFinalDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-final" href={artifactDownloadHref(qaFinalDownload, project.id)}>下载校对后译文</a> : null}
+            {qaChangesDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-changes" href={artifactDownloadHref(qaChangesDownload, project.id)}>下载修改记录</a> : null}
+            {onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
+              <button className="btn btn-primary btn-sm" data-testid="qa-go-delivery" onClick={onGoDelivery}>
+                {qaStatusRun.status === 'failed' ? '去交付页生成带问题交付' : '去交付页生成最终文件'}
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
