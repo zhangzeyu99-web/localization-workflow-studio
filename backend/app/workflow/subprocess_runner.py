@@ -32,6 +32,8 @@ def user_facing_error(exc: BaseException | str) -> str:
     unsupported = re.search(r"unsupported file format:\s*(\.\w+)", text, re.I)
     if unsupported:
         return _friendly_unsupported_language_file_message(unsupported.group(1))
+    if re.search(r"response\s+ids?\s+mismatch", text, re.I):
+        return "AI 返回内容与原文行不匹配。请点击继续翻译重试当前批；如果重复出现，请检查 AI response 是否漏行、乱序或改了 ID。"
     if "another long-text ai job is active" in lower:
         return "\u5df2\u6709\u4e00\u4e2a\u957f\u6587\u672c AI \u4efb\u52a1\u6b63\u5728\u8fd0\u884c\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u6216\u5148\u53d6\u6d88\u540e\u518d\u7ee7\u7eed\u3002"
     if "api_key" in lower or "api key" in lower:

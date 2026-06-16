@@ -435,6 +435,7 @@ def translation_batch_file(run_id: str, batch_index: int, kind: str) -> Path:
 def reconcile_interrupted_background_jobs() -> dict[str, int]:
     db.mark_running_job_leases_interrupted()
     translation_runs = 0
+    local_runs = 0
     announcement_tasks = 0
     for run in db.list_runs():
         if run.get("kind") == "translation" and run.get("status") in {"queued", "running"}:
@@ -444,6 +445,14 @@ def reconcile_interrupted_background_jobs() -> dict[str, int]:
             db.update_run(run["id"], status="needs_input", metadata=metadata)
             db.add_event(run["id"], "background translation job was interrupted; resume from saved batches")
             translation_runs += 1
+        elif run.get("kind") != "translation" and run.get("status") in {"queued", "running"}:
+            metadata = dict(run.get("metadata") or {})
+            metadata["reason"] = "background_job_interrupted"
+            metadata["interrupted_at"] = db.now_iso()
+            metadata["error"] = "后台任务已中断，请重新运行当前步骤。"
+            db.update_run(run["id"], status="failed", metadata=metadata)
+            db.add_event(run["id"], "background local workflow job was interrupted; rerun the current step", level="warning")
+            local_runs += 1
     for project in db.list_projects():
         for task in db.list_announcement_tasks(project["id"]):
             if task.get("status") in {"queued", "running"}:
@@ -464,6 +473,6 @@ def reconcile_interrupted_background_jobs() -> dict[str, int]:
                             metadata=lang_meta,
                         )
                 announcement_tasks += 1
-    return {"translation_runs": translation_runs, "announcement_tasks": announcement_tasks}
+    return {"translation_runs": translation_runs, "announcement_tasks": announcement_tasks, "local_runs": local_runs}
 
 __all__ = [name for name in globals() if not name.startswith("__")]

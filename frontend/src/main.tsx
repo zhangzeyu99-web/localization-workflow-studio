@@ -8,7 +8,7 @@ import { SettingsModal } from './SettingsModal'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from './components/shared/WorkflowPrimitives'
 import { GlossaryTab, TranslationArchiveTab } from './components/assets/ProjectAssetTabs'
 import { QuickTaskWizard } from './components/quickTask/QuickTaskWizard'
-import { activeAnnouncementTasks, AnnouncementProjectPanel, AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
+import { activeAnnouncementTasks, announcementStatusLabel, AnnouncementProjectPanel, AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
 import { MetaTab } from './components/project/ProjectMeta'
 import { DeliveryTab, StepQA, TranslationTab, Wizard, formalTranslationBlockReason } from './components/translationWizard/TranslationWizard'
 import { artifactFileName, artifactKindLabel, artifactPickerLabel, artifactRole, artifactsByRole, artifactsByRoles, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, newestArtifact, pickerArtifacts, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
@@ -280,6 +280,18 @@ function announcementActionSummary(endpoint: string, summary?: Record<string, un
     return '已生成公告交付包，可在下方下载。'
   }
   return ''
+}
+
+function announcementTaskStatusText(task: AnnouncementTask | null | undefined): string {
+  if (!task) return ''
+  const title = task.title || '当前公告任务'
+  if (task.status === 'delivered') return `公告任务已交付：${title}。可在下方下载交付包。`
+  if (task.status === 'applied') return `公告已校对回填：${title}。可以进入交付步骤生成交付包。`
+  if (task.status === 'translated') return `公告 AI 翻译已完成：${title}。请运行校对回填。`
+  if (task.status === 'failed') return `公告任务失败：${title}。请查看当前步骤提示后继续。`
+  if (task.status === 'needs_input') return `公告任务暂停：${title}。请按当前步骤提示继续。`
+  if (['queued', 'running'].includes(task.status)) return `公告任务处理中：${title}（${announcementStatusLabel(task.status)}）。`
+  return `公告任务状态：${title}（${announcementStatusLabel(task.status)}）。`
 }
 
 function App() {
@@ -576,9 +588,22 @@ function App() {
   }, [latestRun?.id, latestRun?.status, tab])
 
   useEffect(() => {
-    if (!current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status))) return
-    const poller = window.setInterval(() => {
-      refreshCurrent()
+    const runningTaskIds = (current?.announcement_tasks || [])
+      .filter((task) => ['queued', 'running'].includes(task.status))
+      .map((task) => task.id)
+    if (!current || !runningTaskIds.length) return
+    const projectId = current.id
+    const poller = window.setInterval(async () => {
+      const loaded = await refreshProjectSnapshot(projectId)
+      if (!loaded || !isCurrentProject(projectId)) return
+      const tasks = loaded.announcement_tasks || []
+      const stillRunning = tasks.some((task) => runningTaskIds.includes(task.id) && ['queued', 'running'].includes(task.status))
+      if (!stillRunning) {
+        const finished = tasks.find((task) => runningTaskIds.includes(task.id)) || tasks[0]
+        setBusyForProject(projectId, false)
+        const message = announcementTaskStatusText(finished)
+        if (message) setStatusForProject(projectId, message)
+      }
     }, 2500)
     return () => window.clearInterval(poller)
   }, [current?.id, current?.announcement_tasks?.map((task) => `${task.id}:${task.status}`).join('|')])
@@ -1593,7 +1618,11 @@ function App() {
       }
       return result
     } catch (error) {
-      setStatusForProject(projectId, `公告任务失败：${errorText(error)}`)
+      const message = errorText(error)
+      setStatusForProject(projectId, `公告任务失败：${message}`)
+      if (/约束文件|语言表|表头|可反查词条/.test(message)) {
+        window.alert(`公告约束文件没有被正确读取：${message}`)
+      }
       return null
     } finally {
       setBusyForProject(projectId, false)
@@ -2110,22 +2139,26 @@ function visibleAnnouncementTaskCount(project: Project): number {
   return project.announcement_tasks ? activeAnnouncementTasks(project.announcement_tasks).length : (project.stats.announcement_tasks || 0)
 }
 
+function isProjectActivityRun(run: Run): boolean {
+  return ['translation', 'qa'].includes(run.kind) && ['queued', 'running', 'needs_input', 'failed'].includes(run.status)
+}
+
 function projectActivityRuns(project: Project | null | undefined): Run[] {
   if (!project) return []
   return (project.runs || [])
-    .filter((run) => ['queued', 'running', 'needs_input', 'failed'].includes(run.status))
+    .filter(isProjectActivityRun)
     .slice(0, 4)
 }
 
 function latestProjectActivityRun(project: Project | null | undefined): Run | null {
-  const latest = (project?.runs || [])[0] || null
+  const latest = (project?.runs || []).find(isProjectActivityRun) || null
   if (!latest) return null
-  return ['queued', 'running', 'needs_input', 'failed'].includes(latest.status) ? latest : null
+  return latest
 }
 
 function projectActiveTaskCount(project: Project | null | undefined): number {
   if (!project) return 0
-  const activeRuns = (project.runs || []).filter((run) => ['queued', 'running'].includes(run.status)).length
+  const activeRuns = (project.runs || []).filter((run) => ['translation', 'qa'].includes(run.kind) && ['queued', 'running'].includes(run.status)).length
   const activeAnnouncements = activeAnnouncementTasks(project.announcement_tasks || [])
     .filter((task) => ['queued', 'running'].includes(task.status)).length
   return activeRuns + activeAnnouncements

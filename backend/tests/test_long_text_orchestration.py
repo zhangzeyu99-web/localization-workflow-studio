@@ -290,7 +290,7 @@ def test_reconcile_interrupted_background_jobs_marks_resume_state() -> None:
 
     summary = workflow.reconcile_interrupted_background_jobs()
 
-    assert summary == {"translation_runs": 1, "announcement_tasks": 1}
+    assert summary == {"translation_runs": 1, "announcement_tasks": 1, "local_runs": 0}
     assert db.get_run(run["id"])["status"] == "needs_input"
     updated_task = db.get_announcement_task(task["id"])
     assert updated_task["status"] == "needs_input"

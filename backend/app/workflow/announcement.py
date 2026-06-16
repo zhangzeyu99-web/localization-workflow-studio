@@ -749,7 +749,7 @@ def apply_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
         if auto_fixed_count:
             fixed_artifact = db.add_artifact(
                 task["project_id"],
-                "公告 Hard blocker 自动修复中转表",
+                "公告严重问题自动修复中转表",
                 fixed_path,
                 "announcement_translation_workbook",
                 run_id=run["id"],
@@ -816,7 +816,7 @@ def fix_announcement_hard_blockers(task_id: str, request: Any) -> dict[str, Any]
     fixed_count = _repair_announcement_translation_workbook(fixed_path, issues, languages)
     fixed_artifact = db.add_artifact(
         task["project_id"],
-        "公告 Hard blocker 修复中转表",
+        "公告严重问题修复中转表",
         fixed_path,
         "announcement_translation_workbook",
         run_id=run["id"],

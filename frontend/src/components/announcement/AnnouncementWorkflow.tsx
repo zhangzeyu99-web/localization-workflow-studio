@@ -523,7 +523,7 @@ export function AnnouncementWizard({
               busy={busy}
               actionLabel="QA 并回填同格式文件"
               onAction={() => run('apply', 9)}
-              fixActionLabel="自动修复 Hard blocker"
+              fixActionLabel="自动修复 严重问题"
               onFixAction={() => run('fix-hard-blockers', 8)}
             />
           ) : (
@@ -782,7 +782,7 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
       <AnnouncementTaskSnapshot task={activeTask} />
       {hardBlockers > 0 && !delivered ? (
         <div className="warn-line">
-          当前还有 {hardBlockers} 个 Hard blocker。系统会把问题写入 QA 摘要；如需继续验收，可以直接生成带 QA 摘要的交付包。
+          当前还有 {hardBlockers} 个 严重问题。系统会把问题写入 QA 摘要；如需继续验收，可以直接生成带 QA 摘要的交付包。
         </div>
       ) : null}
       {qaSummaryArtifacts.length && hardBlockers > 0 ? (
@@ -798,7 +798,7 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
             className="btn btn-primary"
             disabled={!activeTask || busy}
             onClick={() => {
-              if (window.confirm(`当前还有 ${hardBlockers} 个 Hard blocker。确认生成带 QA 摘要的交付包？`)) onDeliver(true)
+              if (window.confirm(`当前还有 ${hardBlockers} 个 严重问题。确认生成带 QA 摘要的交付包？`)) onDeliver(true)
             }}
           >
             生成带 QA 摘要的交付包
@@ -853,7 +853,7 @@ export function AnnouncementActionStep({
       {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
       <AnnouncementTaskSnapshot task={activeTask} />
       {step === 8 && hardBlockers > 0 ? (
-        <div className="warn-line">检测到 {hardBlockers} 个 Hard blocker。系统已保留回填文件，可以下载 QA 摘要查看问题；也可以继续到 STEP 9 生成带 QA 摘要的交付包。</div>
+        <div className="warn-line">检测到 {hardBlockers} 个 严重问题。系统已保留回填文件，可以下载 QA 摘要查看问题；也可以继续到 STEP 9 生成带 QA 摘要的交付包。</div>
       ) : null}
       {step === 8 && qaSummaryArtifacts.length ? (
         <div className="row-actions">
@@ -862,7 +862,7 @@ export function AnnouncementActionStep({
       ) : null}
       <div className="row-actions">
         <button className="btn btn-primary" disabled={!activeTask || busy} onClick={onAction}>{actionLabel}</button>
-        {hardBlockers > 0 && onFixAction ? <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={onFixAction}>{fixActionLabel || '自动修复 Hard blocker'}</button> : null}
+        {hardBlockers > 0 && onFixAction ? <button className="btn btn-ghost" disabled={!activeTask || busy} onClick={onFixAction}>{fixActionLabel || '自动修复 严重问题'}</button> : null}
       </div>
     </>
   )
