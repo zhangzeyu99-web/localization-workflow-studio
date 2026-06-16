@@ -12,6 +12,26 @@ const inlineStatus = (page: any, text: string) => page.locator('.inline-status',
 
 test.use({ acceptDownloads: true })
 
+test('project list refreshes after an external project is created', async ({ page, request }) => {
+  const firstProjectName = `E2E List Base ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: firstProjectName, type: 'list-refresh', description: 'Project list refresh base.' },
+  })
+
+  await page.goto(baseURL)
+  await expect(page.getByRole('button', { name: firstProjectName })).toBeVisible({ timeout: 15000 })
+  await page.getByRole('button', { name: firstProjectName }).click()
+  await expect(page.getByRole('heading', { name: firstProjectName })).toBeVisible()
+
+  const externalProjectName = `E2E List External ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: externalProjectName, type: 'list-refresh', description: 'Created outside the loaded page.' },
+  })
+
+  await expect(page.getByRole('button', { name: externalProjectName })).toBeVisible({ timeout: 20000 })
+  await expect(page.getByRole('heading', { name: firstProjectName })).toBeVisible()
+})
+
 test('user can complete the EN localization workflow from project tabs', async ({ page, request }) => {
   await request.patch(`${baseURL}/api/settings`, {
     data: {

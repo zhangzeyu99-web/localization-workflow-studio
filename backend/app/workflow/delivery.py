@@ -10,7 +10,7 @@ from openpyxl import Workbook, load_workbook
 
 from .. import db
 from ..delivery_naming import safe_delivery_name
-from ..languages import PROJECT_LANGUAGE_ORDER, require_supported_language, target_aliases
+from ..languages import PROJECT_LANGUAGE_ORDER, SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from .announcement_outputs import _announcement_task_source_stem, _artifact_display_label, _visible_language_code
 from .announcement_segments import _normalize_announcement_languages
 from .common import project_dir
@@ -490,7 +490,7 @@ def _workbook_processed_rows(path: Path, language: Any | None = None) -> dict[st
                     for index, value in enumerate(header_row, start=1)
                     if value is not None and str(value).strip()
                 }
-                source_col = _first_col(headers, ["cn", "source", "original", "原文", "中文"])
+                source_col = _first_col(headers, list(SOURCE_HEADER_ALIASES))
                 target_col = _first_col(headers, _target_headers_for_processed_rows(language))
                 if source_col is None or target_col is None:
                     continue

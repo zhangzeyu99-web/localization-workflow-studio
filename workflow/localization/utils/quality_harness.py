@@ -372,7 +372,7 @@ def _collect_terms_from_workbook(workbook, add, all_sheets: bool = False, lang: 
     for ws in workbook.worksheets:
         is_glossary_sheet = _is_glossary_sheet(ws)
         header = [str(value or '').strip().lower() for value in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())]
-        cn_idx = _find_header(header, {'cn', 'zh', '中文', '中文术语', '原文', 'source', 'original'})
+        cn_idx = _find_header(header, {'cn', 'zh', '中文', '简体中文', '中文术语', '原文', 'source', 'original'})
         target_idx = _find_header(header, _target_header_candidates(lang))
         variant_idx = _find_header(header, _variant_header_candidates(lang))
         category_idx = _find_header(header, {'分类', '类别', 'category', 'type', 'tag', 'tags'})
@@ -916,7 +916,7 @@ def _detect_columns(ws, lang: str = 'en') -> tuple[int | None, int | None, int |
         return fallback if fallback is None or fallback < len(headers) else None
 
     id_col = pick({'id', 'key'}, 0)
-    src_col = pick({'cn', 'zh', '中文', '原文', 'source', 'original'}, 1)
+    src_col = pick({'cn', 'zh', '中文', '简体中文', '原文', 'source', 'original'}, 1)
     tgt_col = pick(_target_header_candidates(lang), 2)
     return id_col, src_col, tgt_col
 
@@ -933,7 +933,7 @@ def _is_glossary_sheet(ws) -> bool:
         return True
     return (
         len(headers) >= 4
-        and headers[0] in {'cn', 'zh', 'source', 'original', '中文', '原文'}
+        and headers[0] in {'cn', 'zh', 'source', 'original', '中文', '简体中文', '原文'}
         and headers[1] in _all_target_header_candidates()
         and headers[2] in _all_variant_header_candidates()
         and headers[3] in {'分类', '类别', 'category', 'type', 'tag', 'tags'}

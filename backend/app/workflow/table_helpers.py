@@ -6,7 +6,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from ..languages import PROJECT_LANGUAGE_ORDER, alt_aliases, require_supported_language, target_aliases
+from ..languages import PROJECT_LANGUAGE_ORDER, SOURCE_HEADER_ALIASES, alt_aliases, require_supported_language, target_aliases
 
 LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
 AUTO_LANGUAGE_TARGET_ALIASES = {code: tuple(target_aliases(code)) for code in LANGUAGE_ORDER}
@@ -89,7 +89,7 @@ def _read_glossary_rows(
         headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
         normalized = {header.lower(): index for index, header in enumerate(headers) if header}
         term_key_idx = _column_index(normalized, term_key_column, ["id", "key", "编号", "序号"], required=False)
-        source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "term", "原文", "中文", "术语"])
+        source_idx = _column_index(normalized, source_column, list(SOURCE_HEADER_ALIASES))
         target_idx = _column_index(normalized, target_column, target_aliases(language))
         target_alt_idx = _column_index(normalized, target_alt_column, alt_aliases(language), required=False)
         category_idx = _column_index(normalized, category_column, ["category", "type", "分类", "类别", "类型"], required=False)

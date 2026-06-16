@@ -967,6 +967,14 @@ export function StepTranslate({
   const latestMatchingRun = latestRun && matchesTranslationRun(latestRun, selectedLanguage, sourceArtifact?.id, 'translation_run') ? latestRun : null
   const currentTranslationRun = latestMatchingRun || findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run')
   const progress = getTranslationProgress(currentTranslationRun)
+  const termAudit = (progress?.term_audit || currentTranslationRun?.metadata?.term_audit) as TranslationProgress['term_audit'] | undefined
+  const termAuditWarning = currentTranslationRun?.metadata?.reason === 'glossary_candidates_not_confirmed'
+    ? String(currentTranslationRun.metadata?.user_message || '候选术语尚未确认，当前翻译已暂停；请回 STEP 5 确认术语，或再次启动并确认继续无术语翻译。')
+    : currentTranslationRun?.metadata?.reason === 'selected_term_artifact_empty'
+      ? String(currentTranslationRun.metadata?.user_message || '已选择本次术语表，但没有读取到可用术语；请检查术语表格式和目标语言列。')
+    : termAudit?.warning === 'no_term_hits'
+      ? '本次 workpack 没有命中术语；如果你已提供术语表，请检查术语是否已加入项目术语库或作为本次术语表输入。'
+      : ''
   const languageProgressItems = selectedLanguages.map((code) => {
     const run = findVisibleTranslationRun(project, code, sourceArtifact?.id, 'translation_run')
     const itemProgress = getTranslationProgress(run)
@@ -1070,6 +1078,14 @@ export function StepTranslate({
         </div>
         {showTranslateStatus ? <ActionStatus status={status} busy={busy} /> : null}
         {progress ? <TranslationProgressBar progress={progress} languageLabel={lang.short} /> : null}
+        {termAuditWarning ? (
+          <div className="warn-line">
+            {termAuditWarning}
+            <div className="row-actions wrap">
+              <button className="btn btn-ghost btn-sm" type="button" onClick={() => setStep(5)}>返回确认术语</button>
+            </div>
+          </div>
+        ) : null}
         {finishingTranslation ? <div className="info-line compact">译文批次已完成，正在做 QA 校验和结果归档。完成后会自动接到 STEP 8；请不要在此时重复启动。</div> : null}
         {currentTranslationRun?.metadata?.reason === 'api_budget_confirmation_required' ? (
           <div className="warn-line">预计 API token 超过提醒阈值；点击“继续后台翻译”会二次确认预算，并从已完成批次继续。</div>

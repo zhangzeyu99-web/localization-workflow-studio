@@ -95,6 +95,7 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
                 request = TranslateRequest(
                     batch_size=payload.batch_size,
                     confirm_api_budget=payload.confirm_api_budget,
+                    confirm_term_gap=payload.confirm_term_gap,
                 )
                 run_translate_sync(run["id"], request, cancel_event=cancel_event)
             except Exception as exc:

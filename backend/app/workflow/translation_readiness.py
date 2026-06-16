@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 
 from .. import db
 from ..config import load_settings
-from ..languages import require_supported_language, target_aliases
+from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from .announcement_segments import _is_quick_text_path, _quick_text_translation_rows, _txt_announcement_segments
 from .common import (
     HARNESS_SCHEMA_VERSION,
@@ -47,7 +47,7 @@ def inspect_translation_targets(artifact_id: str) -> dict[str, Any]:
             for ws in wb.worksheets:
                 headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1), ())]
                 normalized = [header.lower() for header in headers]
-                source_detected = any(header in {"cn", "zh", "source", "original", "chinese", "原文", "中文"} for header in normalized)
+                source_detected = any(header in SOURCE_HEADER_ALIASES for header in normalized)
                 result["source_detected"] = bool(result["source_detected"] or source_detected)
                 sheet_languages: list[str] = []
                 for index, header in enumerate(normalized):
@@ -83,7 +83,7 @@ def _scan_workbook_translation_readiness(path: Path, language: str, summary: dic
                     headers = _header_map(ws)
                 except Exception:
                     continue
-                source_col = _first_col(headers, ["cn", "source", "original", "zh", "chinese", "原文", "中文"])
+                source_col = _first_col(headers, list(SOURCE_HEADER_ALIASES))
                 target_col = _first_col(headers, target_aliases(language))
                 id_col = _first_col(headers, ["id", "编号", "序号"])
                 if source_col is None:
@@ -134,7 +134,7 @@ def _finalize_translation_readiness(summary: dict[str, Any], *, found_target_col
             summary,
             input_mode="invalid",
             next_step=4,
-            user_message="未检测到 CN/原文行，请上传包含 ID 和 CN 的语言表。",
+            user_message="未检测到中文原文列，请上传包含 ID 和 CN/简体中文/原文 的语言表。",
             format_errors=["missing_source_rows"],
         )
     if int(summary["invalid_id_rows"]):
@@ -154,7 +154,7 @@ def _finalize_translation_readiness(summary: dict[str, Any], *, found_target_col
             summary,
             input_mode="invalid",
             next_step=4,
-            user_message=f"未检测到 {language} 译文列；请上传包含 ID、CN 和目标语言列的语言表，或先切换目标语言。",
+            user_message=f"未检测到 {language} 译文列；请上传包含 ID、CN/简体中文/原文 和目标语言列的语言表，或先切换目标语言。",
             format_errors=["target_column_missing"],
         )
     if empty_rows == 0 and cjk_rows == 0 and translated_rows > 0:

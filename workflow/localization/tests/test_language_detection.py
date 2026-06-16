@@ -126,5 +126,41 @@ class LanguageDetectionTests(unittest.TestCase):
             self.assertIn("보상 수령", ko_terms["领取奖励"]["variants"])
 
 
+    def test_load_term_base_uses_supported_visible_language_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "terms.xlsx"
+            df = pd.DataFrame(
+                {
+                    "CN": ["HeroSource"],
+                    "FR": ["HeroFR"],
+                    "DE": ["HeroDE"],
+                    "RU": ["HeroRU"],
+                    "IT": ["HeroIT"],
+                    "ES": ["HeroES"],
+                    "PT": ["HeroPT"],
+                    "TR": ["HeroTR"],
+                    "TH": ["HeroTH"],
+                    "AR": ["HeroAR"],
+                }
+            )
+            df.to_excel(path, index=False)
+
+            expected = {
+                "fr": "HeroFR",
+                "de": "HeroDE",
+                "ru": "HeroRU",
+                "it": "HeroIT",
+                "es": "HeroES",
+                "pt": "HeroPT",
+                "tr": "HeroTR",
+                "th": "HeroTH",
+                "ar": "HeroAR",
+            }
+            for lang, target in expected.items():
+                with self.subTest(lang=lang):
+                    term_lookup = _load_term_base(str(path), lang=lang)
+                    self.assertEqual(term_lookup["HeroSource"]["primary"], target)
+
+
 if __name__ == "__main__":
     unittest.main()

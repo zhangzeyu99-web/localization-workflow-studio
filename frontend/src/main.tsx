@@ -294,6 +294,35 @@ function announcementTaskStatusText(task: AnnouncementTask | null | undefined): 
   return `公告任务状态：${title}（${announcementStatusLabel(task.status)}）。`
 }
 
+function hasRecords<T>(items?: T[] | null): items is T[] {
+  return Array.isArray(items) && items.length > 0
+}
+
+function hasObjectFields(value?: Record<string, unknown> | null): value is Record<string, unknown> {
+  return Boolean(value && Object.keys(value).length)
+}
+
+function mergeProjectSummary(existing: Project | undefined, summary: Project): Project {
+  if (!existing) return summary
+  return {
+    ...existing,
+    ...summary,
+    profile: hasObjectFields(summary.profile) ? summary.profile : existing.profile,
+    harness: hasObjectFields(summary.harness as Record<string, unknown> | undefined) ? summary.harness : existing.harness,
+    artifacts: hasRecords(summary.artifacts) ? summary.artifacts : existing.artifacts,
+    runs: hasRecords(summary.runs) ? summary.runs : existing.runs,
+    glossary: hasRecords(summary.glossary) ? summary.glossary : existing.glossary,
+    translations: hasRecords(summary.translations) ? summary.translations : existing.translations,
+    announcement_tasks: hasRecords(summary.announcement_tasks) ? summary.announcement_tasks : existing.announcement_tasks,
+  }
+}
+
+function mergeProjectListSummaries(previous: Project[], loaded: Project[]): Project[] {
+  const previousById = new Map(previous.map((project) => [project.id, project]))
+  return loaded.map((project) => mergeProjectSummary(previousById.get(project.id), project))
+}
+
+
 function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [, setLanguageVersion] = useState(0)
@@ -346,6 +375,24 @@ function App() {
     refreshLanguageOptions(API)
       .then(() => setLanguageVersion((value) => value + 1))
       .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    const syncProjectList = () => {
+      if (document.hidden) return
+      refreshProjects(currentIdRef.current).catch(() => undefined)
+    }
+    const onVisibilityChange = () => {
+      if (!document.hidden) syncProjectList()
+    }
+    window.addEventListener('focus', syncProjectList)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    const poller = window.setInterval(syncProjectList, 10000)
+    return () => {
+      window.removeEventListener('focus', syncProjectList)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.clearInterval(poller)
+    }
   }, [])
 
   const current = useMemo(() => projects.find((p) => p.id === currentId), [projects, currentId])
@@ -557,7 +604,28 @@ function App() {
         if (!isCurrentProject(runProjectId)) return
         setLatestRun(updated)
         const latestEvent = updated.events?.[updated.events.length - 1]
-        if (updated.kind === 'translation' && updated.status === 'passed') {
+        const modelFixStatus = String(updated.metadata?.model_fix_status || '')
+        const modelFixResultRunId = String(updated.metadata?.model_fix_result_run_id || '')
+        if (modelFixStatus) {
+          if (modelFixStatus === 'running' || updated.status === 'running') {
+            setStatus('模型修复后台运行中：正在调用 AI 修复问题，完成后会自动重跑 QA。')
+          } else if (modelFixResultRunId) {
+            const resultRun = await api<Run>(`/api/runs/${modelFixResultRunId}`)
+            if (!isCurrentProject(runProjectId)) return
+            setLatestRun(resultRun)
+            setStep((prev) => (prev < 8 ? 8 : prev))
+            if (resultRun.status === 'passed') {
+              setQualityIssues([])
+              setStatus('模型修复并重跑 QA 已通过，可进入交付。')
+            } else {
+              const issues = await loadQualityIssues(resultRun.id, runProjectId)
+              const hardCount = issues.filter((issue) => issue.severity === 'hard').length
+              setStatus(`模型修复已完成，但 QA 仍有 ${hardCount || issues.length || '若干'} 个问题；可继续修复，或生成带问题交付。`)
+            }
+          } else if (modelFixStatus === 'failed') {
+            setStatus(`模型修复失败：${String(updated.metadata?.model_fix_error || updated.metadata?.error || '请检查 API 配置和 QA 输入。')}`)
+          }
+        } else if (updated.kind === 'translation' && updated.status === 'passed') {
           setStatus(`${languageSpec(normalizeLanguageCode(updated.language) || selectedLanguage).short} 翻译和 QA 已通过，最终产物已归档。`)
           const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
           if (resultArtifact) setQaArtifact(resultArtifact)
@@ -651,7 +719,7 @@ function App() {
       const loaded = await api<Project[]>('/api/projects')
       const activeId = currentIdRef.current
       const nextId = loaded.some((item) => item.id === activeId && item.id !== targetId) ? activeId : loaded[0]?.id || ''
-      setProjects(loaded)
+      setProjects((prev) => mergeProjectListSummaries(prev, loaded))
       currentIdRef.current = nextId
       setCurrentId(nextId)
       if (targetId === activeId) {
@@ -728,7 +796,7 @@ function App() {
       ? selectId
       : (loaded.some((item) => item.id === currentIdRef.current) ? currentIdRef.current : '')
     const nextId = preferred || loaded[0]?.id || ''
-    setProjects(loaded)
+    setProjects((prev) => mergeProjectListSummaries(prev, loaded))
     currentIdRef.current = nextId
     setCurrentId(nextId)
   }
@@ -1208,6 +1276,27 @@ function App() {
     return languages.filter((language, index) => languages.indexOf(language) === index)
   }
 
+  function confirmTermGapBeforeTranslate(language: LanguageCode): boolean {
+    if (!current || termArtifact) return true
+    const confirmedTerms = (current.glossary || []).filter((term) => term.language === language && String(term.target || '').trim()).length
+    const readyCandidates = glossaryCandidates.filter((item) =>
+      item.status === 'pending' &&
+      (item.language || language) === language &&
+      String(item.target || '').trim()
+    ).length
+    if (confirmedTerms > 0 || readyCandidates === 0) return true
+    const shouldContinue = window.confirm(
+      `检测到 ${languageSpec(language).short} 有 ${readyCandidates} 条候选术语尚未加入项目术语库。\n\n` +
+      '这些候选术语默认不会参与本次翻译，可能导致译文不按术语表执行。\n\n' +
+      '建议返回 STEP 5 先确认术语。仍要继续无术语翻译吗？'
+    )
+    if (!shouldContinue) {
+      setStep(5)
+      setStatusForProject(current.id, '已暂停翻译：请先在 STEP 5 确认候选术语，再启动 AI 翻译。')
+    }
+    return shouldContinue
+  }
+
   async function runTranslate(taskCode: 'A' | 'T' = 'T') {
     if (!current || !sourceArtifact) return
     const projectId = current.id
@@ -1227,6 +1316,8 @@ function App() {
       setStatus(`无法开始翻译：${blockReason}`)
       return
     }
+    const confirmedTermGap = confirmTermGapBeforeTranslate(selectedLanguage)
+    if (!confirmedTermGap) return
     setBusy(true)
     setStatusForProject(projectId, `${currentLang.short} 翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
     try {
@@ -1264,10 +1355,15 @@ function App() {
       const started = await api<Run>(`/api/runs/${run.id}/translate/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget })
+        body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget, confirm_term_gap: confirmedTermGap })
       })
       if (!isCurrentProject(projectId)) return
       setLatestRun(started)
+      if (started.status === 'needs_input' && ['glossary_candidates_not_confirmed', 'selected_term_artifact_empty'].includes(String(started.metadata?.reason || ''))) {
+        setStep(5)
+        setStatusForProject(projectId, String(started.metadata?.user_message || '术语未正确进入翻译包，已暂停翻译；请先检查术语表或确认候选术语。'))
+        return
+      }
       if (started.status === 'passed') {
         const resultArtifact = newestArtifact(started.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
         if (resultArtifact) setQaArtifact(resultArtifact)
@@ -1307,12 +1403,14 @@ function App() {
     if (!isCurrentProject(projectId)) return
     const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current, readiness)
     if (blockReason) {
-      setStatusForProject(projectId, `\u65e0\u6cd5\u5f00\u59cb\u591a\u8bed\u8a00\u7ffb\u8bd1\uff1a${blockReason}`)
+      setStatusForProject(projectId, `无法开始多语言翻译：${blockReason}`)
       return
     }
     setBusyForProject(projectId, true)
-    setStatusForProject(projectId, `\u6b63\u5728\u542f\u52a8\u591a\u8bed\u8a00\u7ffb\u8bd1\u961f\u5217\uff1a${languages.map((language) => languageSpec(language).short).join(' / ')}`)
+    setStatusForProject(projectId, `正在启动多语言翻译队列：${languages.map((language) => languageSpec(language).short).join(' / ')}`)
     try {
+      const confirmedTermGap = languages.every((language) => confirmTermGapBeforeTranslate(language))
+      if (!confirmedTermGap) return
       const result = await api<MultilingualQueueStatus>(`/api/projects/${current.id}/multilingual/translate/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1322,7 +1420,8 @@ function App() {
           batch_size: selectedBatchSize,
           task_code: taskCode,
           term_artifact_id: termArtifact?.id || null,
-          confirm_api_budget: false
+          confirm_api_budget: false,
+          confirm_term_gap: confirmedTermGap
         })
       })
       if (!isCurrentProject(projectId)) return
@@ -1491,35 +1590,37 @@ function App() {
     if (!current || !latestRun) return
     const projectId = current.id
     setBusy(true)
-    setStatusForProject(projectId, '模型修复正在运行：系统会先批量修复可定位问题，再自动重跑 QA...')
+    setStatusForProject(projectId, '正在启动模型修复后台任务...')
+    let started = false
     try {
-      const result = await api<{
-        fixed_artifact: Artifact
-        model_fixes: Record<string, unknown>[]
-        qa_result?: { run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }
-      }>(`/api/runs/${latestRun.id}/model-fixes`, {
+      const run = await api<Run>(`/api/runs/${latestRun.id}/model-fixes/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ max_issues: 80, rerun_qa: true })
       })
       if (!isCurrentProject(projectId)) return
-      if (result.qa_result) {
-        setLatestRun({ ...result.qa_result.run, artifacts: result.qa_result.artifacts })
-        const issues = result.qa_result.run.status === 'passed' ? [] : await loadQualityIssues(result.qa_result.run.id, projectId)
-        if (result.qa_result.run.status === 'passed') setQualityIssues([])
-        const hardCount = Number(result.qa_result.quality_summary?.hard_errors || 0) || issues.filter((issue) => issue.severity === 'hard').length
-        setStatusForProject(projectId, result.qa_result.run.status === 'passed'
-          ? `模型已修复 ${result.model_fixes.length} 条，重跑 QA 已通过，可进入交付。`
-          : `模型已修复 ${result.model_fixes.length} 条，但 QA 仍有 ${hardCount || '若干'} 个问题；已生成可交付文件，可继续修或进入交付。`)
+      started = true
+      const resultRunId = String(run.metadata?.model_fix_result_run_id || '')
+      if (resultRunId && run.metadata?.model_fix_status !== 'running') {
+        const resultRun = await api<Run>(`/api/runs/${resultRunId}`)
+        setLatestRun(resultRun)
+        if (resultRun.status === 'passed') {
+          setQualityIssues([])
+          setStatusForProject(projectId, '模型修复并重跑 QA 已通过，可进入交付。')
+        } else {
+          const issues = await loadQualityIssues(resultRun.id, projectId)
+          const hardCount = issues.filter((issue) => issue.severity === 'hard').length
+          setStatusForProject(projectId, `模型修复已完成，但 QA 仍有 ${hardCount || issues.length || '若干'} 个问题；可继续修复，或生成带问题交付。`)
+        }
       } else {
-        setQaArtifact(result.fixed_artifact)
-        setStatusForProject(projectId, `模型已修复 ${result.model_fixes.length} 条，等待重新 QA`)
+        setLatestRun(run)
+        setStatusForProject(projectId, '模型修复已进入后台：系统会修复可定位问题并自动重跑 QA，完成后会更新本页状态。')
       }
       await refreshCurrent()
     } catch (error) {
       setStatusForProject(projectId, `模型修复失败：${errorText(error)}`)
     } finally {
-      setBusyForProject(projectId, false)
+      if (!started) setBusyForProject(projectId, false)
     }
   }
 

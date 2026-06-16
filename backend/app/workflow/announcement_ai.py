@@ -9,7 +9,12 @@ from openpyxl import Workbook
 from .. import db
 from ..config import REAL_PROVIDERS, load_settings, normalize_provider_name
 from ..languages import ANNOUNCEMENT_LANGUAGE_ORDER, require_supported_language, target_aliases, visible_language_code
-from .announcement_shared import ANNOUNCEMENT_STEP, _announcement_task_metadata, _count_lookup_hits
+from .announcement_shared import (
+    ANNOUNCEMENT_STEP,
+    _announcement_task_metadata,
+    _count_lookup_hits,
+    _is_low_value_announcement_term,
+)
 from .announcement_outputs import _announcement_task_source_stem, _today_stamp, _visible_language_code
 from .announcement_segments import _announcement_task_source_text, _glossary_extractor_module
 from .common import run_dir
@@ -67,6 +72,8 @@ def _announcement_ai_rows_to_terms(ai_rows: list[dict[str, object]], original_ro
         source = str(ai_row.get("CN") or "").strip()
         key = _wide_source_key(source)
         if not key or key in seen:
+            continue
+        if _is_low_value_announcement_term(source):
             continue
         seen.add(key)
         if key in original_by_source:
@@ -139,7 +146,11 @@ def _apply_announcement_ai_supplement(
     packet_path = output_dir / f"{base_name}_ai_supplement_packet_{_today_stamp()}.json"
     report_path = output_dir / f"{base_name}_ai_supplement_report_{_today_stamp()}.md"
     matched_rows = [_announcement_term_to_ai_row(row, languages) for row in rows]
-    candidate_rows = [_announcement_term_to_ai_row(row, languages) for row in candidates]
+    candidate_rows = [
+        _announcement_term_to_ai_row(row, languages)
+        for row in candidates
+        if not _is_low_value_announcement_term(str(row.get("source") or row.get("CN") or "").strip())
+    ]
     packet = extractor.build_ai_supplement_packet(
         announcement_text=source_text,
         matched_rows=matched_rows,

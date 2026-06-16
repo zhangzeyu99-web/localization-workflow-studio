@@ -8,7 +8,7 @@ from typing import Any
 from openpyxl import Workbook, load_workbook
 
 from .. import db
-from ..languages import alt_aliases, normalize_language, require_supported_language, target_aliases
+from ..languages import SOURCE_HEADER_ALIASES, alt_aliases, normalize_language, require_supported_language, target_aliases
 from .common import project_dir
 from .naming import _safe_delivery_name, _today_stamp, _visible_language_code
 from .table_helpers import (
@@ -22,6 +22,7 @@ from .table_helpers import (
 )
 
 _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD = 1000
+_LANGUAGE_TABLE_SOURCE_ALIASES = [alias for alias in SOURCE_HEADER_ALIASES if alias not in {"term", "术语"}]
 COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE = "这个文件看起来是完整语言表，不是项目术语表。请到「生成术语」或翻译流程 STEP5 做高频词扫描并生成术语候选，候选确认后才会进入项目术语库。"
 COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE = "这个文件看起来是完整语言表，请上传到 STEP4「语言表」。它不会作为项目资料参与术语提取。"
 
@@ -37,7 +38,7 @@ def is_complete_language_table_for_glossary_import(path: Path, sheet: str | None
         headers = [str(cell.value or "").strip() for cell in header_row]
         normalized = _normalized_header_indices(headers)
         term_key_idx = _column_index(normalized, None, ["id", "key", "编号", "序号"], required=False)
-        source_idx = _column_index(normalized, None, ["source", "original", "cn", "zh", "chinese", "原文", "中文", "简体中文"], required=False)
+        source_idx = _column_index(normalized, None, _LANGUAGE_TABLE_SOURCE_ALIASES, required=False)
         if term_key_idx is None or source_idx is None:
             return False
         reserved = {term_key_idx, source_idx}
@@ -408,7 +409,7 @@ def _read_multilingual_glossary_rows(
         headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
         normalized = _normalized_header_indices(headers)
         term_key_idx = _column_index(normalized, term_key_column, ["id", "key", "编号", "序号"], required=False)
-        source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "term", "原文", "中文", "术语"])
+        source_idx = _column_index(normalized, source_column, list(SOURCE_HEADER_ALIASES))
         category_idx = _column_index(normalized, category_column, ["category", "type", "分类", "类别", "类型"], required=False)
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
         reserved = {index for index in (term_key_idx, source_idx, category_idx, note_idx) if index is not None}
@@ -468,7 +469,7 @@ def _read_multilingual_translation_rows(
         headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
         normalized = _normalized_header_indices(headers)
         id_idx = _column_index(normalized, id_column, ["id", "key", "编号", "序号"], required=False)
-        source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "原文", "中文"])
+        source_idx = _column_index(normalized, source_column, list(SOURCE_HEADER_ALIASES))
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
         reserved = {index for index in (id_idx, source_idx, note_idx) if index is not None}
         language_indices = _auto_language_indices(headers, reserved)
@@ -541,7 +542,7 @@ def _read_translation_rows(
         headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
         normalized = {header.lower(): index for index, header in enumerate(headers) if header}
         id_idx = _column_index(normalized, id_column, ["id", "key", "编号", "序号"], required=False)
-        source_idx = _column_index(normalized, source_column, ["source", "original", "cn", "zh", "chinese", "原文", "中文"])
+        source_idx = _column_index(normalized, source_column, list(SOURCE_HEADER_ALIASES))
         target_idx = _column_index(normalized, target_column, target_aliases(language))
         target_alt_idx = _column_index(normalized, target_alt_column, alt_aliases(language), required=False)
         note_idx = _column_index(normalized, note_column, ["note", "notes", "comment", "备注"], required=False)
@@ -588,7 +589,7 @@ def _translation_row_from_mapping(
 
     return {
         "entry_key": pick("id", "key", "entry_key", "编号", "序号"),
-        "source": pick("cn", "source", "original", "原文", "中文"),
+        "source": pick(*SOURCE_HEADER_ALIASES),
         "target": pick("target", *target_aliases(language)),
         "target_alt": pick("target_alt", *alt_aliases(language)),
         "language": language,

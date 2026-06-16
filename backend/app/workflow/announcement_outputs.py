@@ -14,7 +14,12 @@ from openpyxl import Workbook, load_workbook
 from .. import db
 from ..delivery_naming import safe_delivery_name as _safe_delivery_name, source_stem
 from ..languages import language_spec, require_supported_language, visible_language_code
-from .announcement_shared import _announcement_task_metadata, _rank_translation_lookup_source
+from .announcement_shared import (
+    _announcement_task_metadata,
+    _announcement_term_occurs,
+    _rank_translation_lookup_source,
+    _suppress_overlapping_lookup_hits,
+)
 from .common import _CJK_RE
 from .jsonl_helpers import read_jsonl
 from .table_helpers import _wide_source_key
@@ -96,9 +101,11 @@ def _announcement_segment_term_hits(segment: dict[str, Any], language: str, look
     for term in (lookup.get(language) or {}).get("terms", []):
         term_source = str(term.get("source") or "")
         target = str(term.get("target") or "").strip()
-        if term_source and target and term_source in source:
-            hits.append({"source": term_source, "target": target})
-    return hits
+        hit_count, first_position = _announcement_term_occurs(source, term_source)
+        if term_source and target and hit_count:
+            hits.append({"source": term_source, "target": target, "first_position": first_position, "hit_count": hit_count})
+    selected = _suppress_overlapping_lookup_hits(hits)
+    return [{"source": hit["source"], "target": hit["target"]} for hit in selected]
 
 
 def _announcement_protected_tokens(text: str) -> list[str]:

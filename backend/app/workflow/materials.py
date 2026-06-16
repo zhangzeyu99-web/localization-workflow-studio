@@ -12,7 +12,7 @@ from openpyxl import load_workbook
 
 from .. import db
 from ..config import REAL_PROVIDERS, normalize_provider_name
-from ..languages import visible_language_code
+from ..languages import SOURCE_HEADER_ALIASES, visible_language_code
 from ..providers import call_image_text
 from ..translation_batches import cap_context_text as _cap_context_text
 from .common import project_dir
@@ -217,7 +217,7 @@ def _parse_project_xlsx_material(path: Path) -> dict[str, Any]:
             headers = [str(value or "").strip() for value in (first or [])]
             normalized = _normalized_header_indices(headers)
             id_idx = _column_index(normalized, None, ["id", "key", "编号", "序号"], required=False)
-            source_idx = _column_index(normalized, None, ["source", "original", "cn", "zh", "chinese", "原文", "中文", "简体中文"], required=False)
+            source_idx = _column_index(normalized, None, list(SOURCE_HEADER_ALIASES), required=False)
             reserved = {idx for idx in (id_idx, source_idx) if idx is not None}
             language_indices = _auto_language_indices(headers, reserved)
             detected_languages.update(language_indices.keys())

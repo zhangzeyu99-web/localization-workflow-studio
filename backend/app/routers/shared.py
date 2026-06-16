@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 
 from .. import db
 from ..delivery_naming import safe_filename
-from ..languages import require_supported_language
+from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from ..schemas import (
     RunCreate,
 )
@@ -333,8 +333,8 @@ def _translation_workbook_metrics(artifact: dict[str, Any], runs_by_id: dict[str
                     for index, cell in enumerate(header_row, start=1)
                     if cell.value is not None
                 }
-                source_col = _first_header(headers, ["cn", "source", "original", "中文", "原文"])
-                target_col = _first_header(headers, ["en", "translation", "target", "英文", "译文"])
+                source_col = _first_header(headers, list(SOURCE_HEADER_ALIASES))
+                target_col = _first_header(headers, target_aliases(language))
                 if source_col is None or target_col is None:
                     continue
                 for row in ws.iter_rows(min_row=2, values_only=True):

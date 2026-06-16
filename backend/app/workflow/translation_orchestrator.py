@@ -71,6 +71,13 @@ def _translation_progress(
     started_at: float,
     current_batch: int | None = None,
     failed_batch: int | None = None,
+    current_batch_status: str | None = None,
+    current_batch_rows: int | None = None,
+    current_attempt: int | None = None,
+    max_attempts: int | None = None,
+    provider_timeout_seconds: float | None = None,
+    current_batch_started_at: str | None = None,
+    message: str | None = None,
 ) -> dict[str, Any]:
     elapsed_seconds = max(0.0, time.monotonic() - started_at)
     average_batch_seconds = elapsed_seconds / completed_batches if completed_batches else None
@@ -85,6 +92,13 @@ def _translation_progress(
         "remaining_batches": remaining_batches,
         "current_batch": current_batch,
         "failed_batch": failed_batch,
+        "current_batch_status": current_batch_status,
+        "current_batch_rows": current_batch_rows,
+        "current_attempt": current_attempt,
+        "max_attempts": max_attempts,
+        "provider_timeout_seconds": provider_timeout_seconds,
+        "current_batch_started_at": current_batch_started_at,
+        "message": message or "",
         "batch_size": batch_size,
         "percent": percent,
         "elapsed_seconds": int(elapsed_seconds),
@@ -178,6 +192,25 @@ def _manifest_progress(
     batches = manifest.get("batches") or []
     completed_batches = [batch for batch in batches if batch.get("status") == "passed"]
     completed_rows = sum(int(batch.get("row_count") or 0) for batch in completed_batches)
+    current_meta = None
+    if current_batch is not None:
+        current_meta = next((batch for batch in batches if int(batch.get("batch_index") or 0) == int(current_batch)), None)
+    current_status = str((current_meta or {}).get("status") or "")
+    current_rows = int((current_meta or {}).get("row_count") or 0) if current_meta else None
+    current_attempt = int((current_meta or {}).get("attempts") or 0) if current_meta else None
+    max_attempts = int(manifest.get("max_batch_attempts") or 0) or None
+    timeout_seconds = manifest.get("provider_timeout_seconds")
+    started_at_iso = str((current_meta or {}).get("attempt_started_at") or "") if current_meta else ""
+    if failed_batch:
+        message = f"第 {failed_batch}/{len(batches)} 批失败；可点击继续，从已保存批次后恢复。"
+    elif current_batch is not None and current_status == "running":
+        message = f"正在调用 AI：第 {current_batch}/{len(batches)} 批，本批 {current_rows or 0} 行，第 {current_attempt or 1}/{max_attempts or '-'} 次。"
+    elif rate_limit_wait_seconds:
+        message = f"正在等待限流窗口，约 {round(rate_limit_wait_seconds, 1)} 秒后继续。"
+    elif len(completed_batches) >= len(batches) and batches:
+        message = "全部批次已完成，正在回填并进入 QA。"
+    else:
+        message = "后台处理中，已完成批次会实时保存，可断点继续。"
     progress = _translation_progress(
         total_rows=int(manifest.get("total_rows") or 0),
         total_batches=len(batches),
@@ -187,6 +220,13 @@ def _manifest_progress(
         started_at=started_at,
         current_batch=current_batch,
         failed_batch=failed_batch,
+        current_batch_status=current_status or None,
+        current_batch_rows=current_rows,
+        current_attempt=current_attempt,
+        max_attempts=max_attempts,
+        provider_timeout_seconds=float(timeout_seconds) if timeout_seconds else None,
+        current_batch_started_at=started_at_iso or None,
+        message=message,
     )
     progress.update(
         {
@@ -196,6 +236,7 @@ def _manifest_progress(
             "fingerprint": str(manifest.get("input_fingerprint") or ""),
             "lease_status": (db.get_job_lease("long_text") or {}).get("status", ""),
             "invalidated_reason": str(manifest.get("invalidated_reason") or ""),
+            "term_audit": manifest.get("term_audit") or {},
         }
     )
     return progress
@@ -212,6 +253,7 @@ async def _translate_rows_with_orchestration(
     language: str,
     cancel_event: Any | None = None,
     confirm_api_budget: bool = False,
+    term_audit: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     batch_size = max(1, min(int(batch_size or settings.get("batch_size") or 90), 200))
     provider_prompt = _manage_project_prompt_context(project_prompt, settings)
@@ -225,6 +267,8 @@ async def _translate_rows_with_orchestration(
     batches_dir.mkdir(parents=True, exist_ok=True)
     manifest["project_context"] = context_summary
     manifest["max_concurrent_batches"] = max(1, min(int(settings.get("max_concurrent_batches") or 2), 4))
+    manifest["provider_timeout_seconds"] = _provider_call_timeout_seconds(settings)
+    manifest["term_audit"] = term_audit or manifest.get("term_audit") or {}
     manifest["updated_at"] = db.now_iso()
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     if context_summary.get("trimmed"):
@@ -263,6 +307,11 @@ async def _translate_rows_with_orchestration(
     )
     max_attempts = max(1, min(int(settings.get("max_batch_attempts") or 3), 5))
     concurrency = max(1, min(int(settings.get("max_concurrent_batches") or 2), 4))
+    manifest["max_batch_attempts"] = max_attempts
+    manifest["provider_timeout_seconds"] = _provider_call_timeout_seconds(settings)
+    manifest["term_audit"] = term_audit or manifest.get("term_audit") or {}
+    manifest["updated_at"] = db.now_iso()
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     manifest_lock = asyncio.Lock()
     failure: Exception | None = None
 
@@ -305,7 +354,8 @@ async def _translate_rows_with_orchestration(
                 batch_meta.update({"status": "canceled", "attempts": attempt - 1, "updated_at": db.now_iso()})
                 await persist_manifest(current_batch=batch_index, status="canceled")
                 raise RuntimeError("translation canceled")
-            batch_meta.update({"status": "running", "attempts": attempt, "updated_at": db.now_iso()})
+            attempt_started_at = db.now_iso()
+            batch_meta.update({"status": "running", "attempts": attempt, "attempt_started_at": attempt_started_at, "updated_at": attempt_started_at})
             await persist_manifest(current_batch=batch_index)
             wait_seconds = await limiter.acquire(int(batch_meta.get("estimated_input_tokens") or 1))
             if wait_seconds:

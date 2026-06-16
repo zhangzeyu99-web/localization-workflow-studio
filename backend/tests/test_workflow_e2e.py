@@ -5,6 +5,7 @@ import base64
 import json
 import re
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -135,6 +136,27 @@ def _announcement_language_table(path: Path) -> None:
     ws.append(["1001", "秘境", "Trial Realm", "시련의 영역", "試練の境界"])
     ws.append(["1002", "纹章", "Emblem", "문장", "紋章"])
     ws.append(["1003", "商城", "Shop", "상점", "ショップ"])
+    wb.save(path)
+    wb.close()
+
+
+def _announcement_language_table_with_generic_hits(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append(["generic_notice", "\u516c\u544a", "Notice"])
+    ws.append(["generic_game", "\u6e38\u620f", "Game"])
+    ws.append(["generic_use", "\u4f7f\u7528", "Use"])
+    ws.append(["generic_issue", "\u95ee\u9898", "Issue"])
+    ws.append(["generic_enter", "\u8fdb\u5165", "Enter"])
+    ws.append(["generic_enter_game", "\u8fdb\u5165\u6e38\u620f", "Enter Game"])
+    ws.append(["generic_get", "\u83b7\u5f97", "Get"])
+    ws.append(["term_train", "\u65e0\u9650\u5217\u8f66", "Infinity Train"])
+    ws.append(["term_train_event", "\u65e0\u9650\u5217\u8f66\u6d3b\u52a8", "Infinity Train Event"])
+    ws.append(["term_artifact", "\u5723\u5668", "Artifact"])
+    ws.append(["term_puncher", "\u62f3\u9b3c", "Puncher"])
+    ws.append(["sentence_reward", "\u65e0\u9650\u5217\u8f66\u6392\u884c\u5956\u52b1", "Infinity Train Ranking Rewards"])
     wb.save(path)
     wb.close()
 
@@ -366,6 +388,76 @@ def test_announcement_terms_endpoint_generates_multilingual_terms_with_alias_hea
         ]
         assert payload["manifest"]["languages"] == ["en", "ko", "ja"]
         assert payload["summary"]["terms"] == 2
+
+
+def test_announcement_terms_filter_generic_language_table_hits_before_workpack(tmp_path: Path) -> None:
+    table_path = tmp_path / "language.xlsx"
+    notice_path = tmp_path / "notice.txt"
+    _announcement_language_table_with_generic_hits(table_path)
+    notice_path.write_text(
+        "\u516c\u544a\uff1a\u65e0\u9650\u5217\u8f66\u6d3b\u52a8\u5f00\u542f\uff0c\u62f3\u9b3c\u53ef\u83b7\u5f97\u5723\u5668\u3002\u8fdb\u5165\u6e38\u620f\u540e\u8bf7\u4f7f\u7528\u5df2\u4fee\u590d\u95ee\u9898\u7248\u672c\u3002",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Generic hit regression", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={
+                "source_artifact_id": notice_artifact["id"],
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en"],
+                "include_project_archive": False,
+            },
+        ).json()
+
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={"language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"], "include_project_archive": False, "ai_supplement": False},
+        )
+        assert extracted.status_code == 200, extracted.text
+        extracted_sources = [term["source"] for term in extracted.json()["task"]["metadata"]["terms"]]
+        assert extracted_sources == ["\u65e0\u9650\u5217\u8f66\u6d3b\u52a8", "\u62f3\u9b3c", "\u5723\u5668"]
+        assert "\u6e38\u620f" not in extracted_sources
+        assert "\u4f7f\u7528" not in extracted_sources
+        assert "\u95ee\u9898" not in extracted_sources
+
+        lookup = client.post(f"/api/announcement-tasks/{task['id']}/lookup-translations", json={"languages": ["en"], "include_project_archive": False})
+        assert lookup.status_code == 200, lookup.text
+        prepared = client.post(f"/api/announcement-tasks/{task['id']}/prepare", json={"languages": ["en"]})
+        assert prepared.status_code == 200, prepared.text
+        workpack = next(artifact for artifact in prepared.json()["artifacts"] if artifact["kind"] == "announcement_workpack")
+        rows = [json.loads(line) for line in Path(workpack["path"]).read_text(encoding="utf-8").splitlines()]
+        targets = [hit["target"] for row in rows for hit in row["term_hits"]]
+        assert targets == ["Infinity Train Event", "Puncher", "Artifact"]
+        assert not {"Notice", "Game", "Use", "Issue", "Enter", "Enter Game", "Get"} & set(targets)
+
+
+def test_announcement_ai_supplement_does_not_readd_low_value_terms() -> None:
+    from app.workflow.announcement_ai import _announcement_ai_rows_to_terms
+
+    rows = _announcement_ai_rows_to_terms(
+        [
+            {"ID": "generic_issue", "CN": "\u95ee\u9898", "EN": "Issue"},
+            {"ID": "generic_mail", "CN": "\u90ae\u4ef6", "EN": "Mail"},
+            {"ID": "term_starcore", "CN": "\u5143\u7d20\u661f\u6838", "EN": "Element Starcore"},
+        ],
+        [],
+        "\u7ef4\u62a4\u540e\u53d1\u653e\u5143\u7d20\u661f\u6838\uff0c\u95ee\u9898\u5c06\u901a\u8fc7\u90ae\u4ef6\u8bf4\u660e\u3002",
+        ["en"],
+    )
+
+    assert [row["source"] for row in rows] == ["\u5143\u7d20\u661f\u6838"]
 
 
 def test_announcement_task_extract_terms_ignores_generated_terms_workbook_as_constraint(tmp_path: Path) -> None:
@@ -1308,6 +1400,112 @@ def test_fake_provider_runs_english_workflow_end_to_end(tmp_path: Path) -> None:
         assert any("resume: batch 1/2 already completed" in event["message"] for event in resume_events)
 
 
+
+def test_translation_uses_task_term_artifact_without_glossary_import(tmp_path: Path) -> None:
+    workbook = tmp_path / "source.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append([1, "HeroSource is ready", ""])
+    wb.save(workbook)
+    wb.close()
+
+    terms = tmp_path / "terms.xlsx"
+    twb = Workbook()
+    tws = twb.active
+    tws.title = "Glossary"
+    tws.append(["ID", "CN", "EN", "EN2", "category", "note"])
+    tws.append([1, "HeroSource", "HeroTarget", "", "system", "task term"])
+    twb.save(terms)
+    twb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Task terms", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("source.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with terms.open("rb") as fh:
+            term_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "translation",
+                "language": "en",
+                "input_artifact_id": source_artifact["id"],
+                "term_artifact_id": term_artifact["id"],
+                "batch_size": 1,
+            },
+        ).json()
+        response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 1})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        audit = result["run"]["metadata"]["term_audit"]
+        assert audit["term_count"] >= 1
+        assert audit["term_hit_rows"] == 1
+        workpack = Path(os.environ["LWS_DATA_ROOT"]) / "runs" / run["id"] / "translation" / "translation_workpack.jsonl"
+        rows = [json.loads(line) for line in workpack.read_text(encoding="utf-8").splitlines()]
+        assert rows[0]["term_hits"][0]["source"] == "HeroSource"
+        assert rows[0]["term_hits"][0]["target"] == "HeroTarget"
+
+
+def test_translation_pauses_when_selected_term_artifact_has_no_usable_terms(tmp_path: Path) -> None:
+    workbook = tmp_path / "source.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append([1, "HeroSource is ready", ""])
+    wb.save(workbook)
+    wb.close()
+
+    bad_terms = tmp_path / "bad_terms.xlsx"
+    twb = Workbook()
+    tws = twb.active
+    tws.title = "Glossary"
+    tws.append(["ID", "CN", "FR"])
+    tws.append([1, "HeroSource", "HeroFR"])
+    twb.save(bad_terms)
+    twb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Bad task terms", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("source.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with bad_terms.open("rb") as fh:
+            term_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("bad_terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "translation",
+                "language": "en",
+                "input_artifact_id": source_artifact["id"],
+                "term_artifact_id": term_artifact["id"],
+                "batch_size": 1,
+            },
+        ).json()
+        response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 1})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["run"]["status"] == "needs_input"
+        assert result["run"]["metadata"]["reason"] == "selected_term_artifact_empty"
+        assert result["run"]["metadata"]["term_audit"]["warning"] == "selected_term_artifact_empty"
+
 def test_project_analysis_display_prompt_keeps_project_brief_specifics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     brief = tmp_path / "hell-slg-projectbrief.md"
     brief.write_text(
@@ -2160,6 +2358,49 @@ def test_translation_readiness_accepts_jp_and_kr_target_header_aliases(tmp_path:
             assert readiness["source_rows"] == 2
             assert readiness["needs_translation"] is True
             assert readiness["reason"] == "empty_target_rows"
+
+
+def test_imports_accept_chinese_full_language_headers(tmp_path: Path) -> None:
+    workbook = tmp_path / "chinese-full-headers.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "简体中文", "英文", "日语", "韩语", "法语"])
+    ws.append(["1", "领取奖励", "Claim Reward", "報酬を受け取る", "보상 받기", "Récupérer la récompense"])
+    ws.append(["2", "开始游戏", "Start Game", "ゲーム開始", "게임 시작", "Démarrer le jeu"])
+    wb.save(workbook)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Chinese Header Aliases", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": (workbook.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        targets = client.get(f"/api/artifacts/{artifact['id']}/translation-targets").json()
+        assert targets["source_detected"] is True
+        assert targets["detected_languages"][:4] == ["en", "ko", "ja", "fr"]
+
+        readiness_response = client.get(f"/api/artifacts/{artifact['id']}/translation-readiness?language=ko&batch_size=90")
+        assert readiness_response.status_code == 200, readiness_response.text
+        readiness = readiness_response.json()
+        assert readiness["source_rows"] == 2
+        assert readiness["translated_rows"] == 2
+        assert readiness["needs_translation"] is False
+
+        archive_response = client.post(f"/api/projects/{project['id']}/translations/import", json={"artifact_id": artifact["id"]})
+        assert archive_response.status_code == 200, archive_response.text
+        archive = archive_response.json()
+        assert archive["imported_count"] == 8
+        assert archive["languages"] == ["en", "ko", "ja", "fr"]
+
+        preview_response = client.post(f"/api/projects/{project['id']}/glossary/import-preview", json={"artifact_id": artifact["id"], "limit": 20})
+        assert preview_response.status_code == 200, preview_response.text
+        preview = preview_response.json()
+        assert preview["languages"] == ["en", "ko", "ja", "fr"]
+        assert preview["total_rows"] == 8
 
 
 def test_project_language_workflow_accepts_non_en_kr_jp_languages(tmp_path: Path) -> None:
@@ -3472,6 +3713,9 @@ def test_model_fix_requires_configured_provider(tmp_path: Path) -> None:
         response = client.post(f"/api/runs/{failed_run['id']}/model-fixes", json={"max_issues": 20, "rerun_qa": True})
         assert response.status_code == 409
         assert "API key" in response.json()["detail"]
+        start_response = client.post(f"/api/runs/{failed_run['id']}/model-fixes/start", json={"max_issues": 20, "rerun_qa": True})
+        assert start_response.status_code == 409
+        assert "API key" in start_response.json()["detail"]
 
 
 def test_model_fix_applies_provider_suggestions_and_reruns_qa(tmp_path: Path, monkeypatch) -> None:
@@ -3518,6 +3762,50 @@ def test_model_fix_applies_provider_suggestions_and_reruns_qa(tmp_path: Path, mo
         delivery_label = delivery_response.json()["deliverable"]["input_label"]
         assert "project-failed" in delivery_label
         assert "model_fixed" not in delivery_label
+
+
+def test_model_fix_background_start_returns_and_finishes(tmp_path: Path, monkeypatch) -> None:
+    workbook = tmp_path / "project-failed.xlsx"
+    _project_harness_failed_workbook(workbook)
+
+    def fake_model(settings: dict, prompt: str) -> str:
+        if "待修复行" not in prompt:
+            return '{"passed": true, "issues": []}'
+        return '{"fixes":[{"issue_id":"project_harness:0:Language:2:forbidden_translation","sheet":"Language","row":2,"translation":"Reward","note":"remove forbidden phrase"}]}'
+
+    monkeypatch.setattr(workflow, "_call_semantic_provider", fake_model)
+    with TestClient(app) as client:
+        client.patch("/api/settings", json={"provider": "openai", "api_key": "test-key", "model": "gpt-test"})
+        project = client.post("/api/projects", json={"name": "Model Fix Background", "type": "QA"}).json()
+        client.patch(f"/api/projects/{project['id']}/harness", json={"forbidden_translations": ["Forbidden Brand"]})
+        with workbook.open("rb") as fh:
+            translated_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=final_workbook",
+                files={"file": ("project-failed.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        failed_run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": translated_artifact["id"], "task_code": "QA"},
+        ).json()
+        assert client.post(f"/api/runs/{failed_run['id']}/qa").json()["run"]["status"] == "failed"
+
+        response = client.post(f"/api/runs/{failed_run['id']}/model-fixes/start", json={"max_issues": 20, "rerun_qa": True})
+        assert response.status_code == 200, response.text
+        started = response.json()
+        assert started["metadata"]["model_fix_status"] in {"running", "passed"}
+
+        final_source = None
+        for _ in range(120):
+            final_source = client.get(f"/api/runs/{failed_run['id']}").json()
+            if final_source["metadata"].get("model_fix_status") != "running":
+                break
+            time.sleep(0.2)
+        assert final_source is not None
+        assert final_source["metadata"]["model_fix_status"] == "passed"
+        result_run_id = final_source["metadata"]["model_fix_result_run_id"]
+        result_run = client.get(f"/api/runs/{result_run_id}").json()
+        assert result_run["status"] == "passed"
+        assert result_run["metadata"]["model_fix_source_run_id"] == failed_run["id"]
 
 
 def test_project_harness_is_project_scoped_and_affects_only_its_run(tmp_path: Path) -> None:

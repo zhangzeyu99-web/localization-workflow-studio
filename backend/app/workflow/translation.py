@@ -131,7 +131,13 @@ def _create_translation_run_snapshots(
     snapshot_dir: Path,
     settings: dict[str, Any],
 ) -> dict[str, Any]:
-    glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, snapshot_dir, language=language)
+    glossary_snapshot = create_project_glossary_snapshot(
+        project["id"],
+        run_id,
+        snapshot_dir,
+        language=language,
+        extra_term_artifact_id=metadata.get("term_artifact_id"),
+    )
     snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, snapshot_dir, language=language)
     reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
     prompt = snapshots["prompt"]
@@ -166,6 +172,70 @@ def _create_translation_run_snapshots(
         "prompt_path": prompt_path,
         "reference_snapshot": reference_snapshot,
     }
+
+
+def _translation_term_audit(project_id: str, language: str, glossary_snapshot: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    metadata = glossary_snapshot.get("metadata") or {}
+    term_hit_rows = 0
+    term_hits = 0
+    for row in rows:
+        hits = row.get("term_hits") or []
+        if hits:
+            term_hit_rows += 1
+            term_hits += len(hits) if isinstance(hits, list) else 0
+    pending_candidates = db.list_glossary_candidates(project_id, status="pending", language=language)
+    ready_candidates = [item for item in pending_candidates if str(item.get("target") or "").strip()]
+    term_count = int(metadata.get("term_count") or 0)
+    extra_selected = bool(metadata.get("extra_term_artifact_selected"))
+    extra_term_count = int(metadata.get("extra_term_count") or 0)
+    extra_term_rows_read = int(metadata.get("extra_term_rows_read") or 0)
+    project_term_count = int(metadata.get("project_term_count") or metadata.get("term_count") or 0)
+    warning = ""
+    if extra_selected and extra_term_rows_read == 0 and project_term_count == 0:
+        warning = "selected_term_artifact_empty"
+    elif len(ready_candidates) > 0 and term_count == 0:
+        warning = "glossary_candidates_not_confirmed"
+    elif term_count > 0 and term_hit_rows == 0:
+        warning = "no_term_hits"
+    return {
+        "language": language,
+        "term_count": term_count,
+        "project_term_count": project_term_count,
+        "extra_term_count": extra_term_count,
+        "extra_term_rows_read": extra_term_rows_read,
+        "extra_term_artifact_id": str(metadata.get("extra_term_artifact_id") or ""),
+        "extra_term_artifact_selected": extra_selected,
+        "extra_term_error": str(metadata.get("extra_term_error") or ""),
+        "term_hit_rows": term_hit_rows,
+        "term_hits": term_hits,
+        "total_rows": len(rows),
+        "pending_candidate_count": len(pending_candidates),
+        "ready_candidate_count": len(ready_candidates),
+        "needs_confirmation": warning in {"glossary_candidates_not_confirmed", "selected_term_artifact_empty"},
+        "warning": warning,
+    }
+
+
+def _pause_for_unconfirmed_terms(run_id: str, metadata: dict[str, Any], term_audit: dict[str, Any], request: Any) -> dict[str, Any] | None:
+    if term_audit.get("warning") == "selected_term_artifact_empty":
+        reason = "已选择本次术语表，但没有读取到可用术语；请检查术语表格式和目标语言列，或返回 STEP 5 重新生成/确认术语。"
+        db.update_run(
+            run_id,
+            status="needs_input",
+            metadata={**metadata, "reason": "selected_term_artifact_empty", "user_message": reason, "term_audit": term_audit},
+        )
+        db.add_event(run_id, reason, level="warning")
+        return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
+    if not term_audit.get("needs_confirmation") or bool(getattr(request, "confirm_term_gap", False)):
+        return None
+    reason = "已扫描到候选术语，但还没有确认加入项目术语库；本次翻译不会使用这些候选术语。请先在 STEP 5 确认术语，或明确选择继续无术语翻译。"
+    db.update_run(
+        run_id,
+        status="needs_input",
+        metadata={**metadata, "reason": "glossary_candidates_not_confirmed", "user_message": reason, "term_audit": term_audit},
+    )
+    db.add_event(run_id, reason, level="warning")
+    return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
 
 
 async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
@@ -250,6 +320,12 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         run_subprocess(prepare_args, LOCALIZATION_ROOT, run_id)
         workpack_path = work_dir / "translation_workpack.jsonl"
         rows = read_jsonl(workpack_path)
+        term_audit = _translation_term_audit(project["id"], language, glossary_snapshot, rows)
+        current_metadata = db.get_run(run_id).get("metadata", {})
+        db.update_run(run_id, metadata={**current_metadata, "term_audit": term_audit})
+        paused = _pause_for_unconfirmed_terms(run_id, db.get_run(run_id).get("metadata", {}), term_audit, request)
+        if paused is not None:
+            return paused
         manifest_preview = _load_or_create_batch_manifest(work_dir / "batch_manifest.json", rows, prompt, settings, batch_size, language)
         db.add_event(run_id, f"workpack prepared: rows={len(rows)}, dynamic_batches={len(manifest_preview.get('batches') or [])}, concurrency={settings.get('max_concurrent_batches')}")
         translated_rows = await _translate_rows_with_orchestration(
@@ -262,6 +338,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             language=language,
             cancel_event=cancel_event,
             confirm_api_budget=bool(getattr(request, "confirm_api_budget", False)),
+            term_audit=term_audit,
         )
         if not translated_rows and db.get_run(run_id).get("status") == "needs_input":
             return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}

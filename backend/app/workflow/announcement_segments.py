@@ -14,12 +14,56 @@ from ..languages import ANNOUNCEMENT_LANGUAGE_ORDER, require_supported_language,
 from .announcement_outputs import _file_sha256, _safe_source_stem, _visible_language_code
 from .announcement_shared import (
     _announcement_task_metadata,
-    _count_lookup_hits,
+    _announcement_term_occurs,
+    _is_low_value_announcement_term,
     _rank_translation_lookup_source,
     _suppress_overlapping_lookup_hits,
 )
 from .common import _CJK_RE
 from .table_helpers import _wide_source_key
+
+
+_XLSX_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+
+
+class _RawXlsxCell:
+    def __init__(self, value: Any, row_number: int, column_index: int) -> None:
+        self.value = value
+        self.coordinate = f"{_xlsx_column_name(column_index + 1)}{row_number}"
+
+
+class _RawXlsxSheet:
+    def __init__(self, title: str, rows: list[list[Any]]) -> None:
+        self.title = title
+        self._rows = rows
+        self.max_row = len(rows)
+
+    def iter_rows(self, min_row: int = 1, max_row: int | None = None, values_only: bool = False) -> Any:
+        start = max(0, int(min_row or 1) - 1)
+        stop = int(max_row) if max_row is not None else len(self._rows)
+        for row_offset, row in enumerate(self._rows[start:stop], start=start + 1):
+            if values_only:
+                yield tuple(row)
+            else:
+                yield tuple(_RawXlsxCell(value, row_offset, index) for index, value in enumerate(row))
+
+
+def _xlsx_column_name(number: int) -> str:
+    name = ""
+    while number > 0:
+        number, remainder = divmod(number - 1, 26)
+        name = chr(65 + remainder) + name
+    return name or "A"
+
+
+def _load_xlsx_sheets(path: Path) -> tuple[list[Any], Any]:
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        return list(wb.worksheets), wb.close
+    except Exception:
+        raw_sheets = _glossary_extractor_module().iter_raw_xlsx_sheets(path)
+        return [_RawXlsxSheet(title, rows) for title, rows in raw_sheets], lambda: None
+
 
 def _announcement_source_format(path: Path) -> str:
     suffix = path.suffix.lower()
@@ -117,10 +161,10 @@ def _write_quick_text_output(source_path: Path, translated_rows: list[dict[str, 
 
 
 def _xlsx_announcement_segments(path: Path) -> list[dict[str, Any]]:
-    wb = load_workbook(path, read_only=True, data_only=True)
+    sheets, close = _load_xlsx_sheets(path)
     rows: list[dict[str, Any]] = []
     try:
-        for ws in wb.worksheets:
+        for ws in sheets:
             for row in ws.iter_rows():
                 for cell in row:
                     value = str(cell.value or "").strip()
@@ -129,7 +173,7 @@ def _xlsx_announcement_segments(path: Path) -> list[dict[str, Any]]:
                     key = f"{ws.title}!{cell.coordinate}"
                     rows.append({"id": _segment_id(path.name, len(rows), f"{key}:{value}"), "source_file": path.name, "index": len(rows), "kind": "cell", "sheet": ws.title, "coordinate": cell.coordinate, "source": value})
     finally:
-        wb.close()
+        close()
     return rows
 
 
@@ -195,14 +239,13 @@ _SOURCE_HEADER_ALIASES = [
     "术语",
 ]
 
-
 def _detect_language_columns(path: Path) -> list[str]:
-    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+    if path.suffix.lower() not in _XLSX_SUFFIXES:
         return []
-    wb = load_workbook(path, read_only=True, data_only=True)
+    sheets, close = _load_xlsx_sheets(path)
     found: set[str] = set()
     try:
-        for ws in wb.worksheets:
+        for ws in sheets:
             layout = _language_table_header_layout(ws, ANNOUNCEMENT_LANGUAGE_ORDER)
             if not layout:
                 continue
@@ -210,7 +253,7 @@ def _detect_language_columns(path: Path) -> list[str]:
                 if index is not None:
                     found.add(code)
     finally:
-        wb.close()
+        close()
     return [code for code in ANNOUNCEMENT_LANGUAGE_ORDER if code in found]
 
 
@@ -289,7 +332,7 @@ def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str]
         artifact_rows = _read_language_table_rows(path, languages)
         if not artifact_rows:
             visible = " / ".join(_visible_language_code(language) for language in languages) or "目标语言"
-            raise ValueError(f"约束文件未识别到可反查词条：{path.name}。请检查表头是否包含 ID、CN/中文/原文，以及 {visible} 目标语言列。")
+            raise ValueError(f"约束文件未识别到可反查词条：{path.name}。请检查表头是否包含 ID、CN/简体中文/原文，以及 {visible} 目标语言列。")
         for row in artifact_rows:
             key = _wide_source_key(row.get("source"))
             if not key:
@@ -303,7 +346,7 @@ def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str]
             existing["sources"].append({"type": "language_table", "artifact_id": artifact_id})
     if scanned_artifacts and not by_source:
         visible = " / ".join(_visible_language_code(language) for language in languages) or "目标语言"
-        raise ValueError(f"约束文件未识别到可反查词条。请确认表头包含 ID、CN/中文/原文，以及 {visible} 目标语言列。")
+        raise ValueError(f"约束文件未识别到可反查词条。请确认表头包含 ID、CN/简体中文/原文，以及 {visible} 目标语言列。")
     return list(by_source.values())
 
 
@@ -324,32 +367,32 @@ def _is_generated_announcement_terms_artifact(artifact: dict[str, Any]) -> bool:
 
 
 def _workbook_looks_like_announcement_terms(path: Path) -> bool:
-    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"} or not path.exists():
+    if path.suffix.lower() not in _XLSX_SUFFIXES or not path.exists():
         return True
-    wb = load_workbook(path, read_only=True, data_only=True)
+    sheets, close = _load_xlsx_sheets(path)
     try:
-        for ws in wb.worksheets:
+        for ws in sheets:
             try:
                 headers = [str(value or "").strip().lower() for value in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
             except StopIteration:
                 continue
-            has_source = any(header in {"cn", "zh", "source", "chinese", "中文", "原文", "术语", "term"} for header in headers)
+            has_source = any(header in {alias.lower() for alias in _SOURCE_HEADER_ALIASES} for header in headers)
             has_hit_count = any(header in {"hit count", "hit_count", "hits", "命中次数"} or "命中" in header for header in headers)
             has_origin = any(header in {"来源", "origin", "source"} for header in headers)
             if has_source and has_hit_count and has_origin:
                 return True
     finally:
-        wb.close()
+        close()
     return False
 
 
 def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str, Any]]:
-    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+    if path.suffix.lower() not in _XLSX_SUFFIXES:
         return []
-    wb = load_workbook(path, read_only=True, data_only=True)
+    sheets, close = _load_xlsx_sheets(path)
     rows: list[dict[str, Any]] = []
     try:
-        for ws in wb.worksheets:
+        for ws in sheets:
             layout = _language_table_header_layout(ws, languages)
             if not layout:
                 continue
@@ -370,7 +413,7 @@ def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str
                             translations[language] = value
                 rows.append({"id": str(values[id_idx] or "").strip() if id_idx is not None and id_idx < len(values) else "", "source": source, "translations": translations, "sheet": ws.title})
     finally:
-        wb.close()
+        close()
     return rows
 
 
@@ -413,7 +456,9 @@ def _select_announcement_constraint_rows(text: str, candidates: list[dict[str, A
         source = str(row.get("source") or "").strip()
         if len(source) < 2:
             continue
-        hit_count, first_position = _count_lookup_hits(text, source)
+        if _is_low_value_announcement_term(source):
+            continue
+        hit_count, first_position = _announcement_term_occurs(text, source)
         if hit_count < min_hit:
             continue
         selected.append({"id": row.get("id", ""), "source": source, "translations": {language: (row.get("translations") or {}).get(language, "") for language in languages}, "hit_count": hit_count, "first_position": first_position})

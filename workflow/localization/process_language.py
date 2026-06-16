@@ -163,6 +163,42 @@ LANG_TERM_PATTERNS = {
         'primary': [r'^ja$', r'^jp$', r'japanese', r'日语', r'日語', r'日本語'],
         'variant': [r'^ja2$', r'^jp2$', r'ja\s*2', r'japanese2', r'日语2', r'日語2', r'日本語2', r'补充形式', r'另一词性', r'动词译法'],
     },
+    'fr': {
+        'primary': [r'^fr$', r'french', r'法语', r'法文', r'fran[cç]ais'],
+        'variant': [r'^fr2$', r'fr\s*2', r'french2', r'法语2', r'法文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'de': {
+        'primary': [r'^de$', r'german', r'德语', r'德文', r'deutsch'],
+        'variant': [r'^de2$', r'de\s*2', r'german2', r'德语2', r'德文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'ru': {
+        'primary': [r'^ru$', r'russian', r'俄语', r'俄文', r'русский'],
+        'variant': [r'^ru2$', r'ru\s*2', r'russian2', r'俄语2', r'俄文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'it': {
+        'primary': [r'^it$', r'italian', r'意大利语', r'意大利文', r'italiano'],
+        'variant': [r'^it2$', r'it\s*2', r'italian2', r'意大利语2', r'意大利文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'es': {
+        'primary': [r'^es$', r'spanish', r'西班牙语', r'西班牙文', r'español', r'espanol'],
+        'variant': [r'^es2$', r'es\s*2', r'spanish2', r'西班牙语2', r'西班牙文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'pt': {
+        'primary': [r'^pt$', r'portuguese', r'葡萄牙语', r'葡萄牙文', r'português', r'portugues'],
+        'variant': [r'^pt2$', r'pt\s*2', r'portuguese2', r'葡萄牙语2', r'葡萄牙文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'tr': {
+        'primary': [r'^tr$', r'turkish', r'土耳其语', r'土耳其文', r'türkçe', r'turkce'],
+        'variant': [r'^tr2$', r'tr\s*2', r'turkish2', r'土耳其语2', r'土耳其文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'th': {
+        'primary': [r'^th$', r'thai', r'泰语', r'泰文', r'ภาษาไทย'],
+        'variant': [r'^th2$', r'th\s*2', r'thai2', r'泰语2', r'泰文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
+    'ar': {
+        'primary': [r'^ar$', r'arabic', r'阿拉伯语', r'阿拉伯文', r'العربية'],
+        'variant': [r'^ar2$', r'ar\s*2', r'arabic2', r'阿拉伯语2', r'阿拉伯文2', r'补充形式', r'另一词性', r'动词译法'],
+    },
 }
 
 
@@ -189,7 +225,7 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
                         return col_map[c]
             return None
 
-        cn_col = _pick([r'中文术语', r'原文', r'中文', r'^cn$', r'^zh$', r'source', r'original'])
+        cn_col = _pick([r'中文术语', r'简体中文', r'中文原文', r'原文', r'中文', r'^cn$', r'^zh$', r'source', r'original'])
         lang_patterns = LANG_TERM_PATTERNS.get(lang, LANG_TERM_PATTERNS['en'])
         target_col = _pick(lang_patterns['primary']) or _pick([r'^en$', r'译文', r'翻译', r'translation', r'target'])
         alt_col = _pick(lang_patterns['variant']) or _pick([r'^en2$', r'variant', r'variants', r'alternate'])

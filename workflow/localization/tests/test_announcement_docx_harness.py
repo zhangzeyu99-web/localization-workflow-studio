@@ -124,6 +124,23 @@ def _write_terms(path: Path) -> None:
     wb.save(path)
 
 
+def _write_generic_noise_terms(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN"])
+    ws.append(["generic_notice", "\u516c\u544a", "Notice"])
+    ws.append(["generic_game", "\u6e38\u620f", "Game"])
+    ws.append(["generic_use", "\u4f7f\u7528", "Use"])
+    ws.append(["generic_issue", "\u95ee\u9898", "Issue"])
+    ws.append(["generic_enter", "\u8fdb\u5165", "Enter"])
+    ws.append(["generic_enter_game", "\u8fdb\u5165\u6e38\u620f", "Enter Game"])
+    ws.append(["term_train", "\u65e0\u9650\u5217\u8f66", "Infinity Train"])
+    ws.append(["term_train_event", "\u65e0\u9650\u5217\u8f66\u6d3b\u52a8", "Infinity Train Event"])
+    ws.append(["term_artifact", "\u5723\u5668", "Artifact"])
+    wb.save(path)
+
+
 def _write_en_fr_terms(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -265,10 +282,34 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
                 ],
             )
             first_hits = json.loads(ws.cell(2, headers.index("term_hits_json") + 1).value)
-            self.assertIn("\u670d\u52a1\u5668\u65f6\u95f4 2026", [hit["source"] for hit in first_hits])
-            self.assertNotIn("\u670d\u52a1\u5668\u65f6\u95f4", [hit["source"] for hit in first_hits])
+            self.assertIn("\u670d\u52a1\u5668\u65f6\u95f4", [hit["source"] for hit in first_hits])
+            self.assertNotIn("\u670d\u52a1\u5668\u65f6\u95f4 2026", [hit["source"] for hit in first_hits])
+            self.assertNotIn("\u516c\u544a", [hit["source"] for hit in first_hits])
             self.assertEqual(ws.max_row, 4)
             wb.close()
+
+    def test_prepare_filters_generic_terms_before_term_hits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            doc = Document()
+            doc.add_paragraph("\u516c\u544a\uff1a\u65e0\u9650\u5217\u8f66\u6d3b\u52a8\u5f00\u542f\uff0c\u8fdb\u5165\u6e38\u620f\u540e\u4f7f\u7528\u5723\u5668\u4fee\u590d\u95ee\u9898\u3002")
+            doc.save(task_dir / "sample.docx")
+            _write_generic_noise_terms(task_dir / "sample_announcement_terms_20260526.xlsx")
+
+            prepared = prepare_announcement_docx_harness(task_dir, languages=["en"])
+            rows = [
+                json.loads(line)
+                for line in (prepared.work_dir / "workpack_en.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            targets = [hit["target"] for row in rows for hit in row["term_hits"]]
+
+            self.assertEqual(targets, ["Infinity Train Event", "Artifact"])
+            self.assertNotIn("Notice", targets)
+            self.assertNotIn("Game", targets)
+            self.assertNotIn("Use", targets)
+            self.assertNotIn("Issue", targets)
+            self.assertNotIn("Enter", targets)
+            self.assertNotIn("Enter Game", targets)
 
     def test_prepare_infers_target_languages_from_term_columns(self):
         with tempfile.TemporaryDirectory() as tmp:

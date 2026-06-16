@@ -135,6 +135,7 @@ def build_prompt(rows: list[dict[str, Any]], project_prompt: str, *, ascii_escap
         f"{escape_note}"
         "Return JSONL only. Each line must be {\"id\": number|string, \"translation\": string}. "
         "Preserve placeholders, tags, escaped newlines, actual newlines, and row order exactly. "
+        "Glossary rule: each row may include term_hits. If term_hits is not empty, use hit.target as the canonical translation for the matching Chinese term; do not rename, paraphrase, or replace glossary targets. Translate the whole sentence naturally and never output a bare concatenation of glossary targets. "
         "Do not add explanations.\n\n"
         f"{guidance_label}\n{guidance}\n\n"
         f"Rows:\n{payload}"

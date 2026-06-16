@@ -59,7 +59,7 @@ LANGUAGE_SPECS: dict[str, LanguageSpec] = {
     "ru": _spec("ru", "RU 俄语", "Russian", "RU", ("ru", "rus", "russian", "俄语", "俄文", "русский")),
     "it": _spec("it", "IT 意大利语", "Italian", "IT", ("it", "ita", "italian", "意语", "意大利语", "italiano")),
     "es": _spec("es", "ES 西班牙语", "Spanish", "ES", ("es", "spa", "spanish", "西语", "西班牙语", "español", "espanol")),
-    "pt": _spec("pt", "PT 葡萄牙语", "Portuguese", "PT", ("pt", "pt-br", "por", "portuguese", "葡语", "葡萄牙语", "巴葡", "português", "portugues")),
+    "pt": _spec("pt", "PT 葡萄牙语", "Portuguese", "PT", ("pt", "pt-br", "por", "portuguese", "葡语", "葡萄牙", "葡萄牙语", "巴葡", "português", "portugues")),
     "tr": _spec("tr", "TR 土耳其语", "Turkish", "TR", ("tr", "tk", "tur", "turkish", "土耳其语", "türkçe", "turkce")),
     "idn": _spec("idn", "ID 印尼语", "Indonesian", "IDN", ("idn", "id", "ind", "indonesian", "印尼语", "印度尼西亚语", "bahasa", "bahasa indonesia")),
     "th": _spec("th", "TH 泰语", "Thai", "TH", ("th", "tha", "thai", "泰语", "ภาษาไทย")),
@@ -69,6 +69,25 @@ LANGUAGE_SPECS: dict[str, LanguageSpec] = {
 PROJECT_LANGUAGE_ORDER = ("en", "ko", "ja", "fr", "de", "ru", "it", "es", "pt", "tr", "idn", "th", "ar")
 ANNOUNCEMENT_LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
 SUPPORTED_LANGUAGES = frozenset(LANGUAGE_SPECS)
+
+SOURCE_HEADER_ALIASES: tuple[str, ...] = (
+    "source",
+    "original",
+    "cn",
+    "zh",
+    "zh-cn",
+    "zh_cn",
+    "zhcn",
+    "chinese",
+    "term",
+    "原文",
+    "源文",
+    "源文本",
+    "中文",
+    "简体中文",
+    "中文原文",
+    "术语",
+)
 
 _LANGUAGE_ALIASES = {
     "kr": "ko",

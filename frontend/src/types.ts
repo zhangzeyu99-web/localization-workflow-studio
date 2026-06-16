@@ -262,6 +262,27 @@ export type TranslationProgress = {
   remaining_batches: number
   current_batch?: number | null
   failed_batch?: number | null
+  current_batch_status?: string | null
+  current_batch_rows?: number | null
+  current_attempt?: number | null
+  max_attempts?: number | null
+  provider_timeout_seconds?: number | null
+  current_batch_started_at?: string | null
+  message?: string
+  term_audit?: {
+    language?: LanguageCode | string
+    term_count?: number
+    project_term_count?: number
+    extra_term_count?: number
+    extra_term_artifact_id?: string
+    term_hit_rows?: number
+    term_hits?: number
+    total_rows?: number
+    pending_candidate_count?: number
+    ready_candidate_count?: number
+    needs_confirmation?: boolean
+    warning?: string
+  }
   batch_size: number
   max_concurrent_batches?: number
   estimated_total_input_tokens?: number

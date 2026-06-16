@@ -11,7 +11,7 @@ from openpyxl import Workbook, load_workbook
 
 from .. import db
 from ..config import LOCALIZATION_ROOT, load_settings
-from ..languages import require_supported_language, target_aliases
+from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
 from .common import GLOBAL_HARNESS_CONTRACT, HARNESS_SCHEMA_VERSION, RowId, project_dir, read_project_harness, run_dir, write_project_harness
 from .semantic_qa import run_semantic_qa_report
@@ -51,7 +51,7 @@ def run_project_harness_qa(final_workbook: Path, harness: dict[str, Any], langua
     try:
         for ws in wb.worksheets:
             headers = _header_map(ws)
-            source_col = _first_col(headers, ["cn", "source", "original", "原文", "中文"])
+            source_col = _first_col(headers, list(SOURCE_HEADER_ALIASES))
             target_col = _first_col(headers, target_aliases(language))
             if target_col is None:
                 continue
@@ -791,7 +791,7 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
             for index, value in enumerate(header_row, start=1)
             if value is not None and str(value).strip()
         }
-        source_col = _first_col(headers, ["cn", "source", "original", "原文", "中文"])
+        source_col = _first_col(headers, list(SOURCE_HEADER_ALIASES))
         target_col = _first_col(headers, ["en", "target", "translation", "译文", "英文"])
         id_col = _first_col(headers, ["id", "key", "编号", "序号"])
         row_values = next(ws.iter_rows(min_row=row_index, max_row=row_index, values_only=True), ())

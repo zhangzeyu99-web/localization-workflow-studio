@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 
 from .. import db, translation_batches as _translation_batches
 from ..config import DATA_ROOT
-from ..languages import PROJECT_LANGUAGE_ORDER, alt_aliases, target_aliases
+from ..languages import PROJECT_LANGUAGE_ORDER, SOURCE_HEADER_ALIASES, alt_aliases, target_aliases, visible_language_code
 
 _AsyncTokenRateLimiter = _translation_batches.AsyncTokenRateLimiter
 _build_batch_manifest = _translation_batches.build_batch_manifest
@@ -38,24 +38,17 @@ LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
 TERM_REFERENCE_RULE = "术语译法以随附术语表、行级 term_hits 和译文归档命中为准。"
 AUTO_LANGUAGE_TARGET_ALIASES = {code: tuple(target_aliases(code)) for code in LANGUAGE_ORDER}
 AUTO_LANGUAGE_ALT_ALIASES = {code: tuple(alt_aliases(code)) for code in LANGUAGE_ORDER}
+_GENERIC_TARGET_ALIASES = {"target", "translation", "译文"}
 _TARGET_DETECTION_ALIASES: dict[str, set[str]] = {
-    "en": {"en", "english"},
-    "ko": {"ko", "kr", "korean"},
-    "ja": {"ja", "jp", "japanese"},
-    "fr": {"fr", "fre", "french"},
-    "de": {"de", "ger", "german"},
-    "ru": {"ru", "rus", "russian"},
-    "it": {"it", "ita", "italian"},
-    "es": {"es", "spa", "spanish"},
-    "pt": {"pt", "pt-br", "ptbr", "por", "portuguese"},
-    "tr": {"tr", "tk", "tur", "turkish"},
-    "idn": {"idn", "ind", "indonesian", "bahasa", "bahasa indonesia"},
-    "th": {"th", "tha", "thai"},
-    "ar": {"ar", "ara", "arabic"},
+    code: {
+        *{alias.strip().lower() for alias in target_aliases(code) if alias.strip().lower() not in _GENERIC_TARGET_ALIASES},
+        visible_language_code(code).lower(),
+    }
+    for code in LANGUAGE_ORDER
 }
 _STRUCTURAL_TARGET_HEADERS = {
     "id", "key", "编号", "序号",
-    "cn", "zh", "source", "original", "chinese", "term", "原文", "中文", "术语",
+    *{alias.lower() for alias in SOURCE_HEADER_ALIASES},
     "category", "type", "分类", "类别", "类型",
     "note", "notes", "comment", "备注",
     "target", "translation", "译文",
@@ -187,10 +180,7 @@ def _workbook_text_stats(path: Path) -> dict[str, int]:
         ws = wb.active
         headers = [str(cell.value or "").strip() for cell in next(ws.iter_rows(min_row=1, max_row=1))]
         lowered = [header.lower() for header in headers]
-        source_idx = next(
-            (idx for idx, header in enumerate(lowered) if header in {"cn", "source", "原文", "中文"}),
-            None,
-        )
+        source_idx = next((idx for idx, header in enumerate(lowered) if header in SOURCE_HEADER_ALIASES), None)
         target_idx = next(
             (idx for idx, header in enumerate(lowered) if header in {"en", "target", "translation", "译文", "英文"}),
             None,

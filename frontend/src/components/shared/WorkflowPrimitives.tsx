@@ -172,13 +172,26 @@ export function LanguageSelector({ selectedLanguage, setSelectedLanguage }: { se
 export function TranslationProgressBar({ progress, languageLabel = '' }: { progress: TranslationProgress; languageLabel?: string }) {
   const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)))
   const completed = progress.completed_rows >= progress.total_rows && progress.total_rows > 0
+  const currentAttemptText = progress.current_attempt && progress.max_attempts
+    ? `第 ${progress.current_attempt}/${progress.max_attempts} 次`
+    : ''
+  const currentBatchText = progress.current_batch
+    ? `第 ${progress.current_batch}/${progress.total_batches} 批`
+    : ''
+  const currentRowsText = progress.current_batch_rows
+    ? `本批 ${progress.current_batch_rows} 行`
+    : ''
   const stateText = progress.failed_batch
     ? `卡在第 ${progress.failed_batch} 批：修复配置或下载错误报告后，点“继续 AI 翻译”会从已保存批次续跑。`
     : completed
       ? '翻译已完成：下一步进入 QA 校对，交付文件会从已保存结果生成。'
       : progress.rate_limit_wait_seconds
         ? `正在等限流窗口：约 ${formatDuration(progress.rate_limit_wait_seconds)} 后继续。`
-        : '后台处理中：已完成批次会实时保存，刷新页面后仍可继续。'
+        : (progress.message || '后台处理中：已完成批次会实时保存，刷新页面后仍可继续。')
+  const termAudit = progress.term_audit
+  const termCoverageText = termAudit && typeof termAudit.total_rows === 'number'
+    ? `术语命中 ${termAudit.term_hit_rows || 0}/${termAudit.total_rows || 0} 行 · 可用术语 ${termAudit.term_count || 0} 条`
+    : ''
   return (
     <div className="translation-progress">
       <div className="progress-head">
@@ -191,6 +204,22 @@ export function TranslationProgressBar({ progress, languageLabel = '' }: { progr
         <span>{progress.failed_batch ? `失败批次：${progress.failed_batch}` : completed ? '批次已完成' : `当前批次：${progress.current_batch || '-'}`}</span>
         {progress.rate_limit_wait_seconds ? <span>限流等待 {formatDuration(progress.rate_limit_wait_seconds)}</span> : null}
       </div>
+      {currentBatchText || currentRowsText || currentAttemptText ? (
+        <div className="progress-foot">
+          {currentBatchText ? <span>{currentBatchText}</span> : null}
+          {currentRowsText ? <span>{currentRowsText}</span> : null}
+          {currentAttemptText ? <span>{currentAttemptText}</span> : null}
+          {progress.provider_timeout_seconds ? <span>单批超时 {Math.round(progress.provider_timeout_seconds)} 秒</span> : null}
+        </div>
+      ) : null}
+      {termCoverageText ? (
+        <div className={`progress-guidance ${termAudit?.warning ? 'blocked' : ''}`}>
+          {termCoverageText}
+          {termAudit?.warning === 'no_term_hits' ? '；当前文本没有命中术语，如不符合预期请返回术语筛选/导入。' : ''}
+          {termAudit?.warning === 'glossary_candidates_not_confirmed' ? '；候选术语尚未确认，默认不会参与翻译。' : ''}
+          {termAudit?.warning === 'selected_term_artifact_empty' ? '；已选择术语表但未读取到可用术语，请检查文件格式或目标语言列。' : ''}
+        </div>
+      ) : null}
       <div className={`progress-guidance ${progress.failed_batch ? 'blocked' : completed ? 'done' : ''}`}>{stateText}</div>
     </div>
   )

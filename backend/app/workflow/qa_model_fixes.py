@@ -21,13 +21,18 @@ from .qa import (
 from .semantic_qa import _call_semantic_provider, _parse_semantic_qa_payload
 
 
-def apply_model_fixes(run_id: str, request: Any) -> dict[str, Any]:
-    run = db.get_run(run_id)
-    project = db.get_project(run["project_id"])
+def model_fix_provider_settings() -> tuple[dict[str, Any], str]:
     settings = load_settings()
     provider = normalize_provider_name(settings.get("provider"))
     if provider not in REAL_PROVIDERS or not settings.get("api_key"):
         raise ValueError("模型修复需要配置 GPT / Claude / GPT 中转站 API key，不能在未配置真实 API 时生成可交付修复。")
+    return settings, provider
+
+
+def apply_model_fixes(run_id: str, request: Any) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    project = db.get_project(run["project_id"])
+    settings, provider = model_fix_provider_settings()
 
     max_issues = max(1, min(int(getattr(request, "max_issues", 80) or 80), 200))
     issue_payload = list_quality_issues(run_id)
@@ -107,4 +112,3 @@ def apply_model_fixes(run_id: str, request: Any) -> dict[str, Any]:
         )
         result["qa_result"] = run_qa_sync(qa_run["id"])
     return result
-

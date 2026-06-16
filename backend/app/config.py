@@ -172,7 +172,7 @@ def load_settings() -> dict[str, Any]:
     if not SETTINGS_PATH.exists():
         save_settings(DEFAULT_SETTINGS)
         return dict(DEFAULT_SETTINGS)
-    payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8-sig"))
     merged = dict(DEFAULT_SETTINGS)
     merged.update(payload)
     merged["multimodal"] = {**DEFAULT_SETTINGS["multimodal"], **payload.get("multimodal", {})}

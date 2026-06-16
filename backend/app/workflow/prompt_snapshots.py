@@ -17,6 +17,7 @@ from ..translation_batches import (
 )
 from .common import GLOBAL_HARNESS_CONTRACT, _language_assets_summary, project_dir, read_project_harness, run_dir
 from .asset_import_export import _glossary_export_row
+from .table_helpers import _read_glossary_rows
 from .materials import build_project_material_packet
 from .project_analysis import (
     _apply_project_analysis_provider,
@@ -163,7 +164,13 @@ def compile_project_harness_prompt(project: dict[str, Any], base_prompt: str, ou
     return prompt_path, snapshot_path, compiled, snapshot
 
 
-def create_project_glossary_snapshot(project_id: str, run_id: str, output_dir: Path | None = None, language: str = "en") -> dict[str, Any]:
+def create_project_glossary_snapshot(
+    project_id: str,
+    run_id: str,
+    output_dir: Path | None = None,
+    language: str = "en",
+    extra_term_artifact_id: str | None = None,
+) -> dict[str, Any]:
     language = require_supported_language(language)
     spec = language_spec(language)
     output = output_dir or run_dir(run_id) / "snapshots"
@@ -174,8 +181,41 @@ def create_project_glossary_snapshot(project_id: str, run_id: str, output_dir: P
     ws.title = "Glossary"
     ws.append(["ID", "CN", spec.target_header, *(["EN2"] if spec.alt_header else []), "分类", "备注"])
     terms = db.list_glossary_terms(project_id, language=language)
+    seen_sources: set[str] = set()
     for term in reversed(terms):
         ws.append(_glossary_export_row(term, include_alt=bool(spec.alt_header)))
+        source_key = str(term.get("source") or "").strip()
+        if source_key:
+            seen_sources.add(source_key)
+    extra_term_count = 0
+    extra_term_rows_read = 0
+    extra_artifact = None
+    extra_term_error = ""
+    if extra_term_artifact_id:
+        try:
+            candidate = db.get_artifact(extra_term_artifact_id)
+            if candidate.get("project_id") == project_id and Path(str(candidate.get("path") or "")).exists():
+                extra_artifact = candidate
+                extra_rows, _ = _read_glossary_rows(Path(candidate["path"]), limit=None, language=language)
+                extra_term_rows_read = len(extra_rows)
+                for row in extra_rows:
+                    source = str(row.get("source") or "").strip()
+                    target = str(row.get("target") or "").strip()
+                    if not source or not target or source in seen_sources:
+                        continue
+                    ws.append([
+                        row.get("term_key", ""),
+                        source,
+                        target,
+                        *( [row.get("target_alt", "")] if spec.alt_header else [] ),
+                        row.get("category", ""),
+                        row.get("note", ""),
+                    ])
+                    seen_sources.add(source)
+                    extra_term_count += 1
+        except Exception as exc:
+            extra_term_error = str(exc)
+            db.add_event(run_id, f"extra term artifact ignored: {exc}", level="warning")
     wb.save(path)
     wb.close()
     return db.add_artifact(
@@ -186,7 +226,17 @@ def create_project_glossary_snapshot(project_id: str, run_id: str, output_dir: P
         run_id=run_id,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         origin="generated",
-        metadata={"term_count": len(terms), "source": "project_glossary", "language": language},
+        metadata={
+            "term_count": len(terms) + extra_term_count,
+            "project_term_count": len(terms),
+            "extra_term_count": extra_term_count,
+            "extra_term_rows_read": extra_term_rows_read,
+            "extra_term_artifact_id": extra_artifact["id"] if extra_artifact else "",
+            "extra_term_artifact_selected": bool(extra_artifact),
+            "extra_term_error": extra_term_error,
+            "source": "project_glossary_with_task_terms" if extra_artifact else "project_glossary",
+            "language": language,
+        },
     )
 
 

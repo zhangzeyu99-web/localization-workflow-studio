@@ -11,7 +11,7 @@ from openpyxl import Workbook
 
 import app.db as db
 import app.routers.system as system_router
-from app.config import DEFAULT_SETTINGS, save_settings
+from app.config import DEFAULT_SETTINGS, SETTINGS_PATH, load_settings, save_settings
 from app.main import app
 from app.workflow.prompt_snapshots import create_prompt_and_harness_snapshots
 from conftest import reset_data_root, wait_for_background_jobs
@@ -26,6 +26,16 @@ def reset_test_state() -> None:
     yield
     wait_for_background_jobs()
     save_settings(DEFAULT_SETTINGS)
+
+
+
+
+def test_settings_local_json_allows_utf8_bom() -> None:
+    SETTINGS_PATH.write_text('\ufeff{"provider":"test-fake","model":"bom-ok"}', encoding="utf-8")
+
+    settings = load_settings()
+
+    assert settings["model"] == "bom-ok"
 
 
 def _xlsx_language_table(path: Path) -> None:
