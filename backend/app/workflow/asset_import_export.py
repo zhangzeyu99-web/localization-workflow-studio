@@ -25,6 +25,7 @@ _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD = 1000
 _LANGUAGE_TABLE_SOURCE_ALIASES = [alias for alias in SOURCE_HEADER_ALIASES if alias not in {"term", "术语"}]
 COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE = "这个文件看起来是完整语言表，不是项目术语表。请到「生成术语」或翻译流程 STEP5 做高频词扫描并生成术语候选，候选确认后才会进入项目术语库。"
 COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE = "这个文件看起来是完整语言表，请上传到 STEP4「语言表」。它不会作为项目资料参与术语提取。"
+INVALID_GLOSSARY_TEMPLATE_MESSAGE = "术语表格式有误，请重新上传。请先下载导入模板，按模板列填写：ID、CN、EN/EN2 或 KR/JP、分类、备注。"
 
 def is_complete_language_table_for_glossary_import(path: Path, sheet: str | None = None, row_threshold: int = _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD) -> bool:
     if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
@@ -75,29 +76,37 @@ def preview_glossary_import(project_id: str, request: Any, import_all: bool = Fa
     language = require_supported_language(getattr(request, "language", "en") or "en")
     auto_languages = bool(getattr(request, "auto_languages", True))
     if auto_languages and not getattr(request, "target_column", None) and not getattr(request, "target_alt_column", None):
-        rows, columns, languages = _read_multilingual_glossary_rows(
+        try:
+            rows, columns, languages = _read_multilingual_glossary_rows(
+                path,
+                sheet=getattr(request, "sheet", None),
+                term_key_column=getattr(request, "term_key_column", None),
+                source_column=getattr(request, "source_column", None),
+                category_column=getattr(request, "category_column", None),
+                note_column=getattr(request, "note_column", None),
+                limit=None if import_all else int(getattr(request, "limit", 100) or 100),
+            )
+        except (KeyError, StopIteration, ValueError) as exc:
+            raise ValueError(INVALID_GLOSSARY_TEMPLATE_MESSAGE) from exc
+        if languages:
+            _ensure_glossary_template_rows(rows)
+            return {"artifact": artifact, "columns": columns, "rows": rows, "total_rows": len(rows), "language": "auto", "languages": languages}
+    try:
+        rows, columns = _read_glossary_rows(
             path,
             sheet=getattr(request, "sheet", None),
             term_key_column=getattr(request, "term_key_column", None),
             source_column=getattr(request, "source_column", None),
+            target_column=getattr(request, "target_column", None),
+            target_alt_column=getattr(request, "target_alt_column", None),
             category_column=getattr(request, "category_column", None),
             note_column=getattr(request, "note_column", None),
+            language=language,
             limit=None if import_all else int(getattr(request, "limit", 100) or 100),
         )
-        if languages:
-            return {"artifact": artifact, "columns": columns, "rows": rows, "total_rows": len(rows), "language": "auto", "languages": languages}
-    rows, columns = _read_glossary_rows(
-        path,
-        sheet=getattr(request, "sheet", None),
-        term_key_column=getattr(request, "term_key_column", None),
-        source_column=getattr(request, "source_column", None),
-        target_column=getattr(request, "target_column", None),
-        target_alt_column=getattr(request, "target_alt_column", None),
-        category_column=getattr(request, "category_column", None),
-        note_column=getattr(request, "note_column", None),
-        language=language,
-        limit=None if import_all else int(getattr(request, "limit", 100) or 100),
-    )
+    except (KeyError, StopIteration, ValueError) as exc:
+        raise ValueError(INVALID_GLOSSARY_TEMPLATE_MESSAGE) from exc
+    _ensure_glossary_template_rows(rows)
     return {"artifact": artifact, "columns": columns, "rows": rows, "total_rows": len(rows), "language": language}
 
 
@@ -121,8 +130,20 @@ def import_glossary(project_id: str, request: Any) -> dict[str, Any]:
                 "confirmed": True,
             }
         )
+    if not payloads:
+        raise ValueError(INVALID_GLOSSARY_TEMPLATE_MESSAGE)
     imported = db.upsert_glossary_terms_bulk(project_id, payloads)
     return {"imported_count": len(imported), "terms": imported, "preview": preview, "languages": preview.get("languages") or ([language] if language != "auto" else [])}
+
+
+def _ensure_glossary_template_rows(rows: list[dict[str, Any]]) -> None:
+    valid = [
+        row for row in rows
+        if str(row.get("source") or "").strip()
+        and (str(row.get("target") or "").strip() or str(row.get("target_alt") or "").strip())
+    ]
+    if not valid:
+        raise ValueError(INVALID_GLOSSARY_TEMPLATE_MESSAGE)
 
 
 def export_glossary(project_id: str, fmt: str, language: str | None = None) -> dict[str, Any] | Path:

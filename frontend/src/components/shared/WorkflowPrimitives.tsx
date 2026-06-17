@@ -118,6 +118,7 @@ export function FileBoxWithTemplate({
   templateTitle = '导入模板',
   templateNote = '先下载模板，按列填写后再上传。',
   templateLabel = '下载模板',
+  highlightTemplate = false,
   testId
 }: {
   label: string
@@ -126,12 +127,13 @@ export function FileBoxWithTemplate({
   templateTitle?: string
   templateNote?: string
   templateLabel?: string
+  highlightTemplate?: boolean
   testId?: string
 }) {
   return (
     <div className="upload-template-row">
       <FileBox label={label} onFile={onFile} testId={testId} />
-      <div className="template-card">
+      <div className={`template-card ${highlightTemplate ? 'template-card-highlight' : ''}`}>
         <strong>{templateTitle}</strong>
         <span>{templateNote}</span>
         <TemplateDownloadLink kind={templateKind} label={templateLabel} />

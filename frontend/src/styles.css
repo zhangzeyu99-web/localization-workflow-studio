@@ -1943,6 +1943,19 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   font-size: 12px;
   line-height: 1.5;
 }
+.template-card.template-card-highlight {
+  border-color: rgba(250, 204, 21, .75);
+  background: rgba(250, 204, 21, .10);
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, .22), 0 12px 30px rgba(0, 0, 0, .18);
+}
+.template-card.template-card-highlight strong {
+  color: #fef3c7;
+}
+.template-card.template-card-highlight .btn {
+  border-color: rgba(250, 204, 21, .85);
+  background: rgba(250, 204, 21, .16);
+  color: #fef3c7;
+}
 .upload-row {
   display: grid;
   grid-template-columns: minmax(260px, 320px) 1fr;

@@ -61,6 +61,18 @@ def _sample_term_workbook(path: Path) -> None:
     wb.close()
 
 
+def _invalid_glossary_workbook(path: Path, *, include_target_header: bool = False) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    headers = ["ID", "CN", "EN"] if include_target_header else ["ID", "CN", "wrong_target"]
+    ws.append(headers)
+    ws.append([1, "战机", ""])
+    ws.append([2, "", ""])
+    wb.save(path)
+    wb.close()
+
+
 def _large_language_table_workbook(path: Path, rows: int = 1001) -> None:
     wb = Workbook()
     ws = wb.active
@@ -2508,6 +2520,53 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
             assert headers == ["ID", "CN", "EN", "EN2", "分类", "备注"]
         finally:
             wb.close()
+
+
+def test_glossary_preview_rejects_invalid_template(tmp_path: Path) -> None:
+    terms = tmp_path / "invalid-terms.xlsx"
+    _invalid_glossary_workbook(terms)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Invalid Glossary Preview", "type": "QA"}).json()
+        with terms.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("invalid-terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        assert upload_response.status_code == 200, upload_response.text
+        term_artifact = upload_response.json()
+
+        preview_response = client.post(
+            f"/api/projects/{project['id']}/glossary/import-preview",
+            json={"artifact_id": term_artifact["id"]},
+        )
+        assert preview_response.status_code == 400
+        detail = preview_response.json()["detail"]
+        assert "ID" in detail
+        assert "CN" in detail
+        assert "EN" in detail
+
+
+def test_glossary_import_rejects_template_without_valid_rows(tmp_path: Path) -> None:
+    terms = tmp_path / "blank-target-terms.xlsx"
+    _invalid_glossary_workbook(terms, include_target_header=True)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Invalid Glossary Import", "type": "QA"}).json()
+        with terms.open("rb") as fh:
+            upload_response = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("blank-target-terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        assert upload_response.status_code == 200, upload_response.text
+        term_artifact = upload_response.json()
+
+        import_response = client.post(
+            f"/api/projects/{project['id']}/glossary/import",
+            json={"artifact_id": term_artifact["id"]},
+        )
+        assert import_response.status_code == 400
+        assert client.get(f"/api/projects/{project['id']}/glossary").json() == []
 
 
 def test_large_language_table_is_blocked_from_project_glossary_import(tmp_path: Path) -> None:
