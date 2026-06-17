@@ -24,6 +24,7 @@ from .table_helpers import _wide_source_key
 
 
 _XLSX_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+_LANGUAGE_TABLE_HEADER_SUMMARY_CACHE: dict[tuple[str, int, int, tuple[str, ...]], tuple[list[str], dict[str, int | None]]] = {}
 
 
 class _RawXlsxCell:
@@ -185,7 +186,7 @@ def _segment_id(source_file: str, index: int, source: str) -> str:
 
 def _detect_announcement_constraint_languages(project_id: str, metadata: dict[str, Any]) -> list[str]:
     found: set[str] = set()
-    for artifact_id in [*metadata.get("language_table_artifact_ids", []), *metadata.get("constraint_artifact_ids", [])]:
+    for artifact_id in _announcement_constraint_artifact_ids(metadata):
         try:
             artifact = db.get_artifact(artifact_id)
         except KeyError:
@@ -196,17 +197,58 @@ def _detect_announcement_constraint_languages(project_id: str, metadata: dict[st
             continue
         found.update(_detect_language_columns(Path(artifact["path"])))
     if metadata.get("include_project_archive", True):
-        for language in ANNOUNCEMENT_LANGUAGE_ORDER:
-            if db.list_translation_entries(project_id, language=language):
-                found.add(language)
+        found.update(_translation_archive_languages(project_id))
     return [language for language in ANNOUNCEMENT_LANGUAGE_ORDER if language in found]
 
 
 def _announcement_language_constraint_summary(project_id: str, metadata: dict[str, Any], languages: list[str]) -> dict[str, Any]:
-    table_rows = _language_table_rows_from_artifacts(project_id, [*metadata.get("language_table_artifact_ids", []), *metadata.get("constraint_artifact_ids", [])], languages)
-    archive_counts = {language: len(db.list_translation_entries(project_id, language=language)) for language in languages}
-    table_counts = {language: sum(1 for row in table_rows if row.get("translations", {}).get(language)) for language in languages}
-    return {language: {"language_table": table_counts.get(language, 0), "qa_archive": archive_counts.get(language, 0)} for language in languages}
+    table_counts = _language_table_count_summary_from_artifacts(
+        project_id,
+        _announcement_constraint_artifact_ids(metadata),
+        languages,
+    )
+    archive_counts = _translation_archive_count_summary(project_id, languages)
+    return {language: {"language_table": table_counts.get(language), "qa_archive": archive_counts.get(language, 0)} for language in languages}
+
+
+def _announcement_constraint_artifact_ids(metadata: dict[str, Any]) -> list[str]:
+    """Return selected constraint artifacts once, preserving user selection order."""
+    result: list[str] = []
+    for artifact_id in [*metadata.get("language_table_artifact_ids", []), *metadata.get("constraint_artifact_ids", [])]:
+        value = str(artifact_id or "").strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _translation_archive_count_summary(project_id: str, languages: list[str]) -> dict[str, int]:
+    if not languages:
+        return {}
+    placeholders = ",".join("?" for _ in languages)
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT language, COUNT(*) AS count
+            FROM translation_entries
+            WHERE project_id = ? AND language IN ({placeholders})
+            GROUP BY language
+            """,
+            [project_id, *languages],
+        ).fetchall()
+    return {str(row["language"]): int(row["count"] or 0) for row in rows}
+
+
+def _translation_archive_languages(project_id: str) -> set[str]:
+    with db.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT language
+            FROM translation_entries
+            WHERE project_id = ?
+            """,
+            (project_id,),
+        ).fetchall()
+    return {str(row["language"]) for row in rows}
 
 
 def _normalize_announcement_languages(raw: Any, fallback: list[str] | tuple[str, ...] = ()) -> list[str]:
@@ -242,19 +284,57 @@ _SOURCE_HEADER_ALIASES = [
 def _detect_language_columns(path: Path) -> list[str]:
     if path.suffix.lower() not in _XLSX_SUFFIXES:
         return []
-    sheets, close = _load_xlsx_sheets(path)
+    found, _counts = _language_table_header_summary(path, ANNOUNCEMENT_LANGUAGE_ORDER)
+    return found
+
+
+def _language_table_header_summary(path: Path, languages: list[str]) -> tuple[list[str], dict[str, int | None]]:
+    stat = path.stat()
+    ordered_languages = tuple(languages)
+    cache_key = (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size), ordered_languages)
+    cached = _LANGUAGE_TABLE_HEADER_SUMMARY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     found: set[str] = set()
+    counts: dict[str, int | None] = {language: 0 for language in languages}
+    sheets, close = _load_xlsx_sheets(path)
     try:
         for ws in sheets:
-            layout = _language_table_header_layout(ws, ANNOUNCEMENT_LANGUAGE_ORDER)
+            layout = _language_table_header_layout(ws, languages)
             if not layout:
                 continue
-            for code, index in layout["language_indices"].items():
-                if index is not None:
-                    found.add(code)
+            estimated_rows: int | None = None
+            exact_counts: dict[str, int] | None = None
+            if ws.max_row is not None and int(ws.max_row or 0) <= 5000:
+                exact_counts = {language: 0 for language in languages}
+                source_idx = int(layout["source_index"])
+                language_indices = layout.get("language_indices") or {}
+                for values in ws.iter_rows(min_row=int(layout["header_row"]) + 1, values_only=True):
+                    source = str(values[source_idx] or "").strip() if source_idx < len(values) else ""
+                    if not source or source.lower() in {"string", "text", "c", "s", "int", "float", "number", "bool", "#ignore"}:
+                        continue
+                    for language, index in language_indices.items():
+                        if index is not None and index < len(values) and str(values[index] or "").strip():
+                            exact_counts[language] = exact_counts.get(language, 0) + 1
+            elif ws.max_row is not None:
+                estimated_rows = max(0, int(ws.max_row or 0) - int(layout["header_row"] or 1))
+            for code, index in (layout.get("language_indices") or {}).items():
+                if index is None:
+                    continue
+                found.add(code)
+                if exact_counts is not None:
+                    counts[code] = int(counts.get(code) or 0) + int(exact_counts.get(code, 0))
+                elif estimated_rows is None:
+                    counts[code] = None
+                elif counts.get(code) is not None:
+                    counts[code] = int(counts.get(code) or 0) + estimated_rows
     finally:
         close()
-    return [code for code in ANNOUNCEMENT_LANGUAGE_ORDER if code in found]
+    result = ([code for code in languages if code in found], counts)
+    if len(_LANGUAGE_TABLE_HEADER_SUMMARY_CACHE) > 64:
+        _LANGUAGE_TABLE_HEADER_SUMMARY_CACHE.clear()
+    _LANGUAGE_TABLE_HEADER_SUMMARY_CACHE[cache_key] = result
+    return result
 
 
 def _language_column_index(normalized_headers: dict[str, int], language: str) -> int | None:
@@ -294,7 +374,7 @@ def _column_by_alias(normalized_headers: dict[str, int], aliases: list[str]) -> 
 
 
 def _announcement_constraint_rows(project_id: str, metadata: dict[str, Any], languages: list[str]) -> list[dict[str, Any]]:
-    rows = _language_table_rows_from_artifacts(project_id, [*metadata.get("language_table_artifact_ids", []), *metadata.get("constraint_artifact_ids", [])], languages)
+    rows = _language_table_rows_from_artifacts(project_id, _announcement_constraint_artifact_ids(metadata), languages)
     if metadata.get("include_project_archive", True):
         by_source: dict[str, dict[str, Any]] = {_wide_source_key(row.get("source")): row for row in rows if _wide_source_key(row.get("source"))}
         for language in languages:
@@ -348,6 +428,45 @@ def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str]
         visible = " / ".join(_visible_language_code(language) for language in languages) or "目标语言"
         raise ValueError(f"约束文件未识别到可反查词条。请确认表头包含 ID、CN/简体中文/原文，以及 {visible} 目标语言列。")
     return list(by_source.values())
+
+
+def _language_table_count_summary_from_artifacts(project_id: str, artifact_ids: list[str], languages: list[str]) -> dict[str, int | None]:
+    """Estimate language-table coverage for Step 2 without reading every row.
+
+    Step 2 is only a constraint/language recognition checkpoint. Full row parsing
+    is intentionally deferred to term extraction, where the announcement source
+    text is available and the rows are actually needed.
+    """
+    counts: dict[str, int | None] = {language: 0 for language in languages}
+    scanned_artifacts = 0
+    parsed_layout = False
+    for artifact_id in artifact_ids:
+        if not artifact_id:
+            continue
+        artifact = db.get_artifact(artifact_id)
+        if artifact["project_id"] != project_id:
+            raise KeyError(artifact_id)
+        if _is_generated_announcement_terms_artifact(artifact):
+            continue
+        path = Path(artifact["path"])
+        scanned_artifacts += 1
+        if path.suffix.lower() not in _XLSX_SUFFIXES:
+            raise ValueError(f"约束文件格式不正确：{path.name} 不是 XLSX 语言表。请上传完整语言表/术语交付表，不要把公告原文或 TXT 放在约束来源。")
+        found_languages, artifact_counts = _language_table_header_summary(path, ANNOUNCEMENT_LANGUAGE_ORDER)
+        parsed_layout = parsed_layout or bool(found_languages)
+        for language, count in artifact_counts.items():
+            if language not in languages:
+                continue
+            if language not in found_languages:
+                continue
+            if count is None:
+                counts[language] = None
+            elif counts.get(language) is not None:
+                counts[language] = int(counts.get(language) or 0) + int(count or 0)
+    if scanned_artifacts and not parsed_layout:
+        visible = " / ".join(_visible_language_code(language) for language in languages) or "目标语言"
+        raise ValueError(f"约束文件未识别到可反查词条。请确认表头包含 ID、CN/简体中文/原文，以及 {visible} 目标语言列。")
+    return counts
 
 
 def _is_generated_announcement_terms_artifact(artifact: dict[str, Any]) -> bool:

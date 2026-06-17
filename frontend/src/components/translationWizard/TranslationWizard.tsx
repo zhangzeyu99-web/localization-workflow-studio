@@ -9,7 +9,7 @@ import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, 
 import { ProjectMetaTable } from '../project/ProjectMeta'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
-import type { AppSettings, Artifact, DeliverableTask, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, ProjectMaterialAnalysis, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
+import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, ProjectMaterialAnalysis, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
 
 export const steps = ['项目资料', 'AI 分析', '术语表', '判定输入', '术语候选', '目标语言', 'AI 翻译', 'QA 校对', '交付']
 
@@ -93,7 +93,7 @@ export function DeliveryTab({
   deliverables: DeliverableTask[]
   busy: boolean
   status: string
-  onCreateDelivery: (runId: string) => void
+  onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
   onGoTranslate: () => void
   onGoQA: () => void
   onGoArchive: () => void
@@ -239,6 +239,9 @@ export function Wizard(props: {
   glossaryBatches: GlossaryBatch[]
   glossaryCandidates: GlossaryCandidate[]
   qualityIssues: QualityIssue[]
+  deliverables: DeliverableTask[]
+  generatedDeliveryRunId?: string
+  generatedDeliveryFiles?: DeliveryFile[]
   settings: AppSettings | null
   status: string
   selectedLanguage: LanguageCode
@@ -267,8 +270,9 @@ export function Wizard(props: {
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
-  onCreateDelivery: (runId: string) => void
+  onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
   onCreateMergedDelivery?: () => void
+  onFinishDelivery: () => void
   onFreq: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
@@ -280,6 +284,10 @@ export function Wizard(props: {
   const sourceReadiness = props.sourceArtifact && props.translationReadiness?.artifact_id === props.sourceArtifact.id ? props.translationReadiness : null
   const stepTranslationRun = props.latestRun && matchesTranslationRun(props.latestRun, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run') ? props.latestRun : null
   const stepTranslationActive = step === 7 && Boolean(stepTranslationRun && ['queued', 'running'].includes(stepTranslationRun.status))
+  const stepDeliveryFiles = step === 9
+    ? wizardDeliveryFiles(project, props.latestRun, props.deliverables, props.generatedDeliveryRunId, props.generatedDeliveryFiles)
+    : []
+  const stepDeliveryReady = step !== 9 || stepDeliveryFiles.length > 0
   const goNext = () => {
     if (stepTranslationActive) return
     if (step === 4 && translationInputMode(props.sourceInputNotice) === 'invalid') {
@@ -326,7 +334,14 @@ export function Wizard(props: {
       </div>
       <div className="actions">
         <button className="btn btn-ghost" disabled={step === 1} onClick={() => setStep(step - 1)}>← 上一步</button>
-        <button className="btn btn-primary" disabled={props.busy || stepTranslationActive} onClick={goNext}>{step === 9 ? '🏁 完成' : stepTranslationActive ? '等待翻译完成' : '下一步 →'}</button>
+        <button
+          className="btn btn-primary"
+          disabled={props.busy || stepTranslationActive || (step === 9 && !stepDeliveryReady)}
+          onClick={step === 9 ? props.onFinishDelivery : goNext}
+          title={step === 9 && !stepDeliveryReady ? '请先生成交付文件，下载入口出现后再完成。' : undefined}
+        >
+          {step === 9 ? '🏁 完成' : stepTranslationActive ? '等待翻译完成' : '下一步 →'}
+        </button>
       </div>
     </>
   )
@@ -914,6 +929,91 @@ export function StepLang({
   )
 }
 
+function WorkflowStepShell({
+  stepLabel,
+  title,
+  description,
+  status,
+  statusTone = 'neutral',
+  nextAction,
+  children,
+  side
+}: {
+  stepLabel: string
+  title: string
+  description: string
+  status: string
+  statusTone?: 'neutral' | 'ready' | 'warn' | 'blocked' | 'running'
+  nextAction: string
+  children: React.ReactNode
+  side: React.ReactNode
+}) {
+  return (
+    <div className="workflow-step-shell">
+      <div className="workflow-step-head">
+        <div>
+          <span className="badge">{stepLabel}</span>
+          <h3>{title}</h3>
+          <p>{description}</p>
+        </div>
+        <div className={`workflow-step-status ${statusTone}`}>
+          <span>当前状态</span>
+          <strong>{status}</strong>
+          <em>{nextAction}</em>
+        </div>
+      </div>
+      <div className="workflow-step-grid">
+        <div className="workflow-primary">{children}</div>
+        <aside className="workflow-side">{side}</aside>
+      </div>
+    </div>
+  )
+}
+
+function WorkflowSideCard({
+  title,
+  children,
+  tone = 'neutral'
+}: {
+  title: string
+  children: React.ReactNode
+  tone?: 'neutral' | 'ready' | 'warn' | 'blocked'
+}) {
+  return (
+    <section className={`workflow-side-card ${tone}`}>
+      <strong>{title}</strong>
+      {children}
+    </section>
+  )
+}
+
+function WorkflowFactList({ items }: { items: { label: string; value: React.ReactNode }[] }) {
+  return (
+    <div className="workflow-fact-list">
+      {items.map((item) => (
+        <div key={item.label}>
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function DeliveryFileLinks({ files, projectId }: { files: DeliveryFile[]; projectId: string }) {
+  if (!files.length) return <div className="muted-left">暂无可下载文件。</div>
+  return (
+    <div className="workflow-file-list">
+      {files.map((file, index) => (
+        <a key={`${file.kind}-${file.filename}-${index}`} className="workflow-file-link" href={deliveryFileHref(file, projectId)}>
+          <span>{deliveryFileLabel(file)}</span>
+          <strong>{file.filename}</strong>
+        </a>
+      ))}
+    </div>
+  )
+}
+
 export function StepTranslate({
   project,
   settings,
@@ -1017,13 +1117,57 @@ export function StepTranslate({
       : alreadyTranslated
         ? { label: '可直接校对', tone: 'ready' }
         : { label: '需要翻译', tone: 'todo' }
-  const showTranslateStatus = busy
+  const scopedTranslateStatus = /交付|delivery/i.test(status) ? '' : status
+  const showTranslateStatus = Boolean(scopedTranslateStatus) && (busy
     || Boolean(progress)
-    || /provider|API|workpack|batch|QA|\u7ffb\u8bd1|\u6821\u5bf9/i.test(status)
+    || /provider|API|workpack|batch|QA|\u7ffb\u8bd1|\u6821\u5bf9/i.test(scopedTranslateStatus))
+  const translationArtifacts = pickerArtifacts(currentTranslationRun?.artifacts?.length ? currentTranslationRun.artifacts : runArtifacts(project, currentTranslationRun?.id))
+    .filter((artifact) => ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'].includes(artifact.kind))
+  const qaInputArtifact = newestArtifact(translationArtifacts, ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
+  const canEnterQa = Boolean(alreadyTranslated || qaInputArtifact || (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows))
+  const enterQa = () => {
+    setQaArtifact(qaInputArtifact || sourceArtifact)
+    setStep(8)
+  }
+  const statusTone = activeTranslation ? 'running' : canEnterQa ? 'ready' : blockReason ? 'blocked' : readinessState.tone === 'todo' ? 'warn' : 'neutral'
+  const nextAction = activeTranslation
+    ? '等待当前批次完成'
+    : canEnterQa
+      ? '进入 QA 校对'
+      : blockReason
+        ? '先处理输入或配置'
+        : '点击开始 AI 翻译'
   return (
-    <>
-      <div className="panel-title"><span className="badge">STEP 7</span>{lang.short} AI 翻译</div>
-      <div className="panel-desc">只有“待翻译语言表”才会调用已配置 AI。已译表不在这里重复翻译，直接进入 STEP 8 QA 校对。</div>
+    <WorkflowStepShell
+      stepLabel="STEP 7"
+      title={`${lang.short} AI 翻译`}
+      description="确认输入、启动或续跑 AI 翻译；已有译文的表格直接进入 QA。"
+      status={readinessState.label}
+      statusTone={statusTone}
+      nextAction={nextAction}
+      side={
+        <>
+          <WorkflowSideCard title="下一步" tone={canEnterQa ? 'ready' : blockReason ? 'blocked' : 'neutral'}>
+            <p>{canEnterQa ? '翻译结果已可用于 QA，下一步检查术语、变量和中文残留。' : blockReason || '准备好输入后启动 AI 翻译，系统会自动拆批并保存进度。'}</p>
+            <button className="btn btn-primary btn-sm" disabled={!canEnterQa || busy} onClick={enterQa}>进入 QA 校对</button>
+          </WorkflowSideCard>
+          <WorkflowSideCard title="输入与门槛">
+            <WorkflowFactList items={[
+              { label: '语言表', value: sourceArtifact ? artifactPickerLabel(sourceArtifact) : '未选择' },
+              { label: '项目术语库', value: `${glossaryCount} 条` },
+              { label: `${lang.short} 提示词`, value: projectPromptForLanguage(project, selectedLanguage) ? '已生成' : '未生成' },
+              { label: '后台批次', value: progress?.total_batches ? `${progress.completed_batches}/${progress.total_batches} 批` : `${estimatedBatches || '-'} 批估算` },
+            ]} />
+          </WorkflowSideCard>
+          <WorkflowSideCard title="本步产物" tone={translationArtifacts.length ? 'ready' : 'neutral'}>
+            <div className="artifact-grid compact-artifact-grid">
+              {translationArtifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
+              {!translationArtifacts.length ? <div className="muted-left">翻译完成后这里会出现可用于 QA 的译文表。</div> : null}
+            </div>
+          </WorkflowSideCard>
+        </>
+      }
+    >
       {selectedLanguages.length > 1 ? (
         <div className="translation-language-progress">
           <div className="section-head">
@@ -1044,7 +1188,7 @@ export function StepTranslate({
           <div className="info-line compact">操作方式：点击“开始多语言翻译”，工作台会自动逐个处理已选语言；无需反复回 STEP 6 手动切换。</div>
         </div>
       ) : null}
-      <div className="action-card">
+      <div className="action-card workflow-block">
         <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
         <div className={`translation-readiness-box ${readinessState.tone}`}>
           <div className="readiness-head">
@@ -1076,7 +1220,7 @@ export function StepTranslate({
           )}
           {blockReason && !alreadyTranslated ? <div className="warn-line inline-warning">{blockReason}</div> : null}
         </div>
-        {showTranslateStatus ? <ActionStatus status={status} busy={busy} /> : null}
+        {showTranslateStatus ? <ActionStatus status={scopedTranslateStatus} busy={busy} /> : null}
         {progress ? <TranslationProgressBar progress={progress} languageLabel={lang.short} /> : null}
         {termAuditWarning ? (
           <div className="warn-line">
@@ -1106,7 +1250,7 @@ export function StepTranslate({
         <span>校对门槛 <strong>QA 通过后交付</strong></span>
       </div>
       {currentTranslationRun ? <TaskRunSummary run={currentTranslationRun} issues={qualityIssues} /> : null}
-    </>
+    </WorkflowStepShell>
   )
 }
 
@@ -1217,11 +1361,69 @@ export function StepQA({
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   const multiQaMode = selectedLanguages.length > 1
   const currentLanguageText = languageSpec(selectedLanguage).short
+  const qaTone = qaStatusRun?.status === 'passed' ? 'ready' : qaStatusRun?.status === 'failed' ? 'warn' : busy ? 'running' : 'neutral'
+  const qaStatusLabel = qaStatusRun ? qaStatusBadge(qaStatusRun.status) : '等待运行'
+  const qaActionStatus = status !== '准备就绪' ? status : ''
+  const scrollToManualFixes = () => {
+    document.querySelector('[data-testid="failed-row-editor"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
   return (
-    <>
-      <div className="panel-title"><span className="badge">STEP 8</span>校对任务</div>
-      <div className="panel-desc">先选校对语言，再选译文文件。多语言任务会按语言分别跑 QA，结果分别归档。</div>
-      <div className="qa-workspace">
+    <WorkflowStepShell
+      stepLabel="STEP 8"
+      title="QA 校对任务"
+      description="先确认校对输入，再运行 QA；未通过时可以修复，也可以生成带 QA 摘要的交付。"
+      status={qaStatusLabel}
+      statusTone={qaTone}
+      nextAction={qaNextAction}
+      side={
+        <>
+          <div className={`qa-current-card ${qaStatusRun?.status === 'failed' ? 'qa-failed' : qaStatusRun?.status === 'passed' ? 'qa-passed' : ''}`}>
+            <div className="qa-current-head">
+              <div>
+                <strong>QA 结论</strong>
+                <span>{qaStatus}</span>
+              </div>
+              <span className={`tag ${qaRunTagClass(qaStatusRun)}`}>{qaStatusRun ? qaStatusBadge(qaStatusRun.status) : '未运行'}</span>
+            </div>
+            <div className="qa-current-grid compact-grid">
+              <div><span>处理文件</span><strong>{effectiveQaArtifact ? effectiveQaArtifact.label : '未选择'}</strong></div>
+              <div><span>来源</span><strong>{originText}</strong></div>
+              <div><span>项目术语库</span><strong>{glossaryCount} 条</strong></div>
+              <div><span>下一步</span><strong>{qaNextAction}</strong></div>
+            </div>
+            {qaStatusRun?.status === 'failed' ? (
+              <div className="qa-blocker-line">
+                QA 未完全通过，系统已保留可交付文件和 QA 摘要。可先修复并重跑，也可以临时生成带问题摘要的交付文件。
+              </div>
+            ) : null}
+            {(qaFinalDownload || qaChangesDownload || (qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) && onGoDelivery)) ? (
+              <div className="qa-result-actions">
+                {qaFinalDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-final" href={artifactDownloadHref(qaFinalDownload, project.id)}>下载校对后译文</a> : null}
+                {qaChangesDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-changes" href={artifactDownloadHref(qaChangesDownload, project.id)}>下载修改记录</a> : null}
+                {onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
+                  <button className="btn btn-primary btn-sm" data-testid="qa-go-delivery" onClick={onGoDelivery}>
+                    {qaStatusRun.status === 'failed' ? '生成带 QA 摘要交付' : '进入交付'}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          <WorkflowSideCard title="处理路径" tone={qaStatusRun?.status === 'failed' ? 'warn' : 'neutral'}>
+            <div className="workflow-action-stack">
+              <button className="btn btn-primary btn-sm" disabled={busy || !qaIssues.length} onClick={onModelFixes}>模型修复并重跑 QA</button>
+              <button className="btn btn-ghost btn-sm" disabled={!qaIssues.length} onClick={scrollToManualFixes}>手动逐条修复</button>
+              <button className="btn btn-ghost btn-sm" disabled={!onGoDelivery || !qaStatusRun || !['passed', 'failed'].includes(qaStatusRun.status)} onClick={() => onGoDelivery?.()}>去交付页</button>
+            </div>
+          </WorkflowSideCard>
+          {qaActionStatus ? (
+            <WorkflowSideCard title="当前提示" tone={/失败|error|not found|找不到|缺失/i.test(qaActionStatus) ? 'warn' : 'neutral'}>
+              <div className="workflow-status-note">{busy ? <span className="loading" /> : null}{qaActionStatus}</div>
+            </WorkflowSideCard>
+          ) : null}
+        </>
+      }
+    >
+      <div className="qa-workspace workflow-block">
         <section className="qa-step-card">
           <div className="section-head">
             <div>
@@ -1289,37 +1491,6 @@ export function StepQA({
           </div>
         </details> : null}
       </div>
-      <div className={`qa-current-card ${qaStatusRun?.status === 'failed' ? 'qa-failed' : qaStatusRun?.status === 'passed' ? 'qa-passed' : ''}`}>
-        <div className="qa-current-head">
-          <div>
-            <strong>当前校对状态</strong>
-            <span>{qaStatus}</span>
-          </div>
-          <span className={`tag ${qaRunTagClass(qaStatusRun)}`}>{qaStatusRun ? qaStatusBadge(qaStatusRun.status) : '未运行'}</span>
-        </div>
-        <div className="qa-current-grid">
-          <div><span>处理文件</span><strong>{effectiveQaArtifact ? effectiveQaArtifact.label : '未选择'}</strong></div>
-          <div><span>来源</span><strong>{originText}</strong></div>
-          <div><span>项目术语库</span><strong>{glossaryCount} 条，运行时生成快照</strong></div>
-          <div><span>下一步</span><strong>{qaNextAction}</strong></div>
-        </div>
-        {qaStatusRun?.status === 'failed' ? (
-          <div className="qa-blocker-line">
-            QA 未完全通过，系统已保留可交付文件和 QA 摘要。建议先用“模型修复并重跑 QA”或手工修复；如需临时验收，也可以去交付页生成带问题摘要的交付文件。
-          </div>
-        ) : null}
-        {(qaFinalDownload || qaChangesDownload || (qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) && onGoDelivery)) ? (
-          <div className="qa-result-actions">
-            {qaFinalDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-final" href={artifactDownloadHref(qaFinalDownload, project.id)}>下载校对后译文</a> : null}
-            {qaChangesDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-changes" href={artifactDownloadHref(qaChangesDownload, project.id)}>下载修改记录</a> : null}
-            {onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
-              <button className="btn btn-primary btn-sm" data-testid="qa-go-delivery" onClick={onGoDelivery}>
-                {qaStatusRun.status === 'failed' ? '去交付页生成带问题交付' : '去交付页生成最终文件'}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
       {showHistory ? (
         <details className="history-collapsed">
           <summary>查看历史校对记录</summary>
@@ -1327,7 +1498,7 @@ export function StepQA({
         </details>
       ) : null}
       {qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onModelFix={onModelFixes} onApply={onManualFixes} /> : null}
-    </>
+    </WorkflowStepShell>
   )
 }
 
@@ -1425,7 +1596,10 @@ export function StepDone({
   selectedLanguages,
   busy,
   onCreateDelivery,
-  onCreateMergedDelivery
+  onCreateMergedDelivery,
+  deliverables,
+  generatedDeliveryRunId,
+  generatedDeliveryFiles
 }: {
   project: Project
   latestRun: Run | null
@@ -1434,8 +1608,11 @@ export function StepDone({
   sourceArtifact: Artifact | null
   selectedLanguages: LanguageCode[]
   busy: boolean
-  onCreateDelivery: (runId: string) => void
+  onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
   onCreateMergedDelivery?: () => void
+  deliverables: DeliverableTask[]
+  generatedDeliveryRunId?: string
+  generatedDeliveryFiles?: DeliveryFile[]
 }) {
   const deliveryRun = findWizardDeliveryRun(project, latestRun)
   const artifacts = pickerArtifacts(deliveryRun?.artifacts?.length ? deliveryRun.artifacts : runArtifacts(project, deliveryRun?.id))
@@ -1446,43 +1623,77 @@ export function StepDone({
   const deliveryWarning = deliveryRun?.kind === 'qa' && deliveryRun.status === 'failed' && hasFinalWorkbook
   const multiDelivery = selectedLanguages.length > 1
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
+  const deliveryFiles = deliveryFilesForRun(deliverables, deliveryRun?.id, generatedDeliveryRunId, generatedDeliveryFiles)
+  const canGenerateDelivery = Boolean(deliveryRun && hasFinalWorkbook && !deliveryBlocked)
+  const generated = deliveryFiles.length > 0
+  const deliveryStatus = !deliveryRun
+    ? '暂无可交付任务'
+    : generated
+      ? `已生成 ${deliveryFiles.length} 个文件`
+      : deliveryBlocked
+        ? '需要返回 QA'
+        : deliveryWarning
+          ? '可带 QA 摘要交付'
+          : '可生成最终交付'
   return (
-    <>
-      <div className="panel-title"><span className="badge">STEP 9</span>最终交付</div>
-      {deliveryRun ? <TaskRunSummary run={deliveryRun} issues={deliveryRun.id === latestRun?.id ? qualityIssues : []} /> : <div className="muted-left">暂无可交付任务。先完成翻译或校对。</div>}
-      {deliveryBlocked ? (
-        <div className="delivery-blocker">
-          <strong>暂不能生成交付包</strong>
-          <span>最近一次 QA 未返回可交付文件，请回到校对页重新运行 QA 或上传译文表。</span>
-          <button className="btn btn-primary btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
+    <WorkflowStepShell
+      stepLabel="STEP 9"
+      title="最终交付"
+      description="生成最终交付文件，并在当前页面直接下载；完成后回到项目概览交付页。"
+      status={deliveryStatus}
+      statusTone={generated ? 'ready' : deliveryBlocked ? 'blocked' : deliveryWarning ? 'warn' : 'neutral'}
+      nextAction={generated ? '下载文件或点击完成' : canGenerateDelivery ? '生成交付文件' : '返回 QA 处理'}
+      side={
+        <>
+          <WorkflowSideCard title="下载文件" tone={generated ? 'ready' : 'neutral'}>
+            <DeliveryFileLinks files={deliveryFiles} projectId={project.id} />
+          </WorkflowSideCard>
+          <WorkflowSideCard title="交付说明" tone={deliveryWarning ? 'warn' : deliveryBlocked ? 'blocked' : 'neutral'}>
+            {deliveryBlocked ? (
+              <>
+                <p>最近一次 QA 未返回可交付文件，请回到校对页重新运行 QA 或上传译文表。</p>
+                <button className="btn btn-primary btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
+              </>
+            ) : deliveryWarning ? (
+              <>
+                <p>仍有 {pendingIssueCount || '若干'} 个 QA 问题未清零；交付会保留修改记录和 QA 摘要，便于后续复查。</p>
+                <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
+              </>
+            ) : (
+              <p>{generated ? '交付文件已经生成，可直接下载；底部“完成”会回到项目交付页。' : '系统会把最终译文、修改记录和必要的 QA 摘要打到交付目录。'}</p>
+            )}
+          </WorkflowSideCard>
+        </>
+      }
+    >
+      <div className="workflow-block delivery-workbench">
+        {deliveryRun ? <TaskRunSummary run={deliveryRun} issues={deliveryRun.id === latestRun?.id ? qualityIssues : []} /> : <div className="muted-left">暂无可交付任务。先完成翻译或校对。</div>}
+        {canGenerateDelivery ? (
+          <div className={`delivery-primary-card ${generated ? 'ready' : ''}`}>
+            <div>
+              <strong>{generated ? '交付文件已生成' : deliveryWarning ? '生成带 QA 摘要的交付' : '生成最终交付文件'}</strong>
+              <span>{generated ? '下载入口已在右侧出现；项目概览的交付页也会同步显示。' : '点击后会生成可下载文件，并立即显示在本页下载区。'}</span>
+            </div>
+            <button className="btn btn-primary" data-testid="wizard-generate-delivery" disabled={busy} onClick={() => deliveryRun && void onCreateDelivery(deliveryRun.id)}>
+              {busy ? '生成中...' : generated ? '重新生成交付文件' : '生成交付文件'}
+            </button>
+          </div>
+        ) : null}
+        {multiDelivery ? (
+          <div className="delivery-primary-card">
+            <div>
+              <strong>多语言合并交付</strong>
+              <span>已选 {selectedLanguageText}。已完成或允许交付的语言列会合并回同一语言表；未完成语言写入 QA 摘要。</span>
+            </div>
+            <button className="btn btn-ghost" disabled={busy || !sourceArtifact || !onCreateMergedDelivery} onClick={onCreateMergedDelivery}>生成多语言合并交付</button>
+          </div>
+        ) : null}
+        <div className="artifact-grid compact-artifact-grid">
+          {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
         </div>
-      ) : null}
-      {deliveryWarning ? (
-        <div className="delivery-blocker">
-          <strong>可生成交付，但仍有 QA 问题</strong>
-          <span>还有 {pendingIssueCount || '若干'} 个问题未清零；交付文件会同时保留修改记录和 QA 摘要，方便后续复查。</span>
-          <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
-        </div>
-      ) : null}
-      {multiDelivery ? (
-        <div className="delivery-blocker">
-          <strong>多语言合并交付</strong>
-          <span>已选 {selectedLanguageText}。系统会把已完成或已允许交付的语言列合并回同一个语言表；未完成语言会写入 QA 摘要，不会强行混入。</span>
-          <button className="btn btn-primary btn-sm" disabled={busy || !sourceArtifact || !onCreateMergedDelivery} onClick={onCreateMergedDelivery}>生成多语言合并交付</button>
-        </div>
-      ) : null}
-      {deliveryRun && hasFinalWorkbook ? (
-        <div className="delivery-blocker">
-          <strong>可以生成最终交付</strong>
-          <span>系统已找到本次任务的最终译文和修改记录；点击后会在项目概览「交付」页生成可下载文件。</span>
-          <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onCreateDelivery(deliveryRun.id)}>生成交付文件</button>
-        </div>
-      ) : null}
-      <div className="artifact-grid">
-        {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
+        {!generated ? <div className="muted-left">底部“完成”会在交付文件生成后启用。</div> : null}
       </div>
-      <div className="muted-left">这里显示本次任务的已译表和修改记录；生成后的最终交付文件会同步出现在项目概览的“交付”页。</div>
-    </>
+    </WorkflowStepShell>
   )
 }
 
@@ -1501,6 +1712,63 @@ function findWizardDeliveryRun(project: Project, latestRun: Run | null): Run | n
     if (artifacts.some((artifact) => artifact.kind === 'qa_final_workbook' || artifact.kind === 'qa_changes')) return run
   }
   return null
+}
+
+function wizardDeliveryFiles(
+  project: Project,
+  latestRun: Run | null,
+  deliverables: DeliverableTask[],
+  generatedRunId?: string,
+  generatedFiles?: DeliveryFile[]
+): DeliveryFile[] {
+  const run = findWizardDeliveryRun(project, latestRun)
+  return deliveryFilesForRun(deliverables, run?.id, generatedRunId, generatedFiles)
+}
+
+function deliveryFilesForRun(
+  deliverables: DeliverableTask[],
+  runId?: string | null,
+  generatedRunId?: string,
+  generatedFiles: DeliveryFile[] = []
+): DeliveryFile[] {
+  const generated = runId && generatedRunId === runId ? generatedFiles : []
+  if (generated.length) return uniqueDeliveryFiles(generated)
+  const task = runId ? deliverables.find((item) => item.run_id === runId) : null
+  if (!task) return []
+  const files = task.files || {}
+  return uniqueDeliveryFiles([
+    files.final,
+    files.changes,
+    files.package,
+    files.qa_summary || undefined,
+    ...(files.outputs || []),
+  ].filter((file): file is DeliveryFile => Boolean(file)))
+}
+
+function uniqueDeliveryFiles(files: DeliveryFile[]): DeliveryFile[] {
+  const seen = new Set<string>()
+  const result: DeliveryFile[] = []
+  for (const file of files) {
+    const key = `${file.kind}:${file.filename}:${file.download_url || file.artifact_id || ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(file)
+  }
+  return result
+}
+
+function deliveryFileHref(file: DeliveryFile, projectId: string): string {
+  if (file.download_url) return file.download_url
+  return `/api/projects/${projectId}/delivery/${encodeURIComponent(file.filename)}`
+}
+
+function deliveryFileLabel(file: DeliveryFile): string {
+  if (file.kind === 'final') return '最终译文'
+  if (file.kind === 'changes') return '修改记录'
+  if (file.kind === 'package') return '交付包'
+  if (file.kind === 'qa_summary') return 'QA 摘要'
+  if (file.kind === 'announcement') return '公告交付'
+  return artifactKindLabel({ kind: file.kind } as Artifact)
 }
 
 export function TaskHistoryTable({ project, kind, title }: { project: Project; kind: HistoryKind; title: string }) {

@@ -58,12 +58,22 @@ async function uploadProjectFile(
     data.append('purpose', purpose)
     data.append('index', String(index))
     data.append('total', String(total))
-    const response = await fetch(`${API}/api/projects/${projectId}/files/chunk`, {
-      method: 'POST',
-      body: data
-    })
+    let response: Response
+    try {
+      response = await fetch(`${API}/api/projects/${projectId}/files/chunk`, {
+        method: 'POST',
+        body: data
+      })
+    } catch (error) {
+      throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error)))
+    }
     if (!response.ok) {
       const text = await response.text()
+      const trimmed = text.trim()
+      const contentType = response.headers.get('content-type') || ''
+      if (response.status >= 500 && (!trimmed || (!contentType.includes('application/json') && /^(Internal Server Error|Error occurred while trying to proxy)/i.test(trimmed)))) {
+        throw new Error('连接工作台后端失败。后端可能正在重启或未启动，请等几秒后重试；如果反复出现，请重启本地/局域网工作台。')
+      }
       throw new Error(apiErrorText(text, response.statusText))
     }
     const payload = await response.json() as { complete?: boolean; artifact?: Artifact; received?: number; total?: number }
@@ -361,6 +371,7 @@ function App() {
   const [qualityIssues, setQualityIssues] = useState<QualityIssue[]>([])
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [deliverables, setDeliverables] = useState<DeliverableTask[]>([])
+  const [generatedDelivery, setGeneratedDelivery] = useState<{ projectId: string; runId: string; files: DeliveryFile[] } | null>(null)
   const [translationReadiness, setTranslationReadiness] = useState<TranslationReadiness | null>(null)
   const [sourceInputNotice, setSourceInputNotice] = useState<TranslationReadiness | null>(null)
   const [invalidSourceArtifactIds, setInvalidSourceArtifactIds] = useState<string[]>([])
@@ -468,6 +479,7 @@ function App() {
     setGlossaryCandidates([])
     setQualityIssues([])
     setDeliverables([])
+    setGeneratedDelivery(null)
     setTranslationReadiness(null)
     setAnnouncementText('')
     setAnnouncementLookupResult(null)
@@ -562,10 +574,10 @@ function App() {
   }, [current?.id, latestRun?.id, selectedLanguage])
 
   useEffect(() => {
-    if (current?.id && tab === 'delivery') {
+    if (current?.id && (tab === 'delivery' || (view === 'wizard' && step === 9))) {
       refreshDeliverables()
     }
-  }, [current?.id, current?.runs?.length, tab, selectedLanguage])
+  }, [current?.id, current?.runs?.length, tab, selectedLanguage, view, step])
 
   useEffect(() => {
     if (!sourceArtifact?.id) {
@@ -1950,32 +1962,67 @@ function App() {
     }
   }
 
-  async function refreshDeliverables() {
-    if (!current) {
+  async function refreshDeliverables(projectId = currentIdRef.current) {
+    if (!projectId) {
       setDeliverables([])
       return
     }
     try {
-      const result = await api<{ deliverables: DeliverableTask[] }>(`/api/projects/${current.id}/deliverables`)
-      setDeliverables(result.deliverables || [])
+      const result = await api<{ deliverables: DeliverableTask[] }>(`/api/projects/${projectId}/deliverables`)
+      if (isCurrentProject(projectId)) setDeliverables(result.deliverables || [])
     } catch {
-      setDeliverables([])
+      if (isCurrentProject(projectId)) setDeliverables([])
     }
   }
 
-  async function createDeliveryPackage(runId: string) {
-    if (!current) return
+  async function loadDeliverables(projectId: string): Promise<DeliverableTask[]> {
+    const result = await api<{ deliverables: DeliverableTask[] }>(`/api/projects/${projectId}/deliverables`)
+    return result.deliverables || []
+  }
+
+  function mergeGeneratedDeliveryTask(tasks: DeliverableTask[], generated?: DeliverableTask | null): DeliverableTask[] {
+    if (!generated) return tasks
+    const next = tasks.filter((task) => task.run_id !== generated.run_id)
+    return [generated, ...next]
+  }
+
+  async function createDeliveryPackage(runId: string): Promise<DeliveryFile[] | null> {
+    if (!current) return null
+    const projectId = current.id
     setBusy(true)
-    setStatus('正在生成最终交付文件...')
+    setStatus('\u6b63\u5728\u751f\u6210\u6700\u7ec8\u4ea4\u4ed8\u6587\u4ef6...')
     try {
-      const result = await api<{ files: DeliveryFile[] }>(`/api/projects/${current.id}/delivery-package?run_id=${encodeURIComponent(runId)}`, { method: 'POST' })
-      await refreshDeliverables()
-      setStatus(`最终交付已生成：${result.files.length} 个文件`)
+      const result = await api<{ files: DeliveryFile[]; deliverable?: DeliverableTask }>(`/api/projects/${projectId}/delivery-package?run_id=${encodeURIComponent(runId)}`, { method: 'POST' })
+      const files = result.files || []
+      const generatedTask = result.deliverable || null
+      if (isCurrentProject(projectId)) {
+        setGeneratedDelivery({ projectId, runId, files })
+        try {
+          const refreshed = await loadDeliverables(projectId)
+          setDeliverables(mergeGeneratedDeliveryTask(refreshed, generatedTask))
+        } catch {
+          setDeliverables((previous) => mergeGeneratedDeliveryTask(previous, generatedTask))
+        }
+      }
+      await refreshCurrent(projectId)
+      setStatus(`\u6700\u7ec8\u4ea4\u4ed8\u5df2\u751f\u6210\uff1a${files.length} \u4e2a\u6587\u4ef6`)
+      return files
     } catch (error) {
-      setStatus(`最终交付生成失败：${errorText(error)}`)
+      setStatus(`\u6700\u7ec8\u4ea4\u4ed8\u751f\u6210\u5931\u8d25\uff1a${errorText(error)}`)
+      return null
     } finally {
       setBusy(false)
     }
+  }
+
+  async function finishWizardDelivery() {
+    if (!current) return
+    const projectId = current.id
+    await refreshDeliverables(projectId)
+    await refreshCurrent(projectId)
+    setTab('delivery')
+    setView('overview')
+    setStatus('交付已完成，可在项目概览的“交付”页下载最新文件。')
   }
 
 
@@ -2179,6 +2226,9 @@ function App() {
                 glossaryBatches={glossaryBatches}
                 glossaryCandidates={glossaryCandidates}
                 qualityIssues={qualityIssues}
+                deliverables={deliverables}
+                generatedDeliveryRunId={generatedDelivery?.projectId === current.id ? generatedDelivery.runId : undefined}
+                generatedDeliveryFiles={generatedDelivery?.projectId === current.id ? generatedDelivery.files : []}
                 selectedLanguage={selectedLanguage}
                 setSelectedLanguage={setPrimaryLanguage}
                 selectedLanguages={selectedLanguages}
@@ -2209,6 +2259,7 @@ function App() {
                 onUploadTranslation={uploadTranslationWorkbook}
                 onCreateDelivery={createDeliveryPackage}
                 onCreateMergedDelivery={createMergedDeliveryPackage}
+                onFinishDelivery={finishWizardDelivery}
                 onFreq={() => setFreqOpen(true)}
                 onSaveHarness={saveHarness}
                 onUpdateCandidate={updateGlossaryCandidate}
@@ -2399,7 +2450,7 @@ function ProjectOverview({
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
-  onCreateDelivery: (runId: string) => void
+  onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
   onCreateMergedDelivery?: () => void
   onStartTask: () => void
   onStartAnnouncement: () => void

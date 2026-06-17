@@ -220,25 +220,34 @@ def _require_project_translation(project_id: str, entry_id: str) -> dict[str, An
 
 
 def _with_project_stats(project: dict[str, Any], include_details: bool = False) -> dict[str, Any]:
-    artifacts = db.list_artifacts(project_id=project["id"])
     runs = db.list_runs(project["id"])
-    terms = db.list_glossary_terms(project["id"])
-    translation_entries = db.list_translation_entries(project["id"])
     announcement_tasks = list_announcement_tasks(project["id"])
     active_announcement_tasks = [task for task in announcement_tasks if task.get("status") != "canceled"]
-    archive_metrics = _translation_archive_metrics(translation_entries)
     translation_runs = len([run for run in runs if run["kind"] == "translation"])
     qa_runs = len([run for run in runs if run["kind"] == "qa"])
     language_tasks = _language_business_task_count(runs)
-    deliverable_count = len([
-        run for run in runs
-        if run["kind"] in {"translation", "qa"}
-        and any(
-            artifact["run_id"] == run["id"]
-            and artifact["kind"] == "qa_final_workbook"
-            for artifact in artifacts
-        )
-    ])
+    artifacts: list[dict[str, Any]] = []
+    terms: list[dict[str, Any]] = []
+    translation_entries: list[dict[str, Any]] = []
+    if include_details:
+        artifacts = db.list_artifacts(project_id=project["id"])
+        terms = db.list_glossary_terms(project["id"])
+        translation_entries = db.list_translation_entries(project["id"])
+        archive_metrics = _translation_archive_metrics(translation_entries)
+        deliverable_count = len([
+            run for run in runs
+            if run["kind"] in {"translation", "qa"}
+            and any(
+                artifact["run_id"] == run["id"]
+                and artifact["kind"] == "qa_final_workbook"
+                for artifact in artifacts
+            )
+        ])
+        glossary_count = len(terms)
+    else:
+        archive_metrics = _translation_archive_metrics_fast(project["id"])
+        deliverable_count = _project_delivery_count_fast(project["id"])
+        glossary_count = _project_glossary_count_fast(project["id"])
     announcement_deliverable_count = len([
         task for task in active_announcement_tasks
         if task.get("status") == "delivered" and (task.get("metadata") or {}).get("delivery_artifact_id")
@@ -255,7 +264,7 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
         "words": str(archive_metrics["source_chars"]),
         "archived_rows": archive_metrics["archived_rows"],
         "langs": len(archive_metrics["languages"]),
-        "glossary": len(terms),
+        "glossary": glossary_count,
     }
     if include_details:
         project["artifacts"] = artifacts
@@ -265,6 +274,54 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
         project["announcement_tasks"] = announcement_tasks
         project["harness"] = read_project_harness(project["id"])
     return project
+
+
+def _translation_archive_metrics_fast(project_id: str) -> dict[str, Any]:
+    with db.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+              COUNT(*) AS archived_rows,
+              COUNT(DISTINCT language) AS language_count
+            FROM translation_entries
+            WHERE project_id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+    languages = {f"lang_{index}" for index in range(int(row["language_count"] or 0))}
+    return {
+        # The project list is loaded on every page open/focus.  Avoid scanning
+        # and measuring every archived source string here; exact character
+        # counts are still returned by the detail endpoint.
+        "source_chars": 0,
+        "archived_rows": int(row["archived_rows"] or 0),
+        "languages": languages,
+    }
+
+
+def _project_glossary_count_fast(project_id: str) -> int:
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM glossary_terms WHERE project_id = ? AND confirmed = 1",
+            (project_id,),
+        ).fetchone()
+    return int(row["count"] or 0)
+
+
+def _project_delivery_count_fast(project_id: str) -> int:
+    with db.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT artifacts.run_id) AS count
+            FROM artifacts
+            JOIN runs ON runs.id = artifacts.run_id
+            WHERE artifacts.project_id = ?
+              AND artifacts.kind = 'qa_final_workbook'
+              AND runs.kind IN ('translation', 'qa')
+            """,
+            (project_id,),
+        ).fetchone()
+    return int(row["count"] or 0)
 
 
 def _language_business_task_count(runs: list[dict[str, Any]]) -> int:

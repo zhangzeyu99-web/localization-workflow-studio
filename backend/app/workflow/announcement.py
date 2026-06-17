@@ -419,8 +419,8 @@ def create_announcement_task(project_id: str, request: Any) -> dict[str, Any]:
 
 def inspect_announcement_constraints(task_id: str, request: Any) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
-    metadata = _announcement_task_metadata(task)
-    metadata = _merge_announcement_constraint_request(metadata, request)
+    original_metadata = _announcement_task_metadata(task)
+    metadata = _merge_announcement_constraint_request(original_metadata, request)
     detected = _detect_announcement_constraint_languages(task["project_id"], metadata)
     selected = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=detected)
     metadata["detected_languages"] = detected
@@ -431,6 +431,14 @@ def inspect_announcement_constraints(task_id: str, request: Any) -> dict[str, An
     current_step = int(task.get("current_step") or 0)
     if current_step > next_step:
         return {"task": _hydrate_announcement_task(task), "detected_languages": detected, "selected_languages": task.get("selected_languages") or selected, "constraints": metadata["language_constraints"]}
+    if (
+        current_step == next_step
+        and str(task.get("status") or "") == next_status
+        and list(task.get("selected_languages") or []) == selected
+        and _same_announcement_constraint_inputs(original_metadata, metadata)
+        and (original_metadata.get("language_constraints") or {}) == metadata["language_constraints"]
+    ):
+        return {"task": _hydrate_announcement_task(task), "detected_languages": detected, "selected_languages": selected, "constraints": metadata["language_constraints"]}
     task = db.update_announcement_task(
         task_id,
         status=next_status,
@@ -441,6 +449,22 @@ def inspect_announcement_constraints(task_id: str, request: Any) -> dict[str, An
     for language in selected:
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status=next_status, current_step=next_step)
     return {"task": _hydrate_announcement_task(task), "detected_languages": detected, "selected_languages": selected, "constraints": metadata["language_constraints"]}
+
+
+def _same_announcement_constraint_inputs(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    def ids(value: Any) -> list[str]:
+        result: list[str] = []
+        for item in list(value or []):
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+        return result
+
+    return (
+        ids(left.get("language_table_artifact_ids")) == ids(right.get("language_table_artifact_ids"))
+        and ids(left.get("constraint_artifact_ids")) == ids(right.get("constraint_artifact_ids"))
+        and bool(left.get("include_project_archive", True)) == bool(right.get("include_project_archive", True))
+    )
 
 
 def extract_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
