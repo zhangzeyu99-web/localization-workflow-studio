@@ -632,7 +632,7 @@ function App() {
             } else {
               const issues = await loadQualityIssues(resultRun.id, runProjectId)
               const hardCount = issues.filter((issue) => issue.severity === 'hard').length
-              setStatus(`模型修复已完成，但 QA 仍有 ${hardCount || issues.length || '若干'} 个问题；可继续修复，或生成带问题交付。`)
+              setStatus(`模型修复已完成，但 QA 仍有 ${hardCount || issues.length || '若干'} 个问题。请继续修复；急需交付时可带问题摘要交付。`)
             }
           } else if (modelFixStatus === 'failed') {
             setStatus(`模型修复失败：${String(updated.metadata?.model_fix_error || updated.metadata?.error || '请检查 API 配置和 QA 输入。')}`)
@@ -645,7 +645,7 @@ function App() {
         } else if (updated.kind === 'translation' && updated.status === 'failed') {
           const progress = getTranslationProgress(updated)
           if (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows) {
-            setStatus(`翻译已完成，但 QA 未通过：${projectRunStatusText(updated)}。请进入 STEP 8 查看问题、修复或生成带问题交付。`)
+            setStatus(`翻译已完成，但 QA 未通过：${projectRunStatusText(updated)}。请进入 STEP 8 查看问题并修复；急需交付时可带问题摘要交付。`)
             const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
             if (resultArtifact) setQaArtifact(resultArtifact)
             setStep((prev) => (prev < 8 ? 8 : prev))
@@ -1268,7 +1268,7 @@ function App() {
         if (resultArtifact) setQaArtifact(resultArtifact)
         await refreshCurrent()
         if (tab === 'delivery') await refreshDeliverables()
-        setStatusForProject(projectId, `快速翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请到校对页处理或到交付页生成带问题交付。`)
+        setStatusForProject(projectId, `快速翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请到校对页修复；急需交付时可带问题摘要交付。`)
         return started
       }
       setStatusForProject(projectId, resumableRun
@@ -1389,7 +1389,7 @@ function App() {
         const resultArtifact = newestArtifact(started.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
         if (resultArtifact) setQaArtifact(resultArtifact)
         setStep((prev) => (prev < 8 ? 8 : prev))
-        setStatusForProject(projectId, `翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请进入 STEP 8 查看问题、修复或生成带问题交付。`)
+        setStatusForProject(projectId, `翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请进入 STEP 8 查看问题并修复；急需交付时可带问题摘要交付。`)
         await refreshCurrent()
         if (tab === 'delivery') await refreshDeliverables()
         return
@@ -1518,7 +1518,7 @@ function App() {
       const hardCount = Number(result.quality_summary?.hard_errors || 0) || issues.filter((issue) => issue.severity === 'hard').length
       setStatusForProject(projectId, result.run.status === 'passed'
         ? '已有译文 QA 通过，可进入交付。'
-        : `QA 未完全通过：还有 ${hardCount || '若干'} 个问题；已生成可交付文件，可先修复，也可进入交付。`)
+        : `QA 未通过：发现 ${hardCount || '若干'} 个问题。建议先修复并重跑；急需交付时可带问题摘要进入交付。`)
     } catch (error) {
       setStatusForProject(projectId, `已有译文 QA 失败：${errorText(error)}`)
     } finally {
@@ -1622,7 +1622,7 @@ function App() {
         } else {
           const issues = await loadQualityIssues(resultRun.id, projectId)
           const hardCount = issues.filter((issue) => issue.severity === 'hard').length
-          setStatusForProject(projectId, `模型修复已完成，但 QA 仍有 ${hardCount || issues.length || '若干'} 个问题；可继续修复，或生成带问题交付。`)
+          setStatusForProject(projectId, `模型修复已完成，但 QA 仍有 ${hardCount || issues.length || '若干'} 个问题。请继续修复；急需交付时可带问题摘要交付。`)
         }
       } else {
         setLatestRun(run)

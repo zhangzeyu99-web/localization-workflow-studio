@@ -142,7 +142,7 @@ export function DeliveryTab({
               </div>
               {hasQaIssues ? (
                 <div className="warn-line" data-testid="delivery-problem-warning">
-                  这份任务还有 QA 问题；可以先下载修改记录复查，也可以生成带问题说明的交付文件。
+                  这份任务还有 QA 问题。建议先复查并修复；急需交付时，交付文件会附带问题摘要。
                 </div>
               ) : null}
               <div className="delivery-line-info">
@@ -1381,7 +1381,7 @@ export function StepQA({
     <WorkflowStepShell
       stepLabel="STEP 8"
       title="QA 校对任务"
-      description="先确认校对输入，再运行 QA；未通过时可以修复，也可以生成带 QA 摘要的交付。"
+      description="先确认校对输入，再运行 QA。未通过时先修复并重跑；急需时可带问题摘要交付。"
       status={qaStatusLabel}
       statusTone={qaTone}
       nextAction={qaNextAction}
@@ -1396,14 +1396,14 @@ export function StepQA({
               <span className={`tag ${qaRunTagClass(qaStatusRun)}`}>{qaStatusRun ? qaStatusBadge(qaStatusRun.status) : '未运行'}</span>
             </div>
             <div className="qa-current-grid compact-grid">
-              <div><span>处理文件</span><strong>{effectiveQaArtifact ? effectiveQaArtifact.label : '未选择'}</strong></div>
-              <div><span>来源</span><strong>{originText}</strong></div>
-              <div><span>项目术语库</span><strong>{glossaryCount} 条</strong></div>
-              <div><span>下一步</span><strong>{qaNextAction}</strong></div>
+              <div><span>校对文件</span><strong>{effectiveQaArtifact ? effectiveQaArtifact.label : '未选择'}</strong></div>
+              <div><span>文件来源</span><strong>{originText}</strong></div>
+              <div><span>术语数量</span><strong>{glossaryCount} 条</strong></div>
+              <div><span>建议动作</span><strong>{qaNextAction}</strong></div>
             </div>
             {qaStatusRun?.status === 'failed' ? (
               <div className="qa-blocker-line">
-                QA 未完全通过，系统已保留可交付文件和 QA 摘要。可先修复并重跑，也可以临时生成带问题摘要的交付文件。
+                已保留译文文件和 QA 摘要。建议先修复并重跑；急需交付时，交付文件会附带问题摘要。
               </div>
             ) : null}
             {(qaFinalDownload || qaChangesDownload || (qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) && onGoDelivery)) ? (
@@ -1412,21 +1412,21 @@ export function StepQA({
                 {qaChangesDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-changes" href={artifactDownloadHref(qaChangesDownload, project.id)}>下载修改记录</a> : null}
                 {onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
                   <button className="btn btn-primary btn-sm" data-testid="qa-go-delivery" onClick={onGoDelivery}>
-                    {qaStatusRun.status === 'failed' ? '生成带 QA 摘要交付' : '进入交付'}
+                    {qaStatusRun.status === 'failed' ? '带问题摘要交付' : '进入交付'}
                   </button>
                 ) : null}
               </div>
             ) : null}
           </div>
-          <WorkflowSideCard title="处理路径" tone={qaStatusRun?.status === 'failed' ? 'warn' : 'neutral'}>
+          <WorkflowSideCard title="建议处理" tone={qaStatusRun?.status === 'failed' ? 'warn' : 'neutral'}>
             <div className="workflow-action-stack">
               <button className="btn btn-primary btn-sm" disabled={busy || !qaIssues.length} onClick={onModelFixes}>模型修复并重跑 QA</button>
               <button className="btn btn-ghost btn-sm" disabled={!qaIssues.length} onClick={scrollToManualFixes}>手动逐条修复</button>
-              <button className="btn btn-ghost btn-sm" disabled={!onGoDelivery || !qaStatusRun || !['passed', 'failed'].includes(qaStatusRun.status)} onClick={() => onGoDelivery?.()}>去交付页</button>
+              <button className="btn btn-ghost btn-sm" disabled={!onGoDelivery || !qaStatusRun || !['passed', 'failed'].includes(qaStatusRun.status)} onClick={() => onGoDelivery?.()}>查看交付页</button>
             </div>
           </WorkflowSideCard>
           {qaActionStatus ? (
-            <WorkflowSideCard title="当前提示" tone={/失败|error|not found|找不到|缺失/i.test(qaActionStatus) ? 'warn' : 'neutral'}>
+            <WorkflowSideCard title="任务提示" tone={/失败|error|not found|找不到|缺失/i.test(qaActionStatus) ? 'warn' : 'neutral'}>
               <div className="workflow-status-note">{busy ? <span className="loading" /> : null}{qaActionStatus}</div>
             </WorkflowSideCard>
           ) : null}
@@ -1643,7 +1643,7 @@ export function StepDone({
       : deliveryBlocked
         ? '需要返回 QA'
         : deliveryWarning
-          ? '可带 QA 摘要交付'
+          ? '可带问题摘要交付'
           : '可生成最终交付'
   return (
     <WorkflowStepShell
@@ -1666,7 +1666,7 @@ export function StepDone({
               </>
             ) : deliveryWarning ? (
               <>
-                <p>仍有 {pendingIssueCount || '若干'} 个 QA 问题未清零；交付会保留修改记录和 QA 摘要，便于后续复查。</p>
+                <p>仍有 {pendingIssueCount || '若干'} 个 QA 问题未清零；交付文件会附带问题摘要和修改记录，便于后续复查。</p>
                 <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
               </>
             ) : (
@@ -1681,7 +1681,7 @@ export function StepDone({
         {canGenerateDelivery ? (
           <div className={`delivery-primary-card ${generated ? 'ready' : ''}`}>
             <div>
-              <strong>{generated ? '交付文件已生成' : deliveryWarning ? '生成带 QA 摘要的交付' : '生成最终交付文件'}</strong>
+              <strong>{generated ? '交付文件已生成' : deliveryWarning ? '生成带问题摘要的交付' : '生成最终交付文件'}</strong>
               <span>{generated ? '下载入口已在右侧出现；项目概览的交付页也会同步显示。' : '点击后会生成可下载文件，并立即显示在本页下载区。'}</span>
             </div>
             <button className="btn btn-primary" data-testid="wizard-generate-delivery" disabled={busy} onClick={() => deliveryRun && void onCreateDelivery(deliveryRun.id)}>
@@ -1991,7 +1991,7 @@ export function qaRunTagClass(run: Run | null | undefined): string {
 export function qaRunSummaryText(run: Run | null | undefined, pendingIssueCount = 0): string {
   if (!run) return '尚未运行 QA。请选择译文表后点击“运行 QA”。'
   if (run.status === 'passed') return 'QA 已通过，可以进入交付页生成最终文件。'
-  if (run.status === 'failed') return `QA 未完全通过，还有 ${pendingIssueCount || '若干'} 个问题；仍可生成带 QA 摘要的交付文件。`
+  if (run.status === 'failed') return `QA 未通过：发现 ${pendingIssueCount || '若干'} 个问题。建议先修复并重跑；急需时可带问题摘要交付。`
   if (run.status === 'queued' || run.status === 'running') return 'QA 正在运行，请等待当前任务完成。'
   if (run.status === 'needs_input') return 'QA 需要补充输入后继续。'
   return `当前状态：${run.status}`
@@ -2000,7 +2000,7 @@ export function qaRunSummaryText(run: Run | null | undefined, pendingIssueCount 
 export function qaRunActionText(run: Run | null | undefined, pendingIssueCount = 0): string {
   if (!run) return '运行 QA'
   if (run.status === 'passed') return '去交付页生成最终文件'
-  if (run.status === 'failed') return pendingIssueCount ? '可先修复，也可去交付' : '查看 QA 报告后交付'
+  if (run.status === 'failed') return pendingIssueCount ? '先修复；急需时交付' : '查看 QA 报告后交付'
   if (run.status === 'queued' || run.status === 'running') return '等待任务完成'
   return '按提示补齐输入'
 }
@@ -2009,7 +2009,7 @@ export function runDeliveryState(run: Run, visibleArtifacts: Artifact[]): string
   if (visibleArtifacts.some((artifact) => artifact.kind === 'qa_final_workbook' || artifact.role === 'translation_workbook')) return '可生成最终交付'
   if (run.status === 'passed') return '已通过，等待生成交付文件'
   if (run.status === 'needs_input') return '需要补充输入'
-  if (run.status === 'failed') return 'QA 未完全通过，可带摘要交付'
+  if (run.status === 'failed') return 'QA 未通过，可带问题摘要交付'
   return '处理中'
 }
 
