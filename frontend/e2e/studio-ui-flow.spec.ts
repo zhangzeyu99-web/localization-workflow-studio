@@ -364,6 +364,7 @@ wb.close()
   await page.getByTestId('quick-task-entry').click()
   await expect(page.locator('.quick-steps')).toBeVisible()
   await expect(page.locator('.steps-nav')).toHaveCount(0)
+  await page.getByTestId('quick-mode-upload').click()
   await page.getByTestId('quick-input-upload').locator('input[type="file"]').setInputFiles(workbook)
   await expect(page.getByTestId('quick-reference-next')).toBeVisible({ timeout: 15000 })
   await page.getByTestId('quick-reference-next').click()
@@ -375,6 +376,35 @@ wb.close()
     const run = (detail.runs || []).find((item: any) => item.metadata?.task_origin === 'quick_task')
     return run?.status || ''
   }, { timeout: 60000 }).toBe('passed')
+})
+
+test('quick task translates pasted text and shows copyable result in step three', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 1 },
+  })
+  const projectName = `E2E Quick Paste ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'quick-task', description: 'Quick pasted text smoke.' },
+  }).then((response) => response.json())
+  await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { source: '开始游戏', target: 'Start Game', language: 'en', source_type: 'manual', confirmed: true },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await expect(page.getByTestId('quick-text-input')).toBeVisible()
+  await page.getByTestId('quick-text-input').fill('开始游戏\n保存 {0}\n')
+  await page.getByTestId('quick-text-next').click()
+  await expect(page.getByTestId('quick-reference-next')).toBeVisible({ timeout: 15000 })
+  await page.getByTestId('quick-reference-next').click()
+  await page.getByTestId('quick-objective-translate').click()
+  await page.getByTestId('quick-task-start').click()
+
+  await expect(page.getByTestId('quick-text-result')).toContainText('TestFake', { timeout: 60000 })
+  await expect(page.getByTestId('quick-text-result')).toContainText('{0}')
+  await expect(page.getByTestId('quick-result-copy')).toBeVisible()
+  await expect(page.getByTestId('quick-result-download')).toBeVisible()
 })
 
 test('quick workflow can preview and import glossary terms', async ({ page, request }) => {

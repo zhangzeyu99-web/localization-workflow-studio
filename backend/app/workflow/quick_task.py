@@ -4,8 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from openpyxl import load_workbook
+
 from .. import db
+from ..languages import language_spec
 from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
+from .announcement import _lookup_terms, _lookup_translation_entries
 from .announcement_segments import _quick_text_translation_rows, _write_quick_text_output
 from .common import run_dir
 from .jsonl_helpers import write_jsonl
@@ -34,7 +38,13 @@ def _quick_text_prompt_context(
     settings: dict[str, Any],
 ) -> dict[str, Any]:
     snapshot_dir = work_dir / "snapshots"
-    glossary_snapshot = create_project_glossary_snapshot(project_id, run_id, snapshot_dir, language=language)
+    glossary_snapshot = create_project_glossary_snapshot(
+        project_id,
+        run_id,
+        snapshot_dir,
+        language=language,
+        extra_term_artifact_id=metadata.get("term_artifact_id"),
+    )
     snapshots = create_prompt_and_harness_snapshots(project_id, run_id, snapshot_dir, language=language)
     reference_snapshot = create_quick_reference_snapshot(project_id, run_id, metadata.get("reference_artifact_ids"), snapshot_dir)
     prompt = snapshots["prompt"]
@@ -51,6 +61,62 @@ def _quick_text_prompt_context(
         "harness_snapshot_artifact": snapshots["harness_artifact"],
         "reference_snapshot": reference_snapshot,
     }
+
+
+def _quick_text_glossary_rows(glossary_snapshot: dict[str, Any], language: str) -> list[dict[str, Any]]:
+    path = Path(str(glossary_snapshot.get("path") or ""))
+    if not path.exists():
+        return []
+    spec = language_spec(language)
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return []
+        headers = [str(value or "").strip() for value in rows[0]]
+        header_index = {header.casefold(): index for index, header in enumerate(headers) if header}
+        source_index = header_index.get("cn")
+        target_index = header_index.get(spec.target_header.casefold())
+        alt_index = header_index.get(spec.alt_header.casefold()) if spec.alt_header else None
+        if source_index is None or target_index is None:
+            return []
+        output = []
+        for raw in rows[1:]:
+            source = str(raw[source_index] or "").strip() if source_index < len(raw) else ""
+            target = str(raw[target_index] or "").strip() if target_index < len(raw) else ""
+            target_alt = str(raw[alt_index] or "").strip() if alt_index is not None and alt_index < len(raw) else ""
+            if source and (target or target_alt):
+                output.append({"source": source, "target": target, "target_alt": target_alt, "language": language})
+        return output
+    finally:
+        wb.close()
+
+
+def _quick_text_rows_with_context(project_id: str, language: str, rows: list[dict[str, Any]], glossary_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    glossary_rows = _quick_text_glossary_rows(glossary_snapshot, language)
+    archive_rows = db.list_translation_entries(project_id, language=language)
+    enriched = []
+    for row in rows:
+        source = str(row.get("source") or "")
+        term_hits = _lookup_terms(source, glossary_rows, min_length=2, limit=20)
+        reference_hits = _lookup_translation_entries(source, archive_rows, min_length=4, limit=20)
+        enriched.append({
+            **row,
+            "term_hits": [{"source": hit.get("source", ""), "target": hit.get("target", ""), "target_alt": hit.get("target_alt", "")} for hit in term_hits],
+            "reference_hits": [
+                {
+                    "source": hit.get("source", ""),
+                    "target": hit.get("target", ""),
+                    "target_alt": hit.get("target_alt", ""),
+                    "source_type": hit.get("source_type", ""),
+                    "sheet": hit.get("sheet", ""),
+                    "row_number": hit.get("row_number", 0),
+                }
+                for hit in reference_hits
+            ],
+        })
+    return enriched
 
 
 def _write_quick_text_artifacts(
@@ -198,6 +264,7 @@ async def _translate_quick_text_run(
         work_dir=work_dir,
         settings=settings,
     )
+    rows = _quick_text_rows_with_context(project["id"], language, rows, prompt_context["glossary_snapshot"])
 
     workpack_path = work_dir / "quick_text_workpack.jsonl"
     write_jsonl(workpack_path, rows)

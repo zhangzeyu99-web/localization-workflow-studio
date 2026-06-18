@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../apiClient'
-import { artifactPickerLabel, uniqueArtifactsByContent } from '../../domain/artifacts'
+import { artifactDownloadHref, artifactPickerLabel, newestArtifact, uniqueArtifactsByContent } from '../../domain/artifacts'
 import { aiProviderConfigurationReminder } from '../../domain/providerSettings'
 import { canSkipModelTranslation, effectiveBatchSize, isTranslationRunResumable, matchesTranslationRun } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
@@ -62,6 +62,8 @@ export function QuickTaskWizard({
   const [language, setLanguage] = useState<LanguageCode>('en')
   const [readiness, setReadiness] = useState<TranslationReadiness | null>(null)
   const [startedRun, setStartedRun] = useState<Run | null>(null)
+  const [inputMode, setInputMode] = useState<'paste' | 'upload'>('paste')
+  const [pastedText, setPastedText] = useState('')
 
   useEffect(() => {
     if (!inputArtifact?.id) {
@@ -93,6 +95,13 @@ export function QuickTaskWizard({
     setQuickStep(2)
   }
 
+  async function submitPastedText() {
+    const text = pastedText.trim()
+    if (!text) return
+    const file = new File([pastedText], `inline-quick-${Date.now()}.txt`, { type: 'text/plain' })
+    await uploadInput(file)
+  }
+
   async function uploadReference(file: File) {
     const artifact = await onUploadFile(file, 'quick_reference')
     if (!artifact) return
@@ -104,6 +113,23 @@ export function QuickTaskWizard({
     const run = await onStartQuickTask({ inputArtifact, referenceArtifacts, objective, language })
     if (run) setStartedRun(run)
   }
+
+  useEffect(() => {
+    if (!startedRun?.id || ['passed', 'failed', 'needs_input', 'canceled'].includes(startedRun.status)) return
+    let canceled = false
+    const timer = window.setInterval(async () => {
+      try {
+        const updated = await api<Run>(`/api/runs/${startedRun.id}`)
+        if (!canceled) setStartedRun(updated)
+      } catch {
+        // Keep the last known run state; the global status already surfaces API errors.
+      }
+    }, 1500)
+    return () => {
+      canceled = true
+      window.clearInterval(timer)
+    }
+  }, [startedRun?.id, startedRun?.status])
 
   const detected = normalizeLanguageArray(targets?.detected_languages)
   const quickRuns = quickTaskRuns(project).slice(0, 3)
@@ -136,6 +162,7 @@ export function QuickTaskWizard({
     if (run.kind === 'translation' && run.status === 'failed' && quality?.passed === false) return '\u9700\u6821\u5bf9'
     return quickStatusLabel(run.status)
   }
+  const displayRun = startedRun || (latestRun?.metadata?.task_origin === 'quick_task' ? latestRun : null)
   return (
     <>
       <div className="proj-head">
@@ -157,11 +184,25 @@ export function QuickTaskWizard({
         {quickStep === 1 ? (
           <>
             <div className="panel-title"><span className="badge">STEP 1</span>投入要处理的内容</div>
-            <div className="panel-desc">支持语言表格或 TXT 文本。上传后系统只做本次任务输入，不写入长期语言表资产。</div>
-            <div className="upload-row">
-              <FileBox label="上传待翻译 / 待校对文件（XLSX/TXT）" onFile={uploadInput} testId="quick-input-upload" />
-              {inputArtifact ? <ArtifactNote artifact={inputArtifact} /> : null}
+            <div className="panel-desc">可直接粘贴短文本，也可上传语言表格或 TXT。系统只做本次任务输入，不写入长期语言表资产。</div>
+            <div className="segmented-control quick-input-mode">
+              <button data-testid="quick-mode-paste" className={inputMode === 'paste' ? 'active' : ''} onClick={() => setInputMode('paste')}>粘贴文本</button>
+              <button data-testid="quick-mode-upload" className={inputMode === 'upload' ? 'active' : ''} onClick={() => setInputMode('upload')}>上传文件</button>
             </div>
+            {inputMode === 'paste' ? (
+              <QuickTextInput
+                value={pastedText}
+                onChange={setPastedText}
+                onSubmit={submitPastedText}
+                disabled={busy}
+                artifact={inputArtifact}
+              />
+            ) : (
+              <div className="upload-row">
+                <FileBox label="上传待翻译 / 待校对文件（XLSX/TXT）" onFile={uploadInput} testId="quick-input-upload" />
+                {inputArtifact ? <ArtifactNote artifact={inputArtifact} /> : null}
+              </div>
+            )}
           </>
         ) : null}
         {quickStep === 2 ? (
@@ -219,6 +260,7 @@ export function QuickTaskWizard({
               <button className="btn btn-ghost" disabled={!startedRun && !latestRun} onClick={() => onViewResult(startedRun || latestRun)}>查看结果</button>
             </div>
             {startedRun ? <div className="scan-explain"><strong>{quickTaskName(startedRun)} 已创建</strong><span>{languageSpec(normalizeLanguageCode(startedRun.language) || language).short} · {quickRunStatusLabel(startedRun)} · {startedRun.id}</span></div> : null}
+            {displayRun ? <QuickTextResultPanel projectId={project.id} run={displayRun} onOpenDetail={() => onViewResult(displayRun)} /> : null}
           </>
         ) : null}
       </div>
@@ -236,5 +278,91 @@ export function QuickTaskWizard({
         </div>
       ) : null}
     </>
+  )
+}
+
+function QuickTextInput({
+  value,
+  onChange,
+  onSubmit,
+  disabled,
+  artifact
+}: {
+  value: string
+  onChange: (value: string) => void
+  onSubmit: () => void
+  disabled: boolean
+  artifact: Artifact | null
+}) {
+  const lineCount = value.split(/\r?\n/).filter((line) => line.trim()).length
+  return (
+    <div className="quick-text-input-block">
+      <textarea
+        data-testid="quick-text-input"
+        className="quick-text-input"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="粘贴要翻译的正文。每个非空行会作为一条翻译输入。"
+      />
+      <div className="quick-text-meta">
+        <span>{lineCount} 个非空行</span>
+        {artifact ? <ArtifactNote artifact={artifact} compact /> : null}
+      </div>
+      <div className="actions inline-actions">
+        <button className="btn btn-primary" data-testid="quick-text-next" disabled={disabled || !value.trim()} onClick={onSubmit}>下一步：投入参考</button>
+      </div>
+    </div>
+  )
+}
+
+function QuickTextResultPanel({ projectId, run, onOpenDetail }: { projectId: string; run: Run; onOpenDetail: () => void }) {
+  const finalTextArtifact = newestArtifact(run.artifacts || [], ['final_text'])
+  const [text, setText] = useState('')
+  const [copyStatus, setCopyStatus] = useState('')
+  const href = finalTextArtifact ? artifactDownloadHref(finalTextArtifact, projectId) : ''
+
+  useEffect(() => {
+    let canceled = false
+    setText('')
+    if (!href) return
+    fetch(href)
+      .then((response) => response.ok ? response.text() : '')
+      .then((body) => {
+        if (!canceled) setText(body)
+      })
+      .catch(() => {
+        if (!canceled) setText('')
+      })
+    return () => { canceled = true }
+  }, [href])
+
+  async function copyText() {
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopyStatus('已复制')
+    } catch {
+      setCopyStatus('复制失败，请手动选中文本')
+    }
+  }
+
+  if (!finalTextArtifact && !['passed', 'failed'].includes(run.status)) {
+    return <div className="scan-explain" data-testid="quick-text-result"><strong>结果生成中</strong><span>{run.status}</span></div>
+  }
+  if (!finalTextArtifact) return null
+  return (
+    <div className="quick-result-panel" data-testid="quick-text-result">
+      <div className="card-title">
+        <div className="left">快速翻译结果</div>
+        <span>{run.status}</span>
+      </div>
+      <pre>{text || '正在读取结果...'}</pre>
+      <div className="row-actions">
+        <button className="btn btn-primary" data-testid="quick-result-copy" disabled={!text} onClick={copyText}>复制正文</button>
+        <a className="btn btn-ghost" data-testid="quick-result-download" href={href}>下载 TXT</a>
+        <button className="btn btn-ghost" onClick={onOpenDetail}>查看详情</button>
+        {copyStatus ? <span className="muted-inline">{copyStatus}</span> : null}
+      </div>
+    </div>
   )
 }

@@ -3352,6 +3352,77 @@ def test_quick_task_can_translate_txt_and_deliver_same_format(tmp_path: Path) ->
         assert package["files"][0]["filename"].endswith("_final.txt")
 
 
+def test_quick_txt_translation_workpack_uses_terms_and_project_archive(tmp_path: Path) -> None:
+    source = tmp_path / "quick-context.txt"
+    source.write_text("战机升级\n领取奖励\n暗影钥匙\n跨项目短语\n", encoding="utf-8")
+    selected_terms = tmp_path / "selected-terms.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "KR", "分类", "备注"])
+    ws.append(["T-2", "暗影钥匙", "Shadow Key", "item", "selected quick term"])
+    wb.save(selected_terms)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Quick TXT Context", "type": "quick-task"}).json()
+        other_project = client.post("/api/projects", json={"name": "Other Quick TXT Context", "type": "quick-task"}).json()
+        client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"term_key": "T-1", "source": "战机", "target": "Warplane", "language": "ko", "category": "unit", "source_type": "manual", "confirmed": True},
+        )
+        db.insert_translation_entry(
+            project["id"],
+            {"entry_key": "A-1", "source": "领取奖励", "target": "보상 받기", "language": "ko", "sheet": "Language", "row_number": 9, "source_type": "qa_passed"},
+        )
+        db.insert_translation_entry(
+            project["id"],
+            {"entry_key": "A-2", "source": "跨项目短语", "target": "Wrong EN", "language": "en", "source_type": "manual"},
+        )
+        db.insert_translation_entry(
+            other_project["id"],
+            {"entry_key": "A-3", "source": "跨项目短语", "target": "다른 프로젝트", "language": "ko", "source_type": "qa_passed"},
+        )
+        with selected_terms.open("rb") as fh:
+            term_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=term_base",
+                files={"file": ("selected-terms.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with source.open("rb") as fh:
+            quick_input = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_input",
+                files={"file": ("quick-context.txt", fh, "text/plain")},
+            ).json()
+
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "translation",
+                "language": "ko",
+                "input_artifact_id": quick_input["id"],
+                "term_artifact_id": term_artifact["id"],
+                "task_origin": "quick_task",
+                "batch_size": 1,
+            },
+        ).json()
+        result = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 1}).json()
+        assert result["run"]["status"] == "passed"
+        workpack_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "translation_workpack")
+        rows = [json.loads(line) for line in Path(workpack_artifact["path"]).read_text(encoding="utf-8").splitlines()]
+
+        by_source = {row["source"]: row for row in rows}
+        assert by_source["战机升级"]["term_hits"][0]["target"] == "Warplane"
+        assert by_source["暗影钥匙"]["term_hits"][0]["target"] == "Shadow Key"
+        assert by_source["领取奖励"]["reference_hits"][0]["target"] == "보상 받기"
+        assert by_source["领取奖励"]["reference_hits"][0]["source_type"] == "qa_passed"
+        assert by_source["跨项目短语"].get("reference_hits", []) == []
+        final_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "final_text")
+        final_text = Path(final_artifact["path"]).read_text(encoding="utf-8")
+        assert "Warplane" in final_text
+        assert "Shadow Key" in final_text
+
+
 def test_disabled_test_fake_provider_does_not_fall_back_to_real_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LWS_ENABLE_TEST_PROVIDER", raising=False)
     source = tmp_path / "quick.txt"
