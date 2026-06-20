@@ -216,6 +216,7 @@ def _rank_translation_lookup_source(source_type: str) -> int:
         "imported": 2,
         "archive": 2,
         "translation_archive": 2,
+        "delivered_with_issues": 2,
     }
     return priority.get(str(source_type or "").strip().lower(), 3)
 

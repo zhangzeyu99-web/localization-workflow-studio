@@ -220,6 +220,25 @@ def test_delivery_skips_empty_workbook_but_keeps_failed_review_artifact(tmp_path
     assert [item["run_id"] for item in deliverables] == [passed_run["id"], failed_run["id"]]
 
 
+def test_failed_qa_delivery_archives_translation_with_issue_source(tmp_path: Path) -> None:
+    project = db.insert_project("Delivery archive failed QA", "QA", "", "🎮")
+    failed_run = db.insert_run(project["id"], "qa", "en", metadata={"quality_summary": {"passed": False, "hard_errors": 1}})
+    failed_path = tmp_path / "failed-delivery.xlsx"
+    _write_qa_source_workbook(failed_path, translated=True)
+    final_artifact = db.add_artifact(project["id"], "failed final", failed_path, "qa_final_workbook", run_id=failed_run["id"])
+    db.update_run(failed_run["id"], status="failed", metadata={"quality_summary": {"passed": False, "hard_errors": 1}})
+
+    result = workflow.build_delivery_package(project["id"], run_id=failed_run["id"])
+    entries = db.list_translation_entries(project["id"], language="en")
+
+    assert result["archive"]["artifact_id"] == final_artifact["id"]
+    assert result["archive"]["source_type"] == "delivered_with_issues"
+    assert result["archive"]["imported_count"] == 2
+    assert len(entries) == 2
+    assert {entry["source_type"] for entry in entries} == {"delivered_with_issues"}
+    assert {entry["target"] for entry in entries} == {"Start Game", "Claim Rewards"}
+
+
 def test_artifact_payload_exposes_file_existence(tmp_path: Path) -> None:
     project = db.insert_project("Artifact exists", "QA", "", "🎮")
     existing_path = tmp_path / "existing.xlsx"
@@ -523,10 +542,15 @@ def test_model_fix_resolves_generated_confirmation_sheet_by_record_id(tmp_path: 
     ws.append(["ID", "CN", "EN"])
     for row_id in range(8381, 8389):
         ws.append([row_id, f"source {row_id}", f"old {row_id}"])
+    confirmation_title = "\u9700\u786e\u8ba4"
+    review_ws = wb.create_sheet(confirmation_title)
+    review_ws.append(["ID", "source", "current", "suggestion", "reason"])
+    review_ws.append([8381, "source 8381", "old 8381", "short fixed", "too long"])
+    review_ws.append([8387, "source 8387", "old 8387", "short fixed", "too long"])
     wb.save(workbook)
     wb.close()
 
-    issue = {"id": 8387, "sheet": "需确认", "row": 3, "severity": "hard", "check_type": "ui_length_overflow"}
+    issue = {"id": 8387, "sheet": confirmation_title, "row": 3, "severity": "hard", "check_type": "ui_length_overflow"}
     context = workflow._model_fix_row_context(workbook, issue)
 
     assert context["sheet"] == "Sheet1"
@@ -535,7 +559,7 @@ def test_model_fix_resolves_generated_confirmation_sheet_by_record_id(tmp_path: 
 
     applied = workflow._apply_workbook_fixes(
         workbook,
-        [{"issue_id": "issue-1", "sheet": "需确认", "row": 3, "record_id": 8387, "translation": "short fixed"}],
+        [{"issue_id": "issue-1", "sheet": confirmation_title, "row": 3, "record_id": 8387, "translation": "short fixed"}],
         "run_test",
     )
     fixed = load_workbook(workbook, read_only=True, data_only=True)
@@ -547,6 +571,47 @@ def test_model_fix_resolves_generated_confirmation_sheet_by_record_id(tmp_path: 
         assert applied[0]["sheet"] == "Sheet1"
     finally:
         fixed.close()
+
+
+def test_quality_dedupes_generated_confirmation_sheet_duplicates() -> None:
+    quality = {
+        "passed": False,
+        "issues": [
+            {
+                "id": 124,
+                "sheet": "Sheet1",
+                "row": 125,
+                "severity": "error",
+                "check_type": "term_missing",
+                "message": "Source term 部队 must use Troops",
+                "source": "没有支援部队",
+                "translation": "No Reinforcements",
+            },
+            {
+                "id": 124,
+                "sheet": "\u9700\u786e\u8ba4",
+                "row": 5,
+                "severity": "error",
+                "check_type": "term_missing",
+                "message": "Source term 部队 must use Troops",
+                "source": "没有支援部队",
+                "translation": "No Reinforcements",
+            },
+        ],
+        "issue_counts": {"term_missing": 2},
+        "hard_errors": 2,
+        "soft_warnings": 0,
+    }
+
+    deduped = workflow._dedupe_quality_payload(quality)
+    normalized = workflow._dedupe_quality_issues(workflow._normalize_quality_issues("global_harness", deduped))
+
+    assert len(deduped["issues"]) == 1
+    assert deduped["issues"][0]["sheet"] == "Sheet1"
+    assert deduped["issue_counts"] == {"term_missing": 1}
+    assert deduped["hard_errors"] == 1
+    assert len(normalized) == 1
+    assert normalized[0]["sheet"] == "Sheet1"
 
 
 def test_language_api_uses_visible_kr_jp_and_aliases() -> None:

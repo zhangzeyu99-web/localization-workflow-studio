@@ -13,9 +13,13 @@ from ..delivery_naming import safe_delivery_name
 from ..languages import PROJECT_LANGUAGE_ORDER, SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from .announcement_outputs import _announcement_task_source_stem, _artifact_display_label, _visible_language_code
 from .announcement_segments import _normalize_announcement_languages
+from .asset_import_export import archive_translation_artifact
 from .common import project_dir
 from .qa import _first_col, _row_cell, write_qa_changes_report
 from .subprocess_runner import user_facing_error
+
+DELIVERED_WITH_ISSUES_SOURCE_TYPE = "delivered_with_issues"
+
 
 def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
     project = db.get_project(project_id)
@@ -192,7 +196,7 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
         shutil.copy2(final_source["path"], final_path)
         summary = _deliverable_summary(project, run, final_source)
         summary["files"] = {"final": _delivery_file("final", final_path)}
-        return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values())}
+        return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values()), "archive": None}
 
     final_path, changes_path = _delivery_output_paths(project, run)
     shutil.copy2(final_source["path"], final_path)
@@ -208,7 +212,8 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
         "final": _delivery_file("final", final_path),
         "changes": _delivery_file("changes", changes_path),
     }
-    return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values())}
+    archive_result = _archive_delivery_translation(project_id, run, final_source)
+    return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values()), "archive": archive_result}
 
 
 def build_merged_delivery_package(project_id: str, input_artifact_id: str, languages: list[str]) -> dict[str, Any]:
@@ -345,6 +350,19 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
 
 def _deliverable_final_artifact(run: dict[str, Any]) -> dict[str, Any] | None:
     return _run_artifact(run["id"], "qa_final_workbook") or _run_artifact(run["id"], "final_text")
+
+
+def _archive_delivery_translation(project_id: str, run: dict[str, Any], final_artifact: dict[str, Any]) -> dict[str, Any]:
+    quality_summary = run.get("metadata", {}).get("quality_summary") or {}
+    source_type = "qa_passed" if bool(quality_summary.get("passed", run.get("status") == "passed")) else DELIVERED_WITH_ISSUES_SOURCE_TYPE
+    archive_result = archive_translation_artifact(
+        project_id,
+        final_artifact["id"],
+        language=run.get("language") or "en",
+        source_type=source_type,
+    )
+    db.add_event(run["id"], f"delivery translation archive updated: source_type={source_type} rows={archive_result['imported_count']}")
+    return {**archive_result, "source_type": source_type}
 
 
 def _effective_task_identity(run: dict[str, Any], seen: set[str] | None = None) -> tuple[str, str]:

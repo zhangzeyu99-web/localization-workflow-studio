@@ -18,6 +18,10 @@ from .semantic_qa import run_semantic_qa_report
 from .subprocess_runner import run_subprocess, run_subprocess_allow_failure
 
 
+WORKBOOK_ID_HEADER_ALIASES = ["id", "key", "编号", "序号"]
+WORKBOOK_TARGET_HEADER_ALIASES = ["en", "translation", "target", "译文", "英文"]
+
+
 def _harness_summary(harness: dict[str, Any]) -> dict[str, Any]:
     return {
         "source": "project_harness",
@@ -224,15 +228,30 @@ def _dedupe_semantic_qa_against_deterministic(semantic_qa: dict[str, Any], *dete
 
 
 def _dedupe_quality_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, int, str, str]] = set()
+    seen: set[tuple[Any, ...]] = set()
     result: list[dict[str, Any]] = []
     for issue in issues:
-        signature = _quality_issue_signature(issue)
+        signature = _quality_issue_record_signature(issue) or _quality_issue_signature(issue)
         if signature in seen:
             continue
         seen.add(signature)
         result.append(issue)
     return result
+
+
+def _quality_issue_record_signature(issue: dict[str, Any]) -> tuple[str, ...] | None:
+    record_id = str(issue.get("id") or issue.get("record_id") or "").strip()
+    if not record_id or ":" in record_id:
+        return None
+    return (
+        "record",
+        str(issue.get("source") or "").strip().lower(),
+        record_id,
+        str(issue.get("check_type") or "").strip().lower(),
+        str(issue.get("severity") or "hard").strip().lower(),
+        _compact_issue_text(issue.get("message") or ""),
+        _compact_issue_text(issue.get("current_translation") or ""),
+    )
 
 
 def _quality_issue_signature(issue: dict[str, Any]) -> tuple[str, int, str, str]:
@@ -244,6 +263,10 @@ def _quality_issue_signature(issue: dict[str, Any]) -> tuple[str, int, str, str]
     severity = str(issue.get("severity") or "hard").strip().lower()
     message = re.sub(r"\s+", " ", str(issue.get("message") or "").strip().lower())
     return sheet, row, severity, message
+
+
+def _compact_issue_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
 def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
@@ -590,7 +613,59 @@ def _run_quality_json(args: list[str], run_id: str) -> dict[str, Any]:
     proc = run_subprocess_allow_failure(args, LOCALIZATION_ROOT, run_id)
     if not proc.stdout.strip():
         raise RuntimeError(f"quality harness returned no JSON: {proc.stderr}")
-    return json.loads(proc.stdout)
+    return _dedupe_quality_payload(json.loads(proc.stdout))
+
+
+def _dedupe_quality_payload(quality: dict[str, Any]) -> dict[str, Any]:
+    issues = quality.get("issues") if isinstance(quality.get("issues"), list) else []
+    if not issues:
+        return quality
+    seen: set[tuple[str, ...]] = set()
+    deduped: list[dict[str, Any]] = []
+    for issue in issues:
+        signature = _quality_payload_issue_signature(issue)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(issue)
+    if len(deduped) == len(issues):
+        return quality
+
+    issue_counts: dict[str, int] = {}
+    hard_errors = 0
+    soft_warnings = 0
+    for issue in deduped:
+        check_type = str(issue.get("check_type") or issue.get("type") or issue.get("code") or "quality_issue")
+        issue_counts[check_type] = issue_counts.get(check_type, 0) + 1
+        severity = str(issue.get("severity") or "hard").lower()
+        if severity in {"warning", "soft", "info"}:
+            soft_warnings += 1
+        else:
+            hard_errors += 1
+    return {
+        **quality,
+        "issues": deduped,
+        "issue_counts": issue_counts,
+        "hard_errors": hard_errors,
+        "soft_warnings": soft_warnings,
+    }
+
+
+def _quality_payload_issue_signature(issue: dict[str, Any]) -> tuple[str, ...]:
+    record_id = str(issue.get("id") or issue.get("record_id") or "").strip()
+    check_type = str(issue.get("check_type") or issue.get("type") or issue.get("code") or "quality_issue").strip().lower()
+    severity = str(issue.get("severity") or "hard").strip().lower()
+    message = _compact_issue_text(issue.get("message") or issue.get("detail") or "")
+    source = _compact_issue_text(issue.get("source_text") or issue.get("source") or issue.get("rule_source") or "")
+    translation = _compact_issue_text(issue.get("translation") or issue.get("target") or issue.get("actual") or "")
+    if record_id:
+        return ("record", record_id, check_type, severity, message, source, translation)
+    sheet = str(issue.get("sheet") or "").strip()
+    try:
+        row = str(int(issue.get("row") or 0))
+    except (TypeError, ValueError):
+        row = "0"
+    return ("position", sheet, row, check_type, severity, message)
 
 
 def _hard_error_count(quality: dict[str, Any]) -> int:
@@ -618,10 +693,10 @@ def _collect_workbook_translation_changes(before_path: Path, after_path: Path) -
         after_ws = after_wb[before_ws.title] if before_ws.title in after_wb.sheetnames else after_wb[after_wb.sheetnames[0]]
         before_headers = _header_map(before_ws)
         after_headers = _header_map(after_ws)
-        before_id_col = _first_col(before_headers, ["id", "key", "编号", "序号"])
-        after_id_col = _first_col(after_headers, ["id", "key", "编号", "序号"])
-        before_target_col = _first_col(before_headers, ["en", "translation", "target", "译文", "英文"])
-        after_target_col = _first_col(after_headers, ["en", "translation", "target", "译文", "英文"])
+        before_id_col = _first_col(before_headers, WORKBOOK_ID_HEADER_ALIASES)
+        after_id_col = _first_col(after_headers, WORKBOOK_ID_HEADER_ALIASES)
+        before_target_col = _first_col(before_headers, WORKBOOK_TARGET_HEADER_ALIASES)
+        after_target_col = _first_col(after_headers, WORKBOOK_TARGET_HEADER_ALIASES)
         if before_id_col is None or after_id_col is None or before_target_col is None or after_target_col is None:
             return []
         after_by_id: dict[str, tuple[int, str]] = {}
@@ -792,8 +867,8 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
             if value is not None and str(value).strip()
         }
         source_col = _first_col(headers, list(SOURCE_HEADER_ALIASES))
-        target_col = _first_col(headers, ["en", "target", "translation", "译文", "英文"])
-        id_col = _first_col(headers, ["id", "key", "编号", "序号"])
+        target_col = _first_col(headers, WORKBOOK_TARGET_HEADER_ALIASES)
+        id_col = _first_col(headers, WORKBOOK_ID_HEADER_ALIASES)
         row_values = next(ws.iter_rows(min_row=row_index, max_row=row_index, values_only=True), ())
         return {
             "issue_id": issue.get("id", ""),
@@ -815,23 +890,30 @@ def _resolve_workbook_row_for_issue(wb: Any, requested_ws: Any | None, row_index
     normalized_record_id = _normalize_translation_id(record_id)
     if requested_ws is not None and row_index >= 2:
         headers = _header_map(requested_ws)
-        id_col = _first_col(headers, ["id", "key", "编号", "序号"])
-        if id_col is None or normalized_record_id is None:
+        id_col = _first_col(headers, WORKBOOK_ID_HEADER_ALIASES)
+        has_target_col = _first_col(headers, WORKBOOK_TARGET_HEADER_ALIASES) is not None
+        if has_target_col and (id_col is None or normalized_record_id is None):
             return requested_ws, row_index
-        current_id = _normalize_translation_id(requested_ws.cell(row_index, id_col).value)
-        if current_id == normalized_record_id:
+        current_id = _normalize_translation_id(requested_ws.cell(row_index, id_col).value) if id_col is not None else None
+        if has_target_col and current_id == normalized_record_id:
             return requested_ws, row_index
     if normalized_record_id is None:
-        return (requested_ws, row_index) if requested_ws is not None and row_index >= 2 else None
+        if requested_ws is not None and row_index >= 2 and _first_col(_header_map(requested_ws), WORKBOOK_TARGET_HEADER_ALIASES) is not None:
+            return requested_ws, row_index
+        return None
     for ws in wb.worksheets:
         headers = _header_map(ws)
-        id_col = _first_col(headers, ["id", "key", "编号", "序号"])
+        if _first_col(headers, WORKBOOK_TARGET_HEADER_ALIASES) is None:
+            continue
+        id_col = _first_col(headers, WORKBOOK_ID_HEADER_ALIASES)
         if id_col is None:
             continue
         for candidate_row in range(2, ws.max_row + 1):
             if _normalize_translation_id(ws.cell(candidate_row, id_col).value) == normalized_record_id:
                 return ws, candidate_row
-    return (requested_ws, row_index) if requested_ws is not None and row_index >= 2 else None
+    if requested_ws is not None and row_index >= 2 and _first_col(_header_map(requested_ws), WORKBOOK_TARGET_HEADER_ALIASES) is not None:
+        return requested_ws, row_index
+    return None
 
 
 def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]]) -> str:
@@ -909,7 +991,7 @@ def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id
                 if resolved:
                     ws, row_index = resolved
                     sheet_name = ws.title
-            target_col = _first_col(_header_map(ws), ["en", "translation", "target", "译文", "英文"])
+            target_col = _first_col(_header_map(ws), WORKBOOK_TARGET_HEADER_ALIASES)
             if target_col is None:
                 raise KeyError(f"target column not found in sheet: {sheet_name}")
             cell = ws.cell(row_index, target_col)
