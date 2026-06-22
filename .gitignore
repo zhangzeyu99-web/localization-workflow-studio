@@ -36,3 +36,4 @@ api_key*
 .local-logs/
 tmp/
 release_archives/
+frontend-v2/

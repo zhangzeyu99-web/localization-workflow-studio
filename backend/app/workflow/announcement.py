@@ -59,79 +59,16 @@ from .announcement_segments import (
 from .announcement_shared import (
     ANNOUNCEMENT_STEP,
     _announcement_task_metadata,
-    _count_lookup_hits,
-    _rank_translation_lookup_source,
-    _suppress_overlapping_lookup_hits,
 )
 from .common import project_dir, run_dir
 from .jsonl_helpers import read_jsonl, write_jsonl
 from .materials import _compact_lookup_text, _read_lookup_material_text
 from .naming import _today_stamp, _visible_language_code
 from .prompt_snapshots import create_prompt_and_harness_snapshots
+from .reference_lookup import lookup_terms as _lookup_terms, lookup_translation_entries as _lookup_translation_entries
 from .subprocess_runner import user_facing_error
 from .table_helpers import _wide_source_key
 from .translation import _translate_rows_with_orchestration
-
-
-def _lookup_terms(text: str, terms: list[dict[str, Any]], *, min_length: int, limit: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for term in terms:
-        source = str(term.get("source") or "").strip()
-        if len(source) < min_length or not (str(term.get("target") or "").strip() or str(term.get("target_alt") or "").strip()):
-            continue
-        hit_count, first_position = _count_lookup_hits(text, source)
-        if not hit_count:
-            continue
-        rows.append(
-            {
-                "id": term.get("id"),
-                "term_key": term.get("term_key", ""),
-                "source": source,
-                "target": term.get("target", ""),
-                "target_alt": term.get("target_alt", ""),
-                "language": term.get("language", "en"),
-                "category": term.get("category", ""),
-                "note": term.get("note", ""),
-                "source_type": term.get("source_type", ""),
-                "first_position": first_position,
-                "hit_count": hit_count,
-            }
-        )
-    return _suppress_overlapping_lookup_hits(rows)[:limit]
-
-
-def _lookup_translation_entries(text: str, entries: list[dict[str, Any]], *, min_length: int, limit: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for entry in entries:
-        source = str(entry.get("source") or "").strip()
-        if len(source) < min_length or not (str(entry.get("target") or "").strip() or str(entry.get("target_alt") or "").strip()):
-            continue
-        hit_count, first_position = _count_lookup_hits(text, source)
-        if not hit_count:
-            continue
-        rows.append(
-            {
-                "id": entry.get("id"),
-                "entry_key": entry.get("entry_key", ""),
-                "source": source,
-                "target": entry.get("target", ""),
-                "target_alt": entry.get("target_alt", ""),
-                "language": entry.get("language", "en"),
-                "sheet": entry.get("sheet", ""),
-                "row_number": entry.get("row_number", 0),
-                "note": entry.get("note", ""),
-                "source_type": entry.get("source_type", ""),
-                "source_artifact_id": entry.get("source_artifact_id", ""),
-                "first_position": first_position,
-                "hit_count": hit_count,
-                "_priority": _rank_translation_lookup_source(str(entry.get("source_type") or "")),
-            }
-        )
-    rows.sort(key=lambda item: (int(item.get("first_position") or 0), item.get("_priority", 3), -len(str(item.get("source") or "")), str(item.get("source") or "")))
-    accepted = _suppress_overlapping_lookup_hits(rows)[:limit]
-    for row in accepted:
-        row.pop("_priority", None)
-    return accepted
 
 
 def _announcement_prompt_context(project: dict[str, Any], language: str, terms: list[dict[str, Any]], translations: list[dict[str, Any]]) -> str:

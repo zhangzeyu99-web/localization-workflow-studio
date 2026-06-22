@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .. import db
+from ..download_urls import attach_delivery_item_downloads
 from ..workflow import (
     build_merged_delivery_package,
     build_delivery_package,
@@ -41,8 +42,7 @@ def create_project_delivery(project_id: str, run_id: str | None = None) -> dict[
         raise HTTPException(status_code=404, detail="project not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
-    for item in package["files"]:
-        item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
+    attach_delivery_item_downloads(project_id, package["files"])
     _attach_delivery_downloads(project_id, package["deliverable"])
     return package
 
@@ -55,11 +55,7 @@ def create_project_merged_delivery(project_id: str, payload: MultilingualQueueRe
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
-    for item in package["files"]:
-        if item.get("artifact_id"):
-            item["download_url"] = f"/api/projects/{project_id}/artifacts/{item['artifact_id']}/download"
-        else:
-            item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
+    attach_delivery_item_downloads(project_id, package["files"])
     if package.get("deliverable"):
         _attach_delivery_downloads(project_id, package["deliverable"])
     return package

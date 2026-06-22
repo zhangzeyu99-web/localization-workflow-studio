@@ -9,6 +9,7 @@ from openpyxl import load_workbook
 
 from .. import db
 from ..delivery_naming import safe_filename
+from ..download_urls import attach_delivery_item_downloads
 from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from ..schemas import (
     RunCreate,
@@ -31,17 +32,7 @@ def _attach_delivery_downloads(project_id: str, deliverable: dict[str, Any]) -> 
     files = deliverable.get("files") if isinstance(deliverable.get("files"), dict) else {}
     for value in files.values():
         items = value if isinstance(value, list) else [value]
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            if item.get("download_url"):
-                continue
-            if item.get("artifact_id"):
-                item["download_url"] = f"/api/projects/{project_id}/artifacts/{item['artifact_id']}/download"
-            elif item.get("path"):
-                item["download_url"] = f"/api/projects/{project_id}/delivery/{item['filename']}"
-            else:
-                item["download_url"] = ""
+        attach_delivery_item_downloads(project_id, [item for item in items if isinstance(item, dict)])
 
 
 def _resolve_task_code(payload: RunCreate) -> str:

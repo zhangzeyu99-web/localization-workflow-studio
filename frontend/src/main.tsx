@@ -1,17 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
-import { API, api, apiErrorText, sanitizeUserFacingError } from './apiClient'
+import { API, api } from './apiClient'
 import { WIDE_TABLE_PAGE_SIZE, pagedRows } from './assetTableState'
 import { announcementLanguages, refreshLanguageOptions, supportedLanguages, unsupportedLanguages, languageSpec, languageChipTitle, languageQuery, normalizeLanguageCode, normalizeLanguageArray, type LanguageCode, type LanguageOption } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from './components/shared/WorkflowPrimitives'
 import { GlossaryTab, TranslationArchiveTab } from './components/assets/ProjectAssetTabs'
 import { QuickTaskWizard } from './components/quickTask/QuickTaskWizard'
-import { activeAnnouncementTasks, announcementStatusLabel, AnnouncementProjectPanel, AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
+import { AnnouncementProjectPanel, AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
 import { MetaTab } from './components/project/ProjectMeta'
 import { DeliveryTab, StepQA, TranslationTab, Wizard, formalTranslationBlockReason } from './components/translationWizard/TranslationWizard'
 import { artifactFileName, artifactKindLabel, artifactPickerLabel, artifactRole, artifactsByRole, artifactsByRoles, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, newestArtifact, pickerArtifacts, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
+import { uploadProjectFile } from './domain/projectApi'
+import { mergeProjectListSummaries, preferredTranslationResultArtifact } from './domain/projectState'
+import { latestProjectActivityRun, projectActiveTaskCount, projectActivityRuns, projectRunStatusText, projectRunTitle, projectTranslationPassedStatusText, visibleAnnouncementTaskCount } from './domain/projectActivity'
+import { announcementActionLabel, announcementActionSummary, announcementTaskStatusText, errorText, humanBackendEvent, humanTaskStatus } from './appText'
 import { formatDate, formatDateTime, shortRunId } from './domain/format'
 import { clampBatchSize, effectiveBatchSize, estimateBatches, getTranslationProgress, canSkipModelTranslation, latestRunOfKind, findResumableTranslationRun, isTranslationRunResumable, matchesTranslationRun, translationInputMode, translationReadinessUserMessage } from './domain/translationFlow'
 import { altColumnVisible, availableLookupLanguages, displayLanguagesForWideRows, fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, glossaryWideRowMatches, glossaryWideRows, languageFromValue, linesToFixedTerms, linesToList, linesToRules, listToLines, normalizeGlossaryNote, projectPromptForLanguage, profileText, rowRecords, ruleSummary, rulesToLines, scopeProjectToLanguage, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from './domain/projectAssets'
@@ -23,314 +27,6 @@ declare global {
 }
 
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppRuntimeVersion, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, GlossaryTerm, HistoryKind, MultilingualQueueStatus, Project, ProjectAnalysisResponse, ProjectHarness, ProjectTab, QualityIssue, QuickObjective, Run, TranslationEntry, TranslationProgress, TranslationReadiness, TranslationTargets, WideConflict, WideGlossaryRow, WideLanguageValue, WideTranslationRow, AppView } from './types'
-
-
-const CHUNKED_UPLOAD_THRESHOLD_BYTES = 768 * 1024
-const UPLOAD_CHUNK_BYTES = 512 * 1024
-
-async function uploadProjectFile(
-  projectId: string,
-  file: File,
-  kind: string,
-  purpose: string,
-  onProgress: (done: number, total: number) => void
-): Promise<Artifact> {
-  if (file.size <= CHUNKED_UPLOAD_THRESHOLD_BYTES) {
-    const data = new FormData()
-    data.append('file', file)
-    const query = new URLSearchParams({ kind })
-    if (purpose) query.set('purpose', purpose)
-    return api<Artifact>(`/api/projects/${projectId}/files?${query.toString()}`, {
-      method: 'POST',
-      body: data
-    })
-  }
-  const total = Math.ceil(file.size / UPLOAD_CHUNK_BYTES)
-  const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  for (let index = 0; index < total; index += 1) {
-    const start = index * UPLOAD_CHUNK_BYTES
-    const chunk = file.slice(start, Math.min(file.size, start + UPLOAD_CHUNK_BYTES))
-    const data = new FormData()
-    data.append('file', chunk, file.name)
-    data.append('upload_id', uploadId)
-    data.append('filename', file.name)
-    data.append('kind', kind)
-    data.append('purpose', purpose)
-    data.append('index', String(index))
-    data.append('total', String(total))
-    let response: Response
-    try {
-      response = await fetch(`${API}/api/projects/${projectId}/files/chunk`, {
-        method: 'POST',
-        body: data
-      })
-    } catch (error) {
-      throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error)))
-    }
-    if (!response.ok) {
-      const text = await response.text()
-      const trimmed = text.trim()
-      const contentType = response.headers.get('content-type') || ''
-      if (response.status >= 500 && (!trimmed || (!contentType.includes('application/json') && /^(Internal Server Error|Error occurred while trying to proxy)/i.test(trimmed)))) {
-        throw new Error('连接工作台后端失败。后端可能正在重启或未启动，请等几秒后重试；如果反复出现，请重启本地/局域网工作台。')
-      }
-      throw new Error(apiErrorText(text, response.statusText))
-    }
-    const payload = await response.json() as { complete?: boolean; artifact?: Artifact; received?: number; total?: number }
-    onProgress(index + 1, total)
-    if (payload.complete && payload.artifact) return payload.artifact
-  }
-  throw new Error('分片上传已完成，但后端没有返回文件记录。')
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function errorText(error: unknown): string {
-  if (error instanceof Error) return apiErrorText(error.message, error.message)
-  return sanitizeUserFacingError(String(error))
-}
-
-function issueCountFromPayload(payload: Record<string, unknown>): number {
-  if (Array.isArray(payload.issues)) return payload.issues.length
-  const counts = payload.issue_counts
-  if (counts && typeof counts === 'object') {
-    return Object.values(counts as Record<string, unknown>).reduce<number>((sum, value) => sum + Number(value || 0), 0)
-  }
-  return Number(payload.total_cases || 0)
-}
-
-function structuredQaStatusText(payload: Record<string, unknown>): string | null {
-  if (!('passed' in payload) && !('issue_counts' in payload) && !('total_cases' in payload)) return null
-  if (payload.passed === true) return '\u0051\u0041 \u5df2\u901a\u8fc7\uff0c\u6b63\u5728\u6574\u7406\u4ea4\u4ed8\u6587\u4ef6\u3002'
-  const issueCount = issueCountFromPayload(payload)
-  return `QA \u672a\u901a\u8fc7\uff1a\u53d1\u73b0 ${issueCount} \u4e2a\u95ee\u9898\uff0c\u8bf7\u8fdb\u5165\u6821\u5bf9\u6b65\u9aa4\u67e5\u770b QA \u6458\u8981\u5e76\u5904\u7406\u3002`
-}
-
-function parseStructuredStatusText(text: string): Record<string, unknown> | null {
-  let trimmed = text.trim()
-  if (!trimmed.startsWith('{')) {
-    const start = trimmed.indexOf('{')
-    const end = trimmed.lastIndexOf('}')
-    if (start < 0 || end <= start) return null
-    trimmed = trimmed.slice(start, end + 1)
-  }
-  try {
-    return JSON.parse(trimmed) as Record<string, unknown>
-  } catch {
-    // Some local Python harnesses print dict-like text with single quotes.
-  }
-  const normalized = trimmed
-    .replace(/'/g, '"')
-    .replace(/\bTrue\b/g, 'true')
-    .replace(/\bFalse\b/g, 'false')
-    .replace(/\bNone\b/g, 'null')
-  try {
-    return JSON.parse(normalized) as Record<string, unknown>
-  } catch {
-    return null
-  }
-}
-
-function eventStatusText(message: unknown): string {
-  if (!message) return '\u5904\u7406\u4e2d...'
-  if (typeof message === 'string') {
-    const parsed = parseStructuredStatusText(message)
-    const structured = parsed ? structuredQaStatusText(parsed) : null
-    return structured || message
-  }
-  if (typeof message === 'object') {
-    const payload = message as Record<string, unknown>
-    const structured = structuredQaStatusText(payload)
-    if (structured) return structured
-    if (payload.status) return String(payload.status)
-    if (payload.summary) return String(payload.summary)
-  }
-  return '\u5904\u7406\u4e2d...'
-}
-
-function humanTaskStatus(status: string): string {
-  const value = String(status || '').toLowerCase()
-  if (value === 'queued') return '排队中'
-  if (value === 'running') return '处理中'
-  if (value === 'passed') return '已完成'
-  if (value === 'failed') return '失败'
-  if (value === 'needs_input') return '已暂停，等待继续'
-  if (value === 'canceled') return '已取消'
-  return status || '处理中'
-}
-
-function humanBackendEvent(message: unknown): string {
-  if (!message) return '处理中...'
-  if (typeof message !== 'string') return eventStatusText(message)
-  const text = message.trim()
-  const parsed = parseStructuredStatusText(text)
-  const structured = parsed ? structuredQaStatusText(parsed) : null
-  if (structured) return structured
-  const sanitized = sanitizeUserFacingError(text, '')
-  if (sanitized && sanitized !== text) return sanitized
-  let match = text.match(/^translating batch (\d+)\/(\d+): rows=(\d+), attempt=(\d+)\/(\d+)/i)
-  if (match) return `正在翻译：第 ${match[1]}/${match[2]} 批，本批 ${match[3]} 行，第 ${match[4]} 次尝试。`
-  match = text.match(/^translation preflight: source_rows=(\d+), translated_rows=(\d+), empty_target_rows=(\d+), .*estimated_batches=(\d+)/i)
-  if (match) return `\u7ffb\u8bd1\u524d\u68c0\u67e5\u5b8c\u6210\uff1a${match[1]} \u884c\u6e90\u6587\uff0c\u7a7a\u8bd1\u6587 ${match[3]} \u884c\uff0c\u9884\u8ba1 ${match[4]} \u6279\u3002`
-  match = text.match(/^batch (\d+)\/(\d+) completed and persisted: rows=(\d+)/i)
-  if (match) return `已完成第 ${match[1]}/${match[2]} 批，已保存 ${match[3]} 行。`
-  match = text.match(/^resume: batch (\d+)\/(\d+) already completed; rows=(\d+)/i)
-  if (match) return `正在续跑：已跳过第 ${match[1]}/${match[2]} 批，之前已保存 ${match[3]} 行。`
-  match = text.match(/^rate limit wait before batch (\d+): ([\d.]+)s/i)
-  if (match) return `接口限流等待中：约 ${Math.ceil(Number(match[2]))} 秒后继续第 ${match[1]} 批。`
-  if (/background translation job was interrupted/i.test(text)) return '后台翻译被中断，已保留进度，可点击继续翻译。'
-  if (/translation run finished: status=failed/i.test(text)) return '翻译已完成，但 QA 未通过，需要进入校对修复。'
-  if (/translation run finished: status=passed/i.test(text)) return '翻译和 QA 已通过，正在归档产物。'
-  if (/running localization QA gate/i.test(text)) return '正在运行本地 QA 检查。'
-  if (/applying translation response/i.test(text)) return '正在回填译文并校验格式。'
-  if (/^running:\s/i.test(text)) return '正在执行本地校验流程。'
-  if (/^final_workbook=/i.test(text)) return '译文已回填，正在进入 QA。'
-  return eventStatusText(text)
-}
-
-function announcementActionLabel(endpoint: string): string {
-  const labels: Record<string, string> = {
-    'inspect-constraints': '\u7ea6\u675f\u8bc6\u522b',
-    'extract-terms': '\u672f\u8bed\u63d0\u53d6',
-    'import-terms': '\u672f\u8bed\u5bfc\u5165',
-    'lookup-translations': '\u8bd1\u6587\u53cd\u67e5',
-    prepare: '\u7ffb\u8bd1\u51c6\u5907',
-    translate: 'AI \u7ffb\u8bd1',
-    'translate/start': 'AI \u7ffb\u8bd1',
-    'translate/resume': '\u7ee7\u7eed AI \u7ffb\u8bd1',
-    'import-ai': '\u5bfc\u5165\u5916\u90e8 AI \u7ed3\u679c',
-    apply: '\u6821\u5bf9\u56de\u586b',
-    'fix-hard-blockers': '\u81ea\u52a8\u4fee\u590d\u95ee\u9898',
-    deliver: '\u4ea4\u4ed8'
-  }
-  return labels[endpoint] || endpoint
-}
-
-function announcementActionSummary(endpoint: string, summary?: Record<string, unknown>): string {
-  if (!summary) return ''
-  const count = (key: string) => Number(summary[key] || 0)
-  if (endpoint === 'inspect-constraints') {
-    return '约束来源已识别，请确认目标语言。'
-  }
-  if (endpoint === 'extract-terms') {
-    const terms = count('terms')
-    const ai = summary.ai_supplement as Record<string, unknown> | undefined
-    const added = Number(ai?.added_to_main || 0)
-    return `已提取 ${terms} 条公告术语${added ? `，AI 补充 ${added} 条` : ''}。`
-  }
-  if (endpoint === 'lookup-translations') {
-    return `译文反查完成，缺失术语 ${count('missing_terms')} 条。`
-  }
-  if (endpoint === 'prepare') {
-    return `翻译准备完成，共 ${count('segments')} 段。`
-  }
-  if (endpoint.startsWith('translate/')) {
-    return '后台翻译已启动，完成后会自动进入下一步。'
-  }
-  if (endpoint === 'import-ai') {
-    return '外部 AI 译文已导入。'
-  }
-  if (endpoint === 'apply') {
-    const blockers = count('hard_blockers')
-    const fixed = count('auto_fixed_hard_blockers')
-    return blockers ? `已回填并自动修复 ${fixed} 个问题，仍有 ${blockers} 个问题会写入 QA 摘要。` : `已回填并完成校验${fixed ? `，自动修复 ${fixed} 个问题` : ''}。`
-  }
-  if (endpoint === 'deliver') {
-    return '已生成公告交付包，可在下方下载。'
-  }
-  return ''
-}
-
-function announcementTaskStatusText(task: AnnouncementTask | null | undefined): string {
-  if (!task) return ''
-  const title = task.title || '当前公告任务'
-  if (task.status === 'delivered') return `公告任务已交付：${title}。可在下方下载交付包。`
-  if (task.status === 'applied') return `公告已校对回填：${title}。可以进入交付步骤生成交付包。`
-  if (task.status === 'translated') return `公告 AI 翻译已完成：${title}。请运行校对回填。`
-  if (task.status === 'failed') return `公告任务失败：${title}。请查看当前步骤提示后继续。`
-  if (task.status === 'needs_input') return `公告任务暂停：${title}。请按当前步骤提示继续。`
-  if (['queued', 'running'].includes(task.status)) return `公告任务处理中：${title}（${announcementStatusLabel(task.status)}）。`
-  return `公告任务状态：${title}（${announcementStatusLabel(task.status)}）。`
-}
-
-function hasRecords<T>(items?: T[] | null): items is T[] {
-  return Array.isArray(items) && items.length > 0
-}
-
-function hasObjectFields(value?: Record<string, unknown> | null): value is Record<string, unknown> {
-  return Boolean(value && Object.keys(value).length)
-}
-
-function mergeProjectSummary(existing: Project | undefined, summary: Project): Project {
-  if (!existing) return summary
-  return {
-    ...existing,
-    ...summary,
-    profile: hasObjectFields(summary.profile) ? summary.profile : existing.profile,
-    harness: hasObjectFields(summary.harness as Record<string, unknown> | undefined) ? summary.harness : existing.harness,
-    artifacts: hasRecords(summary.artifacts) ? summary.artifacts : existing.artifacts,
-    runs: hasRecords(summary.runs) ? summary.runs : existing.runs,
-    glossary: hasRecords(summary.glossary) ? summary.glossary : existing.glossary,
-    translations: hasRecords(summary.translations) ? summary.translations : existing.translations,
-    announcement_tasks: hasRecords(summary.announcement_tasks) ? summary.announcement_tasks : existing.announcement_tasks,
-  }
-}
-
-function mergeProjectListSummaries(previous: Project[], loaded: Project[]): Project[] {
-  const previousById = new Map(previous.map((project) => [project.id, project]))
-  return loaded.map((project) => mergeProjectSummary(previousById.get(project.id), project))
-}
 
 
 function App() {
@@ -445,22 +141,6 @@ function App() {
 
   function setBusyForProject(projectId: string, value: boolean) {
     if (isCurrentProject(projectId)) setBusy(value)
-  }
-
-  function preferredTranslationResultArtifact(project: Project | null | undefined, run?: Run | null): Artifact | null {
-    if (!project) return null
-    const pickFromRun = (candidate?: Run | null): Artifact | null => {
-      if (!candidate || !['translation', 'qa'].includes(candidate.kind)) return null
-      return newestArtifact(runArtifacts(project, candidate.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
-    }
-    const direct = pickFromRun(run)
-    if (direct) return direct
-    for (const candidate of project.runs || []) {
-      if (!['passed', 'failed'].includes(candidate.status)) continue
-      const artifact = pickFromRun(candidate)
-      if (artifact) return artifact
-    }
-    return null
   }
 
   function resetProjectTransientState(message = '准备就绪') {
@@ -600,6 +280,16 @@ function App() {
   }, [current?.id, current?.artifacts?.length, current?.runs?.length, latestRun?.id, latestRun?.status, qaArtifact?.id])
 
   useEffect(() => {
+    if (!current || !latestRun || latestRun.kind !== 'translation' || latestRun.status !== 'passed') return
+    if (!isCurrentProject(latestRun.project_id) || !busy) return
+    const resultArtifact = preferredTranslationResultArtifact(current, latestRun)
+    if (resultArtifact) setQaArtifact(resultArtifact)
+    setStep((prev) => (prev < 8 ? 8 : prev))
+    setBusyForProject(latestRun.project_id, false)
+    setStatusForProject(latestRun.project_id, projectTranslationPassedStatusText(latestRun, selectedLanguage))
+  }, [busy, current?.id, current?.artifacts?.length, latestRun?.id, latestRun?.kind, latestRun?.status])
+
+  useEffect(() => {
     if (!latestRun || !['failed', 'needs_input'].includes(latestRun.status)) {
       setQualityIssues([])
       return
@@ -638,7 +328,7 @@ function App() {
             setStatus(`模型修复失败：${String(updated.metadata?.model_fix_error || updated.metadata?.error || '请检查 API 配置和 QA 输入。')}`)
           }
         } else if (updated.kind === 'translation' && updated.status === 'passed') {
-          setStatus(`${languageSpec(normalizeLanguageCode(updated.language) || selectedLanguage).short} 翻译和 QA 已通过，最终产物已归档。`)
+          setStatus(projectTranslationPassedStatusText(updated, selectedLanguage))
           const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
           if (resultArtifact) setQaArtifact(resultArtifact)
           setStep((prev) => (prev < 8 ? 8 : prev))
@@ -1380,7 +1070,7 @@ function App() {
         const resultArtifact = newestArtifact(started.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
         if (resultArtifact) setQaArtifact(resultArtifact)
         setStep((prev) => (prev < 8 ? 8 : prev))
-        setStatusForProject(projectId, `${currentLang.short} 翻译和 QA 已通过，最终产物已归档。`)
+        setStatusForProject(projectId, projectTranslationPassedStatusText(started, selectedLanguage))
         await refreshCurrent()
         if (tab === 'delivery') await refreshDeliverables()
         return
@@ -2285,61 +1975,6 @@ function App() {
 
 function EmptyState({ onCreate }: { onCreate: () => void }) {
   return <div className="empty"><h2>还没有项目</h2><p>先创建一个本地化项目，再进入完整工作流。</p><button className="btn btn-primary" onClick={onCreate}>新建项目</button></div>
-}
-
-function visibleAnnouncementTaskCount(project: Project): number {
-  return project.announcement_tasks ? activeAnnouncementTasks(project.announcement_tasks).length : (project.stats.announcement_tasks || 0)
-}
-
-function isProjectActivityRun(run: Run): boolean {
-  return ['translation', 'qa'].includes(run.kind) && ['queued', 'running', 'needs_input', 'failed'].includes(run.status)
-}
-
-function projectActivityRuns(project: Project | null | undefined): Run[] {
-  if (!project) return []
-  return (project.runs || [])
-    .filter(isProjectActivityRun)
-    .slice(0, 4)
-}
-
-function latestProjectActivityRun(project: Project | null | undefined): Run | null {
-  const latest = (project?.runs || []).find(isProjectActivityRun) || null
-  if (!latest) return null
-  return latest
-}
-
-function projectActiveTaskCount(project: Project | null | undefined): number {
-  if (!project) return 0
-  const activeRuns = (project.runs || []).filter((run) => ['translation', 'qa'].includes(run.kind) && ['queued', 'running'].includes(run.status)).length
-  const activeAnnouncements = activeAnnouncementTasks(project.announcement_tasks || [])
-    .filter((task) => ['queued', 'running'].includes(task.status)).length
-  return activeRuns + activeAnnouncements
-}
-
-function projectRunTitle(run: Run): string {
-  const lang = languageSpec(normalizeLanguageCode(run.language) || 'en').short
-  if (run.kind === 'qa') return `${lang} QA 校对`
-  if (run.kind === 'translation') return `${lang} AI 翻译`
-  return `${lang} ${run.kind}`
-}
-
-function projectRunStatusText(run: Run): string {
-  const progress = getTranslationProgress(run)
-  const quality = (run.metadata?.quality_summary || run.metadata?.quality || {}) as { hard_errors?: number; issues?: number; passed?: boolean }
-  if (progress?.total_rows) {
-    const percent = typeof progress.percent === 'number' ? `${Math.round(progress.percent)}%` : `${progress.completed_rows || 0}/${progress.total_rows} 行`
-    if (['queued', 'running'].includes(run.status)) return `进行中 · ${percent}`
-    if (run.status === 'failed' && progress.completed_rows >= progress.total_rows) {
-      const hard = Number(quality.hard_errors || quality.issues || 0)
-      return hard ? `翻译已完成，QA 未通过 · ${hard} 个问题` : '翻译已完成，等待处理 QA 结果'
-    }
-    if (run.status === 'failed') return `中断 · ${progress.completed_rows || 0}/${progress.total_rows} 行`
-  }
-  if (run.status === 'queued') return '排队中'
-  if (run.status === 'running') return '进行中'
-  if (run.status === 'needs_input') return '等待补充输入'
-  if (run.status === 'failed') return '失败待处理'
-  return humanTaskStatus(run.status)
 }
 
 function ProjectOverview({

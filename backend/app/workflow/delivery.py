@@ -10,6 +10,7 @@ from openpyxl import Workbook, load_workbook
 
 from .. import db
 from ..delivery_naming import safe_delivery_name
+from ..download_urls import artifact_download_url
 from ..languages import PROJECT_LANGUAGE_ORDER, SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from .announcement_outputs import _announcement_task_source_stem, _artifact_display_label, _visible_language_code
 from .announcement_segments import _normalize_announcement_languages
@@ -575,7 +576,7 @@ def _artifact_delivery_file(kind: str, artifact: dict[str, Any]) -> dict[str, st
         "filename": path.name,
         "path": str(path),
         "artifact_id": str(artifact.get("id") or ""),
-        "download_url": f"/api/projects/{artifact['project_id']}/artifacts/{artifact['id']}/download",
+        "download_url": artifact_download_url(str(artifact["project_id"]), str(artifact["id"])),
     }
 
 

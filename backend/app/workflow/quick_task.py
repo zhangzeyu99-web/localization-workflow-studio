@@ -9,7 +9,6 @@ from openpyxl import load_workbook
 from .. import db
 from ..languages import language_spec
 from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
-from .announcement import _lookup_terms, _lookup_translation_entries
 from .announcement_segments import _quick_text_translation_rows, _write_quick_text_output
 from .common import run_dir
 from .jsonl_helpers import write_jsonl
@@ -18,6 +17,7 @@ from .prompt_snapshots import (
     create_prompt_and_harness_snapshots,
     create_quick_reference_snapshot,
 )
+from .reference_lookup import lookup_terms as _lookup_terms, lookup_translation_entries as _lookup_translation_entries
 from .translation_orchestrator import _translate_rows_with_orchestration
 
 
