@@ -11,6 +11,9 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $frontendRoot = Join-Path $repoRoot "frontend"
 $runtimeDir = Join-Path $repoRoot ".tmp\runtime"
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$fullPath = if ($userPath) { "$machinePath;$userPath" } else { $machinePath }
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 
 if (-not $DataRoot) {
@@ -58,6 +61,7 @@ function Start-Backend {
 
   $backendLog = Join-Path $runtimeDir "backend-$BackendPort.log"
   $command = @"
+`$env:Path = "$fullPath"
 Set-Location "$repoRoot"
 `$env:LWS_DATA_ROOT = "$DataRoot"
 python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port $BackendPort *> "$backendLog"
@@ -87,6 +91,7 @@ function Start-Frontend {
   $frontendLog = Join-Path $runtimeDir "frontend-$FrontendPort.log"
   $apiTarget = "http://127.0.0.1:$BackendPort"
 $command = @"
+`$env:Path = "$fullPath"
 Set-Location "$frontendRoot"
 `$env:LWS_API_TARGET = "$apiTarget"
 npx vite --host $HostName --port $FrontendPort *> "$frontendLog"
