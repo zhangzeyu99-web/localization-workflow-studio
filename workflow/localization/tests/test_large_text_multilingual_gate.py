@@ -99,6 +99,84 @@ class LargeTextMultilingualGateTests(unittest.TestCase):
 
             self.assertEqual(result["hard_blockers"], 0)
 
+    def test_cache_lint_accepts_game_number_formats_without_false_positives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache.jsonl"
+            write_jsonl(
+                cache,
+                [
+                    {
+                        "key": "rich-unit",
+                        "cn": "123.1<font=GameFont_SDF>\u4e07",
+                        "translations": {
+                            "EN": "1.231<font=GameFont_SDF>M</font>",
+                            "IDN": "1.231M<font=GameFont_SDF>",
+                            "ES": "1.231M<font=GameFont_SDF>",
+                            "PT": "1.231M<font=GameFont_SDF>",
+                        },
+                    },
+                    {
+                        "key": "w-unit",
+                        "cn": "10w\u8d44\u6e90\u968f\u673a\u7bb1",
+                        "translations": {
+                            "EN": "100K Resource Random Box",
+                            "IDN": "Kotak Acak 100K Sumber Daya",
+                            "ES": "Caja aleatoria de 100K Recursos",
+                            "PT": "Caixa aleatoria de 100K Recursos",
+                        },
+                    },
+                    {
+                        "key": "time-units",
+                        "cn": "\u4e0b\u6b21\u5237\u65b0\uff1a24\u65f645\u520616\u79d2",
+                        "translations": {
+                            "EN": "Next Refresh: 24h 45m 16s",
+                            "IDN": "Segarkan berikutnya: 24 j 45 m 16 dtk",
+                            "ES": "Proxima actualizacion: 24 h 45 min 16 s",
+                            "PT": "Proxima atualizacao: 24 h 45 min 16 s",
+                        },
+                    },
+                    {
+                        "key": "month-name",
+                        "cn": "\u6839\u636e2019\u5e7410\u670815\u65e5\u53d1\u5e03",
+                        "translations": {
+                            "EN": "issued on October 15, 2019",
+                            "IDN": "diterbitkan pada 15 Oktober 2019",
+                            "ES": "emitida el 15 de octubre de 2019",
+                            "PT": "emitida em 15 de outubro de 2019",
+                        },
+                    },
+                ],
+            )
+
+            result = cache_lint(cache, target_langs=["EN", "IDN", "ES", "PT"])
+
+            self.assertEqual(result["hard_blockers"], 0)
+
+    def test_cache_lint_only_auto_protects_machine_like_bracket_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache.jsonl"
+            write_jsonl(
+                cache,
+                [
+                    {
+                        "key": "translatable-label",
+                        "source": "Defeat [Monster] for [Name]",
+                        "translations": {"ES": "Derrota [Monstruo] para [Nombre]"},
+                    },
+                    {
+                        "key": "machine-token",
+                        "source": "Share [SDT] {num}",
+                        "translations": {"ES": "Comparte {num}"},
+                    },
+                ],
+            )
+
+            result = cache_lint(cache, target_langs=["ES"])
+
+            self.assertEqual(result["hard_blockers"], 1)
+            self.assertEqual(result["issues"][0]["type"], "protected_token_missing")
+            self.assertIn("[SDT]", result["issues"][0]["detail"])
+
     def test_apply_dry_run_uses_safe_style_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

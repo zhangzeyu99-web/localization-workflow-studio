@@ -84,4 +84,7 @@ python scripts\run_large_text_multilingual_retro.py `
 
 - 这个 harness 不直接从任意 Excel 推断业务列并生成译文；真实任务仍应先由项目脚本或现有 workbook harness 抽取 `items.jsonl/source_rows.jsonl`，再进入本流程。
 - 本地 gate 是确定性门禁，不替代语义校对；漏译、错译、语境不自然必须通过模型翻译和逐句审校处理。
+- gate 因性能、误报或任务不适用而跳过时，retro/QA 摘要必须显式记录 `status=skipped/waived`、原因和替代验证；不能把“未提供”或旧误报混同为最终通过。
+- 单次任务耗时超过一小时时，retro 自动触发长任务复盘关注；这不代表任务有问题，只要求检查耗时是否符合规模、是否有失败/重试/跳过门禁/意外修复，以及是否存在值得沉淀的最小优化。
+- 长任务复盘用于持续改进，不用于扩大流程；重复出现或可机器检查的问题才沉淀为测试、gate 或文档，偶发问题只记录原因和处理结果。
 - 产品后端已有多语言队列和每语言 child run，不应把本地 Agent manifest 当成产品运行状态源。

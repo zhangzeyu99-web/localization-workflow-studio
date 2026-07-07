@@ -10,6 +10,7 @@ from typing import Any
 
 
 RUNNER_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}) (?P<event>START|DONE) (?P<phase>[a-zA-Z0-9_-]+)")
+LONG_TASK_REVIEW_SECONDS = 3600
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -117,6 +118,54 @@ def aggregate_qa(qa: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def infer_gate_status(gate: dict[str, Any], *, verified_key: str | None = None) -> str:
+    explicit = str(gate.get("status") or "").strip().lower()
+    if explicit in {"passed", "skipped", "waived", "failed"}:
+        return explicit
+    if not gate.get("exists"):
+        return "skipped"
+    hard = gate.get("hard_blockers")
+    verified = gate.get(verified_key) if verified_key else gate.get("ok_to_apply")
+    if hard == 0 and verified is not False:
+        return "passed"
+    if isinstance(hard, int) and hard > 0:
+        return "failed"
+    if verified is False:
+        return "failed"
+    return "skipped"
+
+
+def gate_skip_suffix(gate: dict[str, Any], status: str) -> str:
+    if status not in {"skipped", "waived"}:
+        return ""
+    reason = gate.get("reason") or gate.get("skip_reason") or "not provided"
+    alternative = gate.get("alternative_check") or "not provided"
+    return f", reason={reason}, alternative_check={alternative}"
+
+
+def render_long_task_review(
+    timing: dict[str, Any],
+    top_phase: dict[str, Any],
+    *,
+    cache_lint_status: str,
+    readback_gate_status: str,
+) -> str:
+    total_seconds = timing.get("total_seconds")
+    if not isinstance(total_seconds, (int, float)):
+        return "- status=not_measured, threshold=3600s, action=补齐 runner 耗时后再判断是否触发长任务复盘。"
+    if total_seconds < LONG_TASK_REVIEW_SECONDS:
+        return (
+            f"- status=not_triggered, threshold=3600s, total={seconds_to_hms(total_seconds)}，"
+            "未超过一小时，不需要额外长任务复盘。"
+        )
+    return (
+        f"- status=triggered, threshold=3600s, total={seconds_to_hms(total_seconds)}, "
+        f"largest_phase={top_phase.get('phase', 'n/a')}:{top_phase.get('duration', 'n/a')}, "
+        f"cache_lint={cache_lint_status}, readback_gate={readback_gate_status}。\n"
+        "- review_focus=判断耗时是否只是任务规模导致；检查失败/重试/跳过门禁/意外修复；重复出现或可机器检查的问题沉淀为测试、gate 或文档，偶发问题只记录。"
+    )
+
+
 def inspect_delivery(delivery_dir: Path) -> dict[str, Any]:
     if not delivery_dir.exists():
         return {"exists": False, "files": []}
@@ -204,6 +253,15 @@ def render_report(metrics: dict[str, Any]) -> str:
     preflight = metrics.get("preflight") or {"exists": False}
     cache_lint = metrics.get("cache_lint") or {"exists": False}
     readback_gate = metrics.get("readback_gate") or {"exists": False}
+    preflight_status = infer_gate_status(preflight)
+    cache_lint_status = infer_gate_status(cache_lint)
+    readback_gate_status = infer_gate_status(readback_gate, verified_key="readback_verified")
+    long_task_review = render_long_task_review(
+        timing,
+        top_phase,
+        cache_lint_status=cache_lint_status,
+        readback_gate_status=readback_gate_status,
+    )
     phase_lines = "\n".join(f"- {row['phase']}: {row['duration']}" for row in phases) or "- n/a"
     file_lines = "\n".join(f"- {row['name']}: {row['bytes']} bytes" for row in delivery.get("files", [])) or "- n/a"
     category_lines = "\n".join(
@@ -215,23 +273,26 @@ def render_report(metrics: dict[str, Any]) -> str:
             f"unique={preflight.get('unique_items', 'n/a')}, "
             f"estimated_cells={preflight.get('estimated_target_cells', 'n/a')}, "
             f"large_pack={preflight.get('large_pack', 'n/a')}, "
-            f"recommended_shards={preflight.get('recommended_translation_shards', 'n/a')}"
+            f"recommended_shards={preflight.get('recommended_translation_shards', 'n/a')}, "
+            f"status={preflight_status}{gate_skip_suffix(preflight, preflight_status)}"
             if preflight.get("exists")
-            else "- preflight: 未提供"
+            else f"- preflight: status={preflight_status}{gate_skip_suffix(preflight, preflight_status)}"
         ),
         (
             "- cache-lint: "
             f"hard={cache_lint.get('hard_blockers', 'n/a')}, "
-            f"ok_to_apply={cache_lint.get('ok_to_apply', 'n/a')}"
+            f"ok_to_apply={cache_lint.get('ok_to_apply', 'n/a')}, "
+            f"status={cache_lint_status}{gate_skip_suffix(cache_lint, cache_lint_status)}"
             if cache_lint.get("exists")
-            else "- cache-lint: 未提供"
+            else f"- cache-lint: status={cache_lint_status}{gate_skip_suffix(cache_lint, cache_lint_status)}"
         ),
         (
             "- readback-gate: "
             f"hard={readback_gate.get('hard_blockers', 'n/a')}, "
-            f"verified={readback_gate.get('readback_verified', 'n/a')}"
+            f"verified={readback_gate.get('readback_verified', 'n/a')}, "
+            f"status={readback_gate_status}{gate_skip_suffix(readback_gate, readback_gate_status)}"
             if readback_gate.get("exists")
-            else "- readback-gate: 未提供"
+            else f"- readback-gate: status={readback_gate_status}{gate_skip_suffix(readback_gate, readback_gate_status)}"
         ),
     ]
     gate_section = "\n".join(gate_lines)
@@ -256,6 +317,10 @@ def render_report(metrics: dict[str, Any]) -> str:
 ## 阶段耗时
 
 {phase_lines}
+
+## 长任务复盘触发
+
+{long_task_review}
 
 ## 校对问题结构
 

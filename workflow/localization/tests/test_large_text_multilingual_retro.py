@@ -77,7 +77,50 @@ class LargeTextMultilingualRetroTests(unittest.TestCase):
         self.assertIn("执行门禁结果", report)
         self.assertIn("preflight: unique=18727", report)
         self.assertIn("cache-lint: hard=0, ok_to_apply=True", report)
+        self.assertIn("cache-lint: hard=0, ok_to_apply=True, status=passed", report)
         self.assertIn("readback-gate: hard=0, verified=True", report)
+        self.assertIn("readback-gate: hard=0, verified=True, status=passed", report)
+
+    def test_render_report_marks_missing_gate_results_as_skipped(self) -> None:
+        report = render_report(
+            {
+                "task": "large pack",
+                "runner_timing": {"total_duration": "1h", "phases": []},
+                "qa": {"summary": {"hard_blockers": 0, "warnings": 0}},
+                "proofread": {"changed_rows": 0, "changed_cells": 0, "issue_aggregates": {}},
+                "delivery": {"exists": True, "file_count": 1, "files": []},
+                "deliver_log": {"bytes": 0, "null_bytes": 0},
+                "feishu_readback": {"required_missing": []},
+            }
+        )
+
+        self.assertIn("cache-lint: status=skipped, reason=not provided, alternative_check=not provided", report)
+        self.assertIn("readback-gate: status=skipped, reason=not provided, alternative_check=not provided", report)
+
+    def test_render_report_flags_long_tasks_for_process_review(self) -> None:
+        report = render_report(
+            {
+                "task": "large pack",
+                "runner_timing": {
+                    "total_seconds": 3900,
+                    "total_duration": "1h 5m",
+                    "phases": [{"phase": "proofread", "duration": "55m", "seconds": 3300}],
+                },
+                "qa": {"summary": {"hard_blockers": 0, "warnings": 0}},
+                "proofread": {"changed_rows": 0, "changed_cells": 0, "issue_aggregates": {}},
+                "delivery": {"exists": True, "file_count": 1, "files": []},
+                "deliver_log": {"bytes": 0, "null_bytes": 0},
+                "feishu_readback": {"required_missing": []},
+                "cache_lint": {"exists": True, "hard_blockers": 0, "ok_to_apply": True},
+                "readback_gate": {"exists": True, "hard_blockers": 0, "readback_verified": True},
+            }
+        )
+
+        self.assertIn("长任务复盘触发", report)
+        self.assertIn("status=triggered", report)
+        self.assertIn("largest_phase=proofread:55m", report)
+        self.assertIn("判断耗时是否只是任务规模导致", report)
+        self.assertIn("重复出现或可机器检查的问题沉淀为测试、gate 或文档", report)
 
 
 if __name__ == "__main__":

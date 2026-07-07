@@ -13,9 +13,75 @@ from typing import Any
 from openpyxl import load_workbook
 
 
-TOKEN_RE = re.compile(r"\{[^{}\s]+\}|\[[A-Za-z0-9_:-]+\]|</?[^>\s]+[^>]*>|%[sdif]")
+TOKEN_RE = re.compile(r"\\n|\{[^{}\s]+\}|%[sdif]|##\d+|</?[A-Za-z][^>\s]*[^>]*>|\[[A-Za-z0-9_:/#=.,-]+\]")
 CJK_RE = re.compile(r"[\u3400-\u9fff]")
-NUMBER_RE = re.compile(r"\d{1,3}(?:[,\s.]\d{3})+(?:[.,]\d+)?%?|\d+(?:[.,]\d+)?\s*[万萬]?%?")
+NUMBER_RE = re.compile(
+    r"\d+(?:[,.]\d+)?(?:\s*(?:千|万|萬|亿|億|(?i:thousand|million|billion|ribu|rb|juta|miliar|millones|millón|milhao|milhão|milhões|mil)\b)|[KkMBWw](?![A-Za-z]))%?"
+    r"|\d{1,3}(?:[,\s.]\d{3})+(?:[,.]\d+)?%?"
+    r"|\d+(?:[,.]\d+)?%?"
+)
+WORD_MULTIPLIERS = {
+    "thousand": Decimal("1000"),
+    "ribu": Decimal("1000"),
+    "rb": Decimal("1000"),
+    "mil": Decimal("1000"),
+    "million": Decimal("1000000"),
+    "juta": Decimal("1000000"),
+    "millones": Decimal("1000000"),
+    "millón": Decimal("1000000"),
+    "milhao": Decimal("1000000"),
+    "milhão": Decimal("1000000"),
+    "milhões": Decimal("1000000"),
+    "billion": Decimal("1000000000"),
+    "miliar": Decimal("1000000000"),
+}
+NUMBER_WORDS = {
+    "zero": Decimal("0"),
+    "one": Decimal("1"),
+    "once": Decimal("1"),
+    "single": Decimal("1"),
+    "two": Decimal("2"),
+    "three": Decimal("3"),
+    "four": Decimal("4"),
+    "five": Decimal("5"),
+    "six": Decimal("6"),
+    "seven": Decimal("7"),
+    "eight": Decimal("8"),
+    "nine": Decimal("9"),
+    "ten": Decimal("10"),
+    "satu": Decimal("1"),
+    "sekali": Decimal("1"),
+    "dua": Decimal("2"),
+    "tiga": Decimal("3"),
+    "empat": Decimal("4"),
+    "lima": Decimal("5"),
+    "seis": Decimal("6"),
+    "tujuh": Decimal("7"),
+    "delapan": Decimal("8"),
+    "sembilan": Decimal("9"),
+    "sepuluh": Decimal("10"),
+    "uno": Decimal("1"),
+    "una": Decimal("1"),
+    "un": Decimal("1"),
+    "dos": Decimal("2"),
+    "tres": Decimal("3"),
+    "cuatro": Decimal("4"),
+    "cinco": Decimal("5"),
+    "seis": Decimal("6"),
+    "siete": Decimal("7"),
+    "ocho": Decimal("8"),
+    "nueve": Decimal("9"),
+    "diez": Decimal("10"),
+    "um": Decimal("1"),
+    "uma": Decimal("1"),
+    "dois": Decimal("2"),
+    "duas": Decimal("2"),
+    "quatro": Decimal("4"),
+    "sete": Decimal("7"),
+    "oito": Decimal("8"),
+    "nove": Decimal("9"),
+    "dez": Decimal("10"),
+}
 CJK_ALLOWED_LANGS = {"CN", "ZH", "ZH-CN", "JA", "JP"}
 PROCESS_SUFFIXES = {".jsonl", ".log", ".tmp", ".bak", ".manifest"}
 SOURCE_HEADERS = {"CN", "ZH", "SOURCE", "TEXT", "原文"}
@@ -77,27 +143,59 @@ def protected_tokens(row: dict[str, Any]) -> list[str]:
             raw_tokens = [raw_tokens]
     if isinstance(raw_tokens, list):
         tokens.extend(str(token) for token in raw_tokens if str(token))
-    tokens.extend(TOKEN_RE.findall(source_text(row)))
+    tokens.extend(token for token in TOKEN_RE.findall(source_text(row)) if is_auto_protected_token(token))
     return sorted(set(tokens), key=len, reverse=True)
 
 
+def is_auto_protected_token(token: str) -> bool:
+    if token.startswith("[") and token.endswith("]"):
+        inner = token[1:-1]
+        return bool(re.search(r"[\d_:/#=.,-]", inner) or (inner.isupper() and len(inner) <= 12))
+    return True
+
+
 def parse_number_token(token: str) -> Decimal | None:
-    raw = token.strip().replace(" ", "")
+    raw_with_spaces = token.strip()
+    raw = raw_with_spaces.replace(" ", "")
     if not raw:
         return None
 
-    percent = raw.endswith("%")
-    if percent:
+    if raw.endswith("%"):
         raw = raw[:-1]
+        raw_with_spaces = raw_with_spaces[:-1].strip()
 
-    multiplier = Decimal("10000") if raw.endswith(("万", "萬")) else Decimal(1)
-    raw = raw.rstrip("万萬")
+    suffix = ""
+    word_multiplier: Decimal | None = None
+    lowered = raw_with_spaces.lower()
+    for word, multiplier in sorted(WORD_MULTIPLIERS.items(), key=lambda item: len(item[0]), reverse=True):
+        match = re.search(rf"\s+{re.escape(word)}\.?$", lowered)
+        if match:
+            word_multiplier = multiplier
+            raw = raw_with_spaces[: match.start()].strip().replace(" ", "")
+            break
+    if raw and raw[-1] in "KkMBWw":
+        suffix = raw[-1].upper()
+        raw = raw[:-1]
+    elif raw.endswith(("千", "万", "萬", "亿", "億")):
+        suffix = raw[-1]
+        raw = raw[:-1]
     if not raw:
         return None
 
     has_comma = "," in raw
     has_dot = "." in raw
-    if has_comma or has_dot:
+    has_unit = bool(suffix or word_multiplier)
+    if has_unit and (has_comma or has_dot):
+        if has_comma and has_dot:
+            last_comma = raw.rfind(",")
+            last_dot = raw.rfind(".")
+            last_sep = max(last_comma, last_dot)
+            after = raw[last_sep + 1 :]
+            before = re.sub(r"[,.]", "", raw[:last_sep])
+            raw = before + "." + after
+        elif has_comma:
+            raw = raw.replace(",", ".")
+    elif has_comma or has_dot:
         last_comma = raw.rfind(",")
         last_dot = raw.rfind(".")
         last_sep = max(last_comma, last_dot)
@@ -118,18 +216,70 @@ def parse_number_token(token: str) -> Decimal | None:
             raw = before.replace(".", "") + "." + after
 
     try:
+        multiplier = word_multiplier or {
+            "千": Decimal("1000"),
+            "万": Decimal("10000"),
+            "萬": Decimal("10000"),
+            "亿": Decimal("100000000"),
+            "億": Decimal("100000000"),
+            "K": Decimal("1000"),
+            "M": Decimal("1000000"),
+            "B": Decimal("1000000000"),
+            "W": Decimal("10000"),
+        }.get(suffix, Decimal(1))
         return (Decimal(raw) * multiplier).normalize()
     except InvalidOperation:
         return None
 
 
 def numeric_values(text: str) -> set[Decimal]:
+    text = text or ""
+    text = re.sub(r"(\d(?:[\d,.]*))(?:<[^>]+>)+\s*([千万萬亿億KkMBWw])", r"\1\2", text)
+    text = re.sub(r"(?<=\d)\uff0c(?=\d{3}(?!\d))", ",", text)
+    text = text.replace("\uff0c", " ")
     values = set()
     for token in NUMBER_RE.findall(text):
         parsed = parse_number_token(token)
         if parsed is not None:
             values.add(parsed)
+    lowered = text.lower()
+    for word, value in NUMBER_WORDS.items():
+        if re.search(rf"\b{re.escape(word)}\b", lowered):
+            values.add(value)
     return values
+
+
+def source_numeric_values(row: dict[str, Any]) -> set[Decimal]:
+    src = source_text(row)
+    src = re.sub(r"\d+(?:[,.]\d+)?\s*月", "", src)
+    src = re.sub(r"(?<=\d)\.(?=\d点)", " ", src)
+    values = numeric_values(src)
+    if CJK_RE.search(src):
+        values = {
+            value
+            for value in values
+            if not (
+                value == value.to_integral_value()
+                and Decimal("0") <= value <= Decimal("10")
+                and not re.search(rf"(?<!\d){int(value)}\s*%", src)
+            )
+        }
+    return values
+
+
+def numeric_value_present(value: Decimal, targets: set[Decimal]) -> bool:
+    if value in targets:
+        return True
+    if abs(value) >= Decimal("1000"):
+        for target in targets:
+            if target == 0:
+                continue
+            if abs(target - value) / abs(value) <= Decimal("0.005"):
+                return True
+    if Decimal("1") <= value <= Decimal("99"):
+        if (Decimal("1900") + value) in targets or (Decimal("2000") + value) in targets:
+            return True
+    return False
 
 
 def preflight(
@@ -239,7 +389,7 @@ def cache_lint(cache_jsonl: Path, *, target_langs: list[str]) -> dict[str, Any]:
             add_issue(issues, "unauthorized_language", key, lang, "translation cache contains a language that was not requested")
 
         src = source_text(row)
-        src_numbers = numeric_values(src)
+        src_numbers = source_numeric_values(row)
         tokens = protected_tokens(row)
         for lang in target_langs:
             target = row_translation(row, lang).strip()
@@ -252,7 +402,7 @@ def cache_lint(cache_jsonl: Path, *, target_langs: list[str]) -> dict[str, Any]:
                 if token and token not in target:
                     add_issue(issues, "protected_token_missing", key, lang, f"missing protected token {token}")
             target_numbers = numeric_values(target)
-            missing_numbers = src_numbers - target_numbers
+            missing_numbers = {number for number in src_numbers if not numeric_value_present(number, target_numbers)}
             if missing_numbers:
                 add_issue(issues, "number_missing", key, lang, f"missing numeric value(s): {sorted(str(value) for value in missing_numbers)}")
             _check_required_terms(issues, row, key, lang, target)
@@ -342,16 +492,21 @@ def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, A
                 headers = [str(value).strip().upper() if value is not None else "" for value in first_row]
                 if not _looks_like_translation_sheet(headers, target_langs):
                     continue
-                col_by_lang = {header: index + 1 for index, header in enumerate(headers) if header}
+                col_by_lang = {header: index for index, header in enumerate(headers) if header}
+                target_columns: list[tuple[str, int]] = []
                 for lang in target_langs:
-                    col = col_by_lang.get(lang.upper())
-                    if not col:
+                    col_index = col_by_lang.get(lang.upper())
+                    if col_index is None:
                         add_issue(issues, "target_column_missing", f"{path.name}:{sheet.title}", lang, "target language column is missing")
                         continue
-                    for row_index in range(2, sheet.max_row + 1):
-                        value = sheet.cell(row=row_index, column=col).value
+                    target_columns.append((lang, col_index))
+                if not target_columns:
+                    continue
+                for row_index, row_values in enumerate(sheet.iter_rows(min_row=2, values_only=True), 2):
+                    for lang, col_index in target_columns:
+                        value = row_values[col_index] if col_index < len(row_values) else None
                         if value is None or str(value).strip() == "":
-                            add_issue(issues, "blank_target_cell", f"{path.name}:{sheet.title}!R{row_index}C{col}", lang, "target cell is blank")
+                            add_issue(issues, "blank_target_cell", f"{path.name}:{sheet.title}!R{row_index}C{col_index + 1}", lang, "target cell is blank")
         finally:
             workbook.close()
 
