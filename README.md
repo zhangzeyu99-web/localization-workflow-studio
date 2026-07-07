@@ -32,7 +32,7 @@ Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web �
 - 正式语言：语言包工作流和公告外文本工作流共用同一组语言配置：EN / KR / JP / FR / DE / RU / IT / ES / PT / TR / IDN / TH / AR。
 - Provider：正式入口支持 OpenAI/GPT、GPT 中转站与 Claude；测试环境使用隐藏 test-fake，不作为产品 provider。
 - 长文本翻译：由后端任务编排器拆批、限流、断点续跑和失败恢复；不依赖 Codex/Agent 才能运行。
-- Agent 本地大语言包任务：使用 `workflow/localization/scripts/run_large_text_multilingual_*.py` 做 preflight、API manifest、cache-lint、readback 和 retro；详细流程见 `docs/LARGE_TEXT_MULTILINGUAL_WORKFLOW.md`。
+- Agent 本地大语言包任务：使用 `workflow/localization/scripts/run_large_text_multilingual_*.py` 做 preflight、API manifest、cache-lint、readback 和 retro；cache-lint 已覆盖机器型括号 token、富文本/换行占位、中文小数字和日期过滤、千/万/M/K 等跨语言数字单位、强术语命中，以及 skipped/waived gate 状态和超过一小时任务的 retro 复盘提示。详细流程见 `docs/LARGE_TEXT_MULTILINGUAL_WORKFLOW.md`。
 - 公告翻译：项目内 9 步外文本工作流，支持公告资料、约束来源、目标语言、术语提取、译文反查、翻译准备、AI 翻译/导入、校对回填和交付。
 - 禁止路径：不使用 Google Translate、`deep_translator`、`googletrans` 或浏览器机翻。
 - GitHub Pages：只是公开静态 Demo。完整功能必须启动 FastAPI 后端并使用私有数据目录。
@@ -427,7 +427,7 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 ## 版本
 
 
-当前版本：`1.0.2`
+当前版本：`1.0.3`
 
 - `VERSION`
 - `backend/app/main.py`

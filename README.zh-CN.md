@@ -31,6 +31,7 @@ GitHub Pages Demo 是只读静态页面，不上传文件、不调用模型、�
 - 为 AI 辅助翻译生成带术语、占位符、标签和 UI 长度提示的 prompt。
 - 阻止 mock 输出或缺失 provider key 的结果进入真实交付链路。
 - 检查占位符、富文本标签、换行、术语一致性、可读性和 UI 长度。
+- 为本地大文本多语言包提供 preflight、cache-lint、readback-gate 和 retro 摘要，减少数字单位、富文本 token、跳过门禁和长任务复盘的漏报。
 - 支持人工修复后再生成最终交付 workbook。
 - 将运行数据、SQLite、日志、API key 和真实 workbook 保持在公开仓库之外。
 

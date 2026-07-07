@@ -2,6 +2,13 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.0.3 - 2026-07-07
+
+- Documented and versioned the large-text multilingual local harness improvements for repository management.
+- Hardened cache-lint coverage for machine-like bracket tokens, newline/font placeholders, CJK small-number and date filtering, Chinese/ASCII numeric units, language word multipliers, and large-number tolerance.
+- Made retro reports explicitly distinguish skipped or waived gates from passed gates, including reason and alternative-check fields.
+- Added long-task review signaling for runs over one hour so slow localization packs produce process evidence without automatically expanding the workflow.
+
 ## 1.0.0 - 2026-06-10
 
 - Promoted Localization Workflow Studio to the first formal 1.0 release after the language-pack, QA, archive, delivery, quick-task, and announcement workflows were validated as one integrated workbench.
