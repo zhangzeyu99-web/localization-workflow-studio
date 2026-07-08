@@ -162,7 +162,7 @@ def _apply_announcement_ai_supplement(
     response_artifact_id = str(getattr(request, "ai_supplement_response_artifact_id", "") or "")
     response_path: Path | None = None
     provider = ""
-    provider_status = "not_configured"
+    provider_status = "packet_fallback"
     provider_error = ""
     response = _read_ai_supplement_response_artifact(project_id, response_artifact_id)
     if response is not None:
@@ -186,6 +186,7 @@ def _apply_announcement_ai_supplement(
                 provider_error = user_facing_error(exc)
                 response = {"supplement_terms": []}
         else:
+            provider = "packet"
             response = {"supplement_terms": []}
     response = _normalize_ai_supplement_response(response, languages)
     merged_ai_rows, report = extractor.apply_ai_supplement_response(
@@ -219,6 +220,7 @@ def _apply_announcement_ai_supplement(
         "provider_error": provider_error,
         "term_count": len(report_terms),
         "added_to_main": sum(1 for term in report_terms if isinstance(term, dict) and term.get("status") == "added_to_main"),
+        "report_only": sum(1 for term in report_terms if isinstance(term, dict) and term.get("status") == "report_only"),
         "project_name_translation_missing": bool(report.get("project_name_translation_missing")),
         "report": report,
     }

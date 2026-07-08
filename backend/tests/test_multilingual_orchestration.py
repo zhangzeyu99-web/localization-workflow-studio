@@ -111,6 +111,37 @@ def test_multilingual_status_rejects_cross_project_artifact(tmp_path: Path) -> N
 
 
 
+def test_multilingual_status_exposes_large_text_metadata(tmp_path: Path) -> None:
+    project = db.insert_project("multi large text", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN"])
+    run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={
+            "input_artifact_id": artifact["id"],
+            "task_origin": "translation_run",
+            "large_text": {
+                "mode": "auto",
+                "preflight": {"large_pack": True, "unique_items": 6001, "estimated_target_cells": 6001},
+                "cache_lint": {"status": "passed", "hard_blockers": 0},
+            },
+        },
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/projects/{project['id']}/multilingual/status",
+            params={"input_artifact_id": artifact["id"], "languages": "en"},
+        )
+
+    assert response.status_code == 200
+    item = response.json()["languages"][0]
+    assert item["translation_run_id"] == run["id"]
+    assert item["large_text"]["preflight"]["large_pack"] is True
+    assert item["large_text"]["cache_lint"]["status"] == "passed"
+
+
 def test_multilingual_qa_skips_languages_without_translated_input(tmp_path: Path) -> None:
     project = db.insert_project("multi qa skip", "QA", "")
     artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN", "KR"])

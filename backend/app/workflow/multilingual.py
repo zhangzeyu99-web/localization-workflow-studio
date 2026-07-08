@@ -73,6 +73,7 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
             "task_code": payload.task_code or "T",
             "multilingual_queue": True,
             "multilingual_source_artifact_id": source["id"],
+            "large_text_mode": payload.large_text_mode or "auto",
         }
         run = db.insert_run(project_id, "translation", language, metadata)
         created.append(run["id"])
@@ -96,6 +97,7 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
                     batch_size=payload.batch_size,
                     confirm_api_budget=payload.confirm_api_budget,
                     confirm_term_gap=payload.confirm_term_gap,
+                    large_text_mode=payload.large_text_mode or "auto",
                 )
                 run_translate_sync(run["id"], request, cancel_event=cancel_event)
             except Exception as exc:
@@ -187,6 +189,7 @@ def _language_status(project_id: str, input_artifact_id: str, language: str) -> 
     status = run_for_status.get("status") if run_for_status else "pending"
     if (run_for_status and (run_for_status.get("metadata") or {}).get("qa_skipped")):
         status = "qa_skipped"
+    large_text = ((run_for_status or {}).get("metadata") or {}).get("large_text") or {}
     return {
         "language": language,
         "visible_language": visible_language_code(language),
@@ -199,6 +202,7 @@ def _language_status(project_id: str, input_artifact_id: str, language: str) -> 
         "error": ((run_for_status or {}).get("metadata") or {}).get("error") or "",
         "progress": progress,
         "quality_summary": quality,
+        "large_text": large_text,
     }
 
 

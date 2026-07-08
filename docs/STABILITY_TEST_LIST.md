@@ -31,6 +31,7 @@ python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 11. 快速任务能创建并跑到终态。
 12. 公告任务能上传源文、识别约束、提取术语、反查译文、生成 prepare 产物。
 13. 验收结束后临时项目被删除，线上不残留测试数据。
+14. 大语言表/多语言包翻译 run 在 Step 7 显示 preflight 和 cache-lint 结果，交付时 readback gate 能阻断目标列缺失或空目标单元格的最终文件。
 
 ## 失败即阻断
 

@@ -41,6 +41,21 @@
 | 2026-07-08 15:28 | vite on port 5174 | Orphaned node child from loop's own earlier launch held the port | 1 | Killed only the loop's own child process, relaunched cleanly |
 | 2026-07-08 15:31 | stability_check first run | settings.json provider hand-written file normalized back to openai (settings live in settings.local.json) | 1 | PATCH /api/settings provider=test-fake, rerun passed 28/28 |
 
+## Large-Text Takeover (2026-07-08 15:30+)
+
+Fable5 主线程接手外部会话遗留的大文本产品化工作（plan: 2026-07-07-large-text-workbench-productization.md）。
+
+| Step | Scope | Validation | Commit | Result |
+|---|---|---|---|---|
+| 复审 | 外部会话已提交 Task 1-5（39a5e05..fd9bf0a），未提交 Task 6/7 前端+文档改动；package-lock.json 幽灵改动已还原 | 后端聚焦 29 tests + harness parity 16 tests 全过（首轮 3 个失败为共享 LWS_DATA_ROOT 串扰，隔离重跑全过） | n/a | pass |
+| 架构修正 | readback gate/retro 是过程产物，不得进交付 files（违反“交付只留最终文件+QA摘要”规则且破坏前端 2 文件契约）；改存 project qa_gates 目录，仅保留 artifact 记录和 metadata | test_multilingual_delivery 13 passed; test_workflow_e2e 99 passed; e2e 22/22 passed | 71ed8e5 | pass |
+| Task 6 | Step 7 大文本面板 + RunDetail 门禁产物链接 + large_text_mode=auto 透传 + e2e 断言 | build OK; e2e 22/22 | 4b275b1 | pass |
+| Task 7 | LARGE_TEXT_MULTILINGUAL_WORKFLOW/FEATURE_MATRIX/STABILITY_TEST_LIST 产品门禁文档 + 收编 07-07 plan 文件 | n/a | 293a8f7 | pass |
+| Task 8 | 公告 AI 补充契约：provider_status=packet_fallback、report_only 计数、Step 4 UI 状态区分（API 复查/外部导入/检查包降级）+ 项目名缺译警告 + packet fallback 回归测试 | 公告聚焦 4 tests + glossary 39 tests + test_workflow_e2e 100 passed; 公告 e2e passed | 24ae795 | pass |
+| 合并 | master 缓存修复 6464449 并入本分支 | 全量 pytest 186 passed; e2e 22/22 passed; build/lint/compileall clean | a78aea7 | pass |
+
+嵌入式 glossary extractor 与独立仓 v0.3.0 对比：仅 Windows UTF-8 stdio 加固差异，按计划保留，不覆盖。
+
 ## Model Budget Notes
 
 - Default executor model: Sonnet 5 (claude-sonnet-5-thinking-high subagents)

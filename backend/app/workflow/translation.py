@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,13 @@ from .announcement_segments import _is_quick_text_path
 from .common import run_dir
 from .asset_import_export import archive_translation_artifact
 from .jsonl_helpers import read_jsonl, write_jsonl
+from .large_text import (
+    build_large_text_preflight,
+    build_translation_cache_rows,
+    cache_lint_rows,
+    normalize_large_text_mode,
+    render_large_text_retro,
+)
 from .translation_orchestrator import (
     _terminal_translation_progress,
     _translate_rows_with_orchestration,
@@ -320,6 +328,37 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         run_subprocess(prepare_args, LOCALIZATION_ROOT, run_id)
         workpack_path = work_dir / "translation_workpack.jsonl"
         rows = read_jsonl(workpack_path)
+        large_text_mode = normalize_large_text_mode(getattr(request, "large_text_mode", None) or metadata.get("large_text_mode"))
+        large_text_preflight = build_large_text_preflight(
+            rows,
+            target_languages=[language],
+            source_rows=int(readiness.get("source_rows") or len(rows)),
+            workbook_count=1,
+            full_proofread=False,
+        )
+        preflight_path = work_dir / "large_text_preflight.json"
+        preflight_path.write_text(json.dumps(large_text_preflight, ensure_ascii=False, indent=2), encoding="utf-8")
+        preflight_artifact = db.add_artifact(
+            project["id"],
+            "Large text preflight",
+            preflight_path,
+            "large_text_preflight",
+            run_id=run_id,
+            mime="application/json",
+            origin="generated",
+            metadata={"mode": large_text_mode, "large_pack": large_text_preflight["large_pack"]},
+        )
+        db.update_run(
+            run_id,
+            metadata={
+                **db.get_run(run_id).get("metadata", {}),
+                "large_text": {
+                    "mode": large_text_mode,
+                    "preflight": large_text_preflight,
+                    "preflight_artifact_id": preflight_artifact["id"],
+                },
+            },
+        )
         term_audit = _translation_term_audit(project["id"], language, glossary_snapshot, rows)
         current_metadata = db.get_run(run_id).get("metadata", {})
         db.update_run(run_id, metadata={**current_metadata, "term_audit": term_audit})
@@ -345,6 +384,56 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         response_path = work_dir / "translation_response.jsonl"
         write_jsonl(response_path, translated_rows)
         db.add_artifact(project["id"], "Translation response JSONL", response_path, "translation_response", run_id=run_id, mime="application/jsonl")
+
+        cache_rows = build_translation_cache_rows(rows, translated_rows, language)
+        cache_lint = cache_lint_rows(cache_rows, target_languages=[language])
+        cache_lint_path = work_dir / "large_text_cache_lint.json"
+        cache_lint_path.write_text(json.dumps(cache_lint, ensure_ascii=False, indent=2), encoding="utf-8")
+        cache_artifact = db.add_artifact(
+            project["id"],
+            "Large text cache lint",
+            cache_lint_path,
+            "large_text_cache_lint",
+            run_id=run_id,
+            mime="application/json",
+            origin="generated",
+            metadata={"hard_blockers": cache_lint["hard_blockers"], "ok_to_apply": cache_lint["ok_to_apply"]},
+        )
+        should_enforce_cache_lint = large_text_mode == "strict" or (large_text_mode == "auto" and bool(large_text_preflight.get("large_pack")))
+        large_text_state = {
+            "mode": large_text_mode,
+            "preflight": large_text_preflight,
+            "preflight_artifact_id": preflight_artifact["id"],
+            "cache_lint": {
+                "status": "passed" if cache_lint["ok_to_apply"] else "failed",
+                "hard_blockers": cache_lint["hard_blockers"],
+                "artifact_id": cache_artifact["id"],
+            },
+        }
+        if large_text_mode == "off":
+            large_text_state["cache_lint"] = {"status": "skipped", "reason": "large_text_mode_off", "hard_blockers": cache_lint["hard_blockers"], "artifact_id": cache_artifact["id"]}
+        elif not should_enforce_cache_lint:
+            large_text_state["cache_lint"]["status"] = "skipped"
+            large_text_state["cache_lint"]["reason"] = "not_large_pack"
+        if should_enforce_cache_lint and not cache_lint["ok_to_apply"]:
+            current_for_lint = db.get_run(run_id)
+            db.update_run(
+                run_id,
+                status="failed",
+                metadata={
+                    **current_for_lint.get("metadata", {}),
+                    "large_text": large_text_state,
+                    "error": "大文本门禁未通过，未写入最终 workbook。",
+                },
+            )
+            db.add_event(run_id, f"large text cache lint failed: hard_blockers={cache_lint['hard_blockers']}", level="error")
+            return {
+                "run": db.get_run(run_id),
+                "artifacts": [preflight_artifact, cache_artifact],
+                "quality": None,
+                "quality_summary": {"passed": False, "hard_errors": cache_lint["hard_blockers"]},
+            }
+        db.update_run(run_id, metadata={**db.get_run(run_id).get("metadata", {}), "large_text": large_text_state})
 
         db.add_event(run_id, "applying translation response and running strict harness validation")
         apply_args = [
@@ -393,6 +482,8 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             glossary_snapshot,
             prompt_snapshot,
             harness_snapshot_artifact,
+            preflight_artifact,
+            cache_artifact,
             *qa_result["artifacts"],
         ]
         input_artifacts = {
@@ -420,6 +511,29 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         db.add_event(run_id, f"translation run finished: status={status}")
         final_metadata = db.get_run(run_id).get("metadata", {})
         final_progress = _terminal_translation_progress(final_metadata.get("translation_progress"), status)
+        large_text_state = dict(final_metadata.get("large_text") or {})
+        retro_text = render_large_text_retro(
+            {
+                "task": project["name"],
+                "translation_progress": final_progress if isinstance(final_progress, dict) else {},
+                "preflight": large_text_state.get("preflight") or {},
+                "cache_lint": large_text_state.get("cache_lint") or {"status": "skipped", "reason": "not provided"},
+                "readback_gate": large_text_state.get("readback_gate") or {"status": "skipped", "reason": "delivery not generated yet"},
+            }
+        )
+        retro_path = work_dir / "large_text_retro.md"
+        retro_path.write_text(retro_text, encoding="utf-8")
+        retro_artifact = db.add_artifact(
+            project["id"],
+            "Large text retro",
+            retro_path,
+            "large_text_retro",
+            run_id=run_id,
+            mime="text/markdown",
+            origin="generated",
+        )
+        large_text_state["retro_artifact_id"] = retro_artifact["id"]
+        artifacts.append(retro_artifact)
         db.update_run(
             run_id,
             status=status,
@@ -443,6 +557,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
                 "batch_size": batch_size,
                 "translation_readiness": readiness,
                 "translation_archive": archive_result,
+                "large_text": large_text_state,
             },
         )
         return {

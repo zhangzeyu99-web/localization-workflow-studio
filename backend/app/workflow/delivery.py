@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from .announcement_outputs import _announcement_task_source_stem, _artifact_disp
 from .announcement_segments import _normalize_announcement_languages
 from .asset_import_export import archive_translation_artifact
 from .common import project_dir
+from .large_text import readback_gate_files, render_large_text_retro
 from .qa import _first_col, _row_cell, write_qa_changes_report
 from .subprocess_runner import user_facing_error
 
@@ -197,6 +199,10 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     output_dir = project_dir(project_id) / "delivery"
     output_dir.mkdir(parents=True, exist_ok=True)
     if final_source["kind"] == "final_text":
+        # Quick-task plain-text delivery keeps its existing single-file contract.
+        # readback_gate_files only checks workbook target columns/cells, so a
+        # text final has nothing new to verify; skip it here to avoid adding a
+        # second file to an API surface tests and clients treat as single-file.
         final_path = _delivery_final_output_path(project, run, final_source)
         shutil.copy2(final_source["path"], final_path)
         summary = _deliverable_summary(project, run, final_source)
@@ -211,6 +217,14 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     else:
         empty_changes = write_qa_changes_report(output_dir, [])
         empty_changes.replace(changes_path)
+
+    _run_delivery_readback_gate(
+        project_id,
+        project["name"],
+        final_path,
+        target_languages=[_visible_language_code(run.get("language") or "en")],
+        run_id=run["id"],
+    )
 
     summary = _deliverable_summary(project, run, final_source)
     summary["files"] = {
@@ -269,6 +283,13 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
     if not merged:
         raise ValueError("没有可合并的已完成语言，请先完成翻译或 QA")
 
+    readback_artifact = _run_delivery_readback_gate(
+        project_id,
+        f"{project['name']} ALL",
+        output_path,
+        target_languages=[_visible_language_code(language) for language in selected_languages],
+    )
+
     summary_path = _write_merged_delivery_summary(output_dir, merged, skipped, output_path)
     summary_artifact = db.add_artifact(
         project_id,
@@ -294,9 +315,14 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
             "translated_rows": sum(int(item.get("rows") or 0) for item in merged),
             "processed_rows": sum(int(item.get("rows") or 0) for item in merged),
             "qa_hard_errors": sum(int(item.get("hard_errors") or 0) for item in merged),
+            "readback_gate_artifact_id": readback_artifact["id"],
+            "readback_gate": {"status": "passed", "hard_blockers": 0},
         },
     )
-    files = [_artifact_delivery_file("merged_final", final_artifact), _artifact_delivery_file("qa_summary", summary_artifact)]
+    files = [
+        _artifact_delivery_file("merged_final", final_artifact),
+        _artifact_delivery_file("qa_summary", summary_artifact),
+    ]
     return {
         "project_id": project_id,
         "project_name": project["name"],
@@ -589,6 +615,86 @@ def _artifact_delivery_file(kind: str, artifact: dict[str, Any]) -> dict[str, st
 
 def _expected_delivery_file(kind: str, path: Path) -> dict[str, str]:
     return {"kind": kind, "filename": path.name, "path": ""}
+
+
+def _delivery_gate_dir(project_id: str) -> Path:
+    # Process artifacts (readback gate JSON, retro markdown) are workbench
+    # evidence, not delivery content. Keep them out of the delivery folder so
+    # final delivery stays "final files + QA summary" only; they remain
+    # downloadable through their artifact records.
+    path = project_dir(project_id) / "qa_gates"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _run_delivery_readback_gate(
+    project_id: str,
+    label_prefix: str,
+    final_path: Path,
+    *,
+    target_languages: list[str],
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    readback = readback_gate_files([final_path], target_languages=target_languages)
+    readback_path = _delivery_gate_dir(project_id) / f"{final_path.stem}_readback_gate.json"
+    readback_path.write_text(json.dumps(readback, ensure_ascii=False, indent=2), encoding="utf-8")
+    readback_artifact = db.add_artifact(
+        project_id,
+        f"{label_prefix} readback gate",
+        readback_path,
+        "delivery_readback_gate",
+        run_id=run_id,
+        mime="application/json",
+        origin="generated",
+        metadata={"hard_blockers": readback["hard_blockers"], "readback_verified": readback["readback_verified"]},
+    )
+    if not readback["readback_verified"]:
+        raise ValueError(f"交付读回门禁未通过：{readback['hard_blockers']} 个硬错误")
+    if run_id:
+        _update_large_text_retro_after_delivery(project_id, run_id, label_prefix, final_path, readback, readback_artifact)
+    return readback_artifact
+
+
+def _update_large_text_retro_after_delivery(
+    project_id: str,
+    run_id: str,
+    label_prefix: str,
+    final_path: Path,
+    readback: dict[str, Any],
+    readback_artifact: dict[str, Any],
+) -> None:
+    current = db.get_run(run_id)
+    current_metadata = current.get("metadata") or {}
+    large_text_state = dict(current_metadata.get("large_text") or {})
+    if not large_text_state:
+        return
+    large_text_state["readback_gate"] = {
+        "status": "passed" if readback["readback_verified"] else "failed",
+        "hard_blockers": readback["hard_blockers"],
+        "artifact_id": readback_artifact["id"],
+    }
+    retro_text = render_large_text_retro(
+        {
+            "task": label_prefix,
+            "translation_progress": current_metadata.get("translation_progress") or {},
+            "preflight": large_text_state.get("preflight") or {},
+            "cache_lint": large_text_state.get("cache_lint") or {"status": "skipped", "reason": "not provided"},
+            "readback_gate": large_text_state["readback_gate"],
+        }
+    )
+    retro_path = _delivery_gate_dir(project_id) / f"{final_path.stem}_retro.md"
+    retro_path.write_text(retro_text, encoding="utf-8")
+    retro_artifact = db.add_artifact(
+        project_id,
+        f"{label_prefix} retro",
+        retro_path,
+        "large_text_retro",
+        run_id=run_id,
+        mime="text/markdown",
+        origin="generated",
+    )
+    large_text_state["retro_artifact_id"] = retro_artifact["id"]
+    db.update_run(run_id, metadata={**current_metadata, "large_text": large_text_state})
 
 
 def _write_empty_workbook(path: Path, headers: list[str], note: str) -> None:
