@@ -544,7 +544,7 @@ def cancel_translation_run(run_id: str) -> dict[str, Any]:
     work_dir = run_dir(run_id) / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
     _translation_cancel_path(work_dir).write_text(db.now_iso(), encoding="utf-8")
-    db.cancel_job_lease("long_text", run_id)
+    db.cancel_job_lease("long_text", f"run:{run_id}")
     db.merge_run_metadata(run_id, {"cancel_requested_at": db.now_iso()})
     db.update_run(run_id, status="canceled")
     db.add_event(run_id, "translation cancel requested")
