@@ -17,8 +17,11 @@ from app.workflow.large_text import (
     cache_lint_rows,
     normalize_large_text_mode,
     protected_tokens,
+    readback_gate_files,
+    render_large_text_retro,
 )
 from conftest import reset_data_root, wait_for_background_jobs
+from openpyxl import Workbook
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_GATE_DIR = REPO_ROOT / "workflow" / "localization"
@@ -149,3 +152,37 @@ def test_cache_lint_only_auto_protects_machine_like_bracket_tokens() -> None:
     assert "[A_1]" in product_result
     assert "{count}" in product_result
     assert "[Monster]" not in product_result
+
+
+def test_readback_gate_files_blocks_blank_target_cells(tmp_path: Path) -> None:
+    workbook = tmp_path / "final.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append([1, "开始游戏", "Start Game"])
+    ws.append([2, "领取奖励", ""])
+    wb.save(workbook)
+    wb.close()
+
+    result = readback_gate_files([workbook], target_languages=["en"])
+
+    assert result["readback_verified"] is False
+    assert result["hard_blockers"] == 1
+    assert result["issues"][0]["type"] == "blank_target_cell"
+
+
+def test_render_large_text_retro_marks_skipped_and_long_task() -> None:
+    report = render_large_text_retro(
+        {
+            "task": "large pack",
+            "translation_progress": {"elapsed_seconds": 3900, "total_rows": 6000, "completed_rows": 6000},
+            "preflight": {"large_pack": True, "unique_items": 6000, "estimated_target_cells": 30000},
+            "cache_lint": {"status": "skipped", "reason": "not_large_pack", "hard_blockers": 0},
+            "readback_gate": {"status": "passed", "hard_blockers": 0},
+        }
+    )
+
+    assert "长任务复盘触发" in report
+    assert "status=triggered" in report
+    assert "cache-lint: status=skipped, reason=not_large_pack" in report

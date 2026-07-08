@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -94,6 +95,74 @@ def test_merged_delivery_combines_passed_language_outputs(tmp_path: Path) -> Non
         assert ws.cell(row=3, column=4).value == "보상 받기"
     finally:
         wb.close()
+
+
+def test_single_delivery_writes_readback_gate_artifact(tmp_path: Path) -> None:
+    project = db.insert_project("single delivery", "QA", "")
+    source_path = tmp_path / "source.xlsx"
+    _write_source(source_path)
+    source = db.add_artifact(project["id"], "source", source_path, "language_table")
+    run = _add_passed_final(project["id"], source["id"], "en", tmp_path / "en.xlsx", "EN", ["Start Game", "Claim Rewards"])
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/projects/{project['id']}/delivery-package", params={"run_id": run["id"]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    readback_file = next(item for item in payload["files"] if item["kind"] == "readback_gate")
+    with open(readback_file["path"], encoding="utf-8") as handle:
+        gate_result = json.load(handle)
+    assert gate_result["readback_verified"] is True
+    assert gate_result["hard_blockers"] == 0
+
+
+def test_single_delivery_blocks_when_final_workbook_has_blank_target_cell(tmp_path: Path) -> None:
+    project = db.insert_project("single delivery blocked", "QA", "")
+    source_path = tmp_path / "source.xlsx"
+    _write_source(source_path)
+    source = db.add_artifact(project["id"], "source", source_path, "language_table")
+    final_path = tmp_path / "en.xlsx"
+    _write_final(final_path, "EN", ["Start Game", ""])
+    run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={
+            "input_artifact_id": source["id"],
+            "parent_input_artifact_id": source["id"],
+            "task_origin": "translation_run",
+            "quality_summary": {"passed": True, "hard_errors": 0},
+        },
+    )
+    db.update_run(run["id"], status="passed", metadata={**run["metadata"], "quality_summary": {"passed": True, "hard_errors": 0}})
+    db.add_artifact(project["id"], "final en", final_path, "qa_final_workbook", run_id=run["id"])
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/projects/{project['id']}/delivery-package", params={"run_id": run["id"]})
+
+    assert response.status_code == 409
+
+
+def test_merged_delivery_writes_readback_gate_artifact(tmp_path: Path) -> None:
+    project = db.insert_project("merged delivery readback", "QA", "")
+    source_path = tmp_path / "source.xlsx"
+    _write_source(source_path)
+    source = db.add_artifact(project["id"], "source", source_path, "language_table")
+    _add_passed_final(project["id"], source["id"], "en", tmp_path / "en.xlsx", "EN", ["Start Game", "Claim Rewards"])
+    _add_passed_final(project["id"], source["id"], "ko", tmp_path / "kr.xlsx", "KR", ["게임 시작", "보상 받기"])
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project['id']}/delivery-package/merged",
+            json={"input_artifact_id": source["id"], "languages": ["en", "ko"]},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    readback_file = next(item for item in payload["files"] if item["kind"] == "readback_gate")
+    with open(readback_file["path"], encoding="utf-8") as handle:
+        gate_result = json.load(handle)
+    assert gate_result["readback_verified"] is True
 
 
 def test_merged_delivery_rejects_cross_project_source(tmp_path: Path) -> None:

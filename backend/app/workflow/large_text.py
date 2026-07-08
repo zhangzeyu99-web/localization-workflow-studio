@@ -97,6 +97,11 @@ NUMBER_WORDS = {
 }
 CJK_ALLOWED_LANGS = {"cn", "zh", "zh-cn", "ja", "jp"}
 SOURCE_HEADERS = {"CN", "ZH", "SOURCE", "TEXT", "原文"}
+# Sheets emitted by the local QA harness (workflow/localization/process_language.py)
+# alongside the primary translation sheet. They carry review/reference columns
+# only (no full target-language coverage) and must not be treated as delivery
+# content when checking for missing target columns or blank target cells.
+REVIEW_ONLY_SHEET_TITLES = {"需确认", "术语行筛选"}
 
 
 def normalize_large_text_mode(value: str | None) -> str:
@@ -456,6 +461,8 @@ def readback_gate_files(paths: list[Path], *, target_languages: list[str]) -> di
         workbook = load_workbook(path, read_only=True, data_only=True)
         try:
             for sheet in workbook.worksheets:
+                if sheet.title in REVIEW_ONLY_SHEET_TITLES:
+                    continue
                 first_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
                 headers = [str(value).strip().upper() if value is not None else "" for value in first_row]
                 if not _looks_like_translation_sheet(headers, targets):
@@ -495,7 +502,7 @@ LONG_TASK_REVIEW_SECONDS = 3600
 def _gate_line(label: str, gate: dict[str, Any]) -> str:
     status = str(gate.get("status") or ("passed" if int(gate.get("hard_blockers") or 0) == 0 else "failed"))
     reason = f", reason={gate.get('reason')}" if status in {"skipped", "waived"} and gate.get("reason") else ""
-    return f"- {label}: status={status}, hard={gate.get('hard_blockers', 'n/a')}{reason}"
+    return f"- {label}: status={status}{reason}, hard={gate.get('hard_blockers', 'n/a')}"
 
 
 def render_large_text_retro(metrics: dict[str, Any]) -> str:
