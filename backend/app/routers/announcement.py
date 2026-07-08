@@ -3,7 +3,7 @@ from __future__ import annotations
 from .. import db
 from ..ai_input_audit import announcement_ai_input_summary
 from ..jobs import (
-    active_job_id,
+    active_job_id_for_project,
     cancel_singleton_job,
     start_singleton_job,
 )
@@ -46,7 +46,7 @@ from ..workflow import (
     translate_announcement_task,
     user_facing_error,
 )
-from .shared import _query_language
+from .shared import _job_conflict_detail, _query_language
 from fastapi import (
     APIRouter,
     HTTPException,
@@ -246,13 +246,14 @@ def translate_project_announcement(task_id: str, payload: AnnouncementTaskTransl
 
 def _start_announcement_translation_background(task_id: str, payload: AnnouncementTaskTranslateRequest) -> dict[str, Any]:
     try:
-        get_announcement_task(task_id)
+        task = get_announcement_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc
-    active = active_job_id()
+    project_id = task["project_id"]
+    active = active_job_id_for_project(project_id)
     job_id = f"announcement:{task_id}"
     if active and active != job_id:
-        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active}")
+        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
     db.merge_announcement_task_metadata(task_id, {"queued_at": db.now_iso()})
     db.update_announcement_task(task_id, status="queued", current_step=7)
 
@@ -268,9 +269,9 @@ def _start_announcement_translation_background(task_id: str, payload: Announceme
             except Exception:
                 pass
 
-    started, active_conflict = start_singleton_job(job_id, worker)
-    if not started and active_conflict:
-        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active_conflict}")
+    started, conflict = start_singleton_job(project_id, job_id, worker)
+    if not started and conflict:
+        raise HTTPException(status_code=409, detail=_job_conflict_detail(conflict))
     return {"task": get_announcement_task(task_id), "summary": {"status": "queued"}}
 
 
@@ -287,7 +288,8 @@ def translate_project_announcement_resume(task_id: str, payload: AnnouncementTas
 @router.post("/api/announcement-tasks/{task_id}/translate/cancel")
 def translate_project_announcement_cancel(task_id: str) -> dict[str, Any]:
     try:
-        cancel_singleton_job(f"announcement:{task_id}")
+        task = get_announcement_task(task_id)
+        cancel_singleton_job(task["project_id"], f"announcement:{task_id}")
         return {"task": cancel_announcement_translation_task(task_id)["task"], "summary": {"status": "prepared", "reason": "announcement_translation_canceled"}}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc

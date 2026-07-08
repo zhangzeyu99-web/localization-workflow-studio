@@ -739,18 +739,23 @@ def test_cancel_translation_run_matches_run_prefixed_lease_job_id() -> None:
     """Regression test: routers/runs.py stores the lease under job_id=f"run:{run_id}",
     so cancel_translation_run must cancel that same job_id, not the bare run_id
     (which never matches and previously left the lease's cancel_requested unset).
+
+    Since M2, the lease name is project-scoped (``long_text:{project_id}``)
+    rather than the single global ``long_text`` name.
     """
     import app.workflow.translation as translation
+    from app.jobs import lease_name_for_project
 
     project = db.insert_project("cancel lease matching", "QA", "")
     run = db.insert_run(project["id"], "translation", "en", metadata={})
     run_id = run["id"]
+    lease_name = lease_name_for_project(project["id"])
 
-    assert db.acquire_job_lease("long_text", f"run:{run_id}")
+    assert db.acquire_job_lease(lease_name, f"run:{run_id}")
 
     translation.cancel_translation_run(run_id)
 
-    lease = db.get_job_lease("long_text")
+    lease = db.get_job_lease(lease_name)
     assert lease["job_id"] == f"run:{run_id}"
     assert lease["cancel_requested"] is True
 

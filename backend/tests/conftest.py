@@ -11,27 +11,34 @@ os.environ.setdefault("LWS_ENABLE_TEST_PROVIDER", "1")
 
 
 def wait_for_background_jobs(timeout: float = 5.0) -> None:
-    """Wait for the active background job (if any) to finish.
+    """Wait for all active background jobs (if any) to finish.
 
-    Lets the job complete naturally first so tests that start a job and then
+    Lets jobs complete naturally first so tests that start a job and then
     call this helper to await its normal completion aren't racing a forced
     cancellation against the worker thread's own progress. Only falls back to
-    ``cancel_event.set()`` if the job is still running after the grace period,
+    ``cancel_event.set()`` if a job is still running after the grace period,
     as a safety net for cleanup callers (e.g. ``reset_data_root``) that need
-    to unblock a stuck/long-running job before tearing down the data dir.
+    to unblock stuck/long-running jobs before tearing down the data dir.
+
+    Since M2, leases (and therefore active jobs) are per-project, so more than
+    one job can be running concurrently; this waits for all of them rather
+    than assuming a single global job.
     """
     try:
         import app.jobs as jobs
     except Exception:
         return
     with jobs._LOCK:  # type: ignore[attr-defined]
-        active = jobs._ACTIVE_JOB  # type: ignore[attr-defined]
-    if not active or not active.thread.is_alive():
+        active_jobs = [job for job in jobs._ACTIVE_JOBS.values() if job.thread.is_alive()]  # type: ignore[attr-defined]
+    if not active_jobs:
         return
-    active.thread.join(timeout)
-    if active.thread.is_alive():
-        active.cancel_event.set()
-        active.thread.join(timeout)
+    for job in active_jobs:
+        job.thread.join(timeout)
+    still_running = [job for job in active_jobs if job.thread.is_alive()]
+    for job in still_running:
+        job.cancel_event.set()
+    for job in still_running:
+        job.thread.join(timeout)
 
 
 def reset_data_root(path: Path) -> None:

@@ -84,6 +84,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "api_budget_warning_tokens": 1000000,
     "max_batch_attempts": 3,
     "provider_timeout_seconds": 120,
+    "max_concurrent_ai_jobs": 2,
     "multimodal": {
         "images": True,
         "pdf": True,
@@ -213,6 +214,7 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         payload["reasoning_effort"] = "none"
         payload["protocol"] = TEST_FAKE_PROVIDER
         _normalize_long_text_settings(payload)
+        _normalize_max_concurrent_ai_jobs(payload)
         return payload
 
     preset = str(payload.get("preset") or DEFAULT_SETTINGS["preset"])
@@ -232,6 +234,7 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
         payload["max_output_tokens"] = selected["max_output_tokens"]
     payload["protocol"] = "chat-completions" if provider == "openai-chat" else ("responses" if provider == "openai" else "messages")
     _normalize_long_text_settings(payload)
+    _normalize_max_concurrent_ai_jobs(payload)
     return payload
 
 
@@ -240,4 +243,12 @@ def _normalize_long_text_settings(payload: dict[str, Any]) -> None:
     profile = LONG_TEXT_PRESET_DEFAULTS.get(preset, LONG_TEXT_PRESET_DEFAULTS["balanced"])
     for key, value in profile.items():
         payload[key] = value
+
+
+def _normalize_max_concurrent_ai_jobs(payload: dict[str, Any]) -> None:
+    try:
+        value = int(payload.get("max_concurrent_ai_jobs", DEFAULT_SETTINGS["max_concurrent_ai_jobs"]))
+    except (TypeError, ValueError):
+        value = int(DEFAULT_SETTINGS["max_concurrent_ai_jobs"])
+    payload["max_concurrent_ai_jobs"] = max(1, min(value, 4))
 

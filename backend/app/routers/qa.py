@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .. import db
-from ..jobs import active_job_id, start_singleton_job
+from ..jobs import active_job_id_for_project, start_singleton_job
 from ..schemas import (
     ManualFixRequest,
     ModelFixRequest,
@@ -20,6 +20,7 @@ from ..workflow import (
     start_multilingual_qa_queue,
     user_facing_error,
 )
+from .shared import _job_conflict_detail
 from fastapi import (
     APIRouter,
     HTTPException,
@@ -89,10 +90,11 @@ def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="run not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
+    project_id = run["project_id"]
     job_id = f"model-fix:{run_id}"
-    active = active_job_id()
+    active = active_job_id_for_project(project_id)
     if active and active != job_id:
-        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active}")
+        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
     original_status = str(run.get("status") or "failed")
     db.merge_run_metadata(
         run_id,
@@ -139,18 +141,19 @@ def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
             db.update_run(run_id, status="failed")
             db.add_event(run_id, f"model fixes failed: {friendly}", level="error")
 
-    started, active_conflict = start_singleton_job(job_id, worker)
-    if not started and active_conflict:
+    started, conflict = start_singleton_job(project_id, job_id, worker)
+    if not started and conflict:
+        detail = _job_conflict_detail(conflict)
         db.merge_run_metadata(
             run_id,
             {
                 "model_fix_status": "blocked",
-                "model_fix_error": "已有其他 AI 后台任务正在运行，请等待完成后再重试。",
-                "queue_error": f"active job: {active_conflict}",
+                "model_fix_error": detail,
+                "queue_error": f"job start rejected: {conflict}",
             },
         )
         db.update_run(run_id, status=original_status)
-        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active_conflict}")
+        raise HTTPException(status_code=409, detail=detail)
     db.add_event(run_id, "model fixes background job started")
     return db.get_run(run_id)
 

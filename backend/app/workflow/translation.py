@@ -8,6 +8,7 @@ from typing import Any
 
 from .. import db
 from ..config import LOCALIZATION_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name, test_provider_enabled
+from ..jobs import lease_name_for_project
 from ..languages import require_supported_language
 from ..translation_batches import (
     load_or_create_batch_manifest as _load_or_create_batch_manifest,
@@ -540,11 +541,11 @@ def run_translate_sync(run_id: str, request: Any, cancel_event: Any | None = Non
 
 
 def cancel_translation_run(run_id: str) -> dict[str, Any]:
-    db.get_run(run_id)
+    run = db.get_run(run_id)
     work_dir = run_dir(run_id) / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
     _translation_cancel_path(work_dir).write_text(db.now_iso(), encoding="utf-8")
-    db.cancel_job_lease("long_text", f"run:{run_id}")
+    db.cancel_job_lease(lease_name_for_project(run["project_id"]), f"run:{run_id}")
     db.merge_run_metadata(run_id, {"cancel_requested_at": db.now_iso()})
     db.update_run(run_id, status="canceled")
     db.add_event(run_id, "translation cancel requested")

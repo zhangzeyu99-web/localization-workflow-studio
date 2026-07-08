@@ -1753,6 +1753,21 @@ def get_job_lease(name: str) -> dict[str, Any] | None:
         return payload
 
 
+def list_job_leases(status: str | None = None) -> list[dict[str, Any]]:
+    with connect() as conn:
+        if status:
+            rows = conn.execute("SELECT * FROM job_leases WHERE status = ? ORDER BY name", (status,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM job_leases ORDER BY name").fetchall()
+    result = []
+    for row in rows:
+        payload = dict(row)
+        payload["cancel_requested"] = bool(payload["cancel_requested"])
+        payload["metadata"] = json.loads(payload.pop("metadata_json") or "{}")
+        result.append(payload)
+    return result
+
+
 def mark_running_job_leases_interrupted() -> int:
     ts = now_iso()
     with connect() as conn:

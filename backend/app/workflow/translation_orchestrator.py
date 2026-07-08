@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import db
+from ..jobs import lease_name_for_project
 from ..providers import translate_batch
 from ..translation_batches import (
     AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
@@ -185,6 +186,7 @@ def _manifest_progress(
     *,
     batch_size: int,
     started_at: float,
+    run_id: str | None = None,
     current_batch: int | None = None,
     failed_batch: int | None = None,
     rate_limit_wait_seconds: float | None = None,
@@ -201,6 +203,14 @@ def _manifest_progress(
     max_attempts = int(manifest.get("max_batch_attempts") or 0) or None
     timeout_seconds = manifest.get("provider_timeout_seconds")
     started_at_iso = str((current_meta or {}).get("attempt_started_at") or "") if current_meta else ""
+    lease_status = ""
+    if run_id:
+        try:
+            project_id = db.get_run(run_id).get("project_id")
+            lease = db.get_job_lease(lease_name_for_project(project_id)) if project_id else None
+            lease_status = str((lease or {}).get("status") or "")
+        except Exception:
+            lease_status = ""
     if failed_batch:
         message = f"第 {failed_batch}/{len(batches)} 批失败；可点击继续，从已保存批次后恢复。"
     elif current_batch is not None and current_status == "running":
@@ -234,7 +244,7 @@ def _manifest_progress(
             "estimated_total_input_tokens": int(manifest.get("estimated_total_input_tokens") or 0),
             "rate_limit_wait_seconds": round(rate_limit_wait_seconds, 2) if rate_limit_wait_seconds else 0,
             "fingerprint": str(manifest.get("input_fingerprint") or ""),
-            "lease_status": (db.get_job_lease("long_text") or {}).get("status", ""),
+            "lease_status": lease_status,
             "invalidated_reason": str(manifest.get("invalidated_reason") or ""),
             "term_audit": manifest.get("term_audit") or {},
         }
@@ -291,7 +301,7 @@ async def _translate_rows_with_orchestration(
                     "warning_tokens": budget_warning_tokens,
                     "estimated_batches": len(manifest.get("batches") or []),
                 },
-                "translation_progress": _manifest_progress(manifest, batch_size=batch_size, started_at=time.monotonic()),
+                "translation_progress": _manifest_progress(manifest, batch_size=batch_size, started_at=time.monotonic(), run_id=run_id),
             },
         )
         db.update_run(run_id, status="needs_input")
@@ -324,7 +334,7 @@ async def _translate_rows_with_orchestration(
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
             _update_translation_progress(
                 run_id,
-                _manifest_progress(manifest, batch_size=batch_size, started_at=started_at, current_batch=current_batch, failed_batch=failed_batch, rate_limit_wait_seconds=rate_wait),
+                _manifest_progress(manifest, batch_size=batch_size, started_at=started_at, run_id=run_id, current_batch=current_batch, failed_batch=failed_batch, rate_limit_wait_seconds=rate_wait),
                 status=status,
             )
 
@@ -430,7 +440,7 @@ async def _translate_rows_with_orchestration(
     if failure is not None:
         if str(failure) == "translation canceled":
             db.add_event(run_id, "translation canceled")
-            _update_translation_progress(run_id, _manifest_progress(manifest, batch_size=batch_size, started_at=started_at), status="canceled")
+            _update_translation_progress(run_id, _manifest_progress(manifest, batch_size=batch_size, started_at=started_at, run_id=run_id), status="canceled")
         raise failure
 
     translated_rows: list[dict[str, Any]] = []
