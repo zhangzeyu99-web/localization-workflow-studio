@@ -442,7 +442,7 @@ def extract_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
     if ai_summary:
         summary["ai_supplement"] = {
             key: ai_summary[key]
-            for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "project_name_translation_missing")
+            for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "report_only", "project_name_translation_missing")
         }
     manifest = {"kind": "announcement_terms", "task_id": task_id, "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1004,7 +1004,7 @@ def generate_announcement_terms_package(project_id: str, request: Any) -> dict[s
     if ai_summary:
         summary["ai_supplement"] = {
             key: ai_summary[key]
-            for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "project_name_translation_missing")
+            for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "report_only", "project_name_translation_missing")
         }
     manifest = {"kind": "announcement_terms", "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
