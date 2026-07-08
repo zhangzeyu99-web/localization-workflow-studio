@@ -1,5 +1,7 @@
 """Workspace-oriented batch runner for localization QA.
 
+Boundary: AGENT-ONLY tooling. Not imported or subprocessed by the backend.
+
 Discovers project folders under a shared workspace root, resolves the main
 language file plus matching term files, merges term bases, and runs the
 existing processing pipeline for each project.
@@ -18,8 +20,10 @@ from process_language import (
     write_outputs,
 )
 from utils.ai_checker import (
+    collect_recheck_rows as _collect_recheck_rows,
     merge_review_batches,
     prepare_recheck_batches,
+    reset_review_dir as _reset_review_dir,
     write_response_templates,
     write_review_files,
 )
@@ -272,51 +276,6 @@ def write_merged_term_base(term_files: list[Path], output_dir: Path, lang: str) 
         encoding='utf-8',
     )
     return merged_path
-
-
-def _reset_review_dir(review_dir: Path):
-    review_dir.mkdir(parents=True, exist_ok=True)
-    for pattern in (
-        'batch_*.txt',
-        'batch_*.json',
-        'batch_*_response.txt',
-        'batch_recheck_*.txt',
-        'batch_recheck_*.json',
-        'batch_recheck_*_response.txt',
-        'review_run_manifest.json',
-        'review_recheck_manifest.json',
-    ):
-        for path in review_dir.glob(pattern):
-            path.unlink()
-
-
-def _collect_recheck_rows(states, batches):
-    term_error_types = {'term_missing', 'term_partial_hit', 'term_capitalization'}
-    recheck_rows = []
-    ai_batch_ids = set()
-    for batch in batches:
-        ai_batch_ids.update(batch.row_ids)
-
-    for state in states.values():
-        if state.row_id not in ai_batch_ids:
-            continue
-        has_term_issue = any(getattr(issue, 'check_type', '') in term_error_types for issue in state.issues)
-        if not has_term_issue:
-            continue
-        issue_desc = '; '.join(sorted(set(
-            getattr(issue, 'check_type', '')
-            for issue in state.issues
-            if getattr(issue, 'check_type', '') in term_error_types
-        )))
-        recheck_rows.append(
-            {
-                'id': state.row_id,
-                'original': state.original,
-                'translation': state.fixed_translation,
-                'term_issue': issue_desc,
-            }
-        )
-    return recheck_rows
 
 
 def _resolve_task_context(task: WorkspaceTask, lang: str | None, auto_fix: bool):

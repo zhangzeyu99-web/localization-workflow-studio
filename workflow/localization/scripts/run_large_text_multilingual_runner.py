@@ -1,3 +1,5 @@
+"""Boundary: AGENT-ONLY tooling. Not imported or subprocessed by the backend;
+the product ports its gate rules to backend/app/workflow/large_text.py."""
 from __future__ import annotations
 
 import sys

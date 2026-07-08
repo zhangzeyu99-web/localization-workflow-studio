@@ -557,6 +557,53 @@ def _build_batch_manifest(
     }
 
 
+def reset_review_dir(review_dir: Path) -> None:
+    """Remove stale review batch/manifest files before a new review run."""
+    review_dir.mkdir(parents=True, exist_ok=True)
+    for pattern in (
+        'batch_*.txt',
+        'batch_*.json',
+        'batch_*_response.txt',
+        'batch_recheck_*.txt',
+        'batch_recheck_*.json',
+        'batch_recheck_*_response.txt',
+        'review_run_manifest.json',
+        'review_recheck_manifest.json',
+    ):
+        for path in review_dir.glob(pattern):
+            path.unlink()
+
+
+def collect_recheck_rows(states, batches) -> list[dict]:
+    """Collect rows from AI batches that still carry term issues for recheck."""
+    term_error_types = {'term_missing', 'term_partial_hit', 'term_capitalization'}
+    recheck_rows = []
+    ai_batch_ids = set()
+    for batch in batches:
+        ai_batch_ids.update(batch.row_ids)
+
+    for state in states.values():
+        if state.row_id not in ai_batch_ids:
+            continue
+        has_term_issue = any(getattr(issue, 'check_type', '') in term_error_types for issue in state.issues)
+        if not has_term_issue:
+            continue
+        issue_desc = '; '.join(sorted(set(
+            getattr(issue, 'check_type', '')
+            for issue in state.issues
+            if getattr(issue, 'check_type', '') in term_error_types
+        )))
+        recheck_rows.append(
+            {
+                'id': state.row_id,
+                'original': state.original,
+                'translation': state.fixed_translation,
+                'term_issue': issue_desc,
+            }
+        )
+    return recheck_rows
+
+
 def write_review_files(
     review_dir: str | Path,
     batches: list[BatchInfo],

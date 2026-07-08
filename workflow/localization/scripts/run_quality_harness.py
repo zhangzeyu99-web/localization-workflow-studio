@@ -1,4 +1,9 @@
-"""Run localization quality regression fixtures and workbook scans."""
+"""Run localization quality regression fixtures and workbook scans.
+
+Boundary: PRODUCT RUNTIME DEPENDENCY. The FastAPI backend invokes this script
+as a subprocess (see backend/app/workflow/qa.py). Keep the CLI contract stable
+and validate changes with `python -m pytest backend/tests -q`.
+"""
 from __future__ import annotations
 
 import argparse

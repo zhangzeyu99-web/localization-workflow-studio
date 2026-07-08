@@ -1,3 +1,6 @@
+"""Boundary: AGENT-ONLY tooling. Not imported or subprocessed by the backend;
+backend/app/workflow/large_text.py is a port of these gate rules with parity
+tests in backend/tests/test_large_text_productization.py (this gate wins)."""
 from __future__ import annotations
 
 import sys

@@ -1,3 +1,4 @@
+"""Boundary: AGENT-ONLY tooling. Not imported or subprocessed by the backend."""
 from __future__ import annotations
 
 import sys

@@ -16,19 +16,24 @@
 `workflow/localization/` is shared between the running product and agent-only
 tooling. Treat the two halves with different change discipline:
 
-- Product runtime dependencies: `scripts/run_translation_harness.py`,
-  `utils/quality_harness.py`, `utils/announcement_docx_harness.py`, and
-  `process_language.py`. The FastAPI backend invokes these as subprocesses
-  (see `backend/app/workflow/subprocess_runner.py` and its callers). Any
-  change here must be validated with the backend test suite
-  (`python -m pytest backend/tests -q`), not just the local
-  `workflow/localization/tests`.
+- Product runtime dependencies: `process_language.py` and
+  `scripts/run_quality_harness.py` (subprocessed by
+  `backend/app/workflow/qa.py`), `scripts/run_translation_harness.py`
+  (subprocessed by `backend/app/workflow/translation.py`), plus the modules
+  they import (`utils/quality_harness.py`, `utils/translation_harness.py`,
+  `fixtures/quality_regression.json`). Any change here must be validated with
+  the backend test suite (`python -m pytest backend/tests -q`), not just the
+  local `workflow/localization/tests`.
 - Agent-only tooling: `utils/large_text_multilingual_gate.py`,
   `utils/large_text_multilingual_runner.py`,
-  `utils/large_text_multilingual_retro.py`, `cli.py`, and
-  `workspace_runner.py`. These support Codex/agent-driven large-pack workflows
-  outside the product's request path and are not imported or subprocessed by
-  the backend at runtime.
+  `utils/large_text_multilingual_retro.py`,
+  `scripts/run_announcement_docx_harness.py` (the backend keeps its own
+  announcement pipeline in `backend/app/workflow/announcement*.py`), `cli.py`,
+  and `workspace_runner.py`. These support Codex/agent-driven large-pack
+  workflows outside the product's request path and are not imported or
+  subprocessed by the backend at runtime.
+- Each entry script carries a `Boundary:` marker in its module docstring;
+  keep the marker accurate when moving code.
 
 ## Architecture Terms
 

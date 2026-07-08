@@ -1,4 +1,9 @@
-"""CLI for the agent-operated full translation harness."""
+"""CLI for the agent-operated full translation harness.
+
+Boundary: PRODUCT RUNTIME DEPENDENCY. The FastAPI backend invokes this script
+as a subprocess (see backend/app/workflow/translation.py). Keep the CLI
+contract stable and validate changes with `python -m pytest backend/tests -q`.
+"""
 from __future__ import annotations
 
 import argparse

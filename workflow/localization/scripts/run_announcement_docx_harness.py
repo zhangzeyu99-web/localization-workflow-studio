@@ -1,4 +1,9 @@
-"""CLI for the announcement DOCX retrieval-style translation harness."""
+"""CLI for the announcement DOCX retrieval-style translation harness.
+
+Boundary: AGENT-ONLY entry point. The backend does not subprocess this script;
+it maintains its own announcement pipeline in backend/app/workflow/announcement*.py.
+The shared logic lives in utils/announcement_docx_harness.py.
+"""
 from __future__ import annotations
 
 import argparse
