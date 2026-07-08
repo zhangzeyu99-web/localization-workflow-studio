@@ -72,16 +72,18 @@ export function WideTablePager({
   testIdPrefix,
   page,
   totalRows,
-  onPageChange
+  onPageChange,
+  pageSize = WIDE_TABLE_PAGE_SIZE
 }: {
   testIdPrefix: string
   page: number
   totalRows: number
   onPageChange: (page: number) => void
+  pageSize?: number
 }) {
-  const totalPages = Math.max(1, Math.ceil(totalRows / WIDE_TABLE_PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize))
   const currentPage = Math.min(page, totalPages)
-  if (totalRows <= WIDE_TABLE_PAGE_SIZE) {
+  if (totalRows <= pageSize) {
     return <div className="wide-table-pager muted-left">第 1 页 / 共 1 页</div>
   }
   return (
