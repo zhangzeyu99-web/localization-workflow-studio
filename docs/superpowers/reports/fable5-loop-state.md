@@ -89,6 +89,47 @@ Fable5 主线程接手外部会话遗留的大文本产品化工作（plan: 2026
 
 最终状态：master == origin/master @ 98a64ee，工作区干净，临时 worktree/分支/TEMP 目录全部清理。
 
+## Frontend Optimization + Multiuser Concurrency Overnight Run (2026-07-08 20:33 – 07-09 04:45)
+
+用户指令：今晚连续派发完成前端优化（含视觉）与多人化改造全部阶段，留恢复备份，明早完整验收。执行模式：Fable5 主线程调度 + 检查点，Sonnet 5 子 agent 隔离 worktree 执行，两条线并行、串行推送。计划文档：2026-07-08-frontend-optimization.md、2026-07-08-multiuser-concurrency.md。发布版本 v1.0.4 → **v1.1.0**（tag 已推送）。
+
+### 阶段记录
+
+| 阶段 | 内容 | 验证 | 合并点 |
+|---|---|---|---|
+| F1 提示语人话化 | uiText.ts 文案层 + 操作名错误兜底；修复 STEP 编号/英文状态/settings.local.json 直出等全部已确认问题；~8 处原生 alert/confirm 换 ConfirmModal；e2e 断言同批更新 | build/tsc 干净；e2e 22/22（主线程复验） | 0584e8a |
+| M1 并发安全地基 | SQLite WAL+synchronous=NORMAL；merge_run_metadata/merge_announcement_task_metadata 原子合并替换 46 处（远超预估 15 处）；cancel_translation_run lease job_id 前缀修复；顺手修 conftest 等待竞态 | 全量 196 passed（189+7） | 8816bbd |
+| F2 结构拆分 | main.tsx 2500→596 行（modals/ProjectOverview/4 组轮询 hooks/4 组域 action hooks）；TranslationWizard 2167→142 行（9 步独立文件+RunDetail 等） | 两次 e2e 22/22；纯搬家零行为变化 | 90a7667 |
+| M2 锁粒度 | lease 改 long_text:{project_id}（同项目互斥、跨项目并行）；全局上限 max_concurrent_ai_jobs 默认 2 clamp 1-4；project_busy/capacity 结构化 409；GET /api/system/active-jobs；恢复路径按前缀清理；metadata={** 复发守卫测试；顺手修 project_dir 并发删除竞态 | 全量 203 passed ×2（196+7）；恢复中断一次（基础设施故障，断点续跑完成） | ddfc418 |
+| F3 性能 | run 活跃时暂停快照轮询（10s 窗口请求 -25%）；热路径 memo/useCallback；三大向导 React.lazy（主包 445KB→371KB，-17%）；历史/动态列表 50 行分页；F2 发现的死代码清理 | 两次 e2e 22/22；pytest 196 无牵连 | 391934d |
+| F4 视觉规范 | :root 约 60 个 token（色板/间距/圆角/字号）；卡片类收敛 .surface-card；补 640px 断点；9 组前后截图对比无跳变（D:\codex\lws-f4-screenshots\ 保留待验收） | e2e 22/22 ×2；只改 styles.css 一个文件 | d94775b |
+| M3 资源共享 | SharedRateLimiter 进程级按 (provider,key) 分桶，跨线程/事件循环合计速率不超配额（反向验证：去锁 100% 丢数据）；settings 启动快照消灭中途 load（qa/semantic_qa/model_fixes/multilingual/glossary/project_analysis）；project 文件锁；删除项目防护 409 | 全量 213 passed ×2（203+10） | 1c65802 |
+| M4 活跃任务面板 | header 徽章+面板（useActiveJobsPolling 9s）；排队 409 提示附"查看活跃任务"内联引导（公共 ActionStatus 一点覆盖）；新增 3 条 e2e | e2e 25/25（22+3）；pytest 213 | 77f9b50 |
+| M5 部署收尾 | scripts/concurrency_smoke.py（11 步全过：并行翻译/active-jobs 同时可见/上限 409/无 database is locked）；CLOUD_DEPLOYMENT 并发模型改写；STABILITY_TEST_LIST +7 项；版本联动 6 文件 + docs/releases/v1.1.0.md；Tier D：deployment_check 4/4 + stability_check 29/29 + 冒烟全过（18800 隔离实例）；操作人昵称留痕（X-Operator 头 + 事件前缀 + 删除审计） | 全量 218 passed；v1.1.0 tag | 5c5c71a |
+
+### 恢复锚点（均已推送远端）
+
+backup/pre-fe-multiuser-20260708（a0bbae5 开工前）、backup/pre-f2（0584e8a）、backup/pre-f3（90a7667）、backup/pre-f4（391934d）、backup/pre-m2-merge（90a7667）、v1.1.0（5c5c71a）。整体回退：`git reset --hard backup/pre-fe-multiuser-20260708`；数据目录独立不受代码回退影响。
+
+### 过程问题（先于成果）
+
+1. 两个子 agent 各发生一次基础设施中断（F1 收尾时连接断开、M2 验证时流关闭），均为客户端故障非任务失败；断点恢复完成，F1 由主线程复验 e2e 兜底。教训已有：恢复时先清孤儿测试进程和 SQLite 锁残留。
+2. WAL 提速暴露 conftest 等待竞态、并行化暴露 project_dir mkdir/rmtree 竞态——都是"提速/放开并发揭示既有时序假设"的实例，均已修复并留回归测试。
+3. test-fake 任务过快导致 M4 e2e 无法稳定捕获运行态，改用路由拦截做确定性造数（后端锁语义由 pytest 覆盖，前端只验渲染逻辑），属合理分层。
+
+### 外部会话衔接
+
+隔壁会话于 22:11-22:12 直接向 master 提交了两个技术仓库的更新（12ef763 localization agent 工具层拆分、92ed2b4 glossary v0.4.0 同步宣告 SYNC.md、2cdc4fd v1.0.4 发布记录），带完整验证证据。上游 followup 主体已落地，明早验收确认即可。
+
+### 明早验收清单
+
+- [ ] 打开 http://127.0.0.1:5173/（已重启到 v1.1.0），头部版本徽章应显示 v1.1.0
+- [ ] 过一遍主流程：提示语是否更明白、确认框是否为应用内弹窗
+- [ ] 视觉对比 D:\codex\lws-f4-screenshots\before|after（应"更整齐"而非"变样"）
+- [ ] 双开浏览器窗口模拟两人：不同项目同时跑翻译（test-fake 或真实 key）、观察活跃任务徽章、同项目第二任务的排队提示
+- [ ] 设置里填操作人昵称后做一次交付，任务事件里应有 [昵称] 前缀
+- [ ] docs/releases/v1.1.0.md 与 CHANGELOG 内容核对
+
 ## Model Budget Notes
 
 - Default executor model: Sonnet 5 (claude-sonnet-5-thinking-high subagents)
