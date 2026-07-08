@@ -69,7 +69,6 @@ export function StepTranslate({
   const lang = languageSpec(selectedLanguage)
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   const multiLanguageMode = selectedLanguages.length > 1
-  const translateAction = multiLanguageMode && onTranslateQueue ? onTranslateQueue : onTranslate
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   const batchSize = effectiveBatchSize(settings)
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === batchSize ? translationReadiness : null

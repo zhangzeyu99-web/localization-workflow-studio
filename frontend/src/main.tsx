@@ -1,13 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { API } from './apiClient'
 import { refreshLanguageOptions, languageSpec, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { useConfirmDialog } from './components/modals/ConfirmModal'
-import { QuickTaskWizard } from './components/quickTask/QuickTaskWizard'
-import { AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
-import { Wizard } from './components/translationWizard/TranslationWizard'
 import { DeleteProjectModal } from './components/modals/DeleteProjectModal'
 import { CancelAnnouncementTaskModal } from './components/modals/CancelAnnouncementTaskModal'
 import { NewProjectModal } from './components/modals/NewProjectModal'
@@ -28,6 +25,10 @@ import { preferredTranslationResultArtifact } from './domain/projectState'
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
 import { canSkipModelTranslation } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
+
+const QuickTaskWizard = lazy(() => import('./components/quickTask/QuickTaskWizard').then((m) => ({ default: m.QuickTaskWizard })))
+const AnnouncementWizard = lazy(() => import('./components/announcement/AnnouncementWorkflow').then((m) => ({ default: m.AnnouncementWizard })))
+const Wizard = lazy(() => import('./components/translationWizard/TranslationWizard').then((m) => ({ default: m.Wizard })))
 
 declare global {
   interface Window {
@@ -469,105 +470,109 @@ function App() {
                 toggleSelectedLanguage={toggleTargetLanguage}
                 confirm={confirm}
               />
-            ) : view === 'quick' ? (
-              <QuickTaskWizard
-                project={current}
-                busy={busy}
-                status={status}
-                settings={settings}
-                latestRun={latestRun}
-                onBack={() => setView('overview')}
-                onUploadFile={upload}
-                onInspectTargets={inspectTranslationTargets}
-                onStartQuickTask={startQuickTask}
-                onViewResult={(run) => { setView('overview'); setTab(run?.kind === 'qa' ? 'qa' : 'translation') }}
-              />
-            ) : view === 'announcement' ? (
-              <AnnouncementWizard
-                project={current}
-                busy={busy}
-                status={status}
-                selectedLanguage={selectedLanguage}
-                setSelectedLanguage={setSelectedLanguage}
-                assetArtifacts={assetArtifacts}
-                announcementText={announcementText}
-                setAnnouncementText={setAnnouncementText}
-                lookupResult={announcementLookupResult}
-                onUploadAsset={uploadAsset}
-                onUploadConstraint={uploadAnnouncementConstraint}
-                onUploadTermsFile={uploadAnnouncementTermsFile}
-                onCreateTask={createAnnouncementTask}
-                onTaskAction={runAnnouncementTaskAction}
-                onLookup={runAnnouncementLookup}
-                onBack={() => setView('overview')}
-                onUploadResponse={uploadAnnouncementResponse}
-                onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
-                onCancelAnnouncementHold={cancelAnnouncementCancelHold}
-                announcementCancelHoldTaskId={announcementCancelHoldTaskId}
-                initialTaskId={announcementFocusTaskId}
-                settings={settings}
-                confirm={confirm}
-              />
             ) : (
-              <Wizard
-                project={currentScoped || current}
-                step={step}
-                setStep={setStep}
-                intro={intro}
-                setIntro={setIntro}
-                sourceArtifact={sourceArtifact}
-                termArtifact={termArtifact}
-                qaArtifact={qaArtifact}
-                assetArtifacts={assetArtifacts}
-                latestRun={latestRun}
-                translationReadiness={translationReadiness}
-                sourceInputNotice={sourceInputNotice}
-                invalidSourceArtifactIds={invalidSourceArtifactIds}
-                glossaryBatches={glossaryBatches}
-                glossaryCandidates={glossaryCandidates}
-                qualityIssues={qualityIssues}
-                deliverables={deliverables}
-                generatedDeliveryRunId={generatedDelivery?.projectId === current.id ? generatedDelivery.runId : undefined}
-                generatedDeliveryFiles={generatedDelivery?.projectId === current.id ? generatedDelivery.files : []}
-                selectedLanguage={selectedLanguage}
-                setSelectedLanguage={setPrimaryLanguage}
-                selectedLanguages={selectedLanguages}
-                toggleSelectedLanguage={toggleTargetLanguage}
-                setSourceArtifact={selectSourceArtifact}
-                setTermArtifact={setTermArtifact}
-                setQaArtifact={selectQaArtifact}
-                glossaryPreview={glossaryPreview}
-                settings={settings}
-                status={status}
-                onBack={() => setView('overview')}
-                onUploadSource={uploadSourceWorkbook}
-                onUploadTerm={handleUploadTerm}
-                onUploadAsset={uploadProjectMaterial}
-                onAnalyze={runAnalysis}
-                onGlossaryExtract={runGlossaryExtract}
-                onGlossaryPreview={previewGlossaryImport}
-                onGlossaryImport={importGlossaryArtifact}
-                onTranslate={() => runTranslate('A')}
-                onTranslateQueue={() => startMultilingualTranslationQueue('T')}
-                onCancelTranslate={cancelTranslateRun}
-                onDirectQA={(artifact) => runDirectQA('QA', artifact)}
-                onDirectQAQueue={() => startMultilingualQAQueue('QA')}
-                onSkipQAArchive={skipQAArchive}
-                allowSkipQAArchive
-                onManualFixes={applyManualFixes}
-                onModelFixes={applyModelFixes}
-                onUploadTranslation={uploadTranslationWorkbook}
-                onCreateDelivery={createDeliveryPackage}
-                onCreateMergedDelivery={createMergedDeliveryPackage}
-                onFinishDelivery={finishWizardDelivery}
-                onFreq={() => setFreqOpen(true)}
-                onSaveHarness={saveHarness}
-                onUpdateCandidate={updateGlossaryCandidate}
-                onResolveCandidates={resolveGlossaryCandidates}
-                onTranslateMissingCandidates={translateMissingGlossaryCandidates}
-                busy={busy}
-                confirm={confirm}
-              />
+              <Suspense fallback={<span className="loading" />}>
+                {view === 'quick' ? (
+                  <QuickTaskWizard
+                    project={current}
+                    busy={busy}
+                    status={status}
+                    settings={settings}
+                    latestRun={latestRun}
+                    onBack={() => setView('overview')}
+                    onUploadFile={upload}
+                    onInspectTargets={inspectTranslationTargets}
+                    onStartQuickTask={startQuickTask}
+                    onViewResult={(run) => { setView('overview'); setTab(run?.kind === 'qa' ? 'qa' : 'translation') }}
+                  />
+                ) : view === 'announcement' ? (
+                  <AnnouncementWizard
+                    project={current}
+                    busy={busy}
+                    status={status}
+                    selectedLanguage={selectedLanguage}
+                    setSelectedLanguage={setSelectedLanguage}
+                    assetArtifacts={assetArtifacts}
+                    announcementText={announcementText}
+                    setAnnouncementText={setAnnouncementText}
+                    lookupResult={announcementLookupResult}
+                    onUploadAsset={uploadAsset}
+                    onUploadConstraint={uploadAnnouncementConstraint}
+                    onUploadTermsFile={uploadAnnouncementTermsFile}
+                    onCreateTask={createAnnouncementTask}
+                    onTaskAction={runAnnouncementTaskAction}
+                    onLookup={runAnnouncementLookup}
+                    onBack={() => setView('overview')}
+                    onUploadResponse={uploadAnnouncementResponse}
+                    onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
+                    onCancelAnnouncementHold={cancelAnnouncementCancelHold}
+                    announcementCancelHoldTaskId={announcementCancelHoldTaskId}
+                    initialTaskId={announcementFocusTaskId}
+                    settings={settings}
+                    confirm={confirm}
+                  />
+                ) : (
+                  <Wizard
+                    project={currentScoped || current}
+                    step={step}
+                    setStep={setStep}
+                    intro={intro}
+                    setIntro={setIntro}
+                    sourceArtifact={sourceArtifact}
+                    termArtifact={termArtifact}
+                    qaArtifact={qaArtifact}
+                    assetArtifacts={assetArtifacts}
+                    latestRun={latestRun}
+                    translationReadiness={translationReadiness}
+                    sourceInputNotice={sourceInputNotice}
+                    invalidSourceArtifactIds={invalidSourceArtifactIds}
+                    glossaryBatches={glossaryBatches}
+                    glossaryCandidates={glossaryCandidates}
+                    qualityIssues={qualityIssues}
+                    deliverables={deliverables}
+                    generatedDeliveryRunId={generatedDelivery?.projectId === current.id ? generatedDelivery.runId : undefined}
+                    generatedDeliveryFiles={generatedDelivery?.projectId === current.id ? generatedDelivery.files : []}
+                    selectedLanguage={selectedLanguage}
+                    setSelectedLanguage={setPrimaryLanguage}
+                    selectedLanguages={selectedLanguages}
+                    toggleSelectedLanguage={toggleTargetLanguage}
+                    setSourceArtifact={selectSourceArtifact}
+                    setTermArtifact={setTermArtifact}
+                    setQaArtifact={selectQaArtifact}
+                    glossaryPreview={glossaryPreview}
+                    settings={settings}
+                    status={status}
+                    onBack={() => setView('overview')}
+                    onUploadSource={uploadSourceWorkbook}
+                    onUploadTerm={handleUploadTerm}
+                    onUploadAsset={uploadProjectMaterial}
+                    onAnalyze={runAnalysis}
+                    onGlossaryExtract={runGlossaryExtract}
+                    onGlossaryPreview={previewGlossaryImport}
+                    onGlossaryImport={importGlossaryArtifact}
+                    onTranslate={() => runTranslate('A')}
+                    onTranslateQueue={() => startMultilingualTranslationQueue('T')}
+                    onCancelTranslate={cancelTranslateRun}
+                    onDirectQA={(artifact) => runDirectQA('QA', artifact)}
+                    onDirectQAQueue={() => startMultilingualQAQueue('QA')}
+                    onSkipQAArchive={skipQAArchive}
+                    allowSkipQAArchive
+                    onManualFixes={applyManualFixes}
+                    onModelFixes={applyModelFixes}
+                    onUploadTranslation={uploadTranslationWorkbook}
+                    onCreateDelivery={createDeliveryPackage}
+                    onCreateMergedDelivery={createMergedDeliveryPackage}
+                    onFinishDelivery={finishWizardDelivery}
+                    onFreq={() => setFreqOpen(true)}
+                    onSaveHarness={saveHarness}
+                    onUpdateCandidate={updateGlossaryCandidate}
+                    onResolveCandidates={resolveGlossaryCandidates}
+                    onTranslateMissingCandidates={translateMissingGlossaryCandidates}
+                    busy={busy}
+                    confirm={confirm}
+                  />
+                )}
+              </Suspense>
             )}
           </main>
         </div>

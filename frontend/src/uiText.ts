@@ -3,7 +3,7 @@
 // Dynamic backend-event copy stays in appText.ts; this file only holds text
 // that does not depend on parsing a backend message.
 
-export { announcementStatusLabel } from './components/announcement/AnnouncementWorkflow'
+export { announcementStatusLabel } from './domain/announcementText'
 
 export const OP_UPLOAD = '上传'
 export const OP_TRANSLATE = '翻译'

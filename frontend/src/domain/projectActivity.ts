@@ -1,4 +1,4 @@
-import { activeAnnouncementTasks } from '../components/announcement/AnnouncementWorkflow'
+import { activeAnnouncementTasks } from '../components/announcement/AnnouncementProjectPanel'
 import { languageSpec, normalizeLanguageCode } from '../languages'
 import { humanTaskStatus } from '../appText'
 import { getTranslationProgress } from './translationFlow'
