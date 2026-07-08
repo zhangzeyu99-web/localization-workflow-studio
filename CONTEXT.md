@@ -11,6 +11,25 @@
 - Large Text Pack: A language-table workload whose rows, target-language count, workbook count, or estimated target cells require deterministic gates beyond normal QA.
 - Delivery Readback: A post-generation check that reads the final output file and verifies target columns and non-empty target cells before exposing downloads.
 
+## workflow/localization Dual Role
+
+`workflow/localization/` is shared between the running product and agent-only
+tooling. Treat the two halves with different change discipline:
+
+- Product runtime dependencies: `scripts/run_translation_harness.py`,
+  `utils/quality_harness.py`, `utils/announcement_docx_harness.py`, and
+  `process_language.py`. The FastAPI backend invokes these as subprocesses
+  (see `backend/app/workflow/subprocess_runner.py` and its callers). Any
+  change here must be validated with the backend test suite
+  (`python -m pytest backend/tests -q`), not just the local
+  `workflow/localization/tests`.
+- Agent-only tooling: `utils/large_text_multilingual_gate.py`,
+  `utils/large_text_multilingual_runner.py`,
+  `utils/large_text_multilingual_retro.py`, `cli.py`, and
+  `workspace_runner.py`. These support Codex/agent-driven large-pack workflows
+  outside the product's request path and are not imported or subprocessed by
+  the backend at runtime.
+
 ## Architecture Terms
 
 - Module: Anything with an Interface and an Implementation.

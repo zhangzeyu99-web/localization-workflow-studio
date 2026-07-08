@@ -24,6 +24,58 @@ from .subprocess_runner import user_facing_error
 DELIVERED_WITH_ISSUES_SOURCE_TYPE = "delivered_with_issues"
 
 
+def _build_deliverable_summary(
+    *,
+    run_id: str,
+    task_code: str,
+    task_id: str,
+    task_type: str,
+    language: str,
+    created_at: str,
+    updated_at: str,
+    status: str,
+    processed_rows: int,
+    source_rows: int,
+    translated_rows: int,
+    provider: str,
+    model: str,
+    input_label: str,
+    qa_status: str,
+    qa_hard_errors: int,
+    qa_soft_warnings: int,
+    delivered_with_issues: bool,
+    files: dict[str, Any],
+    source_artifacts: dict[str, Any],
+) -> dict[str, Any]:
+    """Single construction point for the deliverable summary shape shared by
+    per-run, merged, and announcement deliveries. Keeps the ~20-key API
+    contract (see frontend/src/types.ts DeliverableTask) defined in exactly
+    one place instead of three hand-rolled dict literals."""
+    return {
+        "run_id": run_id,
+        "task_code": task_code,
+        "task_id": task_id,
+        "task_label": f"{task_code}-{task_id}",
+        "task_type": task_type,
+        "language": language,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "status": status,
+        "processed_rows": processed_rows,
+        "source_rows": source_rows,
+        "translated_rows": translated_rows,
+        "provider": provider,
+        "model": model,
+        "input_label": input_label,
+        "qa_status": qa_status,
+        "qa_hard_errors": qa_hard_errors,
+        "qa_soft_warnings": qa_soft_warnings,
+        "delivered_with_issues": delivered_with_issues,
+        "files": files,
+        "source_artifacts": source_artifacts,
+    }
+
+
 def list_project_deliverables(project_id: str) -> list[dict[str, Any]]:
     project = db.get_project(project_id)
     deliverables: list[dict[str, Any]] = []
@@ -63,36 +115,35 @@ def _merged_deliverable_summaries(project: dict[str, Any]) -> list[dict[str, Any
         languages = metadata.get("merged_languages") if isinstance(metadata.get("merged_languages"), list) else []
         skipped = metadata.get("skipped_languages") if isinstance(metadata.get("skipped_languages"), list) else []
         summaries.append(
-            {
-                "run_id": artifact["id"],
-                "task_code": "ALL",
-                "task_id": _short_run_id(artifact["id"]),
-                "task_label": f"ALL-{_short_run_id(artifact['id'])}",
-                "task_type": "多语言合并交付",
-                "language": " / ".join(languages) or "ALL",
-                "created_at": artifact.get("created_at", ""),
-                "updated_at": artifact.get("created_at", ""),
-                "status": "delivered",
-                "processed_rows": int(metadata.get("processed_rows") or 0),
-                "source_rows": int(metadata.get("source_rows") or 0),
-                "translated_rows": int(metadata.get("translated_rows") or 0),
-                "provider": "-",
-                "model": "-",
-                "input_label": str(metadata.get("input_label") or "多语言合并交付"),
-                "qa_status": "mixed" if skipped else "passed",
-                "qa_hard_errors": int(metadata.get("qa_hard_errors") or 0),
-                "qa_soft_warnings": 0,
-                "delivered_with_issues": int(metadata.get("qa_hard_errors") or 0) > 0,
-                "files": {
+            _build_deliverable_summary(
+                run_id=artifact["id"],
+                task_code="ALL",
+                task_id=_short_run_id(artifact["id"]),
+                task_type="多语言合并交付",
+                language=" / ".join(languages) or "ALL",
+                created_at=artifact.get("created_at", ""),
+                updated_at=artifact.get("created_at", ""),
+                status="delivered",
+                processed_rows=int(metadata.get("processed_rows") or 0),
+                source_rows=int(metadata.get("source_rows") or 0),
+                translated_rows=int(metadata.get("translated_rows") or 0),
+                provider="-",
+                model="-",
+                input_label=str(metadata.get("input_label") or "多语言合并交付"),
+                qa_status="mixed" if skipped else "passed",
+                qa_hard_errors=int(metadata.get("qa_hard_errors") or 0),
+                qa_soft_warnings=0,
+                delivered_with_issues=int(metadata.get("qa_hard_errors") or 0) > 0,
+                files={
                     "final": _artifact_delivery_file("merged_final", artifact),
                     "qa_summary": _artifact_delivery_file("qa_summary", summary_artifact) if summary_artifact else None,
                     "outputs": [],
                 },
-                "source_artifacts": {
+                source_artifacts={
                     "merged_delivery_workbook": artifact["id"],
                     "merged_delivery_summary": summary_id,
                 },
-            }
+            )
         )
     return summaries
 
@@ -142,38 +193,37 @@ def _announcement_deliverable_summaries(project: dict[str, Any]) -> list[dict[st
         source_rows = int(metadata.get("segment_count") or metadata.get("terms_count") or metadata.get("term_count") or 0)
         return_label = task.get("title") or _announcement_task_source_stem(task)
         summaries.append(
-            {
-                "run_id": package_artifact.get("run_id") or task["id"],
-                "task_code": "ANN",
-                "task_id": _short_run_id(task["id"]),
-                "task_label": f"ANN-{_short_run_id(task['id'])}",
-                "task_type": "公告任务",
-                "language": language_label,
-                "created_at": task.get("created_at", ""),
-                "updated_at": task.get("updated_at", ""),
-                "status": "delivered",
-                "processed_rows": source_rows,
-                "source_rows": source_rows,
-                "translated_rows": source_rows,
-                "provider": "-",
-                "model": "-",
-                "input_label": return_label,
-                "qa_status": "passed",
-                "qa_hard_errors": int(metadata.get("hard_blockers") or 0),
-                "qa_soft_warnings": 0,
-                "delivered_with_issues": bool(package_metadata.get("forced") or metadata.get("forced"))
+            _build_deliverable_summary(
+                run_id=package_artifact.get("run_id") or task["id"],
+                task_code="ANN",
+                task_id=_short_run_id(task["id"]),
+                task_type="公告任务",
+                language=language_label,
+                created_at=task.get("created_at", ""),
+                updated_at=task.get("updated_at", ""),
+                status="delivered",
+                processed_rows=source_rows,
+                source_rows=source_rows,
+                translated_rows=source_rows,
+                provider="-",
+                model="-",
+                input_label=return_label,
+                qa_status="passed",
+                qa_hard_errors=int(metadata.get("hard_blockers") or 0),
+                qa_soft_warnings=0,
+                delivered_with_issues=bool(package_metadata.get("forced") or metadata.get("forced"))
                 or int(package_metadata.get("hard_blockers") or metadata.get("hard_blockers") or 0) > 0,
-                "files": {
+                files={
                     "package": package_file,
                     "qa_summary": qa_file,
                     "outputs": output_files,
                 },
-                "source_artifacts": {
+                source_artifacts={
                     "announcement_delivery_package": package_artifact["id"],
                     "announcement_outputs": [item.get("artifact_id") for item in output_files if item.get("artifact_id")],
                     "announcement_qa_summary": qa_artifact_id,
                 },
-            }
+            )
         )
     return summaries
 
@@ -353,33 +403,32 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
     files = {"final": _delivery_file("final", final_path) if final_path.exists() else _expected_delivery_file("final", final_path)}
     if final_artifact["kind"] != "final_text":
         files["changes"] = _delivery_file("changes", changes_path) if changes_path.exists() else _expected_delivery_file("changes", changes_path)
-    return {
-        "run_id": run["id"],
-        "task_code": task_code,
-        "task_id": _short_run_id(task_run_id),
-        "task_label": f"{task_code}-{_short_run_id(task_run_id)}",
-        "task_type": _task_type_label(task_code),
-        "language": _visible_language_code(run.get("language") or "en"),
-        "created_at": run.get("created_at", ""),
-        "updated_at": run.get("updated_at", ""),
-        "status": run.get("status", ""),
-        "processed_rows": processed["processed_rows"] or int(metadata.get("translated_rows") or 0),
-        "source_rows": processed["source_rows"],
-        "translated_rows": processed["translated_rows"],
-        "provider": provider,
-        "model": model,
-        "input_label": input_label,
-        "qa_status": "passed" if qa_passed else "failed",
-        "qa_hard_errors": int(quality_summary.get("hard_errors") or 0),
-        "qa_soft_warnings": _soft_warning_count(quality_summary),
-        "delivered_with_issues": not qa_passed,
-        "files": files,
-        "source_artifacts": {
+    return _build_deliverable_summary(
+        run_id=run["id"],
+        task_code=task_code,
+        task_id=_short_run_id(task_run_id),
+        task_type=_task_type_label(task_code),
+        language=_visible_language_code(run.get("language") or "en"),
+        created_at=run.get("created_at", ""),
+        updated_at=run.get("updated_at", ""),
+        status=run.get("status", ""),
+        processed_rows=processed["processed_rows"] or int(metadata.get("translated_rows") or 0),
+        source_rows=processed["source_rows"],
+        translated_rows=processed["translated_rows"],
+        provider=provider,
+        model=model,
+        input_label=input_label,
+        qa_status="passed" if qa_passed else "failed",
+        qa_hard_errors=int(quality_summary.get("hard_errors") or 0),
+        qa_soft_warnings=_soft_warning_count(quality_summary),
+        delivered_with_issues=not qa_passed,
+        files=files,
+        source_artifacts={
             "qa_final_workbook": final_artifact["id"] if final_artifact["kind"] == "qa_final_workbook" else "",
             "final_text": final_artifact["id"] if final_artifact["kind"] == "final_text" else "",
             "qa_changes": changes_artifact["id"] if changes_artifact else "",
         },
-    }
+    )
 
 
 def _deliverable_final_artifact(run: dict[str, Any]) -> dict[str, Any] | None:
@@ -763,8 +812,8 @@ def _merge_language_column(target_path: Path, source_path: Path, language: str) 
             source_ws = source_wb[target_ws.title] if target_ws.title in source_wb.sheetnames else (source_wb.worksheets[0] if len(source_wb.worksheets) == 1 else None)
             if source_ws is None:
                 continue
-            target_headers = _header_map(target_ws)
-            source_headers = _header_map(source_ws)
+            target_headers = _delivery_header_map(target_ws)
+            source_headers = _delivery_header_map(source_ws)
             target_id_col = _first_header_index(target_headers, ["id"])
             source_id_col = _first_header_index(source_headers, ["id"])
             source_lang_col = _first_header_index(source_headers, [visible, *target_aliases(code)])
@@ -776,11 +825,11 @@ def _merge_language_column(target_path: Path, source_path: Path, language: str) 
                 target_ws.cell(row=1, column=target_lang_col).value = visible
             if target_id_col and source_id_col:
                 source_by_id = {
-                    _cell_text(source_ws.cell(row=row_index, column=source_id_col).value): source_ws.cell(row=row_index, column=source_lang_col).value
+                    _delivery_cell_text(source_ws.cell(row=row_index, column=source_id_col).value): source_ws.cell(row=row_index, column=source_lang_col).value
                     for row_index in range(2, source_ws.max_row + 1)
                 }
                 for row_index in range(2, target_ws.max_row + 1):
-                    row_id = _cell_text(target_ws.cell(row=row_index, column=target_id_col).value)
+                    row_id = _delivery_cell_text(target_ws.cell(row=row_index, column=target_id_col).value)
                     if not row_id or row_id not in source_by_id:
                         continue
                     value = source_by_id[row_id]
@@ -801,10 +850,14 @@ def _merge_language_column(target_path: Path, source_path: Path, language: str) 
     return copied
 
 
-def _header_map(ws: Any) -> dict[str, int]:
+# NOTE: 命名带 _delivery_ 前缀是刻意的。app/workflow/__init__.py 会把所有子模块的
+# 顶层符号合并注入共享命名空间，qa.py 也定义了 _header_map / _cell_text（且 _cell_text
+# 不做 strip），后加载的 qa 版本会静默覆盖本模块版本，导致合并交付时带空格的 ID
+# 匹配失败。改名以避开注入覆盖，保证交付合并始终使用 strip 语义。
+def _delivery_header_map(ws: Any) -> dict[str, int]:
     headers: dict[str, int] = {}
     for cell in ws[1]:
-        value = _cell_text(cell.value).lower()
+        value = _delivery_cell_text(cell.value).lower()
         if value:
             headers[value] = int(cell.column)
     return headers
@@ -812,13 +865,13 @@ def _header_map(ws: Any) -> dict[str, int]:
 
 def _first_header_index(headers: dict[str, int], aliases: list[str]) -> int | None:
     for alias in aliases:
-        key = _cell_text(alias).lower()
+        key = _delivery_cell_text(alias).lower()
         if key in headers:
             return headers[key]
     return None
 
 
-def _cell_text(value: Any) -> str:
+def _delivery_cell_text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 

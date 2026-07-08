@@ -1,3 +1,11 @@
+"""Agent-only large-text multilingual gate (preflight/cache-lint/apply-dry-run/readback-gate).
+
+`backend/app/workflow/large_text.py` is the product-side port of this module's
+readback-gate logic. Lint rule changes here (token/number/CJK detection, etc.)
+must be mirrored there, and `backend/tests/test_large_text_productization.py`
+parity tests must be extended to cover the change. Where the two sides
+disagree, this module is authoritative.
+"""
 from __future__ import annotations
 
 import argparse
