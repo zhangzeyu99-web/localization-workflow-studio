@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook, load_workbook
 
-from .. import db
+from .. import db, operator_context
 from ..delivery_naming import safe_delivery_name
 from ..download_urls import artifact_download_url
 from ..languages import PROJECT_LANGUAGE_ORDER, SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
@@ -444,7 +444,10 @@ def _archive_delivery_translation(project_id: str, run: dict[str, Any], final_ar
         language=run.get("language") or "en",
         source_type=source_type,
     )
-    db.add_event(run["id"], f"delivery translation archive updated: source_type={source_type} rows={archive_result['imported_count']}")
+    db.add_event(
+        run["id"],
+        operator_context.prefixed_message(f"delivery translation archive updated: source_type={source_type} rows={archive_result['imported_count']}"),
+    )
     return {**archive_result, "source_type": source_type}
 
 

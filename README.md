@@ -422,12 +422,13 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 - [GitHub 管理](docs/GITHUB_MANAGEMENT.md)
 - [更新日志](CHANGELOG.md)
 - [v1.0.0 正式版说明](docs/releases/v1.0.0.md)
+- [v1.1.0 正式版说明](docs/releases/v1.1.0.md)
 - [许可证](LICENSE)
 
 ## 版本
 
 
-当前版本：`1.0.3`
+当前版本：`1.1.0`
 
 - `VERSION`
 - `backend/app/main.py`

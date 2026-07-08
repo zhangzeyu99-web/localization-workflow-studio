@@ -12,12 +12,12 @@ from fastapi.responses import JSONResponse
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app import db
+    from app import db, operator_context
     from app.errors import UserFacingError, http_status_for_user_facing_error
     from app.workflow import reconcile_interrupted_background_jobs, user_facing_error
     from app.routers.api import router as api_router
 else:
-    from . import db
+    from . import db, operator_context
     from .errors import UserFacingError, http_status_for_user_facing_error
     from .workflow import reconcile_interrupted_background_jobs, user_facing_error
     from .routers.api import router as api_router
@@ -38,7 +38,7 @@ def _cors_origins() -> list[str]:
     return [*defaults, *[origin for origin in extra if origin not in defaults]]
 
 
-app = FastAPI(title="Localization Workflow Studio", version="1.0.3", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="1.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
@@ -61,6 +61,17 @@ async def _no_store_api_responses(request: Request, call_next):
     if request.url.path.startswith("/api/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.middleware("http")
+async def _capture_operator_header(request: Request, call_next):
+    """Make the optional ``X-Operator`` nickname available to this request's
+    handler (sync or async) via operator_context.current_operator(), without
+    threading it through every function signature. See operator_context.py
+    for why this is safe across FastAPI's sync-endpoint threadpool.
+    """
+    operator_context.set_current_operator(request.headers.get("x-operator"))
+    return await call_next(request)
 
 
 @app.exception_handler(UserFacingError)

@@ -2,6 +2,41 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.1.0 - 2026-07-09
+
+Multi-user concurrency (backend) and a frontend optimization pass, planned in `docs/superpowers/plans/2026-07-08-multiuser-concurrency.md` and `docs/superpowers/plans/2026-07-08-frontend-optimization.md`.
+
+Concurrency model — the workbench moves from one global "single long-text job" lock to per-project locking with a global cap, so a small team (2-10 people) can run tasks in different projects at the same time without stepping on each other:
+
+- Enabled SQLite WAL journal mode for safer concurrent reads/writes, and closed a read-modify-write metadata race (`db.merge_run_metadata`) across ~15 call sites in runs/QA/multilingual/announcement flows.
+- Evolved the single global job lease into a per-project lease `long_text:{project_id}`: different projects' translation/QA/announcement/model-fix jobs now run in parallel; the same project still serializes strictly (same guarantees for resumable runs, manifests, and harness files as before).
+- Added a global concurrency cap `max_concurrent_ai_jobs` (default 2, adjustable 1-4) so provider budget, memory, and SQLite write pressure stay bounded even with many projects. Rejections now distinguish two reasons with distinct 409 copy: "project busy" (same project already running a task) vs "capacity" (workbench-wide cap reached).
+- Added `GET /api/system/active-jobs`, returning every currently running job (lease name, job kind, project, start time) for UI surfaces and queueing hints.
+- Added a process-wide shared rate limiter so concurrent runs against the same provider/API key share one RPM/TPM budget instead of each assuming exclusive access.
+- Runs now snapshot `settings.local.json` once at start and use that snapshot throughout, so another user changing provider/preset mid-run no longer affects an already-started task.
+- Added file-level locking around per-project shared JSON state (`project_harness.json`, `improvement_suggestions.json`) to close an edit window between the API thread and a background job.
+- Project deletion is now refused with a clear 409 while a background job for that project is still active, instead of racing the job's file I/O.
+- Fixed a pre-existing lease-name mismatch in `cancel_translation_run` so cancellation targets the correct lease.
+- Added `scripts/concurrency_smoke.py`: an isolated-instance smoke test that runs two projects' translations in parallel, asserts both complete and are deliverable, asserts `/api/system/active-jobs` reports both running at once, asserts no `database is locked` errors, and asserts a third project is capacity-rejected once the default cap of 2 is reached.
+
+Frontend optimization (F1-F4, purely UI/structure — no API or business-logic changes):
+
+- **F1 (copy)**: added a centralized `uiText.ts` copy layer and operation-aware error fallback text; removed internal identifiers (status enums, field names, file paths, UUIDs, step numbers) from user-facing text; replaced native `window.alert`/`window.confirm` with an in-app `ConfirmModal`.
+- **F2 (structure)**: split the ~2500-line `main.tsx` monolith and the ~2100-line `TranslationWizard.tsx` into focused modal, project-overview, per-domain action hook, and per-step wizard files with no behavior change.
+- **F3 (performance)**: collapsed five overlapping polling loops behind shared hooks with `document.hidden` checks, in-flight de-duplication, and `AbortController`; paused the project-snapshot poll while a run is active; memoized hot-path components; code-split the three main wizard views; paginated run-history and project-activity lists.
+- **F4 (visual)**: introduced a CSS custom-property design-token layer (color palette, spacing scale, radii, type scale) in `styles.css`, consolidated repeated card selectors onto shared base classes, and added a small-screen (~640px) breakpoint alongside the existing 980px one.
+
+Active jobs panel (M4, frontend):
+
+- The header now polls `GET /api/system/active-jobs` (every 9s, `document.hidden`-aware) and shows a quiet badge only while jobs are running; clicking it opens a panel listing each active job's project name, task type, and relative start time.
+- The shared inline-status renderer now detects the `project_busy`/`capacity` 409 messages and appends a "查看活跃任务" action that opens the same panel, so a queued/rejected user can immediately see what is occupying the workbench.
+
+Deployment closeout (M5):
+
+- Replaced the "single instance, single task" constraint section in `docs/CLOUD_DEPLOYMENT.md` with a description of the new concurrency model (per-project lock, global cap, shared rate limiter, settings snapshot); kept the "single uvicorn worker, do not share SQLite across workers" constraint unchanged.
+- Added multi-user concurrency test items to `docs/STABILITY_TEST_LIST.md` (parallel translation across projects, same-project mutual exclusion, capacity rejection, active-jobs visibility, restart lease recovery, settings-change isolation, delete-while-active guard) and a `docs/FEATURE_MATRIX.md` row for the concurrency surface.
+- Version bump to 1.1.0 (MINOR: new user-visible concurrency capability) across `VERSION`, `backend/app/main.py`, `frontend/package.json`/`package-lock.json`, `README.md`; added `docs/releases/v1.1.0.md`.
+
 ## 1.0.4 - 2026-07-08
 
 - Split the three thousand-line agent-side localization modules with zero behavior change: `utils/quality_harness.py`, `utils/announcement_docx_harness.py`, and `process_language.py` now delegate to focused submodules (`quality_harness_rules/terms`, `announcement_docx_common/terms/prepare/apply`, `process_language_terms/review/outputs`) while keeping every public symbol re-exported for backend subprocess callers and tests.

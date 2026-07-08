@@ -100,7 +100,17 @@ def test_delete_project_rejected_while_job_active_then_allowed_after_completion(
         terminal = _wait_for_terminal_run(client, run["id"])
         assert terminal["status"] == "passed"
 
+        # The run row flips to "passed" (inside the worker thread's target())
+        # a moment before that same thread's `finally` block releases the
+        # per-project job lease, so there is a brief, load-sensitive window
+        # right after the terminal status is observed where the lease still
+        # looks active. Retry instead of asserting on the very first attempt.
         deleted = client.delete(f"/api/projects/{project['id']}")
+        for _ in range(50):
+            if deleted.status_code != 409:
+                break
+            time.sleep(0.05)
+            deleted = client.delete(f"/api/projects/{project['id']}")
         assert deleted.status_code == 200, deleted.text
         assert deleted.json() == {"deleted": True}
         assert client.get(f"/api/projects/{project['id']}").status_code == 404

@@ -16,6 +16,7 @@
 | 设置与供应商保护 | `test_formal_translation_is_blocked_without_configured_api_key`、`test_openai_provider_does_not_fallback_to_chat_completions` | `real project formal translation is blocked without configured API credential`、`announcement AI translation shows API reminder when provider is not configured` |
 | 多语言队列 | `test_start_multilingual_translation_creates_missing_child_runs`、`test_multilingual_qa_skips_languages_without_translated_input` | `new translation task exposes the full supported language set` |
 | 大文本产品化门禁（大语言表/多语言包在 Step 7 显示 preflight，翻译写入前跑 cache-lint，交付时跑 readback gate，并生成 retro artifact） | `backend/tests/test_large_text_productization.py`、`backend/tests/test_long_text_orchestration.py` | `frontend/e2e/studio-ui-flow.spec.ts`（`interrupted translation run resumes instead of creating a new run` 断言 `large-text-panel`） |
+| 多人并发（项目级锁 `long_text:{project_id}`、全局并发上限 `max_concurrent_ai_jobs`、`GET /api/system/active-jobs`、共享限流器、settings 快照、删除防护） | `backend/tests/test_concurrency_lease.py`、`backend/tests/test_shared_rate_limiter.py`、`backend/tests/test_shared_resource_protection.py`、`scripts/concurrency_smoke.py` | `frontend/e2e/studio-ui-flow.spec.ts`（`active jobs badge and panel show the running project name and task type`、`starting a second task on a busy project shows a queue hint that opens the active jobs panel`） |
 
 ## 重构默认门禁
 

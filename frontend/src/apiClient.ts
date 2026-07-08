@@ -1,3 +1,5 @@
+import { getOperatorName } from './operator'
+
 export const API = import.meta.env.VITE_API_BASE_URL || ''
 
 // Matches the two M2 per-project-lease/capacity 409 rejection texts (see the
@@ -82,10 +84,18 @@ export function apiErrorText(text: string, fallback: string, operation?: string)
   return sanitizeUserFacingError(text, undefined, operation)
 }
 
+function withOperatorHeader(init?: RequestInit): RequestInit | undefined {
+  const operator = getOperatorName()
+  if (!operator) return init
+  const headers = new Headers(init?.headers)
+  headers.set('X-Operator', operator)
+  return { ...init, headers }
+}
+
 export async function api<T>(path: string, init?: RequestInit, operation?: string): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`${API}${path}`, init)
+    response = await fetch(`${API}${path}`, withOperatorHeader(init))
   } catch (error) {
     throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error), undefined, operation))
   }

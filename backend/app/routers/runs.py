@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .. import db
+from .. import db, operator_context
 from ..ai_input_audit import run_ai_input_summary
 from ..jobs import (
     active_job_id_for_project,
@@ -71,7 +71,9 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
         "source_run_id": payload.source_run_id,
         "task_code": _resolve_task_code(payload),
     }
-    return db.insert_run(payload.project_id, payload.kind, language, metadata)
+    run = db.insert_run(payload.project_id, payload.kind, language, metadata)
+    db.add_event(run["id"], operator_context.prefixed_message(f"run created (kind={payload.kind})"))
+    return run
 
 
 @router.get("/api/runs")

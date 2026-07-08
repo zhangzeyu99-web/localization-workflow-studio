@@ -4,7 +4,7 @@ import hashlib
 import mimetypes
 import shutil
 from pathlib import Path
-from .. import db
+from .. import db, operator_context
 from ..ai_input_audit import project_ai_input_summary
 from ..config import (
     DATA_ROOT,
@@ -245,11 +245,18 @@ def delete_project(project_id: str) -> dict[str, bool]:
         )
     run_ids: list[str] = []
     existed = True
+    project_name = ""
     try:
+        project_name = db.get_project(project_id).get("name") or ""
         run_ids = [run["id"] for run in db.list_runs(project_id)]
         db.delete_project(project_id)
     except KeyError:
         existed = False
+    # delete_project() deletes this project's own run events in the same
+    # transaction, so a db.add_event() here would just be erased; record to
+    # the durable operator audit log instead (no-op if no nickname is set).
+    if existed:
+        operator_context.record_operator_audit(DATA_ROOT, "delete_project", {"project_id": project_id, "project_name": project_name})
     shutil.rmtree(DATA_ROOT / "projects" / project_id, ignore_errors=True)
     for run_id in run_ids:
         shutil.rmtree(DATA_ROOT / "runs" / run_id, ignore_errors=True)
