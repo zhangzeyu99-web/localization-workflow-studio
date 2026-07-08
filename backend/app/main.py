@@ -49,6 +49,20 @@ app.add_middleware(
 app.include_router(api_router)
 
 
+@app.middleware("http")
+async def _no_store_api_responses(request: Request, call_next):
+    """API responses must never be cached by browsers, proxies, or CDNs.
+
+    Without an explicit Cache-Control header, an intermediary CDN in front of
+    nginx may cache GET responses such as /api/version or project lists and
+    keep serving stale data after a redeploy.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/api/") and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.exception_handler(UserFacingError)
 async def _handle_user_facing_error(request: Request, exc: UserFacingError) -> JSONResponse:
     """Safety net: a UserFacingError escaping any route becomes a sanitized JSON error.
