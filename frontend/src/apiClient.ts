@@ -16,7 +16,19 @@ export function sanitizeUserFacingError(text: string, fallback?: string, operati
     return `\u5f53\u524d\u5165\u53e3\u4e0d\u652f\u6301 ${unsupported[1]} \u6587\u4ef6\u3002\u8bed\u8a00\u5305\u7ffb\u8bd1\u8bf7\u4e0a\u4f20 XLSX/XLS/CSV \u8bed\u8a00\u8868\uff1bTXT/DOCX \u957f\u6587\u672c\u8bf7\u4f7f\u7528\u516c\u544a\u7ffb\u8bd1/\u5916\u6587\u672c\u6d41\u7a0b\u3002`
   }
   if (/another long-text AI job is active/i.test(raw)) {
+    // Legacy pre-M2 message (single global lease); kept as a fallback in case
+    // an older backend build is still deployed alongside this frontend.
     return '\u5df2\u6709\u4e00\u4e2a\u957f\u6587\u672c AI \u4efb\u52a1\u6b63\u5728\u8fd0\u884c\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u6216\u5148\u53d6\u6d88\u540e\u518d\u7ee7\u7eed\u3002'
+  }
+  if (/该项目正在执行任务/.test(raw)) {
+    // Post-M2 per-project lease rejection; backend detail is already a
+    // complete, user-facing Chinese sentence (e.g. "该项目正在执行任务（翻译任务），
+    // 请等它完成或先取消"), so pass it through unless it grew unexpectedly long.
+    return raw.length <= 200 ? raw : '该项目正在执行任务，请等它完成或先取消。'
+  }
+  if (/工作台已有.*个任务在跑/.test(raw)) {
+    // Post-M2 global concurrency-limit rejection (max_concurrent_ai_jobs).
+    return raw.length <= 200 ? raw : '工作台并发任务已达上限，请稍后再试。'
   }
   if (/response\s+ids?\s+mismatch/i.test(raw)) {
     return 'AI 返回内容与原文行不匹配。请点击继续翻译重试当前批；如果重复出现，请检查 AI response 是否漏行、乱序或改了 ID。'

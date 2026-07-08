@@ -196,3 +196,58 @@ def test_reconcile_interrupted_background_jobs_clears_multiple_residual_leases()
 
     # No active jobs should be reported once every residual lease is interrupted.
     assert jobs.active_jobs() == []
+
+
+def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
+
+    with TestClient(app) as client:
+        project, run = _create_project_with_run(client, tmp_path, "Active Jobs Panel")
+        started = client.post(f"/api/runs/{run['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        assert started.status_code == 200, started.text
+
+        entry = None
+        for _ in range(40):
+            active = client.get("/api/system/active-jobs").json()
+            entry = next((item for item in active if item["project_id"] == project["id"]), None)
+            if entry:
+                break
+            time.sleep(0.05)
+        assert entry is not None
+        assert entry["job_id"] == f"run:{run['id']}"
+        assert entry["job_kind"] == "translation"
+        assert entry["project_name"] == "Active Jobs Panel"
+        assert entry["lease_name"] == f"long_text:{project['id']}"
+        assert entry["started_at"]
+
+        _wait_for_terminal_run(client, run["id"])
+
+
+def test_active_jobs_endpoint_reports_two_projects_running_concurrently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
+
+    with TestClient(app) as client:
+        project_a, run_a = _create_project_with_run(client, tmp_path, "Panel Concurrency A")
+        project_b, run_b = _create_project_with_run(client, tmp_path, "Panel Concurrency B")
+
+        started_a = client.post(f"/api/runs/{run_a['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        assert started_a.status_code == 200, started_a.text
+        started_b = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        assert started_b.status_code == 200, started_b.text
+
+        observed_both_running = False
+        for _ in range(40):
+            active = client.get("/api/system/active-jobs").json()
+            project_ids = {item["project_id"] for item in active}
+            if {project_a["id"], project_b["id"]}.issubset(project_ids):
+                observed_both_running = True
+                lease_names = {item["lease_name"] for item in active}
+                assert f"long_text:{project_a['id']}" in lease_names
+                assert f"long_text:{project_b['id']}" in lease_names
+                assert all(item["job_kind"] == "translation" for item in active)
+                break
+            time.sleep(0.05)
+        assert observed_both_running, "expected both projects' jobs to be reported by /api/system/active-jobs concurrently"
+
+        assert _wait_for_terminal_run(client, run_a["id"])["status"] == "passed"
+        assert _wait_for_terminal_run(client, run_b["id"])["status"] == "passed"

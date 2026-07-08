@@ -513,7 +513,7 @@ def merge_run_metadata(run_id: str, patch: dict[str, Any]) -> dict[str, Any]:
     Reads the current metadata_json and writes the merged result inside a single
     ``BEGIN IMMEDIATE`` transaction so concurrent writers on the same run cannot
     lose each other's keys (the read-modify-write races that plagued the old
-    ``metadata={**db.get_run(run_id).get("metadata", {}), ...}`` call sites).
+    ``metadata = {**db.get_run(run_id).get("metadata", {}), ...}`` call sites).
     """
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")

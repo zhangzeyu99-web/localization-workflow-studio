@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from .. import db
+from .. import jobs
 from ..config import (
     DATA_ROOT,
     load_settings,
@@ -184,6 +185,37 @@ def download_import_template(kind: str) -> FileResponse:
 @router.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     return public_settings()
+
+
+def _project_id_from_lease_name(lease_name: str) -> str:
+    prefix = "long_text:"
+    return lease_name[len(prefix):] if lease_name.startswith(prefix) else ""
+
+
+@router.get("/api/system/active-jobs")
+def get_active_jobs() -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for entry in jobs.active_jobs():
+        lease_name = str(entry.get("lease_name") or "")
+        job_id = str(entry.get("job_id") or "")
+        project_id = _project_id_from_lease_name(lease_name)
+        project_name = ""
+        if project_id:
+            try:
+                project_name = db.get_project(project_id)["name"]
+            except KeyError:
+                project_name = ""
+        result.append(
+            {
+                "lease_name": lease_name,
+                "job_id": job_id,
+                "job_kind": jobs.describe_job_kind(job_id),
+                "project_id": project_id,
+                "project_name": project_name,
+                "started_at": entry.get("started_at"),
+            }
+        )
+    return result
 
 
 @router.get("/api/languages")

@@ -776,6 +776,21 @@ def test_workflow_modules_do_not_use_legacy_common_star_imports() -> None:
         assert "ruff: noqa: F403,F405" not in text
 
 
+def test_no_read_modify_write_metadata_spread_pattern_regression() -> None:
+    """Guard against the N-5 race that motivated ``db.merge_run_metadata``:
+    a whole-dict ``metadata={**db.get_run(...).get("metadata", {}), ...}``
+    replace is a read-modify-write race under concurrent writers (M1 fixed
+    ~15 call sites; M2 raises the odds of concurrent writers by letting
+    different projects run in parallel, so this must stay at zero).
+    """
+    offenders: list[str] = []
+    for path in Path("backend/app").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "metadata={**" in text:
+            offenders.append(str(path))
+    assert not offenders, f"found read-modify-write metadata spread pattern in: {offenders}"
+
+
 def _assert_error_detail_is_safe(detail: str) -> None:
     assert detail.strip()
     assert "Traceback" not in detail
