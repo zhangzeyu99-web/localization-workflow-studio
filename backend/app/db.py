@@ -507,6 +507,28 @@ def update_run(run_id: str, status: str | None = None, metadata: dict[str, Any] 
         return get_run(run_id, conn=conn)
 
 
+def merge_run_metadata(run_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    """Atomically merge ``patch`` into a run's metadata (shallow, top-level keys).
+
+    Reads the current metadata_json and writes the merged result inside a single
+    ``BEGIN IMMEDIATE`` transaction so concurrent writers on the same run cannot
+    lose each other's keys (the read-modify-write races that plagued the old
+    ``metadata={**db.get_run(run_id).get("metadata", {}), ...}`` call sites).
+    """
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT metadata_json FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        current_metadata = json.loads(row["metadata_json"] or "{}")
+        merged = {**current_metadata, **(patch or {})}
+        conn.execute(
+            "UPDATE runs SET metadata_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(merged, ensure_ascii=False), now_iso(), run_id),
+        )
+        return merged
+
+
 def list_runs(project_id: str | None = None) -> list[dict[str, Any]]:
     with connect() as conn:
         if project_id:
@@ -647,6 +669,22 @@ def update_announcement_task(
             for language in task["selected_languages"]:
                 _upsert_announcement_task_language(conn, task_id, task["project_id"], language, {"status": "draft", "current_step": task["current_step"], "metadata": {}})
         return get_announcement_task(task_id, conn=conn)
+
+
+def merge_announcement_task_metadata(task_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    """Same atomic merge as ``merge_run_metadata``, for the announcement_tasks table."""
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT metadata_json FROM announcement_tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        current_metadata = json.loads(row["metadata_json"] or "{}")
+        merged = {**current_metadata, **(patch or {})}
+        conn.execute(
+            "UPDATE announcement_tasks SET metadata_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(merged, ensure_ascii=False), now_iso(), task_id),
+        )
+        return merged
 
 
 def upsert_announcement_task_language(

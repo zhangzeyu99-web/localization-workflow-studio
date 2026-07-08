@@ -420,11 +420,9 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
             language=run.get("language") or "en",
             source_type="qa_passed",
         )
-    db.update_run(
+    db.merge_run_metadata(
         run_id,
-        status=status,
-        metadata={
-            **metadata,
+        {
             "task_origin": metadata.get("task_origin") or "direct_import",
             "input_artifacts": input_artifacts,
             "quality": qa_result["quality"],
@@ -434,6 +432,7 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
             "translation_archive": archive_result,
         },
     )
+    db.update_run(run_id, status=status)
     return {"run": db.get_run(run_id), "artifacts": qa_result["artifacts"], "quality_summary": qa_result["quality_summary"]}
 
 

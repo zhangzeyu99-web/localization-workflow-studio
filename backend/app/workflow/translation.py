@@ -58,62 +58,34 @@ def _translation_preflight_blocker(
     input_path = Path(input_artifact["path"])
     if _is_quick_text_path(input_path) and metadata.get("task_origin") != "quick_task":
         reason = _friendly_unsupported_language_file_message(input_path.suffix)
-        db.update_run(
-            run_id,
-            status="needs_input",
-            metadata={
-                **metadata,
-                "reason": reason,
-                "translation_readiness": readiness,
-            },
-        )
+        db.merge_run_metadata(run_id, {"reason": reason, "translation_readiness": readiness})
+        db.update_run(run_id, status="needs_input")
         db.add_event(run_id, reason)
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
     if readiness.get("reason") == "unsupported_file":
         reason = _friendly_unsupported_language_file_message(input_path.suffix)
-        db.update_run(
-            run_id,
-            status="needs_input",
-            metadata={
-                **metadata,
-                "reason": reason,
-                "translation_readiness": readiness,
-            },
-        )
+        db.merge_run_metadata(run_id, {"reason": reason, "translation_readiness": readiness})
+        db.update_run(run_id, status="needs_input")
         db.add_event(run_id, reason)
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
     if readiness.get("reason") == "invalid_id_rows":
         reason = "language table ID column must be present and non-empty before translation or QA"
-        db.update_run(
-            run_id,
-            status="needs_input",
-            metadata={
-                **metadata,
-                "reason": reason,
-                "translation_readiness": readiness,
-            },
-        )
+        db.merge_run_metadata(run_id, {"reason": reason, "translation_readiness": readiness})
+        db.update_run(run_id, status="needs_input")
         db.add_event(run_id, f"translation skipped: {reason}")
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
     if readiness.get("ready_for_qa"):
-        db.update_run(
+        db.merge_run_metadata(
             run_id,
-            status="needs_input",
-            metadata={
-                **metadata,
-                "reason": "input already contains target translations; run QA instead",
-                "translation_readiness": readiness,
-            },
+            {"reason": "input already contains target translations; run QA instead", "translation_readiness": readiness},
         )
+        db.update_run(run_id, status="needs_input")
         db.add_event(run_id, "translation skipped: input already contains target translations; run QA instead")
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
     effective_provider = normalize_provider_name(settings.get("provider"))
     if effective_provider in REAL_PROVIDERS and not settings.get("api_key"):
-        db.update_run(
-            run_id,
-            status="needs_input",
-            metadata={**metadata, "reason": f"{effective_provider} api_key is required for formal translation"},
-        )
+        db.merge_run_metadata(run_id, {"reason": f"{effective_provider} api_key is required for formal translation"})
+        db.update_run(run_id, status="needs_input")
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
     return None
 
@@ -227,21 +199,15 @@ def _translation_term_audit(project_id: str, language: str, glossary_snapshot: d
 def _pause_for_unconfirmed_terms(run_id: str, metadata: dict[str, Any], term_audit: dict[str, Any], request: Any) -> dict[str, Any] | None:
     if term_audit.get("warning") == "selected_term_artifact_empty":
         reason = "已选择本次术语表，但没有读取到可用术语；请检查术语表格式和目标语言列，或返回 STEP 5 重新生成/确认术语。"
-        db.update_run(
-            run_id,
-            status="needs_input",
-            metadata={**metadata, "reason": "selected_term_artifact_empty", "user_message": reason, "term_audit": term_audit},
-        )
+        db.merge_run_metadata(run_id, {"reason": "selected_term_artifact_empty", "user_message": reason, "term_audit": term_audit})
+        db.update_run(run_id, status="needs_input")
         db.add_event(run_id, reason, level="warning")
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
     if not term_audit.get("needs_confirmation") or bool(getattr(request, "confirm_term_gap", False)):
         return None
     reason = "已扫描到候选术语，但还没有确认加入项目术语库；本次翻译不会使用这些候选术语。请先在 STEP 5 确认术语，或明确选择继续无术语翻译。"
-    db.update_run(
-        run_id,
-        status="needs_input",
-        metadata={**metadata, "reason": "glossary_candidates_not_confirmed", "user_message": reason, "term_audit": term_audit},
-    )
+    db.merge_run_metadata(run_id, {"reason": "glossary_candidates_not_confirmed", "user_message": reason, "term_audit": term_audit})
+    db.update_run(run_id, status="needs_input")
     db.add_event(run_id, reason, level="warning")
     return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
 
@@ -254,7 +220,8 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
     input_artifact = db.get_artifact(metadata["input_artifact_id"])
     if request.provider and str(request.provider).strip() == TEST_FAKE_PROVIDER and not test_provider_enabled():
         reason = "测试 provider 未启用；正式任务请使用已配置的 GPT / Claude API。"
-        db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason})
+        db.merge_run_metadata(run_id, {"reason": reason})
+        db.update_run(run_id, status="needs_input")
         db.add_event(run_id, reason)
         return {"run": db.get_run(run_id), "artifacts": [], "quality": None}
     settings, batch_size = _translation_settings_and_batch_size(request, metadata)
@@ -348,10 +315,9 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             origin="generated",
             metadata={"mode": large_text_mode, "large_pack": large_text_preflight["large_pack"]},
         )
-        db.update_run(
+        db.merge_run_metadata(
             run_id,
-            metadata={
-                **db.get_run(run_id).get("metadata", {}),
+            {
                 "large_text": {
                     "mode": large_text_mode,
                     "preflight": large_text_preflight,
@@ -360,8 +326,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             },
         )
         term_audit = _translation_term_audit(project["id"], language, glossary_snapshot, rows)
-        current_metadata = db.get_run(run_id).get("metadata", {})
-        db.update_run(run_id, metadata={**current_metadata, "term_audit": term_audit})
+        db.merge_run_metadata(run_id, {"term_audit": term_audit})
         paused = _pause_for_unconfirmed_terms(run_id, db.get_run(run_id).get("metadata", {}), term_audit, request)
         if paused is not None:
             return paused
@@ -416,16 +381,8 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             large_text_state["cache_lint"]["status"] = "skipped"
             large_text_state["cache_lint"]["reason"] = "not_large_pack"
         if should_enforce_cache_lint and not cache_lint["ok_to_apply"]:
-            current_for_lint = db.get_run(run_id)
-            db.update_run(
-                run_id,
-                status="failed",
-                metadata={
-                    **current_for_lint.get("metadata", {}),
-                    "large_text": large_text_state,
-                    "error": "大文本门禁未通过，未写入最终 workbook。",
-                },
-            )
+            db.merge_run_metadata(run_id, {"large_text": large_text_state, "error": "大文本门禁未通过，未写入最终 workbook。"})
+            db.update_run(run_id, status="failed")
             db.add_event(run_id, f"large text cache lint failed: hard_blockers={cache_lint['hard_blockers']}", level="error")
             return {
                 "run": db.get_run(run_id),
@@ -433,7 +390,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
                 "quality": None,
                 "quality_summary": {"passed": False, "hard_errors": cache_lint["hard_blockers"]},
             }
-        db.update_run(run_id, metadata={**db.get_run(run_id).get("metadata", {}), "large_text": large_text_state})
+        db.merge_run_metadata(run_id, {"large_text": large_text_state})
 
         db.add_event(run_id, "applying translation response and running strict harness validation")
         apply_args = [
@@ -534,11 +491,9 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         )
         large_text_state["retro_artifact_id"] = retro_artifact["id"]
         artifacts.append(retro_artifact)
-        db.update_run(
+        db.merge_run_metadata(
             run_id,
-            status=status,
-            metadata={
-                **final_metadata,
+            {
                 "translation_progress": final_progress,
                 "task_origin": metadata.get("task_origin") or "translation_run",
                 "input_artifacts": input_artifacts,
@@ -560,6 +515,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
                 "large_text": large_text_state,
             },
         )
+        db.update_run(run_id, status=status)
         return {
             "run": db.get_run(run_id),
             "artifacts": artifacts,
@@ -572,7 +528,8 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         db.add_event(run_id, friendly, level="error")
         failed_metadata = db.get_run(run_id).get("metadata", {})
         status = "canceled" if str(exc) == "translation canceled" else "failed"
-        db.update_run(run_id, status=status, metadata={**failed_metadata, "translation_progress": _terminal_translation_progress(failed_metadata.get("translation_progress"), status), "error": friendly})
+        db.merge_run_metadata(run_id, {"translation_progress": _terminal_translation_progress(failed_metadata.get("translation_progress"), status), "error": friendly})
+        db.update_run(run_id, status=status)
         if isinstance(exc, UserFacingWorkflowError):
             raise
         raise UserFacingWorkflowError(friendly) from exc
@@ -583,13 +540,13 @@ def run_translate_sync(run_id: str, request: Any, cancel_event: Any | None = Non
 
 
 def cancel_translation_run(run_id: str) -> dict[str, Any]:
-    run = db.get_run(run_id)
+    db.get_run(run_id)
     work_dir = run_dir(run_id) / "translation"
     work_dir.mkdir(parents=True, exist_ok=True)
     _translation_cancel_path(work_dir).write_text(db.now_iso(), encoding="utf-8")
     db.cancel_job_lease("long_text", run_id)
-    metadata = run.get("metadata", {})
-    db.update_run(run_id, status="canceled", metadata={**metadata, "cancel_requested_at": db.now_iso()})
+    db.merge_run_metadata(run_id, {"cancel_requested_at": db.now_iso()})
+    db.update_run(run_id, status="canceled")
     db.add_event(run_id, "translation cancel requested")
     return db.get_run(run_id)
 
@@ -631,18 +588,20 @@ def reconcile_interrupted_background_jobs() -> dict[str, int]:
     announcement_tasks = 0
     for run in db.list_runs():
         if run.get("kind") == "translation" and run.get("status") in {"queued", "running"}:
-            metadata = dict(run.get("metadata") or {})
-            metadata["reason"] = "background_job_interrupted"
-            metadata["interrupted_at"] = db.now_iso()
-            db.update_run(run["id"], status="needs_input", metadata=metadata)
+            db.merge_run_metadata(run["id"], {"reason": "background_job_interrupted", "interrupted_at": db.now_iso()})
+            db.update_run(run["id"], status="needs_input")
             db.add_event(run["id"], "background translation job was interrupted; resume from saved batches")
             translation_runs += 1
         elif run.get("kind") != "translation" and run.get("status") in {"queued", "running"}:
-            metadata = dict(run.get("metadata") or {})
-            metadata["reason"] = "background_job_interrupted"
-            metadata["interrupted_at"] = db.now_iso()
-            metadata["error"] = "后台任务已中断，请重新运行当前步骤。"
-            db.update_run(run["id"], status="failed", metadata=metadata)
+            db.merge_run_metadata(
+                run["id"],
+                {
+                    "reason": "background_job_interrupted",
+                    "interrupted_at": db.now_iso(),
+                    "error": "后台任务已中断，请重新运行当前步骤。",
+                },
+            )
+            db.update_run(run["id"], status="failed")
             db.add_event(run["id"], "background local workflow job was interrupted; rerun the current step", level="warning")
             local_runs += 1
     for project in db.list_projects():

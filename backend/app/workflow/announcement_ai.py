@@ -256,7 +256,8 @@ def _save_announcement_terms(task_id: str, rows: list[dict[str, Any]], languages
     for language in languages:
         missing = sum(1 for row in rows if not str((row.get("translations") or {}).get(language) or "").strip())
         db.upsert_announcement_task_language(task_id, project_id, language, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], metadata={"terms": len(rows), "missing_terms": missing})
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary, "task_id": task_id})
+    db.merge_run_metadata(run["id"], {"summary": summary, "task_id": task_id})
+    db.update_run(run["id"], status="passed")
     from .announcement import _hydrate_announcement_task
 
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
