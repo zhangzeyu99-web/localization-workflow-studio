@@ -331,4 +331,5 @@ class SettingsUpdate(BaseModel):
     max_batch_input_tokens: int | None = None
     api_budget_warning_tokens: int | None = None
     max_batch_attempts: int | None = None
+    max_concurrent_ai_jobs: int | None = None
     multimodal: dict[str, bool] | None = None

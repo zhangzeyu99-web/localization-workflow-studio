@@ -739,18 +739,23 @@ def test_cancel_translation_run_matches_run_prefixed_lease_job_id() -> None:
     """Regression test: routers/runs.py stores the lease under job_id=f"run:{run_id}",
     so cancel_translation_run must cancel that same job_id, not the bare run_id
     (which never matches and previously left the lease's cancel_requested unset).
+
+    Since M2, the lease name is project-scoped (``long_text:{project_id}``)
+    rather than the single global ``long_text`` name.
     """
     import app.workflow.translation as translation
+    from app.jobs import lease_name_for_project
 
     project = db.insert_project("cancel lease matching", "QA", "")
     run = db.insert_run(project["id"], "translation", "en", metadata={})
     run_id = run["id"]
+    lease_name = lease_name_for_project(project["id"])
 
-    assert db.acquire_job_lease("long_text", f"run:{run_id}")
+    assert db.acquire_job_lease(lease_name, f"run:{run_id}")
 
     translation.cancel_translation_run(run_id)
 
-    lease = db.get_job_lease("long_text")
+    lease = db.get_job_lease(lease_name)
     assert lease["job_id"] == f"run:{run_id}"
     assert lease["cancel_requested"] is True
 
@@ -769,6 +774,21 @@ def test_workflow_modules_do_not_use_legacy_common_star_imports() -> None:
         text = path.read_text(encoding="utf-8")
         assert "from .common import *" not in text
         assert "ruff: noqa: F403,F405" not in text
+
+
+def test_no_read_modify_write_metadata_spread_pattern_regression() -> None:
+    """Guard against the N-5 race that motivated ``db.merge_run_metadata``:
+    a whole-dict ``metadata={**db.get_run(...).get("metadata", {}), ...}``
+    replace is a read-modify-write race under concurrent writers (M1 fixed
+    ~15 call sites; M2 raises the odds of concurrent writers by letting
+    different projects run in parallel, so this must stay at zero).
+    """
+    offenders: list[str] = []
+    for path in Path("backend/app").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "metadata={**" in text:
+            offenders.append(str(path))
+    assert not offenders, f"found read-modify-write metadata spread pattern in: {offenders}"
 
 
 def _assert_error_detail_is_safe(detail: str) -> None:

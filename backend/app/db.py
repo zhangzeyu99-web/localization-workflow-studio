@@ -513,7 +513,7 @@ def merge_run_metadata(run_id: str, patch: dict[str, Any]) -> dict[str, Any]:
     Reads the current metadata_json and writes the merged result inside a single
     ``BEGIN IMMEDIATE`` transaction so concurrent writers on the same run cannot
     lose each other's keys (the read-modify-write races that plagued the old
-    ``metadata={**db.get_run(run_id).get("metadata", {}), ...}`` call sites).
+    ``metadata = {**db.get_run(run_id).get("metadata", {}), ...}`` call sites).
     """
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -1751,6 +1751,21 @@ def get_job_lease(name: str) -> dict[str, Any] | None:
         payload["cancel_requested"] = bool(payload["cancel_requested"])
         payload["metadata"] = json.loads(payload.pop("metadata_json") or "{}")
         return payload
+
+
+def list_job_leases(status: str | None = None) -> list[dict[str, Any]]:
+    with connect() as conn:
+        if status:
+            rows = conn.execute("SELECT * FROM job_leases WHERE status = ? ORDER BY name", (status,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM job_leases ORDER BY name").fetchall()
+    result = []
+    for row in rows:
+        payload = dict(row)
+        payload["cancel_requested"] = bool(payload["cancel_requested"])
+        payload["metadata"] = json.loads(payload.pop("metadata_json") or "{}")
+        result.append(payload)
+    return result
 
 
 def mark_running_job_leases_interrupted() -> int:

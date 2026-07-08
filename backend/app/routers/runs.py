@@ -3,7 +3,7 @@ from __future__ import annotations
 from .. import db
 from ..ai_input_audit import run_ai_input_summary
 from ..jobs import (
-    active_job_id,
+    active_job_id_for_project,
     cancel_singleton_job,
     start_singleton_job,
 )
@@ -23,6 +23,7 @@ from ..workflow import (
     user_facing_error,
 )
 from .shared import (
+    _job_conflict_detail,
     _resolve_task_code,
     _validate_run_input_artifact,
 )
@@ -134,10 +135,11 @@ def _start_translation_background(run_id: str, payload: TranslateRequest) -> dic
         raise HTTPException(status_code=404, detail="run not found") from exc
     if run["kind"] != "translation":
         raise HTTPException(status_code=400, detail="run is not a translation run")
-    active = active_job_id()
+    project_id = run["project_id"]
+    active = active_job_id_for_project(project_id)
     job_id = f"run:{run_id}"
     if active and active != job_id:
-        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active}")
+        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
     if run["status"] == "running" and active == job_id:
         return get_run(run_id)
     db.merge_run_metadata(run_id, {"queued_at": db.now_iso()})
@@ -155,12 +157,12 @@ def _start_translation_background(run_id: str, payload: TranslateRequest) -> dic
             except Exception:
                 pass
 
-    started, active_conflict = start_singleton_job(job_id, worker)
-    if not started and active_conflict:
+    started, conflict = start_singleton_job(project_id, job_id, worker)
+    if not started and conflict:
         run = db.get_run(run_id)
-        db.merge_run_metadata(run_id, {"queue_error": f"active job: {active_conflict}"})
+        db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
         db.update_run(run_id, status=run.get("status") or "created")
-        raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active_conflict}")
+        raise HTTPException(status_code=409, detail=_job_conflict_detail(conflict))
     db.add_event(run_id, "translation background job started")
     return get_run(run_id)
 
@@ -178,7 +180,8 @@ def translate_resume(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
 @router.post("/api/runs/{run_id}/translate/cancel")
 def translate_cancel(run_id: str) -> dict[str, Any]:
     try:
-        cancel_singleton_job(f"run:{run_id}")
+        run = db.get_run(run_id)
+        cancel_singleton_job(run["project_id"], f"run:{run_id}")
         cancel_translation_run(run_id)
         return get_run(run_id)
     except KeyError as exc:

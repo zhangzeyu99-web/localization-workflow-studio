@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 from .. import db
 from ..delivery_naming import safe_filename
 from ..download_urls import attach_delivery_item_downloads
+from ..jobs import describe_job
 from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from ..schemas import (
     RunCreate,
@@ -19,6 +20,21 @@ from ..workflow import (
     list_announcement_tasks,
     user_facing_error,
 )
+
+
+def _job_conflict_detail(reason: dict[str, Any] | None) -> str:
+    """Render a structured job-start rejection (from jobs.start_singleton_job)
+    into the 409 detail text shown to the user.
+    """
+    payload = reason or {}
+    if payload.get("reason") == "capacity":
+        limit = payload.get("limit")
+        active_count = payload.get("active_count")
+        return f"工作台已有 {active_count} 个任务在跑（上限 {limit}），请稍后再试"
+    active_job_id = str(payload.get("active_job_id") or "")
+    job_label = describe_job(active_job_id) if active_job_id else "其他任务"
+    return f"该项目正在执行任务（{job_label}），请等它完成或先取消"
+
 
 def _query_language(language: str | None) -> str | None:
     if not language:
