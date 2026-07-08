@@ -14,6 +14,7 @@
 | 交付包 | `test_delivery_package_contains_only_task_outputs`、`test_delivery_filename_sanitizes_invalid_project_name_without_double_spaces`、`test_merged_delivery_combines_passed_language_outputs` | `delivery empty state routes to next actions`、`user can explicitly skip QA and archive an existing translated language table` |
 | 设置与供应商保护 | `test_formal_translation_is_blocked_without_configured_api_key`、`test_openai_provider_does_not_fallback_to_chat_completions` | `real project formal translation is blocked without configured API credential`、`announcement AI translation shows API reminder when provider is not configured` |
 | 多语言队列 | `test_start_multilingual_translation_creates_missing_child_runs`、`test_multilingual_qa_skips_languages_without_translated_input` | `new translation task exposes the full supported language set` |
+| 大文本产品化门禁（大语言表/多语言包在 Step 7 显示 preflight，翻译写入前跑 cache-lint，交付时跑 readback gate，并生成 retro artifact） | `backend/tests/test_large_text_productization.py`、`backend/tests/test_long_text_orchestration.py` | `frontend/e2e/studio-ui-flow.spec.ts`（`interrupted translation run resumes instead of creating a new run` 断言 `large-text-panel`） |
 
 ## 重构默认门禁
 

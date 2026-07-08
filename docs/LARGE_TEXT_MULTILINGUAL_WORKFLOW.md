@@ -88,3 +88,10 @@ python scripts\run_large_text_multilingual_retro.py `
 - 单次任务耗时超过一小时时，retro 自动触发长任务复盘关注；这不代表任务有问题，只要求检查耗时是否符合规模、是否有失败/重试/跳过门禁/意外修复，以及是否存在值得沉淀的最小优化。
 - 长任务复盘用于持续改进，不用于扩大流程；重复出现或可机器检查的问题才沉淀为测试、gate 或文档，偶发问题只记录原因和处理结果。
 - 产品后端已有多语言队列和每语言 child run，不应把本地 Agent manifest 当成产品运行状态源。
+
+## 产品工作台内置能力
+
+- 工作台翻译 run 会在 workpack 生成后写入 `large_text_preflight` artifact，并在 run metadata 的 `large_text.preflight` 暴露规模、长文本数量、目标语言数量和推荐分片。
+- 当 `large_text_mode=auto` 且检测为 large pack 时，工作台在写入最终 workbook 前执行 `large_text_cache_lint`。未通过时保留批次和 AI 响应，但不写入最终 workbook。
+- 交付生成会执行 `delivery_readback_gate`，读回本次生成的最终文件，阻断目标列缺失和空目标单元格。
+- 工作台生成的 `large_text_retro` 只记录 host/path/model/provider/protocol 和门禁结果，不写入 `api_key`。
