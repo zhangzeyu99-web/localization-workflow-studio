@@ -56,6 +56,39 @@ Fable5 主线程接手外部会话遗留的大文本产品化工作（plan: 2026
 
 嵌入式 glossary extractor 与独立仓 v0.3.0 对比：仅 Windows UTF-8 stdio 加固差异，按计划保留，不覆盖。
 
+## Optimization Closeout (2026-07-08 16:45–18:00)
+
+架构检视报告（architecture-review-2026-07-08.md）优化项收口记录。执行方式：主线程（Fable5）调度，两个 Sonnet 5 后台子 agent 在隔离 worktree（独立 TEMP/端口）并行执行，串行推送。
+
+### 收口项与证据
+
+| 项 | 处置 | 验证 | Commit |
+|---|---|---|---|
+| E-剩余+N-7 大文本产品化收尾 | 本轮主线程完成（见 Large-Text Takeover 节） | 全量 186 + e2e 22/22 | fd9a0f3 及之前 |
+| N-1 同名覆盖 bug（P1） | `_cell_text`/`_header_map` 改名 `_delivery_*` 恢复 strip 语义；新增 AST 守卫测试 test_workflow_namespace_guard.py（9 组重名逐一判定：1 真 bug、10 条白名单等价拷贝，白名单带源码一致性校验）+ 含空格 ID 合并回归测试 | 聚焦 116 passed；全量 189 passed（基线 186+3 新测试） | 98a64ee (merge) |
+| N-2 交付摘要 shape 三处手写 | 新增 `_build_deliverable_summary` 单一构造入口，三处调用统一，输出逐字段不变 | 同上 | e755345 |
+| N-3 单任务约束 | 按报告结论代码不动，约束写入 CLOUD_DEPLOYMENT.md | n/a | 05f4fbc |
+| N-6 工具层双重角色 | CONTEXT.md 增加 Dual Role 节（runtime harness vs agent-only） | n/a | 32ded74 |
+| N-8 双实现 parity 契约 | gate 侧文件头补 parity 契约说明（product 侧已有） | n/a | 32ded74 |
+| 上游同步试跑（U3） | 判定 U3 小同步：glossary 文档/资产补齐（修复 README 坏链）、localization requirements 补 python-docx、补公告 docx 测试；副本领先部分不反向覆盖 | 四条 ITERATION.md 契约 CLI 冒烟全过；上游套件 154+44；parity 8；全量 186 | c6e78e4 (merge) |
+| 上游流程文档修订 | 试跑暴露 5 处流程缺陷全部落档：基线套件分目录执行、diff 先 git archive 去噪、副本领先处置规则、同步 commit 固定格式、worktree 隔离推荐 | n/a | 8b33cb2 |
+
+### 收口过程中的问题（先于成果记录）
+
+1. 主线程一次 Await 中断连带断开两个子 agent 流，且遗留孤儿 pytest 进程锁住共享 lws-test-data SQLite，导致恢复后 parity 测试 2 个 setup 错误——清进程+隔离重跑通过。教训：并行子 agent 必须隔离 TEMP（本轮已做），中断恢复时先清理遗留进程。
+2. 流程文档初版的验证命令（仓库根跑 workflow 套件）实际跑不通，靠残留 PYTHONPATH 掩盖；试跑清环境后才暴露。已修订文档。
+3. 上游 localization 工作树有 30 个未提交 WIP 文件，diff 方向易失真；已把"只认已提交内容 + git archive 快照"写入流程。
+
+### 明确不做/待触发项
+
+- N-4（db.py glossary 规则上移）：下次改术语功能时顺手拆。
+- N-5（run metadata 并发合并）：出现 metadata 丢失事故前不动。
+- N-3 代码（任务锁粒度）：云端多用户成为真实需求时再演进。
+- C（provider readiness 单一信号）：下次触碰任一 readiness seam 时顺手收。
+- F（main.tsx 拆分）：extract-on-touch，不立项。
+
+最终状态：master == origin/master @ 98a64ee，工作区干净，临时 worktree/分支/TEMP 目录全部清理。
+
 ## Model Budget Notes
 
 - Default executor model: Sonnet 5 (claude-sonnet-5-thinking-high subagents)
