@@ -795,6 +795,36 @@ def test_error_responses_do_not_leak_traceback_or_server_paths(monkeypatch: pyte
         _assert_error_detail_is_safe(crashed.json()["detail"])
 
 
+def test_deployment_check_frontend_asset_comparison(tmp_path: Path) -> None:
+    import importlib.util
+
+    script_path = Path("scripts/deployment_check.py").resolve()
+    spec = importlib.util.spec_from_file_location("deployment_check", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    matching = module.compare_frontend_assets(["index-abc.css", "index-abc.js"], ["index-abc.js", "index-abc.css"])
+    assert matching["ok"] is True
+    assert matching["missing_on_server"] == []
+    assert matching["missing_locally"] == []
+
+    mismatch = module.compare_frontend_assets(["index-old.js"], ["index-new.js"])
+    assert mismatch["ok"] is False
+    assert mismatch["missing_on_server"] == ["index-new.js"]
+    assert mismatch["missing_locally"] == ["index-old.js"]
+    assert "different frontend build" in mismatch["error"]
+
+    empty_local = module.compare_frontend_assets(["index-abc.js"], [])
+    assert empty_local["ok"] is False
+    assert "frontend build" in empty_local["error"]
+
+    (tmp_path / "index-abc.js").write_text("js", encoding="utf-8")
+    (tmp_path / "index-abc.css").write_text("css", encoding="utf-8")
+    (tmp_path / "nested").mkdir()
+    assert module.local_frontend_assets(tmp_path) == ["index-abc.css", "index-abc.js"]
+
+
 def test_user_facing_error_from_route_maps_status_and_sanitized_detail(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.errors import ArtifactError, ProviderError
 

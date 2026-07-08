@@ -1746,7 +1746,9 @@ function App() {
 
   const isCloudDeployment = runtimeVersion?.deployment_mode === 'cloud'
   const showSettingsButton = runtimeVersion?.deployment_mode === 'local'
-  const visibleVersion = runtimeVersion?.version || 'unknown'
+  const bundleVersion = __APP_VERSION__
+  const backendVersion = runtimeVersion?.version || ''
+  const versionMismatch = Boolean(backendVersion) && backendVersion !== 'unknown' && backendVersion !== bundleVersion
 
   return (
     <div className="shell">
@@ -1962,7 +1964,14 @@ function App() {
         </div>
       </div>
 
-      <div className="runtime-version-badge" title={runtimeVersion?.git_sha ? `commit ${runtimeVersion.git_sha}` : 'current deployment version'}>v{visibleVersion}</div>
+      <div
+        className={versionMismatch ? 'runtime-version-badge version-mismatch' : 'runtime-version-badge'}
+        title={versionMismatch
+          ? `前端 v${bundleVersion} 与后端 v${backendVersion} 版本不一致，请刷新页面或重新部署前端`
+          : (runtimeVersion?.git_sha ? `commit ${runtimeVersion.git_sha}` : 'current deployment version')}
+      >
+        {versionMismatch ? `v${bundleVersion} / 后端 v${backendVersion} 版本不一致` : `v${bundleVersion}`}
+      </div>
 
       {newProjectOpen ? <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreate={createProject} /> : null}
       {deleteProjectTarget ? <DeleteProjectModal project={deleteProjectTarget} busy={busy} onClose={() => { longPressTriggeredProjectId.current = ''; setDeleteProjectTarget(null) }} onDelete={deleteProject} /> : null}

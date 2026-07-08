@@ -30,11 +30,51 @@ def _get_json(client: httpx.Client, base_url: str, path: str) -> dict[str, Any]:
     return response.json()
 
 
-def run(base_url: str, *, require_cloud: bool = False, require_provider: bool = False, expect_version: str | None = None) -> int:
+def local_frontend_assets(assets_dir: Path) -> list[str]:
+    # Mirrors backend _frontend_assets(): sorted file names, capped at 20.
+    return sorted(path.name for path in assets_dir.glob("*") if path.is_file())[:20]
+
+
+def compare_frontend_assets(reported: list[str] | None, local: list[str]) -> dict[str, Any]:
+    reported_set = {str(item) for item in (reported or [])}
+    local_set = set(local)
+    missing_on_server = sorted(local_set - reported_set)
+    missing_locally = sorted(reported_set - local_set)
+    ok = bool(local_set) and not missing_on_server and not missing_locally
+    result: dict[str, Any] = {
+        "ok": ok,
+        "reported_count": len(reported_set),
+        "local_count": len(local_set),
+        "missing_on_server": missing_on_server,
+        "missing_locally": missing_locally,
+    }
+    if not local_set:
+        result["error"] = "local frontend/dist/assets is empty or missing; run the frontend build first"
+    elif not ok:
+        result["error"] = (
+            "backend-reported frontend assets do not match local dist assets; "
+            "the deployed backend is probably serving a different frontend build"
+        )
+    return result
+
+
+def run(
+    base_url: str,
+    *,
+    require_cloud: bool = False,
+    require_provider: bool = False,
+    expect_version: str | None = None,
+    frontend_assets_dir: Path | None = None,
+) -> int:
     failed = False
+    reported_assets: list[str] | None = None
+    version_fetched = False
     with httpx.Client(timeout=60, follow_redirects=True) as client:
         try:
             version = _get_json(client, base_url, "/api/version")
+            version_fetched = True
+            raw_assets = version.get("frontend_assets")
+            reported_assets = [str(item) for item in raw_assets] if isinstance(raw_assets, list) else []
             expected = _expected_version(expect_version)
             actual = str(version.get("version") or "").strip()
             version_ok = bool(actual)
@@ -48,6 +88,17 @@ def run(base_url: str, *, require_cloud: bool = False, require_provider: bool = 
         except Exception as exc:
             failed = True
             _print_step("version", False, str(exc))
+
+        if frontend_assets_dir is not None:
+            if not version_fetched:
+                failed = True
+                _print_step("frontend_assets", False, "could not compare frontend assets: /api/version was unreachable")
+            else:
+                comparison = compare_frontend_assets(reported_assets, local_frontend_assets(frontend_assets_dir))
+                comparison["assets_dir"] = str(frontend_assets_dir)
+                if not comparison["ok"]:
+                    failed = True
+                _print_step("frontend_assets", bool(comparison["ok"]), comparison)
 
         try:
             health = _get_json(client, base_url, "/api/health")
@@ -109,8 +160,22 @@ def main() -> int:
     parser.add_argument("--require-cloud", action="store_true", help="Fail if /api/health deployment_mode is not cloud.")
     parser.add_argument("--require-provider", action="store_true", help="Fail if provider API key is not configured.")
     parser.add_argument("--expect-version", default=None, help="Expected /api/version value. Defaults to local VERSION file.")
+    parser.add_argument(
+        "--check-frontend-assets",
+        nargs="?",
+        const=str(ROOT / "frontend" / "dist" / "assets"),
+        default=None,
+        metavar="PATH",
+        help="Compare backend-reported frontend_assets with a local dist assets dir. Off by default; PATH defaults to frontend/dist/assets.",
+    )
     args = parser.parse_args()
-    return run(args.base_url, require_cloud=args.require_cloud, require_provider=args.require_provider, expect_version=args.expect_version)
+    return run(
+        args.base_url,
+        require_cloud=args.require_cloud,
+        require_provider=args.require_provider,
+        expect_version=args.expect_version,
+        frontend_assets_dir=Path(args.check_frontend_assets) if args.check_frontend_assets else None,
+    )
 
 
 if __name__ == "__main__":

@@ -2990,3 +2990,9 @@ input:focus, textarea:focus, select:focus { border-color: #8b5cf6; }
   backdrop-filter: blur(8px);
   pointer-events: none;
 }
+
+.runtime-version-badge.version-mismatch {
+  border-color: rgba(251,191,36,.6);
+  background: rgba(120,53,15,.85);
+  color: #fde68a;
+}

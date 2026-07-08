@@ -12,11 +12,11 @@
 ## Current Phase
 
 - Phase: Task 3 main work loop
-- Current item: Tier C sweep, then Batch 6 (I-008 version consistency)
-- Last validation tier: Tier A + Tier B backend + frontend build (batch 5)
-- Last validation result: pass (141 Tier-B backend, frontend build OK)
+- Current item: Batches 7-8 (I-009 deletion e2e, I-004 classifier boundary test)
+- Last validation tier: Tier A + focused + full e2e (batch 6)
+- Last validation result: pass (risk-hardening 37, e2e 21 passed incl. new badge test, build OK)
 - Active model role: Executor (Sonnet 5)
-- Last Fable5 checkpoint: 2026-07-08 13:35 batch 5 diff review approved (delivery summary contract, additive)
+- Last Fable5 checkpoint: 2026-07-08 14:40 batch 6 diff review approved (version consistency)
 
 ## Batch Log
 
@@ -24,7 +24,9 @@
 |---|---|---|---|---|---|
 | 1 | I-002 + Candidate A narrow: app-level UserFacingError handler + status mapping + cross-router no-leak tests | backend/app/errors.py, backend/app/main.py, backend/tests/test_risk_hardening.py | Tier A clean; risk-hardening 33 passed; Tier B backend 137 passed | 7e006c5 | pass |
 | 2-4 | I-001/I-003/I-010 regression tests only (upload format 400, deliverable file-deleted, keyless preflight no-provider-call) | backend/tests/test_risk_hardening.py, backend/tests/test_workflow_e2e.py | Tier A clean; 3 focused passed; 134 passed full on touched files | b4aa443 | pass |
-| 5 | I-007 + Candidate B narrow: delivered_with_issues field on all 3 summary builders; announcement forced delivery records source_type=delivered_with_issues | backend/app/workflow/delivery.py, backend/app/workflow/announcement.py, backend/tests/test_risk_hardening.py, backend/tests/test_workflow_e2e.py, frontend/src/types.ts | Tier A clean; Tier B backend 141 passed; frontend build OK | (next) | pass |
+| 5 | I-007 + Candidate B narrow: delivered_with_issues field on all 3 summary builders; announcement forced delivery records source_type=delivered_with_issues | backend/app/workflow/delivery.py, backend/app/workflow/announcement.py, backend/tests/test_risk_hardening.py, backend/tests/test_workflow_e2e.py, frontend/src/types.ts | Tier A clean; Tier B backend 141 passed; frontend build OK | 0abb831 | pass |
+| Tier C | full sweep after batch 5 | n/a | compileall/ruff clean; pytest 167 passed; build OK; e2e 20 passed | n/a | pass |
+| 6 | I-008: Vite-injected bundle version, badge mismatch warning, deployment_check --check-frontend-assets + unit test + badge e2e | frontend/vite.config.ts, frontend/src/vite-env.d.ts, frontend/src/main.tsx, frontend/src/styles.css, scripts/deployment_check.py, backend/tests/test_risk_hardening.py, frontend/e2e/studio-ui-flow.spec.ts | Tier A clean; risk-hardening 37 passed; e2e 21 passed | (next) | pass |
 
 ## Blockers
 

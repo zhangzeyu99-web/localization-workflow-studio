@@ -12,6 +12,14 @@ const inlineStatus = (page: any, text: string) => page.locator('.inline-status',
 
 test.use({ acceptDownloads: true })
 
+test('runtime version badge shows bundle version without mismatch warning', async ({ page }) => {
+  await page.goto(baseURL)
+  const badge = page.locator('.runtime-version-badge')
+  await expect(badge).toBeVisible()
+  await expect(badge).toHaveText(/^v\d+\.\d+\.\d+$/)
+  await expect(badge).not.toContainText('版本不一致')
+})
+
 test('project list refreshes after an external project is created', async ({ page, request }) => {
   const firstProjectName = `E2E List Base ${Date.now()}`
   await request.post(`${baseURL}/api/projects`, {
