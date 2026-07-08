@@ -59,6 +59,8 @@ LWS_MAX_UPLOAD_MB=1024 \
 
 第一版线上固定单实例、单 worker。不要用多个 uvicorn worker 直接共享 SQLite。
 
+另外注意：产品同一时刻只允许一个后台 AI 任务（翻译队列、QA 队列、公告翻译、模型修复共用同一个全局任务锁，多语言队列内部逐语言串行）。这是刻意设计——provider 限流、断点续跑、任务恢复都建立在这个假设上。多用户同时发起任务时，后到的会收到 409 "another long-text AI job is active"，属预期行为而非故障；如果未来云端多用户并发成为真实需求，需要先演进任务锁粒度（`backend/app/jobs.py`），不要直接放开并发。
+
 ## Nginx 参考配置
 
 ```nginx
