@@ -2,6 +2,14 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.0.4 - 2026-07-08
+
+- Split the three thousand-line agent-side localization modules with zero behavior change: `utils/quality_harness.py`, `utils/announcement_docx_harness.py`, and `process_language.py` now delegate to focused submodules (`quality_harness_rules/terms`, `announcement_docx_common/terms/prepare/apply`, `process_language_terms/review/outputs`) while keeping every public symbol re-exported for backend subprocess callers and tests.
+- Deduplicated the AI review batch helpers shared by `workflow/localization/cli.py` and `workspace_runner.py` into `utils/ai_checker.py` (`reset_review_dir`, `collect_recheck_rows`).
+- Annotated every `workflow/localization` entry point with an explicit `Boundary:` marker (product runtime dependency vs agent-only) and corrected `CONTEXT.md` to match the backend's actual subprocess callers (`qa.py`, `translation.py`).
+- Converted `workflow/glossary` into a declared sync artifact of the standalone `glossary-extraction-workflow` repository (v0.4.0): added `SYNC.md` with the sync command and no-direct-edit rule, synced the packaged `glossary_extraction/` refactor, and verified the copy by hash comparison plus an independent 44-test readback run.
+- Recorded the dual-project review and optimization evidence in `docs/optimization/2026-07-08-dual-project-optimization.md`.
+
 ## 1.0.3 - 2026-07-07
 
 - Documented and versioned the large-text multilingual local harness improvements for repository management.
