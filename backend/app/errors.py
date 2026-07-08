@@ -27,3 +27,21 @@ class DeliveryError(UserFacingError):
 
 class UserFacingWorkflowError(UserFacingError):
     """Workflow subprocess failed with a sanitized user-facing message."""
+
+
+_HTTP_STATUS_BY_ERROR_TYPE: tuple[tuple[type[UserFacingError], int], ...] = (
+    (WorkflowInputError, 400),
+    (ArtifactError, 404),
+    (WorkflowValidationError, 422),
+    (DeliveryError, 409),
+    (ProviderError, 502),
+    (UserFacingWorkflowError, 500),
+)
+
+
+def http_status_for_user_facing_error(error: UserFacingError) -> int:
+    """HTTP status code for a UserFacingError raised out of a route."""
+    for error_type, status in _HTTP_STATUS_BY_ERROR_TYPE:
+        if isinstance(error, error_type):
+            return status
+    return 400

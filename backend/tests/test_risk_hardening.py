@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from io import BytesIO
 import json
 import os
@@ -715,4 +716,92 @@ def test_workflow_modules_do_not_use_legacy_common_star_imports() -> None:
         text = path.read_text(encoding="utf-8")
         assert "from .common import *" not in text
         assert "ruff: noqa: F403,F405" not in text
+
+
+def _assert_error_detail_is_safe(detail: str) -> None:
+    assert detail.strip()
+    assert "Traceback" not in detail
+    assert "python.exe" not in detail
+    assert not re.search(r"[A-Za-z]:[\\/]", detail)
+
+
+def _large_language_table_bytes(rows: int = 1001) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "KR"])
+    for index in range(1, rows + 1):
+        ws.append([index, f"完整语言表源文 {index}", ""])
+    buffer = BytesIO()
+    wb.save(buffer)
+    wb.close()
+    return buffer.getvalue()
+
+
+def test_error_responses_do_not_leak_traceback_or_server_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_internal(*args: Any, **kwargs: Any) -> Any:
+        raise Exception(
+            "Traceback (most recent call last):\n"
+            '  File "D:\\secret\\workflow.py", line 10, in run\n'
+            "command failed: C:\\Python314\\python.exe run_translation_harness.py"
+        )
+
+    monkeypatch.setattr("app.routers.glossary.extract_glossary", raise_internal)
+    monkeypatch.setenv("LWS_MAX_UPLOAD_MB", "8")
+    with TestClient(app) as client:
+        missing_download = client.get("/api/artifacts/no-such-artifact/download")
+        assert missing_download.status_code == 404
+        _assert_error_detail_is_safe(missing_download.json()["detail"])
+
+        project = client.post("/api/projects", json={"name": "Leak Guard", "type": "QA"}).json()
+        rejected_upload = client.post(
+            f"/api/projects/{project['id']}/files?kind=term_base",
+            files={
+                "file": (
+                    "full-language-table.xlsx",
+                    _large_language_table_bytes(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert rejected_upload.status_code == 400
+        _assert_error_detail_is_safe(rejected_upload.json()["detail"])
+
+        crashed = client.post(
+            f"/api/projects/{project['id']}/glossary/extract",
+            json={"input_artifact_id": "artifact-x", "language": "en"},
+        )
+        assert crashed.status_code == 500
+        _assert_error_detail_is_safe(crashed.json()["detail"])
+
+
+def test_user_facing_error_from_route_maps_status_and_sanitized_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.errors import ArtifactError, ProviderError
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "UserFacing Handler", "type": "QA"}).json()
+        payload = {
+            "project_id": project["id"],
+            "kind": "translation",
+            "language": "en",
+            "input_artifact_id": "artifact-x",
+            "batch_size": 10,
+            "task_code": "T",
+        }
+
+        def raise_artifact_error(*args: Any, **kwargs: Any) -> None:
+            raise ArtifactError("找不到所选文件，请重新上传或重新选择文件。")
+
+        monkeypatch.setattr("app.routers.runs._validate_run_input_artifact", raise_artifact_error)
+        artifact_response = client.post("/api/runs", json=payload)
+        assert artifact_response.status_code == 404
+        assert artifact_response.json()["detail"] == "找不到所选文件，请重新上传或重新选择文件。"
+
+        def raise_provider_error(*args: Any, **kwargs: Any) -> None:
+            raise ProviderError("provider exploded at D:\\srv\\app\\worker.py")
+
+        monkeypatch.setattr("app.routers.runs._validate_run_input_artifact", raise_provider_error)
+        provider_response = client.post("/api/runs", json=payload)
+        assert provider_response.status_code == 502
+        _assert_error_detail_is_safe(provider_response.json()["detail"])
 

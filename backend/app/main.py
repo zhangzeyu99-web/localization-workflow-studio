@@ -6,17 +6,20 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from app import db
-    from app.workflow import reconcile_interrupted_background_jobs
+    from app.errors import UserFacingError, http_status_for_user_facing_error
+    from app.workflow import reconcile_interrupted_background_jobs, user_facing_error
     from app.routers.api import router as api_router
 else:
     from . import db
-    from .workflow import reconcile_interrupted_background_jobs
+    from .errors import UserFacingError, http_status_for_user_facing_error
+    from .workflow import reconcile_interrupted_background_jobs, user_facing_error
     from .routers.api import router as api_router
 
 
@@ -44,6 +47,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(api_router)
+
+
+@app.exception_handler(UserFacingError)
+async def _handle_user_facing_error(request: Request, exc: UserFacingError) -> JSONResponse:
+    """Safety net: a UserFacingError escaping any route becomes a sanitized JSON error.
+
+    Response shape matches HTTPException ({"detail": ...}) so frontend apiErrorText keeps working.
+    """
+    _ = request
+    return JSONResponse(
+        status_code=http_status_for_user_facing_error(exc),
+        content={"detail": user_facing_error(exc)},
+    )
 
 
 if __name__ == "__main__":
