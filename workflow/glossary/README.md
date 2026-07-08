@@ -8,6 +8,20 @@
 
 **Keywords:** glossary extraction, game localization glossary, terminology workflow, Excel language table, translation glossary, EN EN2 mapping, localization term management, game translation operations.
 
+## Current Version
+
+Current repository version: **v0.4.0**. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+Main supported workflows:
+
+- Full language-table glossary extraction: `ID / CN / EN / EN2`.
+- Source-only glossary extraction for projects without approved target translations.
+- Project brief and translation prompt generation from language tables plus project materials.
+- Announcement-specific glossary lookup from `docx / txt / md / json / csv / tsv / xlsx`.
+- Multi-language announcement lookup with explicit `LANG=path` inputs.
+- Optional AI supplement interface for announcement leak-checking, sentence-level term splitting, confidence notes, and project-name translation warnings.
+- Local harness regression for core extraction, observation feedback, announcement lookup, and AI supplement behavior.
+
 ## Why This Project Exists
 
 Localization teams often store useful term decisions inside huge language tables, chat threads, or ad hoc spreadsheets. This project turns that mess into a repeatable workflow that:
@@ -56,6 +70,8 @@ python scripts/run_glossary_harness.py fixtures/core_regression.json
 ├─ scripts/
 ├─ templates/
 ├─ tests/
+├─ CHANGELOG.md
+├─ VERSION
 ├─ .gitignore
 └─ requirements.txt
 ```
@@ -273,6 +289,7 @@ python scripts/import_curated_glossary.py /path/to/final_glossary.xlsx \
 
 ## 工作流文档
 
+- [CHANGELOG.md](CHANGELOG.md)：版本记录
 - [docs/workflow.md](docs/workflow.md)：完整提炼流程
 - [docs/maintenance.md](docs/maintenance.md)：维护与回归规范
 - [docs/source-only-delivery-retrospective.md](docs/source-only-delivery-retrospective.md)：源文-only 术语提取、预翻译、分类整理和标准命名复盘
