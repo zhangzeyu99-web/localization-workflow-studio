@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="620" viewBox="0 0 1100 620" role="img" aria-labelledby="title desc">
+  <title id="title">English glossary output preview</title>
+  <desc id="desc">Preview of an English glossary output table with EN and EN2 columns.</desc>
+  <rect width="1100" height="620" fill="#f9fafb"/>
+  <rect x="58" y="56" width="984" height="508" rx="16" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="94" y="116" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="800" fill="#111827">English Glossary Output Preview</text>
+  <text x="94" y="152" font-family="Segoe UI, Arial, sans-serif" font-size="18" fill="#4b5563">Delivery-ready terms with source, standard English, and manual adaptation columns.</text>
+  <rect x="94" y="196" width="912" height="54" fill="#1f2937"/>
+  <text x="118" y="230" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">ID</text>
+  <text x="220" y="230" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">CN</text>
+  <text x="390" y="230" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">EN</text>
+  <text x="610" y="230" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">EN2</text>
+  <text x="792" y="230" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">Reason</text>
+  <text x="118" y="294" font-family="Consolas, monospace" font-size="16" fill="#111827">2001</text>
+  <text x="220" y="294" font-family="Consolas, monospace" font-size="16" fill="#374151">Registration</text>
+  <text x="390" y="294" font-family="Consolas, monospace" font-size="16" fill="#374151">Registration</text>
+  <text x="610" y="294" font-family="Consolas, monospace" font-size="16" fill="#374151">Sign Up</text>
+  <text x="792" y="294" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#374151">UI adaptation</text>
+  <text x="118" y="358" font-family="Consolas, monospace" font-size="16" fill="#111827">2002</text>
+  <text x="220" y="358" font-family="Consolas, monospace" font-size="16" fill="#374151">Legend</text>
+  <text x="390" y="358" font-family="Consolas, monospace" font-size="16" fill="#374151">Legend</text>
+  <text x="610" y="358" font-family="Consolas, monospace" font-size="16" fill="#374151">Legendary</text>
+  <text x="792" y="358" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#374151">Item rarity</text>
+  <text x="118" y="422" font-family="Consolas, monospace" font-size="16" fill="#111827">2003</text>
+  <text x="220" y="422" font-family="Consolas, monospace" font-size="16" fill="#374151">Level Up</text>
+  <text x="390" y="422" font-family="Consolas, monospace" font-size="16" fill="#374151">Level Up</text>
+  <text x="610" y="422" font-family="Consolas, monospace" font-size="16" fill="#374151">Upgrade</text>
+  <text x="792" y="422" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#374151">System action</text>
+  <rect x="94" y="478" width="912" height="52" rx="10" fill="#ecfdf5"/>
+  <text x="118" y="511" font-family="Segoe UI, Arial, sans-serif" font-size="17" fill="#065f46">Use EN for standard terms and EN2 only when actual UI copy shows a stable adaptation.</text>
+</svg>

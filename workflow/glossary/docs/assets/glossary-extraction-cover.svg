@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Glossary Extraction Workflow cover</title>
+  <desc id="desc">Game localization glossary extraction preview for Excel language tables.</desc>
+  <rect width="1200" height="630" fill="#111827"/>
+  <rect x="60" y="62" width="1080" height="506" rx="18" fill="#f9fafb"/>
+  <text x="98" y="128" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="800" fill="#111827">Glossary Extraction Workflow</text>
+  <text x="98" y="168" font-family="Segoe UI, Arial, sans-serif" font-size="20" fill="#4b5563">Extract reusable game localization terms from Excel language tables</text>
+  <rect x="98" y="216" width="434" height="260" rx="12" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="98" y="216" width="434" height="48" rx="12" fill="#0f766e"/>
+  <text x="122" y="247" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff">Input language table</text>
+  <text x="124" y="306" font-family="Consolas, monospace" font-size="17" fill="#111827">ID    CN      EN</text>
+  <text x="124" y="344" font-family="Consolas, monospace" font-size="17" fill="#374151">2001  报名    Registration</text>
+  <text x="124" y="382" font-family="Consolas, monospace" font-size="17" fill="#374151">2002  传说    Legendary</text>
+  <text x="124" y="420" font-family="Consolas, monospace" font-size="17" fill="#374151">2003  升级    Upgrade</text>
+  <rect x="598" y="216" width="444" height="260" rx="12" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="598" y="216" width="444" height="48" rx="12" fill="#1d4ed8"/>
+  <text x="622" y="247" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff">Delivery glossary</text>
+  <text x="624" y="306" font-family="Consolas, monospace" font-size="17" fill="#111827">ID    CN    EN            EN2</text>
+  <text x="624" y="344" font-family="Consolas, monospace" font-size="17" fill="#374151">2001  报名  Registration  Sign Up</text>
+  <text x="624" y="382" font-family="Consolas, monospace" font-size="17" fill="#374151">2002  传说  Legend        Legendary</text>
+  <text x="624" y="420" font-family="Consolas, monospace" font-size="17" fill="#374151">2003  升级  Level Up      Upgrade</text>
+  <text x="98" y="532" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#111827">Built for translators, LQA, terminology owners, and live-ops localization teams.</text>
+</svg>
