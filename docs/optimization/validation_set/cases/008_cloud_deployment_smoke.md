@@ -25,6 +25,8 @@
 ## 通过标准
 
 - `/api/version` 返回当前版本和 commit。
+- 页面右下角版本徽章显示前端构建版本；如与后端版本不一致，徽章必须显示“版本不一致”警示。
+- `python scripts/deployment_check.py --base-url <URL> --check-frontend-assets` 通过（后端上报的 frontend_assets 与本地 dist 一致）。
 - `/api/health` 显示 data root 可写、数据库可连。
 - 上传不返回 413 或 Failed fetch。
 - 产物下载不返回 `Not Found`。
