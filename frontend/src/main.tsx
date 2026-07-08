@@ -16,14 +16,18 @@ import { NewProjectModal } from './components/modals/NewProjectModal'
 import { FrequencyModal } from './components/modals/FrequencyModal'
 import { EmptyState } from './components/project/EmptyState'
 import { ProjectOverview } from './components/project/ProjectOverview'
+import { useProjectListPolling } from './hooks/useProjectListPolling'
+import { useProjectSnapshotPolling } from './hooks/useProjectSnapshotPolling'
+import { useRunStatusPolling } from './hooks/useRunStatusPolling'
+import { useAnnouncementTaskPolling } from './hooks/useAnnouncementTaskPolling'
 import { artifactFileName, artifactKindLabel, artifactPickerLabel, artifactRole, artifactsByRole, artifactsByRoles, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, newestArtifact, pickerArtifacts, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { uploadProjectFile } from './domain/projectApi'
 import { mergeProjectListSummaries, preferredTranslationResultArtifact } from './domain/projectState'
-import { latestProjectActivityRun, projectActiveTaskCount, projectRunStatusText, projectTranslationPassedStatusText, visibleAnnouncementTaskCount } from './domain/projectActivity'
-import { announcementActionLabel, announcementActionSummary, announcementTaskStatusText, errorText, humanBackendEvent, humanTaskStatus } from './appText'
+import { projectActiveTaskCount, projectRunStatusText, projectTranslationPassedStatusText, visibleAnnouncementTaskCount } from './domain/projectActivity'
+import { announcementActionLabel, announcementActionSummary, errorText } from './appText'
 import { formatDate, formatDateTime, shortRunId } from './domain/format'
 import { issueCountPhrase, runStatusLabel } from './uiText'
-import { clampBatchSize, effectiveBatchSize, estimateBatches, getTranslationProgress, canSkipModelTranslation, latestRunOfKind, findResumableTranslationRun, isTranslationRunResumable, matchesTranslationRun, translationInputMode, translationReadinessUserMessage } from './domain/translationFlow'
+import { clampBatchSize, effectiveBatchSize, estimateBatches, canSkipModelTranslation, latestRunOfKind, findResumableTranslationRun, isTranslationRunResumable, matchesTranslationRun, translationInputMode, translationReadinessUserMessage } from './domain/translationFlow'
 import { altColumnVisible, availableLookupLanguages, displayLanguagesForWideRows, fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, glossaryWideRowMatches, languageFromValue, linesToFixedTerms, linesToList, linesToRules, listToLines, normalizeGlossaryNote, projectPromptForLanguage, profileText, rowRecords, ruleSummary, rulesToLines, scopeProjectToLanguage, translationWideRowMatches, visibleLanguagesFromRows } from './domain/projectAssets'
 
 declare global {
@@ -91,23 +95,7 @@ function App() {
       .catch(() => undefined)
   }, [])
 
-  useEffect(() => {
-    const syncProjectList = () => {
-      if (document.hidden) return
-      refreshProjects(currentIdRef.current).catch(() => undefined)
-    }
-    const onVisibilityChange = () => {
-      if (!document.hidden) syncProjectList()
-    }
-    window.addEventListener('focus', syncProjectList)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    const poller = window.setInterval(syncProjectList, 10000)
-    return () => {
-      window.removeEventListener('focus', syncProjectList)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-      window.clearInterval(poller)
-    }
-  }, [])
+  useProjectListPolling(refreshProjects, currentIdRef)
 
   const current = useMemo(() => projects.find((p) => p.id === currentId), [projects, currentId])
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
@@ -185,26 +173,7 @@ function App() {
     if (currentId) refreshCurrent()
   }, [currentId])
 
-  useEffect(() => {
-    if (!currentId) return
-    const poller = window.setInterval(async () => {
-      if (document.hidden) return
-      const loaded = await refreshProjectSnapshot(currentIdRef.current)
-      const activeRun = latestProjectActivityRun(loaded || undefined)
-      if (!activeRun || !isCurrentProject(activeRun.project_id)) return
-      const progress = getTranslationProgress(activeRun)
-      if (['queued', 'running'].includes(activeRun.status)) {
-        setLatestRun({ ...activeRun, artifacts: runArtifacts(loaded!, activeRun.id) })
-        setBusy(true)
-        setStatus(`后台任务处理中：${projectRunStatusText(activeRun)}`)
-      } else if (progress && progress.completed_rows >= progress.total_rows && activeRun.status === 'failed') {
-        setLatestRun({ ...activeRun, artifacts: runArtifacts(loaded!, activeRun.id) })
-        setBusy(false)
-        setStatus(`后台任务已结束但未通过 QA：${projectRunStatusText(activeRun)}`)
-      }
-    }, 6000)
-    return () => window.clearInterval(poller)
-  }, [currentId])
+  useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus)
 
   useEffect(() => {
     if (deleteProjectTarget && !projects.some((project) => project.id === deleteProjectTarget.id)) {
@@ -307,93 +276,24 @@ function App() {
     loadQualityIssues(latestRun.id)
   }, [latestRun?.id, latestRun?.status])
 
-  useEffect(() => {
-    if (!latestRun || !['queued', 'running'].includes(latestRun.status)) return
-    const runProjectId = latestRun.project_id
-    // Ticks awaiting a response when the poller is cleaned up must not apply
-    // stale status text over a fresher terminal message (e.g. manual fix done).
-    let cancelled = false
-    const poller = window.setInterval(async () => {
-      try {
-        const updated = await api<Run>(`/api/runs/${latestRun.id}`)
-        if (cancelled) return
-        if (!isCurrentProject(runProjectId)) return
-        setLatestRun(updated)
-        const latestEvent = updated.events?.[updated.events.length - 1]
-        const modelFixStatus = String(updated.metadata?.model_fix_status || '')
-        const modelFixResultRunId = String(updated.metadata?.model_fix_result_run_id || '')
-        if (modelFixStatus) {
-          if (modelFixStatus === 'running' || updated.status === 'running') {
-            setStatus('模型修复后台运行中：正在调用 AI 修复问题，完成后会自动重跑 QA。')
-          } else if (modelFixResultRunId) {
-            const resultRun = await api<Run>(`/api/runs/${modelFixResultRunId}`)
-            if (!isCurrentProject(runProjectId)) return
-            setLatestRun(resultRun)
-            setStep((prev) => (prev < 8 ? 8 : prev))
-            if (resultRun.status === 'passed') {
-              setQualityIssues([])
-              setStatus('模型修复并重跑 QA 已通过，可进入交付。')
-            } else {
-              const issues = await loadQualityIssues(resultRun.id, runProjectId)
-              const hardCount = issues.filter((issue) => issue.severity === 'hard').length
-              setStatus(`模型修复已完成，但 QA 仍有${issueCountPhrase(hardCount || issues.length)}问题。请继续修复；急需交付时可带问题摘要交付。`)
-            }
-          } else if (modelFixStatus === 'failed') {
-            setStatus(`模型修复失败：${String(updated.metadata?.model_fix_error || updated.metadata?.error || '请检查 API 配置和 QA 输入。')}`)
-          }
-        } else if (updated.kind === 'translation' && updated.status === 'passed') {
-          setStatus(projectTranslationPassedStatusText(updated, selectedLanguage))
-          const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
-          if (resultArtifact) setQaArtifact(resultArtifact)
-          setStep((prev) => (prev < 8 ? 8 : prev))
-        } else if (updated.kind === 'translation' && updated.status === 'failed') {
-          const progress = getTranslationProgress(updated)
-          if (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows) {
-            setStatus(`翻译已完成，但 QA 未通过：${projectRunStatusText(updated)}。请进入「QA 校对」步骤查看问题并修复；急需交付时可带问题摘要交付。`)
-            const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
-            if (resultArtifact) setQaArtifact(resultArtifact)
-            setStep((prev) => (prev < 8 ? 8 : prev))
-          } else {
-            setStatus(`翻译中断：${projectRunStatusText(updated)}。可在「AI 翻译」步骤点击继续 AI 翻译。`)
-          }
-        } else if (latestEvent?.message) {
-          setStatus(`后台任务${humanTaskStatus(updated.status)}：${humanBackendEvent(latestEvent.message)}`)
-        }
-        if (!['queued', 'running'].includes(updated.status)) {
-          setBusyForProject(runProjectId, false)
-          await refreshCurrent()
-          if (tab === 'delivery') await refreshDeliverables()
-        }
-      } catch (error) {
-        if (!cancelled) setStatusForProject(runProjectId, `后台任务进度刷新失败：${errorText(error)}`)
-      }
-    }, 2000)
-    return () => {
-      cancelled = true
-      window.clearInterval(poller)
-    }
-  }, [latestRun?.id, latestRun?.status, tab])
+  useRunStatusPolling(
+    latestRun,
+    tab,
+    selectedLanguage,
+    isCurrentProject,
+    setLatestRun,
+    setStep,
+    setQualityIssues,
+    setQaArtifact,
+    setStatus,
+    setStatusForProject,
+    setBusyForProject,
+    loadQualityIssues,
+    refreshCurrent,
+    refreshDeliverables
+  )
 
-  useEffect(() => {
-    const runningTaskIds = (current?.announcement_tasks || [])
-      .filter((task) => ['queued', 'running'].includes(task.status))
-      .map((task) => task.id)
-    if (!current || !runningTaskIds.length) return
-    const projectId = current.id
-    const poller = window.setInterval(async () => {
-      const loaded = await refreshProjectSnapshot(projectId)
-      if (!loaded || !isCurrentProject(projectId)) return
-      const tasks = loaded.announcement_tasks || []
-      const stillRunning = tasks.some((task) => runningTaskIds.includes(task.id) && ['queued', 'running'].includes(task.status))
-      if (!stillRunning) {
-        const finished = tasks.find((task) => runningTaskIds.includes(task.id)) || tasks[0]
-        setBusyForProject(projectId, false)
-        const message = announcementTaskStatusText(finished)
-        if (message) setStatusForProject(projectId, message)
-      }
-    }, 2500)
-    return () => window.clearInterval(poller)
-  }, [current?.id, current?.announcement_tasks?.map((task) => `${task.id}:${task.status}`).join('|')])
+  useAnnouncementTaskPolling(current, refreshProjectSnapshot, isCurrentProject, setBusyForProject, setStatusForProject)
 
   function cancelProjectDeleteHold() {
     if (deleteHoldTimer.current !== null) {
