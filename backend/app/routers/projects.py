@@ -283,6 +283,7 @@ def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[st
         notes,
         target_language=target_language,
         material_packet=material_packet,
+        settings=settings,
     )
     artifacts = [
         db.add_artifact(project_id, "Project profile", profile_path, "project_profile", mime="application/json"),

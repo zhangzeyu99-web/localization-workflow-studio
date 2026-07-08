@@ -448,8 +448,15 @@ def _project_analysis_provider_prompt(project: dict[str, Any], intro: str, asset
     )
 
 
-def _apply_project_analysis_provider(project: dict[str, Any], intro: str, asset_notes: list[str], profile: dict[str, Any], material_packet: dict[str, Any]) -> dict[str, Any]:
-    settings = load_settings()
+def _apply_project_analysis_provider(
+    project: dict[str, Any],
+    intro: str,
+    asset_notes: list[str],
+    profile: dict[str, Any],
+    material_packet: dict[str, Any],
+    settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    settings = settings if settings is not None else load_settings()
     provider = normalize_provider_name(settings.get("provider"))
     if provider not in REAL_PROVIDERS or not settings.get("api_key"):
         return profile

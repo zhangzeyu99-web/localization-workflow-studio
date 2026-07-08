@@ -17,10 +17,19 @@ def run_semantic_qa_report(
     quality: dict[str, Any],
     project_quality: dict[str, Any],
     language: str = "en",
+    settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Run the semantic QA provider pass.
+
+    ``settings`` should be the settings snapshot the caller's job took at
+    task start (translation/model-fix/multilingual jobs already have one).
+    Only bare synchronous callers with no snapshot of their own should omit
+    it, in which case this loads settings fresh -- that is a single load
+    for that request, not a mid-task reload.
+    """
     language = require_supported_language(language)
     spec = language_spec(language)
-    settings = load_settings()
+    settings = settings if settings is not None else load_settings()
     provider = normalize_provider_name(settings.get("provider"))
     model = str(settings.get("model") or "")
     issue_context = {

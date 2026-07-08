@@ -39,13 +39,18 @@ def write_project_prompt(
     asset_notes: list[str],
     target_language: str = "en",
     material_packet: dict[str, Any] | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> tuple[Path, Path, Path, Path, Path, str]:
     target_language = require_supported_language(target_language)
     root = project_dir(project["id"]) / "profile"
     root.mkdir(parents=True, exist_ok=True)
-    material_packet = material_packet or build_project_material_packet(project["id"], [], load_settings(), run_visual_analysis=False)
+    # Load settings once for this whole call: both the material-packet build
+    # (when the caller doesn't already have one) and the provider-backed
+    # analysis below must observe the same snapshot.
+    settings = settings if settings is not None else load_settings()
+    material_packet = material_packet or build_project_material_packet(project["id"], [], settings, run_visual_analysis=False)
     profile = _build_project_profile(project, intro, asset_notes, target_language=target_language, material_packet=material_packet)
-    profile = _apply_project_brief_markdown_profile(profile, material_packet) or _apply_project_analysis_provider(project, intro, asset_notes, profile, material_packet)
+    profile = _apply_project_brief_markdown_profile(profile, material_packet) or _apply_project_analysis_provider(project, intro, asset_notes, profile, material_packet, settings=settings)
     profile["material_packet"] = _profile_material_summary(material_packet)
     if profile.get("brief_source") == "md_primary" and profile.get("brief_supplements"):
         existing_sources = profile.get("source_materials") if isinstance(profile.get("source_materials"), list) else []

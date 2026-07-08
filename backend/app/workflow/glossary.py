@@ -32,7 +32,12 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
     if announcement_only and not announcement_material_artifact_ids:
         raise ValueError("announcement_only requires announcement_material_artifact_ids")
     project_notes = [str(note).strip() for note in getattr(request, "project_notes", []) or [] if str(note).strip()]
-    material_notes = analyze_assets(material_artifact_ids, load_settings()) if material_artifact_ids else []
+    # Load settings once for this whole request: the material-notes analysis
+    # and the AI candidate supplement below (if enabled) must observe the
+    # same snapshot, even though the extraction subprocess in between may
+    # take a while to run.
+    settings = load_settings()
+    material_notes = analyze_assets(material_artifact_ids, settings) if material_artifact_ids else []
     run = db.insert_run(
         project_id,
         kind="glossary",
@@ -149,6 +154,7 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
                     input_path=input_path,
                     language=language,
                     run_id=run["id"],
+                    settings=settings,
                 )
         if announcement_output is not None and announcement_output.exists():
             artifacts.append(
@@ -226,7 +232,7 @@ async def translate_missing_glossary_candidates(project_id: str, batch_id: str) 
         )
         id_to_candidate[index] = candidate
 
-    prompt = _glossary_candidate_translation_prompt(project, rows, language=language)
+    prompt = _glossary_candidate_translation_prompt(project, rows, language=language, settings=settings)
     try:
         items = await translate_batch(rows, settings, prompt)
     except Exception as exc:
@@ -271,12 +277,14 @@ def translate_missing_glossary_candidates_sync(project_id: str, batch_id: str) -
     return asyncio.run(translate_missing_glossary_candidates(project_id, batch_id))
 
 
-def _glossary_candidate_translation_prompt(project: dict[str, Any], rows: list[dict[str, Any]], language: str = "en") -> str:
+def _glossary_candidate_translation_prompt(
+    project: dict[str, Any], rows: list[dict[str, Any]], language: str = "en", settings: dict[str, Any] | None = None
+) -> str:
     language = require_supported_language(language)
     spec = language_spec(language)
     profile = project.get("profile") or {}
     prompt_text = str((profile.get("prompts_by_language") or {}).get(language) or project.get("prompt_text") or "").strip()
-    prompt_text = _manage_project_prompt_context(prompt_text, load_settings())
+    prompt_text = _manage_project_prompt_context(prompt_text, settings if settings is not None else load_settings())
     profile_summary = {
         key: profile.get(key)
         for key in ("game_type", "target_audience", "content_scope", "translation_style", "tone", "language_assets")

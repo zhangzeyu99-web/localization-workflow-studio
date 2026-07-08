@@ -369,7 +369,16 @@ def create_semantic_qa_context(run_id: str) -> dict[str, Any]:
     return {"run": db.get_run(run_id), "artifact": artifact, "semantic_qa": report}
 
 
-def run_qa_sync(run_id: str) -> dict[str, Any]:
+def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run the full QA pipeline for a run.
+
+    ``settings`` lets a caller that already holds a task-start snapshot
+    (e.g. a model-fix or multilingual QA background job) thread it through
+    to the semantic QA provider call instead of letting this reload
+    settings mid-task. Bare sync callers (the ``/api/runs/{id}/qa``
+    endpoint) omit it and get a single fresh load for this request.
+    """
+    settings = settings if settings is not None else load_settings()
     run = db.get_run(run_id)
     project = db.get_project(run["project_id"])
     metadata = run.get("metadata", {})
@@ -398,6 +407,7 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
         run_metadata=metadata,
         manual_fixes=metadata.get("manual_fixes") or [],
         language=language,
+        settings=settings,
     )
     input_artifacts = {
         "translation_workbook": workbook_artifact["id"],
@@ -447,6 +457,7 @@ def run_localization_qa(
     run_metadata: dict[str, Any] | None = None,
     manual_fixes: list[dict[str, Any]] | None = None,
     language: str = "en",
+    settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     language = require_supported_language(language)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -484,7 +495,7 @@ def run_localization_qa(
         quality_args.insert(2, str(LOCALIZATION_ROOT / "fixtures" / "quality_regression.json"))
     quality = _run_quality_json(quality_args, run_id)
     project_harness_quality = run_project_harness_qa(qa_workbook, harness_snapshot["project_harness"], language=language)
-    semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality, language=language)
+    semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality, language=language, settings=settings)
     semantic_qa = _dedupe_semantic_qa_against_deterministic(semantic_qa, quality, project_harness_quality)
     hard_errors = _hard_error_count(quality) + int(project_harness_quality.get("hard_errors", 0)) + int(semantic_qa.get("hard_errors", 0))
     passed = hard_errors == 0
@@ -915,11 +926,11 @@ def _resolve_workbook_row_for_issue(wb: Any, requested_ws: Any | None, row_index
     return None
 
 
-def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> str:
     language = require_supported_language(run.get("language") or "en")
     profile = project.get("profile") or {}
     prompt = str((profile.get("prompts_by_language") or {}).get(language) or project.get("prompt_text") or "").strip()
-    prompt = _manage_project_prompt_context(prompt, load_settings())
+    prompt = _manage_project_prompt_context(prompt, settings if settings is not None else load_settings())
     harness = read_project_harness(project["id"])
     return (
         "你是游戏本地化 QA 修复模型。请根据项目提示词、项目规则、术语要求和 QA 问题，"
