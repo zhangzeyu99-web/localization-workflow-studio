@@ -224,7 +224,9 @@ function App() {
     if (currentId) refreshCurrent()
   }, [currentId])
 
-  useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus)
+  const activeRunPolling = Boolean(latestRun && ['queued', 'running'].includes(latestRun.status))
+  const activeAnnouncementPolling = Boolean(current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status)))
+  useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus, activeRunPolling || activeAnnouncementPolling)
 
   useEffect(() => {
     if (deleteProjectTarget && !projects.some((project) => project.id === deleteProjectTarget.id)) {

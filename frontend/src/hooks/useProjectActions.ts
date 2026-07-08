@@ -145,8 +145,8 @@ export function useProjectActions(params: UseProjectActionsParams) {
     }
   }
 
-  async function refreshProjects(selectId?: string) {
-    const loaded = await api<Project[]>('/api/projects')
+  async function refreshProjects(selectId?: string, signal?: AbortSignal) {
+    const loaded = await api<Project[]>('/api/projects', signal ? { signal } : undefined)
     const preferred = selectId && loaded.some((item) => item.id === selectId)
       ? selectId
       : (loaded.some((item) => item.id === currentIdRef.current) ? currentIdRef.current : '')
@@ -164,10 +164,10 @@ export function useProjectActions(params: UseProjectActionsParams) {
     return loaded
   }
 
-  async function refreshProjectSnapshot(projectId: string): Promise<Project | null> {
+  async function refreshProjectSnapshot(projectId: string, signal?: AbortSignal): Promise<Project | null> {
     if (!projectId) return null
     try {
-      const loaded = await api<Project>(`/api/projects/${projectId}`)
+      const loaded = await api<Project>(`/api/projects/${projectId}`, signal ? { signal } : undefined)
       setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
       return loaded
     } catch (error) {

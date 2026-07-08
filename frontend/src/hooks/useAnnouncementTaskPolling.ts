@@ -8,7 +8,7 @@ import { usePolling } from './usePolling'
 // component.
 export function useAnnouncementTaskPolling(
   current: Project | undefined,
-  refreshProjectSnapshot: (projectId: string) => Promise<Project | null>,
+  refreshProjectSnapshot: (projectId: string, signal?: AbortSignal) => Promise<Project | null>,
   isCurrentProject: (projectId?: string | null) => boolean,
   setBusyForProject: (projectId: string, value: boolean) => void,
   setStatusForProject: (projectId: string, message: string) => void
@@ -19,8 +19,9 @@ export function useAnnouncementTaskPolling(
   const enabled = Boolean(current && runningTaskIds.length)
   const projectId = current?.id || ''
 
-  usePolling(async () => {
-    const loaded = await refreshProjectSnapshot(projectId)
+  usePolling(async (isStale, signal) => {
+    const loaded = await refreshProjectSnapshot(projectId, signal)
+    if (isStale()) return
     if (!loaded || !isCurrentProject(projectId)) return
     const tasks = loaded.announcement_tasks || []
     const stillRunning = tasks.some((task) => runningTaskIds.includes(task.id) && ['queued', 'running'].includes(task.status))

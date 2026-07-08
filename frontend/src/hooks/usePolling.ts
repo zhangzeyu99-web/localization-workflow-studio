@@ -6,7 +6,7 @@ export interface UsePollingOptions {
   skipWhenHidden?: boolean
 }
 
-export type PollTick = (isStale: () => boolean) => void | Promise<void>
+export type PollTick = (isStale: () => boolean, signal: AbortSignal) => void | Promise<void>
 
 // Generic polling primitive shared by the app's setInterval-based pollers:
 // wraps a window.setInterval with a shared in-flight promise dedupe (a tick
@@ -16,17 +16,21 @@ export type PollTick = (isStale: () => boolean) => void | Promise<void>
 // whenever these values change, exactly like the original per-poller
 // useEffect blocks. The tick receives `isStale()`, which flips to true once
 // this effect instance is cleaned up, so async callbacks can avoid applying
-// results after teardown (mirrors the previous ad-hoc `cancelled` flags).
+// results after teardown (mirrors the previous ad-hoc `cancelled` flags), and
+// `signal`, an AbortSignal aborted on the same teardown so in-flight fetches
+// tied to this polling instance are cancelled on unmount or when deps change
+// (e.g. polling gets disabled).
 export function usePolling(tick: PollTick, options: UsePollingOptions, deps: React.DependencyList) {
   useEffect(() => {
     if (!options.enabled) return undefined
     let cancelled = false
     let inFlight = false
+    const controller = new AbortController()
     const run = () => {
       if (options.skipWhenHidden && document.hidden) return
       if (inFlight) return
       inFlight = true
-      Promise.resolve(tick(() => cancelled)).finally(() => {
+      Promise.resolve(tick(() => cancelled, controller.signal)).finally(() => {
         inFlight = false
       })
     }
@@ -34,6 +38,7 @@ export function usePolling(tick: PollTick, options: UsePollingOptions, deps: Rea
     return () => {
       cancelled = true
       window.clearInterval(poller)
+      controller.abort()
     }
     // Deps are supplied by each call site to mirror the original per-poller
     // useEffect dependency arrays; see usage in hooks/use*Polling.ts.
