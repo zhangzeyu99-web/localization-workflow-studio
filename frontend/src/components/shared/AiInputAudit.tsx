@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { api } from '../../apiClient'
+import { api, sanitizeUserFacingError } from '../../apiClient'
 
 type AuditRecord = Record<string, unknown>
 
@@ -129,10 +129,10 @@ export function AiInputAuditPanel({ endpoint, title, buttonLabel, disabled = fal
     setLoading(true)
     setError('')
     try {
-      setData(await api<AuditRecord>(endpoint))
+      setData(await api<AuditRecord>(endpoint, undefined, buttonLabel || title))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      setError(/not found|找不到|不存在|缺失/i.test(message) ? '当前还没有可查看的 AI 输入。请先完成上一步。' : message)
+      setError(/not found|找不到|不存在|缺失/i.test(message) ? '当前还没有可查看的 AI 输入。请先完成上一步。' : sanitizeUserFacingError(message, undefined, buttonLabel || title))
     } finally {
       setLoading(false)
     }

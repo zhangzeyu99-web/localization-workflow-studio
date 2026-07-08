@@ -1,8 +1,13 @@
 export const API = import.meta.env.VITE_API_BASE_URL || ''
 
-export function sanitizeUserFacingError(text: string, fallback = '\u64cd\u4f5c\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002'): string {
+function defaultFailureText(operation?: string): string {
+  return operation ? `\u300c${operation}\u300d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002` : '\u64cd\u4f5c\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002'
+}
+
+export function sanitizeUserFacingError(text: string, fallback?: string, operation?: string): string {
+  const effectiveFallback = fallback ?? defaultFailureText(operation)
   const raw = String(text || '').trim()
-  if (!raw) return fallback
+  if (!raw) return effectiveFallback
   if (/http proxy error|ECONNREFUSED|connect ECONNREFUSED|NetworkError|Failed to fetch/i.test(raw)) {
     return '连接工作台后端失败。后端可能正在重启或未启动，请等几秒后重试；如果反复出现，请重启本地/局域网工作台。'
   }
@@ -26,7 +31,7 @@ export function sanitizeUserFacingError(text: string, fallback = '\u64cd\u4f5c\u
   }
   if (/<html[\s>]/i.test(raw) || /<body[\s>]/i.test(raw)) {
     const title = raw.match(/<title[^>]*>(.*?)<\/title>/i)?.[1]?.replace(/\s+/g, ' ').trim()
-    return title ? `\u64cd\u4f5c\u5931\u8d25\uff1a${title}` : fallback
+    return title ? `\u64cd\u4f5c\u5931\u8d25\uff1a${title}` : effectiveFallback
   }
   if (/Traceback|command failed|python\.exe|run_translation_harness\.py|\bFile "[^\n]+", line/i.test(raw) || /[A-Za-z]:[\\/]/.test(raw)) {
     return '\u672c\u5730 workflow \u6267\u884c\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165\u6587\u4ef6\u683c\u5f0f\u548c\u5f53\u524d\u6b65\u9aa4\u662f\u5426\u5339\u914d\u3002'
@@ -35,8 +40,8 @@ export function sanitizeUserFacingError(text: string, fallback = '\u64cd\u4f5c\u
   return singleLine.length > 240 ? `${singleLine.slice(0, 237)}...` : singleLine
 }
 
-export function apiErrorText(text: string, fallback: string): string {
-  if (!text.trim()) return fallback
+export function apiErrorText(text: string, fallback: string, operation?: string): string {
+  if (!text.trim()) return operation ? `\u300c${operation}\u300d\u5931\u8d25\uff1a${fallback}` : fallback
   try {
     const payload = JSON.parse(text) as { detail?: unknown; message?: unknown; error?: unknown }
     const detail = payload.detail ?? payload.message ?? payload.error
@@ -50,19 +55,19 @@ export function apiErrorText(text: string, fallback: string): string {
       if (flat.includes('language')) return '请先选择目标语言，再继续当前步骤。'
       if (flat.length) return `请求缺少必要信息：${Array.from(new Set(flat.filter((item) => item !== 'body'))).join(' / ')}`
     }
-    if (typeof detail === 'string' && detail.trim()) return sanitizeUserFacingError(detail, fallback)
+    if (typeof detail === 'string' && detail.trim()) return sanitizeUserFacingError(detail, undefined, operation)
   } catch {
     // Keep the original text when the backend returns plain text.
   }
-  return sanitizeUserFacingError(text, fallback)
+  return sanitizeUserFacingError(text, undefined, operation)
 }
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+export async function api<T>(path: string, init?: RequestInit, operation?: string): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${API}${path}`, init)
   } catch (error) {
-    throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error)))
+    throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error), undefined, operation))
   }
   if (!response.ok) {
     const text = await response.text()
@@ -73,7 +78,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
         throw new Error('连接工作台后端失败。后端可能正在重启或未启动，请等几秒后重试；如果反复出现，请重启本地/局域网工作台。')
       }
     }
-    throw new Error(apiErrorText(text, response.statusText))
+    throw new Error(apiErrorText(text, response.statusText, operation))
   }
   return response.json()
 }

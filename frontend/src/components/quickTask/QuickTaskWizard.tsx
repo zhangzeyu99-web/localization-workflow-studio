@@ -5,6 +5,7 @@ import { aiProviderConfigurationReminder } from '../../domain/providerSettings'
 import { canSkipModelTranslation, effectiveBatchSize, isTranslationRunResumable, matchesTranslationRun } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { ActionStatus, ArtifactNote, FileBox } from '../shared/WorkflowPrimitives'
+import { runStatusLabel } from '../../uiText'
 import type { AppSettings, Artifact, Project, QuickObjective, Run, TranslationReadiness, TranslationTargets } from '../../types'
 
 export function quickTaskRuns(project: Project): Run[] {
@@ -24,7 +25,7 @@ export function QuickTaskRecent({ project }: { project: Project }) {
       {runs.map((run) => (
         <div key={run.id} className="quick-recent-item">
           <span>{quickTaskName(run)} · {languageSpec(normalizeLanguageCode(run.language) || 'en').short}</span>
-          <em>{run.status}</em>
+          <em>{runStatusLabel(run.status)}</em>
         </div>
       ))}
     </div>
@@ -347,14 +348,14 @@ function QuickTextResultPanel({ projectId, run, onOpenDetail }: { projectId: str
   }
 
   if (!finalTextArtifact && !['passed', 'failed'].includes(run.status)) {
-    return <div className="scan-explain" data-testid="quick-text-result"><strong>结果生成中</strong><span>{run.status}</span></div>
+    return <div className="scan-explain" data-testid="quick-text-result"><strong>结果生成中</strong><span>{runStatusLabel(run.status)}</span></div>
   }
   if (!finalTextArtifact) return null
   return (
     <div className="quick-result-panel" data-testid="quick-text-result">
       <div className="card-title">
         <div className="left">快速翻译结果</div>
-        <span>{run.status}</span>
+        <span>{runStatusLabel(run.status)}</span>
       </div>
       <pre>{text || '正在读取结果...'}</pre>
       <div className="row-actions">

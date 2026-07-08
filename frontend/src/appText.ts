@@ -49,7 +49,7 @@ function parseStructuredStatusText(text: string): Record<string, unknown> | null
 }
 
 function eventStatusText(message: unknown): string {
-  if (!message) return '\u5904\u7406\u4e2d...'
+  if (!message) return '任务正在后台处理，请稍候...'
   if (typeof message === 'string') {
     const parsed = parseStructuredStatusText(message)
     const structured = parsed ? structuredQaStatusText(parsed) : null
@@ -73,11 +73,11 @@ export function humanTaskStatus(status: string): string {
   if (value === 'failed') return '失败'
   if (value === 'needs_input') return '已暂停，等待继续'
   if (value === 'canceled') return '已取消'
-  return status || '处理中'
+  return status || '状态未知，正在处理中'
 }
 
 export function humanBackendEvent(message: unknown): string {
-  if (!message) return '处理中...'
+  if (!message) return '任务正在后台处理，请稍候...'
   if (typeof message !== 'string') return eventStatusText(message)
   const text = message.trim()
   const parsed = parseStructuredStatusText(text)

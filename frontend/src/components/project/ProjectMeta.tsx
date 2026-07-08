@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { api } from '../../apiClient'
+import { api, sanitizeUserFacingError } from '../../apiClient'
 import { formatDate } from '../../domain/format'
 import { fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, linesToFixedTerms, linesToList, listToLines, linesToRules, projectPromptForLanguage, profileText, ruleSummary, rulesToLines } from '../../domain/projectAssets'
+import { improvementStatusLabel } from '../../uiText'
 import { languageSpec, type LanguageCode } from '../../languages'
 import type { Artifact, Project, ProjectHarness } from '../../types'
 import { ArtifactNote, FileBox } from '../shared/WorkflowPrimitives'
@@ -326,14 +327,14 @@ export function ImprovementQueue({ project, onSaveHarness }: { project: Project;
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category: kind, title: cleanTitle || '手动改进建议', detail: cleanDetail })
-      })
+      }, '记录建议')
       setTitle('')
       setDetail('')
       await load()
       if (applyNow) await applySuggestion(item, kind)
       else setMessage('建议已记录，尚未写入 Harness。')
     } catch (error) {
-      setMessage(`记录失败：${error instanceof Error ? error.message : String(error)}`)
+      setMessage(sanitizeUserFacingError(error instanceof Error ? error.message : String(error), undefined, '记录建议'))
     } finally {
       setSaving(false)
     }
@@ -345,7 +346,7 @@ export function ImprovementQueue({ project, onSaveHarness }: { project: Project;
       await onSaveHarness(harnessUpdateFromImprovement(project, item, applyKind))
       setMessage('已应用到 Harness；后续翻译、AI 校对和 QA 会读取。')
     } catch (error) {
-      setMessage(`应用失败：${error instanceof Error ? error.message : String(error)}`)
+      setMessage(sanitizeUserFacingError(error instanceof Error ? error.message : String(error), undefined, '应用到 Harness'))
     } finally {
       setSaving(false)
     }
@@ -392,7 +393,7 @@ export function ImprovementQueue({ project, onSaveHarness }: { project: Project;
             <tr key={String(item.id)}>
               <td>{String(item.category || '-')}</td>
               <td>{String(item.title || '-')}</td>
-              <td><span className="tag tag-new">{String(item.status || 'pending_review')}</span></td>
+              <td><span className="tag tag-new">{improvementStatusLabel(String(item.status || ''))}</span></td>
               <td><button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => { void applySuggestion(item, 'soft_rule') }}>应用到 Harness</button></td>
             </tr>
           ))}
@@ -477,7 +478,7 @@ export function HarnessEditor({
       await onSave(updates)
       setImportMessage('Harness 已导入并保存。')
     } catch (error) {
-      setImportMessage(`导入失败：${error instanceof Error ? error.message : String(error)}`)
+      setImportMessage(`导入失败：${sanitizeUserFacingError(error instanceof Error ? error.message : String(error))}`)
     }
   }
 
