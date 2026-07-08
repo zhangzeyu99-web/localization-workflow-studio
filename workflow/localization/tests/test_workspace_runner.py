@@ -4,12 +4,33 @@ import unittest
 from pathlib import Path
 
 from workspace_runner import (
+    discover_announcement_docx_tasks,
     discover_workspace_tasks,
     merge_term_files,
 )
 
 
 class WorkspaceRunnerTests(unittest.TestCase):
+    def test_discovers_announcement_docx_task_without_affecting_excel_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "announcement_project"
+            project.mkdir()
+            (project / "update_notice.docx").write_text("not a real docx for discovery", encoding="utf-8")
+            (project / "update_notice_announcement_terms_20260526.xlsx").write_text("terms", encoding="utf-8")
+            (project / "update_notice_en.docx").write_text("generated", encoding="utf-8")
+
+            tasks = discover_announcement_docx_tasks(root)
+
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0].project_name, "announcement_project")
+            self.assertEqual([path.name for path in tasks[0].docx_files], ["update_notice.docx"])
+            self.assertEqual(
+                [path.name for path in tasks[0].term_files],
+                ["update_notice_announcement_terms_20260526.xlsx"],
+            )
+            self.assertEqual(discover_workspace_tasks(root, lang="en"), [])
+
     def test_discovers_english_project_task_and_ignores_temp_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
