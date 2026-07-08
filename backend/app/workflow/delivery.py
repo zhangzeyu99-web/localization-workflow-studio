@@ -657,8 +657,8 @@ def _merge_language_column(target_path: Path, source_path: Path, language: str) 
             source_ws = source_wb[target_ws.title] if target_ws.title in source_wb.sheetnames else (source_wb.worksheets[0] if len(source_wb.worksheets) == 1 else None)
             if source_ws is None:
                 continue
-            target_headers = _header_map(target_ws)
-            source_headers = _header_map(source_ws)
+            target_headers = _delivery_header_map(target_ws)
+            source_headers = _delivery_header_map(source_ws)
             target_id_col = _first_header_index(target_headers, ["id"])
             source_id_col = _first_header_index(source_headers, ["id"])
             source_lang_col = _first_header_index(source_headers, [visible, *target_aliases(code)])
@@ -670,11 +670,11 @@ def _merge_language_column(target_path: Path, source_path: Path, language: str) 
                 target_ws.cell(row=1, column=target_lang_col).value = visible
             if target_id_col and source_id_col:
                 source_by_id = {
-                    _cell_text(source_ws.cell(row=row_index, column=source_id_col).value): source_ws.cell(row=row_index, column=source_lang_col).value
+                    _delivery_cell_text(source_ws.cell(row=row_index, column=source_id_col).value): source_ws.cell(row=row_index, column=source_lang_col).value
                     for row_index in range(2, source_ws.max_row + 1)
                 }
                 for row_index in range(2, target_ws.max_row + 1):
-                    row_id = _cell_text(target_ws.cell(row=row_index, column=target_id_col).value)
+                    row_id = _delivery_cell_text(target_ws.cell(row=row_index, column=target_id_col).value)
                     if not row_id or row_id not in source_by_id:
                         continue
                     value = source_by_id[row_id]
@@ -695,10 +695,14 @@ def _merge_language_column(target_path: Path, source_path: Path, language: str) 
     return copied
 
 
-def _header_map(ws: Any) -> dict[str, int]:
+# NOTE: 命名带 _delivery_ 前缀是刻意的。app/workflow/__init__.py 会把所有子模块的
+# 顶层符号合并注入共享命名空间，qa.py 也定义了 _header_map / _cell_text（且 _cell_text
+# 不做 strip），后加载的 qa 版本会静默覆盖本模块版本，导致合并交付时带空格的 ID
+# 匹配失败。改名以避开注入覆盖，保证交付合并始终使用 strip 语义。
+def _delivery_header_map(ws: Any) -> dict[str, int]:
     headers: dict[str, int] = {}
     for cell in ws[1]:
-        value = _cell_text(cell.value).lower()
+        value = _delivery_cell_text(cell.value).lower()
         if value:
             headers[value] = int(cell.column)
     return headers
@@ -706,13 +710,13 @@ def _header_map(ws: Any) -> dict[str, int]:
 
 def _first_header_index(headers: dict[str, int], aliases: list[str]) -> int | None:
     for alias in aliases:
-        key = _cell_text(alias).lower()
+        key = _delivery_cell_text(alias).lower()
         if key in headers:
             return headers[key]
     return None
 
 
-def _cell_text(value: Any) -> str:
+def _delivery_cell_text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
