@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from .. import db
+from ..config import normalize_provider_name
 from ..jobs import lease_name_for_project
 from ..providers import translate_batch
 from ..translation_batches import (
-    AsyncTokenRateLimiter as _AsyncTokenRateLimiter,
+    get_shared_rate_limiter as _get_shared_rate_limiter,
     load_or_create_batch_manifest as _load_or_create_batch_manifest,
     manage_project_prompt_context as _manage_project_prompt_context,
     project_context_summary as _project_context_summary,
@@ -309,7 +310,9 @@ async def _translate_rows_with_orchestration(
         return []
 
     started_at = time.monotonic()
-    limiter = _AsyncTokenRateLimiter(
+    limiter = _get_shared_rate_limiter(
+        normalize_provider_name(settings.get("provider")),
+        str(settings.get("api_key") or ""),
         int(settings.get("max_requests_per_minute") or 12),
         int(settings.get("max_estimated_tokens_per_minute") or 120000),
     )

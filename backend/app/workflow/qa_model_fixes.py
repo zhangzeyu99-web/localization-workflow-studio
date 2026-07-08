@@ -29,10 +29,23 @@ def model_fix_provider_settings() -> tuple[dict[str, Any], str]:
     return settings, provider
 
 
-def apply_model_fixes(run_id: str, request: Any) -> dict[str, Any]:
+def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Apply AI model fixes for a run's QA issues.
+
+    ``settings`` lets the background job entry point (``routers/qa.py``'s
+    ``model_fixes_start`` worker) load once at task start and pass the same
+    snapshot through to the optional QA rerun below, instead of each step
+    reloading settings from disk mid-task. The direct sync endpoint
+    (``/api/runs/{id}/model-fixes``) omits it and gets one fresh load here.
+    """
     run = db.get_run(run_id)
     project = db.get_project(run["project_id"])
-    settings, provider = model_fix_provider_settings()
+    if settings is not None:
+        provider = normalize_provider_name(settings.get("provider"))
+        if provider not in REAL_PROVIDERS or not settings.get("api_key"):
+            raise ValueError("模型修复需要配置 GPT / Claude / GPT 中转站 API key，不能在未配置真实 API 时生成可交付修复。")
+    else:
+        settings, provider = model_fix_provider_settings()
 
     max_issues = max(1, min(int(getattr(request, "max_issues", 80) or 80), 200))
     issue_payload = list_quality_issues(run_id)
@@ -49,7 +62,7 @@ def apply_model_fixes(run_id: str, request: Any) -> dict[str, Any]:
     if not source_path.exists():
         raise FileNotFoundError(str(source_path))
     rows = [_model_fix_row_context(source_path, issue) for issue in issues]
-    prompt = _model_fix_prompt(project, run, rows)
+    prompt = _model_fix_prompt(project, run, rows, settings)
     text = _call_semantic_provider(settings, prompt)
     payload = _parse_semantic_qa_payload(text)
     fixes = _normalize_model_fixes(payload, rows)
@@ -110,5 +123,5 @@ def apply_model_fixes(run_id: str, request: Any) -> dict[str, Any]:
                 "task_code": (run.get("metadata") or {}).get("task_code"),
             },
         )
-        result["qa_result"] = run_qa_sync(qa_run["id"])
+        result["qa_result"] = run_qa_sync(qa_run["id"], settings=settings)
     return result

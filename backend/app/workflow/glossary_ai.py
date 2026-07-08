@@ -42,11 +42,12 @@ def _glossary_ai_supplement_prompt(
     language: str,
     candidates: list[dict[str, Any]],
     audit_rows: list[dict[str, str]],
+    settings: dict[str, Any] | None = None,
 ) -> str:
     spec = language_spec(language)
     profile = project.get("profile") or {}
     prompt_text = str((profile.get("prompts_by_language") or {}).get(language) or project.get("prompt_text") or "").strip()
-    prompt_text = _manage_project_prompt_context(prompt_text, load_settings())
+    prompt_text = _manage_project_prompt_context(prompt_text, settings if settings is not None else load_settings())
     candidate_sources = [
         {"cn": item.get("source"), "translation": item.get("target")}
         for item in candidates[:500]
@@ -108,6 +109,7 @@ def supplement_language_table_glossary_candidates_with_ai(
     input_path: Path,
     language: str,
     run_id: str | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     language = require_supported_language(language)
     result: dict[str, Any] = {
@@ -121,7 +123,7 @@ def supplement_language_table_glossary_candidates_with_ai(
         result["reason"] = "no_candidate_batch"
         return result
 
-    settings = load_settings()
+    settings = settings if settings is not None else load_settings()
     provider = normalize_provider_name(settings.get("provider"))
     result["provider"] = provider
     if provider == TEST_FAKE_PROVIDER:
@@ -156,6 +158,7 @@ def supplement_language_table_glossary_candidates_with_ai(
         language=language,
         candidates=batch_candidates,
         audit_rows=audit_rows,
+        settings=settings,
     )
     try:
         response_text = call_text(settings, prompt, system="Return strict JSON only.")

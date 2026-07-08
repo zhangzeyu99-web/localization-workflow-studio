@@ -13,7 +13,16 @@ from .. import db
 from ..config import LOCALIZATION_ROOT, load_settings
 from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
-from .common import GLOBAL_HARNESS_CONTRACT, HARNESS_SCHEMA_VERSION, RowId, project_dir, read_project_harness, run_dir, write_project_harness
+from .common import (
+    GLOBAL_HARNESS_CONTRACT,
+    HARNESS_SCHEMA_VERSION,
+    RowId,
+    read_improvement_suggestions,
+    read_project_harness,
+    run_dir,
+    update_improvement_suggestions,
+    update_project_harness,
+)
 from .semantic_qa import run_semantic_qa_report
 from .subprocess_runner import run_subprocess, run_subprocess_allow_failure
 
@@ -125,10 +134,7 @@ def run_project_harness_qa(final_workbook: Path, harness: dict[str, Any], langua
 
 
 def list_improvements(project_id: str) -> list[dict[str, Any]]:
-    path = project_dir(project_id) / "profile" / "improvement_suggestions.json"
-    if not path.exists():
-        return []
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_improvement_suggestions(project_id)
 
 
 def create_project_improvement(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -145,11 +151,11 @@ def create_improvement_review(run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     project_id = run["project_id"]
     metadata = run.get("metadata", {})
-    suggestions = list_improvements(project_id)
     quality = metadata.get("quality", {})
     project_quality = metadata.get("project_harness_quality", {})
+    new_items: list[dict[str, Any]] = []
     if project_quality.get("hard_errors"):
-        suggestions.append(
+        new_items.append(
             _improvement_item(
                 "project_harness",
                 run_id,
@@ -158,7 +164,7 @@ def create_improvement_review(run_id: str) -> dict[str, Any]:
             )
         )
     if quality and not quality.get("passed", True):
-        suggestions.append(
+        new_items.append(
             _improvement_item(
                 "studio_integration",
                 run_id,
@@ -166,7 +172,7 @@ def create_improvement_review(run_id: str) -> dict[str, Any]:
                 "Global quality gate failed; inspect whether Studio needs better reporting or retry controls.",
             )
         )
-    suggestions.append(
+    new_items.append(
         _improvement_item(
             "upstream_backfeed",
             run_id,
@@ -174,8 +180,7 @@ def create_improvement_review(run_id: str) -> dict[str, Any]:
             "If this run exposed a reusable gap, create a human-reviewed issue or PR against the source workflow repo.",
         )
     )
-    path = project_dir(project_id) / "profile" / "improvement_suggestions.json"
-    path.write_text(json.dumps(suggestions, ensure_ascii=False, indent=2), encoding="utf-8")
+    suggestions = update_improvement_suggestions(project_id, lambda current: [*current, *new_items])
     return {"project_id": project_id, "run_id": run_id, "suggestions": suggestions}
 
 
@@ -297,18 +302,17 @@ def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
         origin="manual",
         metadata={"source_run_id": run_id, "source_artifact_id": source_artifact["id"], "manual_fix_count": len(applied)},
     )
-    harness = read_project_harness(project_id)
-    write_project_harness(
-        project_id,
-        {
-            "manual_fixes": [*harness.get("manual_fixes", []), *applied],
+    def _merge_manual_fix_harness(current: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "manual_fixes": [*current.get("manual_fixes", []), *applied],
             "qa_summary": {
-                **harness.get("qa_summary", {}),
+                **current.get("qa_summary", {}),
                 "last_manual_fix_run": run_id,
                 "last_manual_fix_artifact": fixed_artifact["id"],
             },
-        },
-    )
+        }
+
+    update_project_harness(project_id, _merge_manual_fix_harness)
     _append_improvement_items(
         project_id,
         [
@@ -369,7 +373,16 @@ def create_semantic_qa_context(run_id: str) -> dict[str, Any]:
     return {"run": db.get_run(run_id), "artifact": artifact, "semantic_qa": report}
 
 
-def run_qa_sync(run_id: str) -> dict[str, Any]:
+def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run the full QA pipeline for a run.
+
+    ``settings`` lets a caller that already holds a task-start snapshot
+    (e.g. a model-fix or multilingual QA background job) thread it through
+    to the semantic QA provider call instead of letting this reload
+    settings mid-task. Bare sync callers (the ``/api/runs/{id}/qa``
+    endpoint) omit it and get a single fresh load for this request.
+    """
+    settings = settings if settings is not None else load_settings()
     run = db.get_run(run_id)
     project = db.get_project(run["project_id"])
     metadata = run.get("metadata", {})
@@ -398,6 +411,7 @@ def run_qa_sync(run_id: str) -> dict[str, Any]:
         run_metadata=metadata,
         manual_fixes=metadata.get("manual_fixes") or [],
         language=language,
+        settings=settings,
     )
     input_artifacts = {
         "translation_workbook": workbook_artifact["id"],
@@ -447,6 +461,7 @@ def run_localization_qa(
     run_metadata: dict[str, Any] | None = None,
     manual_fixes: list[dict[str, Any]] | None = None,
     language: str = "en",
+    settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     language = require_supported_language(language)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -484,7 +499,7 @@ def run_localization_qa(
         quality_args.insert(2, str(LOCALIZATION_ROOT / "fixtures" / "quality_regression.json"))
     quality = _run_quality_json(quality_args, run_id)
     project_harness_quality = run_project_harness_qa(qa_workbook, harness_snapshot["project_harness"], language=language)
-    semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality, language=language)
+    semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality, language=language, settings=settings)
     semantic_qa = _dedupe_semantic_qa_against_deterministic(semantic_qa, quality, project_harness_quality)
     hard_errors = _hard_error_count(quality) + int(project_harness_quality.get("hard_errors", 0)) + int(semantic_qa.get("hard_errors", 0))
     passed = hard_errors == 0
@@ -915,11 +930,11 @@ def _resolve_workbook_row_for_issue(wb: Any, requested_ws: Any | None, row_index
     return None
 
 
-def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+def _model_fix_prompt(project: dict[str, Any], run: dict[str, Any], rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> str:
     language = require_supported_language(run.get("language") or "en")
     profile = project.get("profile") or {}
     prompt = str((profile.get("prompts_by_language") or {}).get(language) or project.get("prompt_text") or "").strip()
-    prompt = _manage_project_prompt_context(prompt, load_settings())
+    prompt = _manage_project_prompt_context(prompt, settings if settings is not None else load_settings())
     harness = read_project_harness(project["id"])
     return (
         "你是游戏本地化 QA 修复模型。请根据项目提示词、项目规则、术语要求和 QA 问题，"
@@ -1019,11 +1034,7 @@ def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id
 
 
 def _append_improvement_items(project_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    suggestions = list_improvements(project_id)
-    suggestions.extend(items)
-    path = project_dir(project_id) / "profile" / "improvement_suggestions.json"
-    path.write_text(json.dumps(suggestions, ensure_ascii=False, indent=2), encoding="utf-8")
-    return suggestions
+    return update_improvement_suggestions(project_id, lambda current: [*current, *items])
 
 
 def _header_map(ws: Any) -> dict[str, int]:

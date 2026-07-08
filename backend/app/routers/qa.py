@@ -85,7 +85,11 @@ def model_fixes(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
 def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
     try:
         run = db.get_run(run_id)
-        model_fix_provider_settings()
+        # Snapshot settings once here (the task's entry point) and thread the
+        # same snapshot through apply_model_fixes -> the QA rerun below, so a
+        # concurrent settings PATCH mid-job can't change provider/model
+        # partway through this one job's execution.
+        job_settings, _provider = model_fix_provider_settings()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     except ValueError as exc:
@@ -110,7 +114,7 @@ def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
     def worker(cancel_event: Any) -> None:
         _ = cancel_event
         try:
-            result = apply_model_fixes(run_id, payload)
+            result = apply_model_fixes(run_id, payload, settings=job_settings)
             qa_result = result.get("qa_result") or {}
             qa_run = qa_result.get("run") or {}
             terminal_status = str(qa_run.get("status") or "needs_input")

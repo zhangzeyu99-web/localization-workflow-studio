@@ -52,6 +52,13 @@ def describe_job(job_id: str) -> str:
 
 
 def _resolve_max_concurrent_jobs() -> int:
+    """Read the configured global job cap.
+
+    Must be called *before* acquiring ``_LOCK``: ``load_settings()`` does
+    file IO (reads ``settings.local.json``), and holding a process-wide
+    lock during file IO needlessly blocks every other project's job-start
+    attempt for the duration of that IO.
+    """
     from .config import load_settings
 
     try:
@@ -71,6 +78,10 @@ def start_singleton_job(project_id: str, job_id: str, target: Callable[[threadin
     - ``{"reason": "capacity", "active_count": N, "limit": N}``
     """
     lease_name = lease_name_for_project(project_id)
+    # Read outside the lock: this is a settings.local.json file read, not
+    # in-process state, so it must not hold up every other project's
+    # job-start attempt while the lock is held.
+    limit = _resolve_max_concurrent_jobs()
     global _ACTIVE_JOBS
     with _LOCK:
         existing = _ACTIVE_JOBS.get(lease_name)
@@ -87,7 +98,6 @@ def start_singleton_job(project_id: str, job_id: str, target: Callable[[threadin
                 return False, {"reason": "project_busy", "active_job_id": active_job}
             return False, None
 
-        limit = _resolve_max_concurrent_jobs()
         active_count = sum(1 for job in _ACTIVE_JOBS.values() if job.thread.is_alive())
         if active_count >= limit:
             db.release_job_lease(lease_name, job_id, status="capacity_rejected")

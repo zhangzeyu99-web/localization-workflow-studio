@@ -432,6 +432,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             workbook_artifact=raw_artifact,
             run_metadata=metadata,
             language=language,
+            settings=settings,
         )
         status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
         artifacts = [

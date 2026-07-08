@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import db
+from ..config import load_settings
 from ..jobs import active_job_id_for_project, start_singleton_job
 from ..languages import require_supported_language, visible_language_code
 from ..schemas import MultilingualQueueRequest, TranslateRequest
@@ -151,6 +152,10 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
     job_id = _queue_job_id("qa", project_id, payload.input_artifact_id)
 
     def worker(cancel_event: Any) -> None:
+        # Snapshot settings once for this job and reuse it for every
+        # language's QA pass, instead of each run_qa_sync call reloading
+        # settings.local.json mid-task.
+        job_settings = load_settings()
         for language in selected:
             if cancel_event.is_set():
                 break
@@ -161,7 +166,7 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
                 continue
             try:
                 db.add_event(run["id"], f"multilingual queue running QA {visible_language_code(language)}")
-                run_qa_sync(run["id"])
+                run_qa_sync(run["id"], settings=job_settings)
             except Exception as exc:
                 try:
                     db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})

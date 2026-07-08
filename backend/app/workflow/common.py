@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import load_workbook
 
@@ -23,6 +24,26 @@ _project_context_summary = _translation_batches.project_context_summary
 _provider_retry_delay_seconds = _translation_batches.provider_retry_delay_seconds
 
 HARNESS_SCHEMA_VERSION = 1
+
+# Per-project_id threading.Lock registry guarding the read-modify-write of
+# this project's shared JSON state files (project_harness.json,
+# improvement_suggestions.json). Multiple background jobs for the SAME
+# project can run concurrently (e.g. a harness PATCH racing a running QA
+# job's manual-fix write); without this lock, two concurrent
+# read-modify-write cycles can silently lose one writer's update. A
+# process-level dict + lock (not asyncio.Lock) is required because jobs run
+# on separate threads, each with its own event loop.
+_project_file_locks_guard = threading.Lock()
+_project_file_locks: dict[str, threading.Lock] = {}
+
+
+def _project_file_lock(project_id: str) -> threading.Lock:
+    with _project_file_locks_guard:
+        lock = _project_file_locks.get(project_id)
+        if lock is None:
+            lock = threading.Lock()
+            _project_file_locks[project_id] = lock
+        return lock
 _GLOSSARY_EXTRACTOR_MODULE: Any | None = None
 GLOBAL_HARNESS_CONTRACT: dict[str, Any] = {
     "source": "global_harness",
@@ -171,16 +192,60 @@ def read_project_harness(project_id: str) -> dict[str, Any]:
     return _sanitize_harness(merged)
 
 
+def update_project_harness(project_id: str, updater: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+    """Atomically read-modify-write this project's project_harness.json.
+
+    ``updater`` receives the current harness dict and returns the fields to
+    merge into it (same merge semantics as ``write_project_harness``'s
+    ``updates`` argument: ``None`` values are ignored). The whole
+    read+updater+write runs under this project's file lock so two
+    concurrent writers (e.g. a harness PATCH racing a manual-fix job) can't
+    silently clobber one another's update.
+    """
+    with _project_file_lock(project_id):
+        payload = read_project_harness(project_id)
+        updates = updater(payload)
+        for key, value in updates.items():
+            if value is not None:
+                payload[key] = value
+        payload["updated_at"] = db.now_iso()
+        payload = _sanitize_harness(payload)
+        path = project_harness_path(project_id)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return payload
+
+
 def write_project_harness(project_id: str, updates: dict[str, Any]) -> dict[str, Any]:
-    payload = read_project_harness(project_id)
-    for key, value in updates.items():
-        if value is not None:
-            payload[key] = value
-    payload["updated_at"] = db.now_iso()
-    payload = _sanitize_harness(payload)
-    path = project_harness_path(project_id)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return payload
+    return update_project_harness(project_id, lambda _current: updates)
+
+
+def improvement_suggestions_path(project_id: str) -> Path:
+    return project_dir(project_id) / "profile" / "improvement_suggestions.json"
+
+
+def read_improvement_suggestions(project_id: str) -> list[dict[str, Any]]:
+    path = improvement_suggestions_path(project_id)
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def update_improvement_suggestions(
+    project_id: str, updater: Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Atomically read-modify-write this project's improvement_suggestions.json.
+
+    Shares the same per-project lock as ``update_project_harness`` since
+    both files are this project's shared mutable state and the goal is to
+    stop any concurrent read-modify-write on either file from losing an
+    update, not to maximize file-level parallelism.
+    """
+    with _project_file_lock(project_id):
+        current = read_improvement_suggestions(project_id)
+        updated = updater(current)
+        path = improvement_suggestions_path(project_id)
+        path.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+        return updated
 
 
 def harness_overview(project_id: str) -> dict[str, Any]:
