@@ -11,12 +11,12 @@
 
 ## Current Phase
 
-- Phase: Task 2 audit before refactor
-- Current item: P0 audit + Module candidates
+- Phase: Task 3 main work loop
+- Current item: Batch 1 (I-002 + Candidate A narrow: wire UserFacingError handler + cross-router no-leak test)
 - Last validation tier: none (docs only)
 - Last validation result: n/a
 - Active model role: Executor (Sonnet 5)
-- Last Fable5 checkpoint: 2026-07-08 12:08 extract_glossary.py scope review (no escalation needed)
+- Last Fable5 checkpoint: 2026-07-08 12:25 Task 2.4 candidate approval (A/B approved narrow, C-F deferred, batch order fixed)
 
 ## Batch Log
 
