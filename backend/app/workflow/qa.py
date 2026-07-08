@@ -13,7 +13,16 @@ from .. import db
 from ..config import LOCALIZATION_ROOT, load_settings
 from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
-from .common import GLOBAL_HARNESS_CONTRACT, HARNESS_SCHEMA_VERSION, RowId, project_dir, read_project_harness, run_dir, write_project_harness
+from .common import (
+    GLOBAL_HARNESS_CONTRACT,
+    HARNESS_SCHEMA_VERSION,
+    RowId,
+    read_improvement_suggestions,
+    read_project_harness,
+    run_dir,
+    update_improvement_suggestions,
+    update_project_harness,
+)
 from .semantic_qa import run_semantic_qa_report
 from .subprocess_runner import run_subprocess, run_subprocess_allow_failure
 
@@ -125,10 +134,7 @@ def run_project_harness_qa(final_workbook: Path, harness: dict[str, Any], langua
 
 
 def list_improvements(project_id: str) -> list[dict[str, Any]]:
-    path = project_dir(project_id) / "profile" / "improvement_suggestions.json"
-    if not path.exists():
-        return []
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_improvement_suggestions(project_id)
 
 
 def create_project_improvement(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -145,11 +151,11 @@ def create_improvement_review(run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     project_id = run["project_id"]
     metadata = run.get("metadata", {})
-    suggestions = list_improvements(project_id)
     quality = metadata.get("quality", {})
     project_quality = metadata.get("project_harness_quality", {})
+    new_items: list[dict[str, Any]] = []
     if project_quality.get("hard_errors"):
-        suggestions.append(
+        new_items.append(
             _improvement_item(
                 "project_harness",
                 run_id,
@@ -158,7 +164,7 @@ def create_improvement_review(run_id: str) -> dict[str, Any]:
             )
         )
     if quality and not quality.get("passed", True):
-        suggestions.append(
+        new_items.append(
             _improvement_item(
                 "studio_integration",
                 run_id,
@@ -166,7 +172,7 @@ def create_improvement_review(run_id: str) -> dict[str, Any]:
                 "Global quality gate failed; inspect whether Studio needs better reporting or retry controls.",
             )
         )
-    suggestions.append(
+    new_items.append(
         _improvement_item(
             "upstream_backfeed",
             run_id,
@@ -174,8 +180,7 @@ def create_improvement_review(run_id: str) -> dict[str, Any]:
             "If this run exposed a reusable gap, create a human-reviewed issue or PR against the source workflow repo.",
         )
     )
-    path = project_dir(project_id) / "profile" / "improvement_suggestions.json"
-    path.write_text(json.dumps(suggestions, ensure_ascii=False, indent=2), encoding="utf-8")
+    suggestions = update_improvement_suggestions(project_id, lambda current: [*current, *new_items])
     return {"project_id": project_id, "run_id": run_id, "suggestions": suggestions}
 
 
@@ -297,18 +302,17 @@ def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
         origin="manual",
         metadata={"source_run_id": run_id, "source_artifact_id": source_artifact["id"], "manual_fix_count": len(applied)},
     )
-    harness = read_project_harness(project_id)
-    write_project_harness(
-        project_id,
-        {
-            "manual_fixes": [*harness.get("manual_fixes", []), *applied],
+    def _merge_manual_fix_harness(current: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "manual_fixes": [*current.get("manual_fixes", []), *applied],
             "qa_summary": {
-                **harness.get("qa_summary", {}),
+                **current.get("qa_summary", {}),
                 "last_manual_fix_run": run_id,
                 "last_manual_fix_artifact": fixed_artifact["id"],
             },
-        },
-    )
+        }
+
+    update_project_harness(project_id, _merge_manual_fix_harness)
     _append_improvement_items(
         project_id,
         [
@@ -1030,11 +1034,7 @@ def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id
 
 
 def _append_improvement_items(project_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    suggestions = list_improvements(project_id)
-    suggestions.extend(items)
-    path = project_dir(project_id) / "profile" / "improvement_suggestions.json"
-    path.write_text(json.dumps(suggestions, ensure_ascii=False, indent=2), encoding="utf-8")
-    return suggestions
+    return update_improvement_suggestions(project_id, lambda current: [*current, *items])
 
 
 def _header_map(ws: Any) -> dict[str, int]:

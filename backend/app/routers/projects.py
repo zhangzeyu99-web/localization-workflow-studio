@@ -18,6 +18,7 @@ from ..schemas import (
     ProjectHarnessUpdate,
     ProjectUpdate,
 )
+from ..jobs import active_job_id_for_project, describe_job
 from ..upload_storage import (
     UploadTooLargeError,
     max_upload_bytes,
@@ -232,6 +233,16 @@ def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
 
 @router.delete("/api/projects/{project_id}")
 def delete_project(project_id: str) -> dict[str, bool]:
+    # A background job for this project (translation/QA/model-fix/etc.) may
+    # still be reading/writing project files and artifacts on disk. Deleting
+    # the project directory out from under it races the job's file IO, so
+    # refuse the delete while a job is active instead of racing it.
+    active_job_id = active_job_id_for_project(project_id)
+    if active_job_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该项目正在执行任务（{describe_job(active_job_id)}），请先取消或等待任务完成再删除",
+        )
     run_ids: list[str] = []
     existed = True
     try:

@@ -12,8 +12,7 @@ from .common import (
     TERM_REFERENCE_RULE,
     _language_assets_summary,
     _project_material_labels,
-    read_project_harness,
-    write_project_harness,
+    update_project_harness,
 )
 from .semantic_qa import _call_semantic_provider, _parse_semantic_qa_payload
 
@@ -642,27 +641,26 @@ def _project_analysis_report_markdown(profile: dict[str, Any], material_packet: 
 
 
 def _save_generated_project_harness(project: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    current = read_project_harness(project["id"])
-    metadata = dict(current.get("project_metadata") or {})
-    metadata.update(
-        {
-            "game_type": profile["game_type"],
-            "target_language": profile["target_language"],
-            "content_scope": profile["content_scope"],
-            "language_assets": profile["language_assets"],
-            "source_materials": profile.get("source_materials", []),
-            "generated_from": "project_analysis",
-        }
-    )
-    return write_project_harness(
-        project["id"],
-        {
+    def _merge(current: dict[str, Any]) -> dict[str, Any]:
+        metadata = dict(current.get("project_metadata") or {})
+        metadata.update(
+            {
+                "game_type": profile["game_type"],
+                "target_language": profile["target_language"],
+                "content_scope": profile["content_scope"],
+                "language_assets": profile["language_assets"],
+                "source_materials": profile.get("source_materials", []),
+                "generated_from": "project_analysis",
+            }
+        )
+        return {
             "project_metadata": metadata,
             "style_guidance": profile["translation_style"],
             "target_audience": profile["target_audience"],
             "tone": profile["tone"],
-        },
-    )
+        }
+
+    return update_project_harness(project["id"], _merge)
 
 
 def _profile_material_summary(material_packet: dict[str, Any]) -> dict[str, Any]:
