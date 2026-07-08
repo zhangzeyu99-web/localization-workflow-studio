@@ -1,3 +1,4 @@
+import React, { useCallback } from 'react'
 import type { LanguageCode } from '../../languages'
 import { glossaryWideRows, translationWideRows } from '../../domain/projectAssets'
 import { projectActivityRuns, projectRunStatusText, projectRunTitle, visibleAnnouncementTaskCount } from '../../domain/projectActivity'
@@ -72,7 +73,7 @@ export interface ProjectOverviewProps {
   confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }
 
-export function ProjectOverview({
+function ProjectOverviewImpl({
   project,
   tab,
   setTab,
@@ -145,6 +146,7 @@ export function ProjectOverview({
   ).length
   const deliverableCount = project.stats.deliverables ?? fallbackDeliverableCount
   const activityRuns = projectActivityRuns(project)
+  const goToQaTab = useCallback(() => setTab('qa'), [setTab])
   return (
     <>
       <div className="proj-head">
@@ -301,7 +303,7 @@ export function ProjectOverview({
           onDeleteTranslation={onDeleteTranslation}
           selectedLanguage={selectedLanguage}
           setSelectedLanguage={setSelectedLanguage}
-          onGoQA={() => setTab('qa')}
+          onGoQA={goToQaTab}
         />
       ) : null}
       {tab === 'delivery' ? (
@@ -319,3 +321,5 @@ export function ProjectOverview({
     </>
   )
 }
+
+export const ProjectOverview = React.memo(ProjectOverviewImpl)

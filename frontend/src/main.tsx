@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { API } from './apiClient'
@@ -14,6 +14,7 @@ import { NewProjectModal } from './components/modals/NewProjectModal'
 import { FrequencyModal } from './components/modals/FrequencyModal'
 import { EmptyState } from './components/project/EmptyState'
 import { ProjectOverview } from './components/project/ProjectOverview'
+import { ProjectListItem } from './components/project/ProjectListItem'
 import { useProjectListPolling } from './hooks/useProjectListPolling'
 import { useProjectSnapshotPolling } from './hooks/useProjectSnapshotPolling'
 import { useRunStatusPolling } from './hooks/useRunStatusPolling'
@@ -24,7 +25,7 @@ import { useGlossaryActions } from './hooks/useGlossaryActions'
 import { useAnnouncementActions } from './hooks/useAnnouncementActions'
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { preferredTranslationResultArtifact } from './domain/projectState'
-import { projectActiveTaskCount, projectTranslationPassedStatusText, visibleAnnouncementTaskCount } from './domain/projectActivity'
+import { projectTranslationPassedStatusText } from './domain/projectActivity'
 import { canSkipModelTranslation } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
 
@@ -89,19 +90,19 @@ function App() {
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
   const currentLang = languageSpec(selectedLanguage)
 
-  function setPrimaryLanguage(language: LanguageCode) {
+  const setPrimaryLanguage = useCallback((language: LanguageCode) => {
     setSelectedLanguage(language)
     setSelectedLanguages((prev) => prev.includes(language) ? prev : [...prev, language])
-  }
+  }, [])
 
-  function setPrimaryLanguages(languages: LanguageCode[], primary?: LanguageCode | null) {
+  const setPrimaryLanguages = useCallback((languages: LanguageCode[], primary?: LanguageCode | null) => {
     const normalized = languages.length ? languages : [primary || selectedLanguage]
     const nextPrimary = primary && normalized.includes(primary) ? primary : normalized[0]
     setSelectedLanguages(normalized)
     setSelectedLanguage(nextPrimary)
-  }
+  }, [selectedLanguage])
 
-  function toggleTargetLanguage(language: LanguageCode) {
+  const toggleTargetLanguage = useCallback((language: LanguageCode) => {
     setSelectedLanguages((prev) => {
       const wasSelected = prev.includes(language)
       const next = wasSelected
@@ -112,21 +113,21 @@ function App() {
       if (!wasSelected) setSelectedLanguage(language)
       return normalized
     })
-  }
+  }, [selectedLanguage])
 
-  function isCurrentProject(projectId?: string | null): boolean {
+  const isCurrentProject = useCallback((projectId?: string | null): boolean => {
     return Boolean(projectId) && currentIdRef.current === projectId
-  }
+  }, [])
 
-  function setStatusForProject(projectId: string, message: string) {
+  const setStatusForProject = useCallback((projectId: string, message: string) => {
     if (isCurrentProject(projectId)) setStatus(message)
-  }
+  }, [isCurrentProject])
 
-  function setBusyForProject(projectId: string, value: boolean) {
+  const setBusyForProject = useCallback((projectId: string, value: boolean) => {
     if (isCurrentProject(projectId)) setBusy(value)
-  }
+  }, [isCurrentProject])
 
-  function resetProjectTransientState(message = '准备就绪') {
+  const resetProjectTransientState = useCallback((message = '准备就绪') => {
     setBusy(false)
     setStatus(message)
     setSourceArtifact(null)
@@ -146,7 +147,7 @@ function App() {
     setTranslationReadiness(null)
     setAnnouncementText('')
     setAnnouncementLookupResult(null)
-  }
+  }, [])
 
   const {
     cancelProjectDeleteHold, beginProjectDeleteHold, selectProject, deleteProject, refreshProjects,
@@ -160,6 +161,12 @@ function App() {
     setSourceArtifact, setAssetArtifacts, resetProjectTransientState, confirm,
     runGlossaryExtract: (inputArtifact) => runGlossaryExtractRef.current(inputArtifact)
   })
+  const handleUploadTerm = useCallback(async (file: File) => {
+    setTermArtifact(await upload(file, 'term_base'))
+  }, [upload])
+  const handleProjectPointerDown = useCallback((project: Project, event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button === 0) beginProjectDeleteHold(project)
+  }, [beginProjectDeleteHold])
   const {
     refreshTranslationReadiness, selectSourceArtifact, selectQaArtifact, syncLanguageFromArtifact,
     classifySourceArtifact, inspectTranslationTargets, startQuickTask, runTranslate,
@@ -373,22 +380,17 @@ function App() {
             <div className="sidebar-title">📁 我的项目</div>
             <div className="project-list">
               {projects.map((project) => (
-                <button
+                <ProjectListItem
                   key={project.id}
-                  className={`project-item ${project.id === currentId ? 'active' : ''} ${deleteHoldProjectId === project.id ? 'delete-hold' : ''}`}
-                  title="点击切换项目；长按删除项目"
-                  onPointerDown={(event) => { if (event.button === 0) beginProjectDeleteHold(project) }}
+                  project={project}
+                  isActive={project.id === currentId}
+                  isDeleteHold={deleteHoldProjectId === project.id}
+                  onPointerDown={handleProjectPointerDown}
                   onPointerUp={cancelProjectDeleteHold}
                   onPointerLeave={cancelProjectDeleteHold}
                   onPointerCancel={cancelProjectDeleteHold}
-                  onContextMenu={(event) => event.preventDefault()}
-                  onClick={(event) => selectProject(project, event)}
-                >
-                  <span className="pname">{project.icon ? `${project.icon} ` : ''}{project.name}</span>
-                  <span className="pmeta">语言包 {project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))} · 公告 {visibleAnnouncementTaskCount(project)} · 归档 {project.stats.archived_rows || 0}</span>
-                  {projectActiveTaskCount(project) ? <span className="ptag ptag-live">后台 {projectActiveTaskCount(project)}</span> : null}
-                  {project.type ? <span className="ptag">{project.type}</span> : null}
-                </button>
+                  onSelect={selectProject}
+                />
               ))}
             </div>
             <button className="new-project-btn" onClick={() => setNewProjectOpen(true)}>+ 新建项目</button>
@@ -431,7 +433,7 @@ function App() {
                 onSaveMeta={saveProjectMeta}
                 onAnalyze={runAnalysis}
                 onUploadSource={uploadSourceWorkbook}
-                onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
+                onUploadTerm={handleUploadTerm}
                 onGlossaryPreview={previewGlossaryImport}
                 onGlossaryImport={importGlossaryArtifact}
                 onGlossaryExtract={runGlossaryExtract}
@@ -539,7 +541,7 @@ function App() {
                 status={status}
                 onBack={() => setView('overview')}
                 onUploadSource={uploadSourceWorkbook}
-                onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
+                onUploadTerm={handleUploadTerm}
                 onUploadAsset={uploadProjectMaterial}
                 onAnalyze={runAnalysis}
                 onGlossaryExtract={runGlossaryExtract}

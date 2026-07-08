@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { artifactDownloadHref, runArtifacts } from '../../domain/artifacts'
 import { formatDate } from '../../domain/format'
 import { normalizeLanguageCode, languageSpec } from '../../languages'
@@ -6,7 +6,7 @@ import { runStatusLabel, runStatusTagClass } from '../../uiText'
 import type { HistoryKind, Project } from '../../types'
 import { downloadableArtifact, RunDetail, runProcessedLabel, runTaskSummary } from './RunDetail'
 
-export function TaskHistoryTable({ project, kind, title }: { project: Project; kind: HistoryKind; title: string }) {
+function TaskHistoryTableImpl({ project, kind, title }: { project: Project; kind: HistoryKind; title: string }) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const runs = kind === 'all' ? (project.runs || []) : (project.runs || []).filter((run) => run.kind === kind)
   const selectedRun = runs.find((run) => run.id === selectedRunId) || null
@@ -47,3 +47,5 @@ export function TaskHistoryTable({ project, kind, title }: { project: Project; k
     </div>
   )
 }
+
+export const TaskHistoryTable = React.memo(TaskHistoryTableImpl)

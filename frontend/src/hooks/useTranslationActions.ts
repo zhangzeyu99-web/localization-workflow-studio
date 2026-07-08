@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from '../apiClient'
 import { errorText } from '../appText'
@@ -700,7 +701,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     return artifact
   }
 
-  async function addTranslationEntry(form: FormData) {
+  const addTranslationEntry = useCallback(async (form: FormData) => {
     if (!current) return
     await api(`/api/projects/${current.id}/translations`, {
       method: 'POST',
@@ -717,9 +718,9 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     })
     await refreshCurrent()
     setStatus('译文条目已保存')
-  }
+  }, [current, selectedLanguage, refreshCurrent, setStatus])
 
-  async function updateTranslationEntry(entry: TranslationEntry, updates: Partial<TranslationEntry>) {
+  const updateTranslationEntry = useCallback(async (entry: TranslationEntry, updates: Partial<TranslationEntry>) => {
     if (!current) return
     await api(`/api/projects/${current.id}/translations/${entry.id}`, {
       method: 'PATCH',
@@ -728,22 +729,22 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     })
     await refreshCurrent()
     setStatus('译文条目已保存')
-  }
+  }, [current, refreshCurrent, setStatus])
 
-  async function deleteTranslationEntry(entry: TranslationEntry) {
+  const deleteTranslationEntry = useCallback(async (entry: TranslationEntry) => {
     if (!current) return
     await api(`/api/projects/${current.id}/translations/${entry.id}`, { method: 'DELETE' })
     await refreshCurrent()
     setStatus('译文条目已删除')
-  }
+  }, [current, refreshCurrent, setStatus])
 
-  async function uploadArchiveWorkbook(file: File) {
+  const uploadArchiveWorkbook = useCallback(async (file: File) => {
     const artifact = await upload(file, 'final_workbook')
     if (artifact) setArchiveArtifact(artifact)
     return artifact
-  }
+  }, [upload, setArchiveArtifact])
 
-  async function importTranslationArchive(artifactOverride?: Artifact | null): Promise<boolean> {
+  const importTranslationArchive = useCallback(async (artifactOverride?: Artifact | null): Promise<boolean> => {
     const targetArtifact = artifactOverride || archiveArtifact
     if (!current || !targetArtifact) return false
     setBusy(true)
@@ -764,7 +765,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     } finally {
       setBusy(false)
     }
-  }
+  }, [archiveArtifact, current, setBusy, setStatus, selectedLanguage, refreshCurrent])
 
   async function skipQAArchive(artifactOverride?: Artifact | null) {
     const targetArtifact = artifactOverride || qaArtifact

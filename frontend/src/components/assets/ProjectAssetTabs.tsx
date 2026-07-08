@@ -111,7 +111,7 @@ export function WideTablePager({
   )
 }
 
-export function GlossaryTab({
+function GlossaryTabImpl({
   project,
   sourceArtifact,
   termArtifact,
@@ -258,6 +258,8 @@ export function GlossaryTab({
   )
 }
 
+export const GlossaryTab = React.memo(GlossaryTabImpl)
+
 export function GlossaryToolsPanel({
   project,
   sourceArtifact,
@@ -308,7 +310,7 @@ export function GlossaryToolsPanel({
   )
 }
 
-export function WideGlossaryTermRow({
+function WideGlossaryTermRowImpl({
   row,
   visibleLanguages,
   onUpdateTerm,
@@ -411,7 +413,9 @@ export function WideGlossaryTermRow({
   )
 }
 
-export function TranslationArchiveTab({
+export const WideGlossaryTermRow = React.memo(WideGlossaryTermRowImpl)
+
+function TranslationArchiveTabImpl({
   project,
   archiveArtifact,
   busy,
@@ -561,6 +565,8 @@ export function TranslationArchiveTab({
   )
 }
 
+export const TranslationArchiveTab = React.memo(TranslationArchiveTabImpl)
+
 export function TranslationArchiveImportModal({
   archiveArtifact,
   busy,
@@ -647,7 +653,7 @@ export function TranslationArchiveExportPanel({
   )
 }
 
-export function WideTranslationEntryRow({
+function WideTranslationEntryRowImpl({
   row,
   visibleLanguages,
   onUpdate,
@@ -745,3 +751,5 @@ export function WideTranslationEntryRow({
     </tr>
   )
 }
+
+export const WideTranslationEntryRow = React.memo(WideTranslationEntryRowImpl)

@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { api } from '../apiClient'
 import { errorText } from '../appText'
 import { translationInputMode, translationReadinessUserMessage } from '../domain/translationFlow'
@@ -45,6 +46,12 @@ export interface UseGlossaryActionsParams {
 // and refreshTranslationReadiness (passed in as params); useProjectActions'
 // runAnalysis calls back into this hook's runGlossaryExtract via a ref forwarded
 // from main.tsx, since useProjectActions is constructed before this hook.
+//
+// Every returned handler is wrapped in `useCallback` (see useProjectActions.ts
+// for why) so the memoized `GlossaryTab`/wide-table components can skip
+// re-rendering when their dependencies haven't changed. Declaration order
+// matters: `refreshGlossaryBatches` is used by several other functions here
+// and is declared first.
 export function useGlossaryActions(params: UseGlossaryActionsParams) {
   const {
     current,
@@ -73,14 +80,14 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     refreshTranslationReadiness
   } = params
 
-  async function refreshGlossaryBatches(projectId = currentId) {
+  const refreshGlossaryBatches = useCallback(async (projectId = currentId) => {
     if (!projectId) return
     const loaded = await api<{ batches: GlossaryBatch[]; active_batch: GlossaryBatch | null; candidates: GlossaryCandidate[] }>(`/api/projects/${projectId}/glossary/batches?${languageQuery(selectedLanguage)}`)
     setGlossaryBatches(loaded.batches || [])
     setGlossaryCandidates(loaded.candidates || [])
-  }
+  }, [currentId, selectedLanguage, setGlossaryBatches, setGlossaryCandidates])
 
-  async function runGlossaryExtract(inputArtifact?: Artifact | null) {
+  const runGlossaryExtract = useCallback(async (inputArtifact?: Artifact | null) => {
     const artifact = inputArtifact || sourceArtifact
     if (!current) return
     if (!artifact) {
@@ -152,9 +159,9 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     } finally {
       setBusy(false)
     }
-  }
+  }, [sourceArtifact, current, setStatus, setSourceArtifact, syncLanguageFromArtifact, refreshTranslationReadiness, isCurrentProject, setStep, setQaArtifact, selectedLanguage, setBusy, assetArtifacts, intro, setTermArtifact, setLatestRun, refreshCurrent, refreshGlossaryBatches])
 
-  async function previewGlossaryImport() {
+  const previewGlossaryImport = useCallback(async () => {
     if (!current || !termArtifact) return
     setBusy(true)
     setStatus('正在预览术语表...')
@@ -172,9 +179,9 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     } finally {
       setBusy(false)
     }
-  }
+  }, [current, termArtifact, setBusy, setStatus, selectedLanguage, setGlossaryPreview])
 
-  async function importGlossaryArtifact() {
+  const importGlossaryArtifact = useCallback(async () => {
     if (!current || !termArtifact) return
     const projectId = current.id
     const artifactId = termArtifact.id
@@ -195,9 +202,9 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     } finally {
       setBusyForProject(projectId, false)
     }
-  }
+  }, [current, termArtifact, selectedLanguage, setBusyForProject, setStatusForProject, refreshProjectSnapshot])
 
-  async function addGlossaryTerm(form: FormData) {
+  const addGlossaryTerm = useCallback(async (form: FormData) => {
     if (!current) return
     const projectId = current.id
     await api(`/api/projects/${projectId}/glossary`, {
@@ -217,9 +224,9 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     })
     await refreshProjectSnapshot(projectId)
     setStatusForProject(projectId, '词条已新增')
-  }
+  }, [current, selectedLanguage, refreshProjectSnapshot, setStatusForProject])
 
-  async function updateGlossaryTerm(term: GlossaryTerm, updates: Partial<GlossaryTerm>) {
+  const updateGlossaryTerm = useCallback(async (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => {
     if (!current) return
     const projectId = current.id
     await api(`/api/projects/${projectId}/glossary/${term.id}`, {
@@ -229,9 +236,9 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     })
     await refreshProjectSnapshot(projectId)
     setStatusForProject(projectId, '词条已保存')
-  }
+  }, [current, refreshProjectSnapshot, setStatusForProject])
 
-  async function updateGlossaryCandidate(candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) {
+  const updateGlossaryCandidate = useCallback(async (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => {
     if (!current) return
     await api(`/api/projects/${current.id}/glossary/candidates/${candidate.id}`, {
       method: 'PATCH',
@@ -240,9 +247,9 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     })
     await refreshGlossaryBatches(current.id)
     setStatus('候选词条已保存')
-  }
+  }, [current, refreshGlossaryBatches, setStatus])
 
-  async function translateMissingGlossaryCandidates(batchId: string) {
+  const translateMissingGlossaryCandidates = useCallback(async (batchId: string) => {
     if (!current || !batchId) return
     setBusy(true)
     setStatus(`正在补齐缺失 ${languageSpec(selectedLanguage).short} 译文...`)
@@ -257,9 +264,9 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     } finally {
       setBusy(false)
     }
-  }
+  }, [current, setBusy, setStatus, selectedLanguage, refreshGlossaryBatches])
 
-  async function resolveGlossaryCandidates(batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') {
+  const resolveGlossaryCandidates = useCallback(async (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => {
     if (!current || !batchId || !candidates.length) return
     const projectId = current.id
     setBusy(true)
@@ -278,15 +285,15 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     } finally {
       setBusyForProject(projectId, false)
     }
-  }
+  }, [current, setBusy, setStatusForProject, refreshProjectSnapshot, refreshGlossaryBatches, setBusyForProject])
 
-  async function deleteGlossaryTerm(term: GlossaryTerm) {
+  const deleteGlossaryTerm = useCallback(async (term: GlossaryTerm) => {
     if (!current) return
     const projectId = current.id
     await api(`/api/projects/${projectId}/glossary/${term.id}`, { method: 'DELETE' })
     await refreshProjectSnapshot(projectId)
     setStatusForProject(projectId, '词条已删除')
-  }
+  }, [current, refreshProjectSnapshot, setStatusForProject])
 
   return {
     refreshGlossaryBatches,
