@@ -301,6 +301,36 @@ export type DeliveryFile = {
   artifact_id?: string
 }
 
+export type LargeTextPreflight = {
+  workflow?: string
+  unique_items?: number
+  source_rows?: number
+  target_languages?: string[]
+  target_language_count?: number
+  estimated_target_cells?: number
+  long_text_items?: number
+  workbook_count?: number
+  large_pack?: boolean
+  large_pack_reasons?: string[]
+  recommended_translation_shards?: number
+}
+
+export type LargeTextGateStatus = {
+  status?: 'passed' | 'failed' | 'skipped' | 'waived' | string
+  hard_blockers?: number
+  reason?: string
+  artifact_id?: string
+}
+
+export type LargeTextRunState = {
+  mode?: 'auto' | 'strict' | 'off' | string
+  preflight?: LargeTextPreflight
+  preflight_artifact_id?: string
+  cache_lint?: LargeTextGateStatus
+  readback_gate?: LargeTextGateStatus
+  retro_artifact_id?: string
+}
+
 export type MultilingualQueueLanguage = {
   language: LanguageCode
   visible_language: string
@@ -313,6 +343,7 @@ export type MultilingualQueueLanguage = {
   error?: string
   progress?: Partial<TranslationProgress>
   quality_summary?: Record<string, unknown>
+  large_text?: LargeTextRunState
 }
 
 export type MultilingualQueueStatus = {

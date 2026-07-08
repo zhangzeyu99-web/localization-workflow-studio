@@ -189,6 +189,7 @@ def _language_status(project_id: str, input_artifact_id: str, language: str) -> 
     status = run_for_status.get("status") if run_for_status else "pending"
     if (run_for_status and (run_for_status.get("metadata") or {}).get("qa_skipped")):
         status = "qa_skipped"
+    large_text = ((run_for_status or {}).get("metadata") or {}).get("large_text") or {}
     return {
         "language": language,
         "visible_language": visible_language_code(language),
@@ -201,6 +202,7 @@ def _language_status(project_id: str, input_artifact_id: str, language: str) -> 
         "error": ((run_for_status or {}).get("metadata") or {}).get("error") or "",
         "progress": progress,
         "quality_summary": quality,
+        "large_text": large_text,
     }
 
 
