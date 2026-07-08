@@ -301,6 +301,7 @@ class TranslateRequest(BaseModel):
     batch_size: int | None = None
     confirm_api_budget: bool = False
     confirm_term_gap: bool = False
+    large_text_mode: str | None = None
 
 
 class MultilingualQueueRequest(BaseModel):
@@ -312,6 +313,7 @@ class MultilingualQueueRequest(BaseModel):
     reference_artifact_ids: list[str] = Field(default_factory=list)
     confirm_api_budget: bool = False
     confirm_term_gap: bool = False
+    large_text_mode: str | None = None
 
 
 class SettingsUpdate(BaseModel):
