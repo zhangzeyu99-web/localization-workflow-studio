@@ -384,14 +384,14 @@ export function AnnouncementWizard({
                 </div>
                 <div className="constraint-source-panel">
                   <div className="constraint-source-title">完整语言表 / 术语交付表</div>
-                  <p>可选。用于从公告原文反查已有翻译，生成本任务公告术语表；已生成的公告术语表请到 STEP 4 导入。</p>
+                  <p>可选。用于从公告原文反查已有翻译，生成本任务公告术语表；已生成的公告术语表请到「术语提取」步骤导入。</p>
                   <FileBoxWithTemplate label="上传完整语言表（XLSX）" onFile={async (file) => { const artifact = await onUploadConstraint(file); if (artifact) setConstraintArtifactIds((prev) => [...new Set([artifact.id, ...prev])]) }} templateKind="announcement-language-table" />
                 </div>
               </div>
               <div className="asset-list compact-list">
                 <div className="ai-header">可选语言表</div>
                 {!constraintCandidates.length ? <div className="muted-left">当前没有可选完整语言表；可以只用项目 QA 归档继续。</div> : null}
-                {hiddenAnnouncementTermsArtifacts.length ? <div className="muted-left">已隐藏 {hiddenAnnouncementTermsArtifacts.length} 个已生成公告术语表；如需复用，请到 STEP 4 导入。</div> : null}
+                {hiddenAnnouncementTermsArtifacts.length ? <div className="muted-left">已隐藏 {hiddenAnnouncementTermsArtifacts.length} 个已生成公告术语表；如需复用，请到「术语提取」步骤导入。</div> : null}
                 {constraintCandidates.map((artifact) => (
                   <label key={artifact.id} className="check-row">
                     <input type="checkbox" checked={constraintArtifactIds.includes(artifact.id)} onChange={() => toggleConstraint(artifact.id)} />
@@ -490,7 +490,7 @@ export function AnnouncementWizard({
                 ) : null}
               </div>
               {!hasAnnouncementPreparedAiInput(activeTask) && activeTask ? (
-                <div className="muted-empty-card gap-top">还没有完成翻译准备。请先回 STEP 6 点击“生成翻译准备”。</div>
+                <div className="muted-empty-card gap-top">还没有完成翻译准备。请先回「翻译准备」步骤点击“生成翻译准备”。</div>
               ) : null}
               <details className="delivery-advanced">
                 <summary>过程文件与审计（可选）</summary>
@@ -548,7 +548,7 @@ export function AnnouncementTaskRequiredState({ step, title, onBackToStart }: { 
       <div className="empty-action-card" data-testid="announcement-task-required">
         <div>
           <strong>先创建公告任务</strong>
-          <span>公告翻译按单个源文档推进。请先在 STEP 1 上传公告源文档并创建任务，后续步骤才会保存约束、语言、术语和交付产物。</span>
+          <span>公告翻译按单个源文档推进。请先在「公告资料」步骤上传公告源文档并创建任务，后续步骤才会保存约束、语言、术语和交付产物。</span>
         </div>
         <button className="btn btn-primary btn-sm" onClick={onBackToStart}>回到公告资料</button>
       </div>
@@ -636,7 +636,7 @@ export function AnnouncementTermsStep({
       <>
         <div className="panel-title"><span className="badge">STEP 4</span>术语提取</div>
         <div className="panel-desc">从公告原文中提取本次需要的术语，生成任务内临时术语表；可导出、上传已有提取结果模拟、编辑后保存，不自动写回项目术语库。</div>
-        <div className="warn-line">请先在 STEP 1 创建公告任务。</div>
+        <div className="warn-line">请先在「公告资料」步骤创建公告任务。</div>
       </>
     )
   }
@@ -665,7 +665,7 @@ export function AnnouncementTermsStep({
         <div className="announcement-terms-empty">
           <div>
             <strong>没有命中可确认术语</strong>
-            <span>这不是失败。可以手动新增术语、导入已提取术语表，或直接进入 STEP 5 做译文反查。</span>
+            <span>这不是失败。可以手动新增术语、导入已提取术语表，或直接进入「译文反查」步骤做译文反查。</span>
           </div>
           <div className="row-actions wrap">
             <button className="btn btn-primary" disabled={busy} onClick={addTerm}>+ 新增术语</button>
@@ -787,7 +787,7 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
     <>
       <div className="panel-title"><span className="badge">STEP 9</span>交付</div>
       <div className="panel-desc">生成公告交付总包：只包含按语言分目录的成品和 QA 摘要；过程文件留在高级区域，不放进最终交付。</div>
-      {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
+      {!activeTask ? <div className="warn-line">请先在「公告资料」步骤创建公告任务。</div> : null}
       <AnnouncementTaskSnapshot task={activeTask} />
       {hardBlockers > 0 && !delivered ? (
         <div className="warn-line">
@@ -859,10 +859,10 @@ export function AnnouncementActionStep({
     <>
       <div className="panel-title"><span className="badge">STEP {step}</span>{title}</div>
       <div className="panel-desc">{desc}</div>
-      {!activeTask ? <div className="warn-line">请先在 STEP 1 创建公告任务。</div> : null}
+      {!activeTask ? <div className="warn-line">请先在「公告资料」步骤创建公告任务。</div> : null}
       <AnnouncementTaskSnapshot task={activeTask} />
       {step === 8 && hardBlockers > 0 ? (
-        <div className="warn-line">检测到 {hardBlockers} 个 严重问题。系统已保留回填文件，可以下载 QA 摘要查看问题；也可以继续到 STEP 9 生成带 QA 摘要的交付包。</div>
+        <div className="warn-line">检测到 {hardBlockers} 个 严重问题。系统已保留回填文件，可以下载 QA 摘要查看问题；也可以继续到「交付」步骤生成带 QA 摘要的交付包。</div>
       ) : null}
       {step === 8 && qaSummaryArtifacts.length ? (
         <div className="row-actions">
@@ -998,7 +998,7 @@ export function ArtifactLinks({ artifacts, kinds }: { artifacts: Artifact[]; kin
     <div className="asset-list">
       <div className="ai-header">准备产物下载（可选）</div>
       <div className="panel-desc">正常走 API 翻译时不用下载；需要人工检查、外部协作或复盘审计时再下载。</div>
-      {!filtered.length ? <div className="warn-line">准备产物尚未生成，请先完成 STEP 6。</div> : null}
+      {!filtered.length ? <div className="warn-line">准备产物尚未生成，请先完成「翻译准备」步骤。</div> : null}
       {filtered.map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
     </div>
   )

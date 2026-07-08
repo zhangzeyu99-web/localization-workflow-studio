@@ -12,12 +12,12 @@ export function providerLabel(settings: AppSettings | null | undefined): string 
 }
 
 export function aiProviderConfigurationReminder(settings: AppSettings | null | undefined): string {
-  if (!settings) return '模型配置尚未加载，请稍后重试；线上环境请检查 settings.local.json。'
+  if (!settings) return '模型配置尚未加载，请稍后重试；如果反复出现，请打开「设置」确认 API 配置是否已保存。'
   if (!FORMAL_AI_PROVIDERS.includes(String(settings.provider))) {
     return '还没有选择可用的 AI 服务商。请先配置 GPT、GPT 中转站或 Claude。'
   }
   if (settings.provider !== 'test-fake' && !settings.api_key) {
-    return `还没有配置 ${providerLabel(settings)} API 密钥。本地可在设置里填写；线上请由部署配置写入 settings.local.json。`
+    return `还没有配置 ${providerLabel(settings)} API 密钥。请打开「设置」填写并保存；如果这是团队共用的线上部署，请联系管理员完成 API 配置后再试。`
   }
   return ''
 }

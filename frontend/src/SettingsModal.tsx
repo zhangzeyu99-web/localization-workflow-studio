@@ -9,7 +9,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState('')
-  const apiKeyPlaceholder = settings?.api_key === 'configured' ? '已配置；留空不修改' : '写入本机 settings.local.json'
+  const apiKeyPlaceholder = settings?.api_key === 'configured' ? '已配置；留空不修改' : '首次配置：填写后点击保存'
 
   useEffect(() => {
     api<Record<string, unknown>>('/api/settings').then((loaded) => {
@@ -76,10 +76,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             <span>推理强度</span>
             <select name="reasoning_effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>
               <option value="">跟随预设</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+              <option value="xhigh">极高</option>
             </select>
           </label>
           <label className="settings-wide">

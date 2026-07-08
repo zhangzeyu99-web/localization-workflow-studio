@@ -165,7 +165,7 @@ test('user can complete the EN localization workflow from project tabs', async (
   await page.getByTestId('formal-translate').click()
   await expect(inlineStatus(page, 'EN 翻译和 QA 已通过，最终产物已归档。')).toBeVisible({ timeout: 120000 })
   await expect(page.getByText('最近翻译任务')).toBeVisible()
-  await expect(page.getByText('passed').first()).toBeVisible()
+  await expect(page.getByText('已通过').first()).toBeVisible()
 
   await page.getByRole('button', { name: '🔧 校对' }).click()
   await expect(page.locator('.qa-current-card')).toContainText('QA 已通过')
@@ -199,7 +199,7 @@ test('real project formal translation is blocked without configured API credenti
   await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeDisabled()
   await expect(page.locator('.warn-line', { hasText: 'API' })).toBeVisible()
-  await expect(page.locator('.warn-line', { hasText: 'settings.local.json' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: '设置' })).toBeVisible()
 })
 
 test('announcement AI translation shows API reminder when provider is not configured', async ({ page, request }) => {
@@ -230,7 +230,7 @@ test('announcement AI translation shows API reminder when provider is not config
   await page.locator('.announcement-steps .step-item').nth(6).click()
   await expect(page.locator('.panel-title', { hasText: 'AI 翻译' })).toBeVisible()
   await expect(page.locator('.warn-line', { hasText: '需要先配置 API' })).toBeVisible()
-  await expect(page.locator('.warn-line', { hasText: 'settings.local.json' })).toBeVisible()
+  await expect(page.locator('.warn-line', { hasText: '设置' })).toBeVisible()
   await expect(page.getByRole('button', { name: /^AI\s?\u7ffb\u8bd1$/ })).toBeDisabled()
 })
 
@@ -905,7 +905,7 @@ wb.close()
   await page.getByTestId('run-qa').click()
   await expect(inlineStatus(page, '已有译文 QA 通过')).toBeVisible({ timeout: 60000 })
   await expect(page.locator('.qa-current-card')).toContainText('QA 已通过')
-  await expect(page.locator('.tag-done', { hasText: '已通过' }).first()).toBeVisible()
+  await expect(page.locator('.qa-current-card .tag-done', { hasText: '已通过' }).first()).toBeVisible()
   await page.getByRole('button', { name: '📥 交付' }).click()
   await expect(page.locator('.delivery-head span', { hasText: /QA-[0-9a-f]{6}/ }).first()).toBeVisible({ timeout: 30000 })
   await page.getByRole('button', { name: '\u751f\u6210\u4ea4\u4ed8\u6587\u4ef6' }).click()
