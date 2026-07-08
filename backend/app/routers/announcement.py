@@ -246,14 +246,15 @@ def translate_project_announcement(task_id: str, payload: AnnouncementTaskTransl
 
 def _start_announcement_translation_background(task_id: str, payload: AnnouncementTaskTranslateRequest) -> dict[str, Any]:
     try:
-        task = get_announcement_task(task_id)
+        get_announcement_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc
     active = active_job_id()
     job_id = f"announcement:{task_id}"
     if active and active != job_id:
         raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active}")
-    db.update_announcement_task(task_id, status="queued", current_step=7, metadata={**(task.get("metadata") or {}), "queued_at": db.now_iso()})
+    db.merge_announcement_task_metadata(task_id, {"queued_at": db.now_iso()})
+    db.update_announcement_task(task_id, status="queued", current_step=7)
 
     def worker(cancel_event: Any) -> None:
         try:
@@ -262,7 +263,8 @@ def _start_announcement_translation_background(task_id: str, payload: Announceme
             try:
                 current = db.get_announcement_task(task_id)
                 if current.get("status") not in {"translated", "canceled", "needs_input", "awaiting_ai_response", "prepared"}:
-                    db.update_announcement_task(task_id, status="failed", current_step=7, metadata={**(current.get("metadata") or {}), "error": user_facing_error(exc)})
+                    db.merge_announcement_task_metadata(task_id, {"error": user_facing_error(exc)})
+                    db.update_announcement_task(task_id, status="failed", current_step=7)
             except Exception:
                 pass
 

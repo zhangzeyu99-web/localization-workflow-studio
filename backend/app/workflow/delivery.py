@@ -743,7 +743,7 @@ def _update_large_text_retro_after_delivery(
         origin="generated",
     )
     large_text_state["retro_artifact_id"] = retro_artifact["id"]
-    db.update_run(run_id, metadata={**current_metadata, "large_text": large_text_state})
+    db.merge_run_metadata(run_id, {"large_text": large_text_state})
 
 
 def _write_empty_workbook(path: Path, headers: list[str], note: str) -> None:

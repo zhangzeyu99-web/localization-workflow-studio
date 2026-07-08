@@ -103,10 +103,10 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
             except Exception as exc:
                 try:
                     current = db.get_run(run["id"])
+                    db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})
                     db.update_run(
                         run["id"],
                         status=current.get("status") if current.get("status") in TERMINAL_STATUSES else "failed",
-                        metadata={**current.get("metadata", {}), "error": user_facing_error(exc)},
                     )
                 except Exception:
                     pass
@@ -164,8 +164,8 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
                 run_qa_sync(run["id"])
             except Exception as exc:
                 try:
-                    current = db.get_run(run["id"])
-                    db.update_run(run["id"], status="failed", metadata={**current.get("metadata", {}), "error": user_facing_error(exc)})
+                    db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})
+                    db.update_run(run["id"], status="failed")
                 except Exception:
                     pass
 

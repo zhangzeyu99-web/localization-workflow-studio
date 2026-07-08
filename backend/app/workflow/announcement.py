@@ -246,12 +246,14 @@ def run_announcement_lookup(project_id: str, request: Any) -> dict[str, Any]:
             db.add_artifact(project_id, f"Announcement lookup prompt context ({lang_code})", prompt_path, "announcement_lookup_prompt_context", run_id=run["id"], mime="text/plain", metadata=artifact_metadata),
         ]
         db.add_event(run["id"], f"announcement lookup matched terms={len(matched_terms)} translations={len(matched_translations)}")
-        run = db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary, "manifest_path": str(manifest_path)})
+        db.merge_run_metadata(run["id"], {"summary": summary, "manifest_path": str(manifest_path)})
+        run = db.update_run(run["id"], status="passed")
         return {"run": run, "summary": summary, "artifacts": artifacts, "manifest": manifest}
     except Exception as exc:
         friendly = user_facing_error(exc)
         db.add_event(run["id"], f"announcement lookup failed: {friendly}", level="error")
-        db.update_run(run["id"], status="failed", metadata={**run.get("metadata", {}), "error": friendly})
+        db.merge_run_metadata(run["id"], {"error": friendly})
+        db.update_run(run["id"], status="failed")
         raise
 
 
@@ -470,7 +472,8 @@ def extract_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
     for language in languages:
         missing = sum(1 for row in rows if not str((row.get("translations") or {}).get(language) or "").strip())
         db.upsert_announcement_task_language(task_id, project_id, language, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], metadata={"terms": len(rows), "missing_terms": missing})
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary, "task_id": task_id})
+    db.merge_run_metadata(run["id"], {"summary": summary, "task_id": task_id})
+    db.update_run(run["id"], status="passed")
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
 
 
@@ -553,7 +556,8 @@ def lookup_announcement_translations(task_id: str, request: Any) -> dict[str, An
     artifacts.append(db.add_artifact(task["project_id"], "公告译文反查 manifest", manifest_path, "announcement_lookup_manifest", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages}))
     metadata.update({"lookup": lookup, "lookup_manifest_artifact_id": artifacts[-1]["id"], "lookup_summary": summary})
     task = db.update_announcement_task(task_id, status="lookup_ready", current_step=ANNOUNCEMENT_STEP["prepare"], selected_languages=languages, metadata=metadata)
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary})
+    db.merge_run_metadata(run["id"], {"summary": summary})
+    db.update_run(run["id"], status="passed")
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
 
 
@@ -599,7 +603,8 @@ def prepare_announcement_translation(task_id: str, request: Any) -> dict[str, An
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status="prepared", current_step=ANNOUNCEMENT_STEP["translate"], metadata={"workpack_artifact_id": workpack_artifact["id"], "prompt_artifact_id": prompts[language], "translation_workbook_artifact_id": artifacts[0]["id"]})
     metadata.update({"segments": segments, "prepare_run_id": run["id"], "translation_workbook_artifact_id": artifacts[0]["id"], "manifest_artifact_id": artifacts[1]["id"], "workpack_artifact_ids": workpacks, "prompt_artifact_ids": prompts})
     task = db.update_announcement_task(task_id, status="prepared", current_step=ANNOUNCEMENT_STEP["translate"], selected_languages=languages, metadata=metadata)
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": {"segments": len(segments), "languages": languages}})
+    db.merge_run_metadata(run["id"], {"summary": {"segments": len(segments), "languages": languages}})
+    db.update_run(run["id"], status="passed")
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"segments": len(segments), "languages": languages}, "artifacts": artifacts, "manifest": manifest}
 
 
@@ -658,8 +663,8 @@ async def _translate_announcement_task(task_id: str, request: Any, cancel_event:
         response_artifacts[language] = artifact["id"]
         artifacts.append(artifact)
     import_result = import_announcement_ai_response(task_id, _SimpleRequest(languages=languages, response_artifacts_by_language=response_artifacts))
-    metadata = _announcement_task_metadata(db.get_announcement_task(task_id))
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "response_artifact_ids": response_artifacts})
+    db.merge_run_metadata(run["id"], {"response_artifact_ids": response_artifacts})
+    db.update_run(run["id"], status="passed")
     return {"task": import_result["task"], "run": db.get_run(run["id"]), "summary": {"status": "translated", "languages": languages}, "artifacts": [*artifacts, *import_result.get("artifacts", [])]}
 
 
@@ -747,7 +752,8 @@ def apply_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
         "auto_fixed_hard_blockers": auto_fixed_count,
     })
     task = db.update_announcement_task(task_id, status="applied", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "outputs": output_artifacts, "hard_blockers": hard_blockers, "auto_fixed_hard_blockers": auto_fixed_count})
+    db.merge_run_metadata(run["id"], {"outputs": output_artifacts, "hard_blockers": hard_blockers, "auto_fixed_hard_blockers": auto_fixed_count})
+    db.update_run(run["id"], status="passed")
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"hard_blockers": hard_blockers, "auto_fixed": auto_fixed_count, "can_deliver": True, "languages": languages}, "artifacts": artifacts}
 
 
@@ -792,7 +798,8 @@ def fix_announcement_hard_blockers(task_id: str, request: Any) -> dict[str, Any]
         "hardblock_fix_count": fixed_count,
     })
     task = db.update_announcement_task(task_id, status="translated", current_step=ANNOUNCEMENT_STEP["apply"], metadata=metadata)
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "fixed_count": fixed_count, "fixed_artifact_id": fixed_artifact["id"]})
+    db.merge_run_metadata(run["id"], {"fixed_count": fixed_count, "fixed_artifact_id": fixed_artifact["id"]})
+    db.update_run(run["id"], status="passed")
 
     apply_request = _SimpleRequest(languages=languages, translation_workbook_artifact_id=fixed_artifact["id"])
     try:
@@ -875,7 +882,8 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     task = db.update_announcement_task(task_id, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
     for language in languages:
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"])
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "delivery_artifact_id": artifact["id"], "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers})
+    db.merge_run_metadata(run["id"], {"delivery_artifact_id": artifact["id"], "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers})
+    db.update_run(run["id"], status="passed")
     return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"], "date_stamp": stamp, "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers}, "artifacts": [artifact]}
 
 
@@ -1025,7 +1033,8 @@ def generate_announcement_terms_package(project_id: str, request: Any) -> dict[s
         if response_artifact:
             summary["ai_supplement"]["response_artifact_id"] = response_artifact["id"]
         summary["ai_supplement"]["report_artifact_id"] = report_artifact["id"]
-    db.update_run(run["id"], status="passed", metadata={**run.get("metadata", {}), "summary": summary})
+    db.merge_run_metadata(run["id"], {"summary": summary})
+    db.update_run(run["id"], status="passed")
     return {"run": db.get_run(run["id"]), "summary": summary, "artifacts": artifacts, "manifest": manifest}
 
 
@@ -1046,7 +1055,7 @@ def legacy_prepare_announcement_docx(project_id: str, request: Any) -> dict[str,
     lookup_announcement_translations(task["id"], _SimpleRequest(languages=create_request.languages, include_project_archive=False))
     prepared = prepare_announcement_translation(task["id"], _SimpleRequest(languages=create_request.languages))
     run = prepared["run"]
-    db.update_run(run["id"], metadata={**run.get("metadata", {}), "task_id": task["id"], "legacy_prepare": True})
+    db.merge_run_metadata(run["id"], {"task_id": task["id"], "legacy_prepare": True})
     artifacts = []
     for artifact in prepared["artifacts"]:
         if artifact["kind"] == "announcement_translation_workbook":

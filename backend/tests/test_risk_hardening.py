@@ -735,6 +735,30 @@ def test_persistent_long_text_lease_allows_single_running_job_and_cancel() -> No
     assert db.acquire_job_lease("long_text", "job_b")
 
 
+def test_cancel_translation_run_matches_run_prefixed_lease_job_id() -> None:
+    """Regression test: routers/runs.py stores the lease under job_id=f"run:{run_id}",
+    so cancel_translation_run must cancel that same job_id, not the bare run_id
+    (which never matches and previously left the lease's cancel_requested unset).
+    """
+    import app.workflow.translation as translation
+
+    project = db.insert_project("cancel lease matching", "QA", "")
+    run = db.insert_run(project["id"], "translation", "en", metadata={})
+    run_id = run["id"]
+
+    assert db.acquire_job_lease("long_text", f"run:{run_id}")
+
+    translation.cancel_translation_run(run_id)
+
+    lease = db.get_job_lease("long_text")
+    assert lease["job_id"] == f"run:{run_id}"
+    assert lease["cancel_requested"] is True
+
+    updated = db.get_run(run_id)
+    assert updated["status"] == "canceled"
+    assert updated["metadata"]["cancel_requested_at"]
+
+
 def test_core_python_files_do_not_have_utf8_bom() -> None:
     for relative in ("backend/app/config.py", "backend/app/workflow/common.py"):
         assert not Path(relative).read_bytes().startswith(b"\xef\xbb\xbf")

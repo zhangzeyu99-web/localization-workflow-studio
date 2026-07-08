@@ -140,8 +140,8 @@ def _start_translation_background(run_id: str, payload: TranslateRequest) -> dic
         raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active}")
     if run["status"] == "running" and active == job_id:
         return get_run(run_id)
-    metadata = run.get("metadata", {})
-    db.update_run(run_id, status="queued", metadata={**metadata, "queued_at": db.now_iso()})
+    db.merge_run_metadata(run_id, {"queued_at": db.now_iso()})
+    db.update_run(run_id, status="queued")
 
     def worker(cancel_event: Any) -> None:
         try:
@@ -150,14 +150,16 @@ def _start_translation_background(run_id: str, payload: TranslateRequest) -> dic
             try:
                 current = db.get_run(run_id)
                 if current.get("status") not in {"failed", "canceled", "needs_input", "passed"}:
-                    db.update_run(run_id, status="failed", metadata={**current.get("metadata", {}), "error": user_facing_error(exc)})
+                    db.merge_run_metadata(run_id, {"error": user_facing_error(exc)})
+                    db.update_run(run_id, status="failed")
             except Exception:
                 pass
 
     started, active_conflict = start_singleton_job(job_id, worker)
     if not started and active_conflict:
         run = db.get_run(run_id)
-        db.update_run(run_id, status=run.get("status") or "created", metadata={**run.get("metadata", {}), "queue_error": f"active job: {active_conflict}"})
+        db.merge_run_metadata(run_id, {"queue_error": f"active job: {active_conflict}"})
+        db.update_run(run_id, status=run.get("status") or "created")
         raise HTTPException(status_code=409, detail=f"another long-text AI job is active: {active_conflict}")
     db.add_event(run_id, "translation background job started")
     return get_run(run_id)

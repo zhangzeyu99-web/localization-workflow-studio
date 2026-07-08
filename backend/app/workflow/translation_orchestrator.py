@@ -108,8 +108,8 @@ def _translation_progress(
 
 
 def _update_translation_progress(run_id: str, progress: dict[str, Any], status: str = "running") -> None:
-    current = db.get_run(run_id)
-    db.update_run(run_id, status=status, metadata={**current.get("metadata", {}), "translation_progress": progress})
+    db.merge_run_metadata(run_id, {"translation_progress": progress})
+    db.update_run(run_id, status=status)
 
 
 def _terminal_translation_progress(progress: Any, status: str) -> Any:
@@ -282,12 +282,9 @@ async def _translate_rows_with_orchestration(
     budget_warning_tokens = int(settings.get("api_budget_warning_tokens") or 1000000)
     estimated_total = int(manifest.get("estimated_total_input_tokens") or 0)
     if estimated_total > budget_warning_tokens and not confirm_api_budget:
-        current = db.get_run(run_id)
-        db.update_run(
+        db.merge_run_metadata(
             run_id,
-            status="needs_input",
-            metadata={
-                **current.get("metadata", {}),
+            {
                 "reason": "api_budget_confirmation_required",
                 "api_budget_estimate": {
                     "estimated_input_tokens": estimated_total,
@@ -297,6 +294,7 @@ async def _translate_rows_with_orchestration(
                 "translation_progress": _manifest_progress(manifest, batch_size=batch_size, started_at=time.monotonic()),
             },
         )
+        db.update_run(run_id, status="needs_input")
         db.add_event(run_id, f"translation paused for API budget confirmation: estimated_input_tokens={estimated_total}, warning={budget_warning_tokens}", level="warning")
         return []
 

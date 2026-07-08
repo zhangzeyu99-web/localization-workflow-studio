@@ -23,7 +23,8 @@ from .translation_orchestrator import _translate_rows_with_orchestration
 
 def _quick_text_empty_result(run_id: str, metadata: dict[str, Any], readiness: dict[str, Any]) -> dict[str, Any]:
     reason = "TXT 文件没有检测到可翻译文本。"
-    db.update_run(run_id, status="needs_input", metadata={**metadata, "reason": reason, "translation_readiness": readiness})
+    db.merge_run_metadata(run_id, {"reason": reason, "translation_readiness": readiness})
+    db.update_run(run_id, status="needs_input")
     db.add_event(run_id, reason)
     return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
 
@@ -200,12 +201,9 @@ def _finish_quick_text_run(
     if prompt_context["reference_snapshot"]:
         input_artifacts["quick_reference_snapshot"] = prompt_context["reference_snapshot"]["artifact"]["id"]
     quality_summary = {"passed": True, "hard_errors": 0, "soft_warnings": 0, "rows": len(rows), "format": input_path.suffix.lower().lstrip(".") or "txt"}
-    final_metadata = db.get_run(run_id).get("metadata", {})
-    db.update_run(
+    db.merge_run_metadata(
         run_id,
-        status="passed",
-        metadata={
-            **final_metadata,
+        {
             "task_origin": metadata.get("task_origin") or "quick_task",
             "input_artifacts": input_artifacts,
             "quality_summary": quality_summary,
@@ -216,6 +214,7 @@ def _finish_quick_text_run(
             "output_format": input_path.suffix.lower().lstrip(".") or "txt",
         },
     )
+    db.update_run(run_id, status="passed")
     db.add_event(run_id, f"quick TXT translation finished: rows={len(rows)}, output={artifacts['output_path'].name}")
     return {
         "run": db.get_run(run_id),

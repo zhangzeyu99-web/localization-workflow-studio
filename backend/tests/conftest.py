@@ -11,13 +11,25 @@ os.environ.setdefault("LWS_ENABLE_TEST_PROVIDER", "1")
 
 
 def wait_for_background_jobs(timeout: float = 5.0) -> None:
+    """Wait for the active background job (if any) to finish.
+
+    Lets the job complete naturally first so tests that start a job and then
+    call this helper to await its normal completion aren't racing a forced
+    cancellation against the worker thread's own progress. Only falls back to
+    ``cancel_event.set()`` if the job is still running after the grace period,
+    as a safety net for cleanup callers (e.g. ``reset_data_root``) that need
+    to unblock a stuck/long-running job before tearing down the data dir.
+    """
     try:
         import app.jobs as jobs
     except Exception:
         return
     with jobs._LOCK:  # type: ignore[attr-defined]
         active = jobs._ACTIVE_JOB  # type: ignore[attr-defined]
-    if active and active.thread.is_alive():
+    if not active or not active.thread.is_alive():
+        return
+    active.thread.join(timeout)
+    if active.thread.is_alive():
         active.cancel_event.set()
         active.thread.join(timeout)
 
