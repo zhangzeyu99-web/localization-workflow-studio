@@ -17,7 +17,7 @@ from .announcement_outputs import _announcement_task_source_stem, _artifact_disp
 from .announcement_segments import _normalize_announcement_languages
 from .asset_import_export import archive_translation_artifact
 from .common import project_dir
-from .large_text import readback_gate_files
+from .large_text import readback_gate_files, render_large_text_retro
 from .qa import _first_col, _row_cell, write_qa_changes_report
 from .subprocess_runner import user_facing_error
 
@@ -642,7 +642,51 @@ def _run_delivery_readback_gate(
     )
     if not readback["readback_verified"]:
         raise ValueError(f"交付读回门禁未通过：{readback['hard_blockers']} 个硬错误")
+    if run_id:
+        _update_large_text_retro_after_delivery(project_id, run_id, label_prefix, final_path, readback, readback_artifact)
     return readback_artifact
+
+
+def _update_large_text_retro_after_delivery(
+    project_id: str,
+    run_id: str,
+    label_prefix: str,
+    final_path: Path,
+    readback: dict[str, Any],
+    readback_artifact: dict[str, Any],
+) -> None:
+    current = db.get_run(run_id)
+    current_metadata = current.get("metadata") or {}
+    large_text_state = dict(current_metadata.get("large_text") or {})
+    if not large_text_state:
+        return
+    large_text_state["readback_gate"] = {
+        "status": "passed" if readback["readback_verified"] else "failed",
+        "hard_blockers": readback["hard_blockers"],
+        "artifact_id": readback_artifact["id"],
+    }
+    retro_text = render_large_text_retro(
+        {
+            "task": label_prefix,
+            "translation_progress": current_metadata.get("translation_progress") or {},
+            "preflight": large_text_state.get("preflight") or {},
+            "cache_lint": large_text_state.get("cache_lint") or {"status": "skipped", "reason": "not provided"},
+            "readback_gate": large_text_state["readback_gate"],
+        }
+    )
+    retro_path = final_path.parent / f"{final_path.stem}_retro.md"
+    retro_path.write_text(retro_text, encoding="utf-8")
+    retro_artifact = db.add_artifact(
+        project_id,
+        f"{label_prefix} retro",
+        retro_path,
+        "large_text_retro",
+        run_id=run_id,
+        mime="text/markdown",
+        origin="generated",
+    )
+    large_text_state["retro_artifact_id"] = retro_artifact["id"]
+    db.update_run(run_id, metadata={**current_metadata, "large_text": large_text_state})
 
 
 def _write_empty_workbook(path: Path, headers: list[str], note: str) -> None:

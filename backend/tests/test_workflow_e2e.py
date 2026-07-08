@@ -2295,6 +2295,9 @@ def test_string_ids_run_through_translation_and_qa(tmp_path: Path) -> None:
         assert result["run"]["status"] == "passed"
         assert result["run"]["metadata"]["translation_archive"]["imported_count"] == 2
         assert result["run"]["metadata"]["translation_readiness"]["invalid_id_rows"] == 0
+        assert result["run"]["metadata"]["large_text"]["retro_artifact_id"]
+        artifact_kinds = {artifact["kind"] for artifact in result["artifacts"]}
+        assert "large_text_retro" in artifact_kinds
         final_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "qa_final_workbook")
 
         final_wb = load_workbook(final_artifact["path"], read_only=True, data_only=True)
@@ -2307,6 +2310,13 @@ def test_string_ids_run_through_translation_and_qa(tmp_path: Path) -> None:
 
         archived = client.get(f"/api/projects/{project['id']}/translations").json()
         assert [entry["entry_key"] for entry in archived] == ["M-001", "M-002"]
+
+        package_response = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}")
+        assert package_response.status_code == 200, package_response.text
+        delivered_run = client.get(f"/api/runs/{run['id']}").json()
+        large_text_after_delivery = delivered_run["metadata"]["large_text"]
+        assert large_text_after_delivery["readback_gate"]["status"] == "passed"
+        assert large_text_after_delivery["retro_artifact_id"]
 
 
 def test_glossary_and_translation_archive_are_language_scoped(tmp_path: Path) -> None:

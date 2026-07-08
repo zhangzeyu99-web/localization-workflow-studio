@@ -24,6 +24,7 @@ from .large_text import (
     build_translation_cache_rows,
     cache_lint_rows,
     normalize_large_text_mode,
+    render_large_text_retro,
 )
 from .translation_orchestrator import (
     _terminal_translation_progress,
@@ -510,6 +511,29 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         db.add_event(run_id, f"translation run finished: status={status}")
         final_metadata = db.get_run(run_id).get("metadata", {})
         final_progress = _terminal_translation_progress(final_metadata.get("translation_progress"), status)
+        large_text_state = dict(final_metadata.get("large_text") or {})
+        retro_text = render_large_text_retro(
+            {
+                "task": project["name"],
+                "translation_progress": final_progress if isinstance(final_progress, dict) else {},
+                "preflight": large_text_state.get("preflight") or {},
+                "cache_lint": large_text_state.get("cache_lint") or {"status": "skipped", "reason": "not provided"},
+                "readback_gate": large_text_state.get("readback_gate") or {"status": "skipped", "reason": "delivery not generated yet"},
+            }
+        )
+        retro_path = work_dir / "large_text_retro.md"
+        retro_path.write_text(retro_text, encoding="utf-8")
+        retro_artifact = db.add_artifact(
+            project["id"],
+            "Large text retro",
+            retro_path,
+            "large_text_retro",
+            run_id=run_id,
+            mime="text/markdown",
+            origin="generated",
+        )
+        large_text_state["retro_artifact_id"] = retro_artifact["id"]
+        artifacts.append(retro_artifact)
         db.update_run(
             run_id,
             status=status,
@@ -533,6 +557,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
                 "batch_size": batch_size,
                 "translation_readiness": readiness,
                 "translation_archive": archive_result,
+                "large_text": large_text_state,
             },
         )
         return {
