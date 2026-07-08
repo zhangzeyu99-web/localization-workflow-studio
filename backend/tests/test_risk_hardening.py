@@ -795,6 +795,35 @@ def test_error_responses_do_not_leak_traceback_or_server_paths(monkeypatch: pyte
         _assert_error_detail_is_safe(crashed.json()["detail"])
 
 
+@pytest.mark.parametrize(
+    ("headers", "rows", "expected"),
+    [
+        # Glossary-shaped file: term-like columns, few rows.
+        (["ID", "CN", "EN", "分类", "note"], 3, False),
+        # Exactly at the 1000-source-row threshold: classifier requires MORE than threshold.
+        (["ID", "CN", "KR"], 1000, False),
+        # Just above the threshold: complete language table.
+        (["ID", "CN", "KR"], 1001, True),
+        # Many rows but no target language column: not a language table.
+        (["ID", "CN"], 1001, False),
+    ],
+)
+def test_complete_language_table_classifier_boundary(tmp_path: Path, headers: list[str], rows: int, expected: bool) -> None:
+    from app.workflow.asset_import_export import is_complete_language_table_for_glossary_import
+
+    path = tmp_path / "classifier-input.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(headers)
+    for index in range(1, rows + 1):
+        ws.append([index, f"源文 {index}"] + [""] * (len(headers) - 2))
+    wb.save(path)
+    wb.close()
+
+    assert is_complete_language_table_for_glossary_import(path) is expected
+
+
 def test_deployment_check_frontend_asset_comparison(tmp_path: Path) -> None:
     import importlib.util
 

@@ -40,6 +40,41 @@ test('project list refreshes after an external project is created', async ({ pag
   await expect(page.getByRole('heading', { name: firstProjectName })).toBeVisible()
 })
 
+test('deleting the active project refreshes the list and lands on a surviving project', async ({ page, request }) => {
+  const keepName = `E2E Delete Keep ${Date.now()}`
+  const removeName = `E2E Delete Active ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: keepName, type: 'delete-e2e', description: 'Survives the deletion.' },
+  })
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: removeName, type: 'delete-e2e', description: 'Deleted while active.' },
+  })
+
+  await page.goto(baseURL)
+  const removeButton = page.getByRole('button', { name: removeName })
+  await expect(removeButton).toBeVisible({ timeout: 15000 })
+  await removeButton.click()
+  await expect(page.getByRole('heading', { name: removeName })).toBeVisible()
+
+  // Long-press guard: hold pointer down on the project item; after 850ms the delete modal opens.
+  await removeButton.hover()
+  await page.mouse.down()
+  await expect(page.getByRole('alertdialog')).toBeVisible({ timeout: 5000 })
+  await page.mouse.up()
+
+  await expect(page.getByRole('heading', { name: '⚠️ 删除项目' })).toBeVisible()
+  await page.getByRole('button', { name: '确认删除' }).click()
+
+  // The status toast is transient (background polling overwrites it), so assert durable outcomes.
+  await expect(page.getByRole('alertdialog')).toHaveCount(0, { timeout: 15000 })
+  await expect(page.getByRole('button', { name: removeName })).toHaveCount(0, { timeout: 15000 })
+  await expect(page.getByRole('button', { name: keepName })).toBeVisible()
+  await expect(page.getByRole('heading', { name: removeName })).toHaveCount(0)
+  // App must land on another project view, not a dead/blank state.
+  await expect(page.getByRole('heading', { name: keepName })).toBeVisible({ timeout: 15000 })
+  await expect(page.locator('.stat-grid')).toContainText('语言包任务')
+})
+
 test('user can complete the EN localization workflow from project tabs', async ({ page, request }) => {
   await request.patch(`${baseURL}/api/settings`, {
     data: {
