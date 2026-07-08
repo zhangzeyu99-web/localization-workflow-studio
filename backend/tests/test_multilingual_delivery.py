@@ -109,11 +109,16 @@ def test_single_delivery_writes_readback_gate_artifact(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    readback_file = next(item for item in payload["files"] if item["kind"] == "readback_gate")
-    with open(readback_file["path"], encoding="utf-8") as handle:
+    # Delivery files stay "final files + QA summary" only; the readback gate
+    # result is stored as a workbench artifact, not packed into delivery.
+    assert all(item["kind"] != "readback_gate" for item in payload["files"])
+    gate_artifacts = [item for item in db.list_artifacts(run_id=run["id"]) if item["kind"] == "delivery_readback_gate"]
+    assert gate_artifacts
+    with open(gate_artifacts[0]["path"], encoding="utf-8") as handle:
         gate_result = json.load(handle)
     assert gate_result["readback_verified"] is True
     assert gate_result["hard_blockers"] == 0
+    assert "delivery" not in Path(gate_artifacts[0]["path"]).parent.parts
 
 
 def test_single_delivery_blocks_when_final_workbook_has_blank_target_cell(tmp_path: Path) -> None:
@@ -159,8 +164,11 @@ def test_merged_delivery_writes_readback_gate_artifact(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    readback_file = next(item for item in payload["files"] if item["kind"] == "readback_gate")
-    with open(readback_file["path"], encoding="utf-8") as handle:
+    assert all(item["kind"] != "readback_gate" for item in payload["files"])
+    merged_final = next(item for item in payload["files"] if item["kind"] == "merged_final")
+    merged_artifact = db.get_artifact(merged_final["artifact_id"])
+    gate_artifact = db.get_artifact(merged_artifact["metadata"]["readback_gate_artifact_id"])
+    with open(gate_artifact["path"], encoding="utf-8") as handle:
         gate_result = json.load(handle)
     assert gate_result["readback_verified"] is True
 

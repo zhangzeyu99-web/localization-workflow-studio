@@ -218,7 +218,7 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
         empty_changes = write_qa_changes_report(output_dir, [])
         empty_changes.replace(changes_path)
 
-    readback_artifact = _run_delivery_readback_gate(
+    _run_delivery_readback_gate(
         project_id,
         project["name"],
         final_path,
@@ -230,7 +230,6 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     summary["files"] = {
         "final": _delivery_file("final", final_path),
         "changes": _delivery_file("changes", changes_path),
-        "readback_gate": _delivery_file("readback_gate", Path(readback_artifact["path"])),
     }
     archive_result = _archive_delivery_translation(project_id, run, final_source)
     return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values()), "archive": archive_result}
@@ -323,7 +322,6 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
     files = [
         _artifact_delivery_file("merged_final", final_artifact),
         _artifact_delivery_file("qa_summary", summary_artifact),
-        _artifact_delivery_file("readback_gate", readback_artifact),
     ]
     return {
         "project_id": project_id,
@@ -619,6 +617,16 @@ def _expected_delivery_file(kind: str, path: Path) -> dict[str, str]:
     return {"kind": kind, "filename": path.name, "path": ""}
 
 
+def _delivery_gate_dir(project_id: str) -> Path:
+    # Process artifacts (readback gate JSON, retro markdown) are workbench
+    # evidence, not delivery content. Keep them out of the delivery folder so
+    # final delivery stays "final files + QA summary" only; they remain
+    # downloadable through their artifact records.
+    path = project_dir(project_id) / "qa_gates"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _run_delivery_readback_gate(
     project_id: str,
     label_prefix: str,
@@ -628,7 +636,7 @@ def _run_delivery_readback_gate(
     run_id: str | None = None,
 ) -> dict[str, Any]:
     readback = readback_gate_files([final_path], target_languages=target_languages)
-    readback_path = final_path.parent / f"{final_path.stem}_readback_gate.json"
+    readback_path = _delivery_gate_dir(project_id) / f"{final_path.stem}_readback_gate.json"
     readback_path.write_text(json.dumps(readback, ensure_ascii=False, indent=2), encoding="utf-8")
     readback_artifact = db.add_artifact(
         project_id,
@@ -674,7 +682,7 @@ def _update_large_text_retro_after_delivery(
             "readback_gate": large_text_state["readback_gate"],
         }
     )
-    retro_path = final_path.parent / f"{final_path.stem}_retro.md"
+    retro_path = _delivery_gate_dir(project_id) / f"{final_path.stem}_retro.md"
     retro_path.write_text(retro_text, encoding="utf-8")
     retro_artifact = db.add_artifact(
         project_id,

@@ -3602,10 +3602,10 @@ def test_delivery_package_contains_only_task_outputs(tmp_path: Path) -> None:
         assert package_response.status_code == 200, package_response.text
         package = package_response.json()
         filenames = [item["filename"] for item in package["files"]]
-        assert len(filenames) == 3
+        assert len(filenames) == 2
         assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_final\.xlsx", filenames[0])
         assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_changes\.xlsx", filenames[1])
-        assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_final_readback_gate\.json", filenames[2])
+        assert not any("readback_gate" in filename for filename in filenames)
         assert not any(
             "input_copy" in filename
             or "manifest" in filename
