@@ -4,7 +4,8 @@ import { projectActivityRuns, projectRunStatusText, projectRunTitle, visibleAnno
 import { AnnouncementProjectPanel } from '../announcement/AnnouncementWorkflow'
 import { GlossaryTab, TranslationArchiveTab } from '../assets/ProjectAssetTabs'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
-import { DeliveryTab, StepQA, TranslationTab } from '../translationWizard/TranslationWizard'
+import { DeliveryTab, TranslationTab } from '../translationWizard/ProjectTabs'
+import { StepQA } from '../translationWizard/steps/StepQA'
 import { MetaTab } from './ProjectMeta'
 import type { AnnouncementTask, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryPreviewRow, GlossaryTerm, Project, ProjectHarness, ProjectTab, QualityIssue, Run, TranslationEntry, TranslationReadiness } from '../../types'
 

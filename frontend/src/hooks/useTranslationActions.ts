@@ -12,7 +12,7 @@ import {
   translationInputMode,
   translationReadinessUserMessage
 } from '../domain/translationFlow'
-import { formalTranslationBlockReason } from '../components/translationWizard/TranslationWizard'
+import { formalTranslationBlockReason } from '../components/translationWizard/translationGuards'
 import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, type LanguageCode } from '../languages'
 import type { ConfirmDialogOptions } from '../components/modals/ConfirmModal'
 import { issueCountPhrase, runStatusLabel } from '../uiText'
