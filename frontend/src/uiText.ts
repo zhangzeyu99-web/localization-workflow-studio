@@ -59,3 +59,18 @@ export function shortIdLabel(id: string, length = 8): string {
   const value = String(id || '')
   return value.length > length ? `${value.slice(0, length)}…` : value || '-'
 }
+
+// Job kinds as reported by GET /api/system/active-jobs (job_kind field,
+// see backend/app/jobs.py's _JOB_KIND_PREFIXES/describe_job_kind). Both
+// multilingual job kinds collapse into one "多语言队列" label here since the
+// active-jobs panel shows a workbench-wide glance, not a per-run detail view.
+export function activeJobKindLabel(jobKind?: string): string {
+  const labels: Record<string, string> = {
+    translation: '翻译',
+    model_fix: 'QA 修复',
+    announcement: '公告翻译',
+    multilingual_translate: '多语言队列',
+    multilingual_qa: '多语言队列',
+  }
+  return labels[String(jobKind || '')] || 'AI 任务'
+}

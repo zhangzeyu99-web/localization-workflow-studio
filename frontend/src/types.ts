@@ -503,3 +503,14 @@ export type AppView = 'overview' | 'wizard' | 'announcement' | 'quick'
 export type QuickObjective = 'translate' | 'qa'
 
 export type HistoryKind = 'translation' | 'qa' | 'all'
+
+// Mirrors GET /api/system/active-jobs (backend/app/routers/system.py); one
+// entry per currently-held per-project lease (backend/app/jobs.py).
+export type ActiveJob = {
+  lease_name: string
+  job_id: string
+  job_kind: string
+  project_id: string
+  project_name: string
+  started_at: string | null
+}

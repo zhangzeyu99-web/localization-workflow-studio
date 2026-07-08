@@ -1025,3 +1025,107 @@ wb.close()
   await skipPanel.locator('summary').click()
   await expect(skipPanel.getByRole('button', { name: '\u786e\u8ba4\u8df3\u8fc7 QA \u5e76\u5f52\u6863' })).toBeEnabled({ timeout: 15000 })
 })
+
+// --- M4: active jobs panel + queue guidance --------------------------------
+// GET /api/system/active-jobs reflects backend/app/jobs.py's per-project lease
+// registry. The test-fake provider used elsewhere in this file completes a
+// translation run (even a large one) in well under a second, so there is no
+// real window in which a genuine background job stays "running" long enough
+// for the frontend's ~9s poll to observe it. Following the same technique the
+// "interrupted translation run resumes" test above uses (page.route to control
+// backend responses deterministically), these tests intercept the active-jobs
+// endpoint and/or the translate/start conflict response so they exercise the
+// frontend's polling + rendering + inline-action logic without racing a job
+// that would already be gone by the time the page checks.
+
+test('active jobs badge stays hidden when no task is running', async ({ page }) => {
+  await page.goto(baseURL)
+  await expect(page.getByRole('heading', { name: '🎮 游戏翻译本地化 · 项目工作台' })).toBeVisible()
+  await expect(page.getByTestId('active-jobs-badge')).toHaveCount(0)
+})
+
+test('active jobs badge and panel show the running project name and task type', async ({ page, request }) => {
+  const projectName = `E2E Active Jobs ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'active-jobs', description: 'Active jobs panel smoke.' },
+  }).then((response) => response.json())
+
+  await page.route('**/api/system/active-jobs', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          lease_name: `long_text:${project.id}`,
+          job_id: 'run:run-e2e-active',
+          job_kind: 'translation',
+          project_id: project.id,
+          project_name: projectName,
+          started_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+        },
+      ]),
+    })
+  })
+
+  await page.goto(baseURL)
+  const badge = page.getByTestId('active-jobs-badge')
+  await expect(badge).toBeVisible({ timeout: 15000 })
+  await expect(badge).toContainText('1')
+  await badge.click()
+  const panel = page.getByTestId('active-jobs-panel')
+  await expect(panel).toBeVisible()
+  await expect(panel).toContainText(projectName)
+  await expect(panel).toContainText('翻译')
+  await expect(panel).toContainText('分钟前')
+})
+
+test('starting a second task on a busy project shows a queue hint that opens the active jobs panel', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 24 },
+  })
+  const projectName = `E2E Queue Hint ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'queue-hint', description: 'Queue conflict inline action smoke.' },
+  }).then((response) => response.json())
+
+  // Exact text backend/app/routers/shared.py's _job_conflict_detail renders
+  // for a project_busy rejection; apiClient.ts's sanitizeUserFacingError
+  // passes it through unchanged (see the "该项目正在执行任务" branch).
+  const conflictDetail = '该项目正在执行任务（翻译任务），请等它完成或先取消'
+  await page.route('**/api/runs/*/translate/start', async (route) => {
+    await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ detail: conflictDetail }) })
+  })
+  await page.route('**/api/system/active-jobs', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          lease_name: `long_text:${project.id}`,
+          job_id: 'run:run-e2e-conflict',
+          job_kind: 'translation',
+          project_id: project.id,
+          project_name: projectName,
+          started_at: new Date(Date.now() - 60 * 1000).toISOString(),
+        },
+      ]),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '⚡ 翻译' }).click()
+  await page.locator('label.upload-box', { hasText: '上传待翻译表格' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
+  await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
+  await expect(page.getByTestId('formal-translate')).toBeEnabled()
+  await page.getByTestId('formal-translate').click()
+  await expect(inlineStatus(page, '该项目正在执行任务')).toBeVisible({ timeout: 15000 })
+
+  const action = page.getByTestId('inline-status-view-active-jobs')
+  await expect(action).toBeVisible()
+  await action.click()
+  const panel = page.getByTestId('active-jobs-panel')
+  await expect(panel).toBeVisible()
+  await expect(panel).toContainText(projectName)
+  await expect(panel).toContainText('翻译')
+})

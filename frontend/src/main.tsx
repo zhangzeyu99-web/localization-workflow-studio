@@ -16,10 +16,14 @@ import { useProjectListPolling } from './hooks/useProjectListPolling'
 import { useProjectSnapshotPolling } from './hooks/useProjectSnapshotPolling'
 import { useRunStatusPolling } from './hooks/useRunStatusPolling'
 import { useAnnouncementTaskPolling } from './hooks/useAnnouncementTaskPolling'
+import { useActiveJobsPolling } from './hooks/useActiveJobsPolling'
 import { useProjectActions } from './hooks/useProjectActions'
 import { useTranslationActions } from './hooks/useTranslationActions'
 import { useGlossaryActions } from './hooks/useGlossaryActions'
 import { useAnnouncementActions } from './hooks/useAnnouncementActions'
+import { ActiveJobsBadge } from './components/system/ActiveJobsBadge'
+import { ActiveJobsPanel } from './components/system/ActiveJobsPanel'
+import { onOpenActiveJobsPanelRequest } from './components/system/activeJobsPanelBus'
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { preferredTranslationResultArtifact } from './domain/projectState'
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
@@ -59,6 +63,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [runtimeVersion, setRuntimeVersion] = useState<AppRuntimeVersion | null>(null)
   const [freqOpen, setFreqOpen] = useState(false)
+  const [activeJobsPanelOpen, setActiveJobsPanelOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('准备就绪')
   const currentIdRef = useRef('')
@@ -218,6 +223,9 @@ function App() {
   }, [])
 
   useProjectListPolling(refreshProjects, currentIdRef)
+  const activeJobs = useActiveJobsPolling()
+
+  useEffect(() => onOpenActiveJobsPanelRequest(() => setActiveJobsPanelOpen(true)), [])
 
   useEffect(() => {
     currentIdRef.current = currentId
@@ -372,6 +380,10 @@ function App() {
           </div>
           <div className="header-actions">
             <span className={`status ${busy ? 'running' : ''}`}>{busy ? <span className="loading" /> : null}{status}</span>
+            <div className="active-jobs-anchor">
+              <ActiveJobsBadge jobs={activeJobs} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
+              {activeJobsPanelOpen ? <ActiveJobsPanel jobs={activeJobs} onClose={() => setActiveJobsPanelOpen(false)} /> : null}
+            </div>
             {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}>⚙ 设置</button> : null}
           </div>
         </header>
