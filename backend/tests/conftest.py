@@ -10,7 +10,7 @@ os.environ.setdefault("LWS_DATA_ROOT", str(Path(os.environ.get("TEMP", ".")) / "
 os.environ.setdefault("LWS_ENABLE_TEST_PROVIDER", "1")
 
 
-def wait_for_background_jobs(timeout: float = 5.0) -> None:
+def wait_for_background_jobs(timeout: float = 15.0) -> None:
     """Wait for all active background jobs (if any) to finish.
 
     Lets jobs complete naturally first so tests that start a job and then

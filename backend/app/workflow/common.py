@@ -64,17 +64,37 @@ def _looks_like_untranslated_seed(text: str, language: str) -> bool:
     return True
 
 
+def _mkdir_with_parents_retry(path: Path, *, attempts: int = 3) -> None:
+    """``Path.mkdir(parents=True, exist_ok=True)`` that tolerates a concurrent
+    deletion of an ancestor directory racing with this call (e.g. a project
+    delete, or test teardown wiping the data root, happening between the
+    parent and child directory checks). Without this, a background job that
+    is mid-write while its project directory is removed can raise
+    ``FileNotFoundError`` even though ``exist_ok=True`` was requested.
+    """
+    last_error: OSError | None = None
+    for _ in range(attempts):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return
+        except FileNotFoundError as exc:
+            last_error = exc
+            continue
+    if last_error:
+        raise last_error
+
+
 def project_dir(project_id: str) -> Path:
     path = DATA_ROOT / "projects" / project_id
-    path.mkdir(parents=True, exist_ok=True)
+    _mkdir_with_parents_retry(path)
     for child in ("uploads", "profile", "glossary", "runs", "assets", "translations"):
-        (path / child).mkdir(exist_ok=True)
+        _mkdir_with_parents_retry(path / child)
     return path
 
 
 def run_dir(run_id: str) -> Path:
     path = DATA_ROOT / "runs" / run_id
-    path.mkdir(parents=True, exist_ok=True)
+    _mkdir_with_parents_retry(path)
     return path
 
 
