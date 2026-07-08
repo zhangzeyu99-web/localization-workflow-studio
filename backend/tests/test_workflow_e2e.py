@@ -596,6 +596,10 @@ def test_announcement_force_delivery_with_hard_blockers_generates_package(tmp_pa
         assert summary["hard_blockers"] > 0
         package = next(artifact for artifact in normal_delivery.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         assert package["metadata"]["forced"] is True
+        assert package["metadata"]["source_type"] == "delivered_with_issues"
+        deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
+        forced_deliverable = next(item for item in deliverables if item["task_code"] == "ANN")
+        assert forced_deliverable["delivered_with_issues"] is True
         with zipfile.ZipFile(package["path"]) as archive:
             names = sorted(archive.namelist())
             assert names == ["KR/notice_force_KR.txt", "QA\u6458\u8981.xlsx"]
@@ -1276,6 +1280,7 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         assert announcement_deliverable["status"] == "delivered"
         assert announcement_deliverable["task_type"] == "公告任务"
         assert announcement_deliverable["language"] == "KR"
+        assert announcement_deliverable["delivered_with_issues"] is False
         assert announcement_deliverable["files"]["package"]["download_url"].startswith(f"/api/projects/{project['id']}/artifacts/")
         assert announcement_deliverable["files"]["qa_summary"]["download_url"].startswith(f"/api/projects/{project['id']}/artifacts/")
         assert announcement_deliverable["files"]["outputs"][0]["download_url"].startswith(f"/api/projects/{project['id']}/artifacts/")

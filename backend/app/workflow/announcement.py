@@ -61,6 +61,7 @@ from .announcement_shared import (
     _announcement_task_metadata,
 )
 from .common import project_dir, run_dir
+from .delivery import DELIVERED_WITH_ISSUES_SOURCE_TYPE
 from .jsonl_helpers import read_jsonl, write_jsonl
 from .materials import _compact_lookup_text, _read_lookup_material_text
 from .naming import _today_stamp, _visible_language_code
@@ -864,7 +865,7 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
             archive.write(qa_artifact["path"], "QA摘要.xlsx")
     artifact_metadata = {"task_id": task_id, "languages": languages, "date_stamp": stamp}
     if forced_by_hard_blockers:
-        artifact_metadata.update({"forced": True, "hard_blockers": hard_blockers})
+        artifact_metadata.update({"forced": True, "hard_blockers": hard_blockers, "source_type": DELIVERED_WITH_ISSUES_SOURCE_TYPE})
     artifact = db.add_artifact(task["project_id"], "公告交付总包", zip_path, "announcement_delivery_package", run_id=run["id"], mime="application/zip", metadata=artifact_metadata)
     for old_artifact in superseded_artifacts:
         if old_artifact["id"] == artifact["id"]:

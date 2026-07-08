@@ -80,6 +80,7 @@ def _merged_deliverable_summaries(project: dict[str, Any]) -> list[dict[str, Any
                 "qa_status": "mixed" if skipped else "passed",
                 "qa_hard_errors": int(metadata.get("qa_hard_errors") or 0),
                 "qa_soft_warnings": 0,
+                "delivered_with_issues": int(metadata.get("qa_hard_errors") or 0) > 0,
                 "files": {
                     "final": _artifact_delivery_file("merged_final", artifact),
                     "qa_summary": _artifact_delivery_file("qa_summary", summary_artifact) if summary_artifact else None,
@@ -107,7 +108,8 @@ def _announcement_deliverable_summaries(project: dict[str, Any]) -> list[dict[st
             package_artifact = db.get_artifact(delivery_artifact_id)
         except KeyError:
             continue
-        if (package_artifact.get("metadata") or {}).get("superseded"):
+        package_metadata = package_artifact.get("metadata") or {}
+        if package_metadata.get("superseded"):
             continue
         if not Path(package_artifact["path"]).exists():
             continue
@@ -157,6 +159,8 @@ def _announcement_deliverable_summaries(project: dict[str, Any]) -> list[dict[st
                 "qa_status": "passed",
                 "qa_hard_errors": int(metadata.get("hard_blockers") or 0),
                 "qa_soft_warnings": 0,
+                "delivered_with_issues": bool(package_metadata.get("forced") or metadata.get("forced"))
+                or int(package_metadata.get("hard_blockers") or metadata.get("hard_blockers") or 0) > 0,
                 "files": {
                     "package": package_file,
                     "qa_summary": qa_file,
@@ -311,6 +315,8 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
     task_code, task_run_id = _effective_task_identity(run)
     metadata = run.get("metadata", {})
     quality_summary = metadata.get("quality_summary") or {}
+    # Same decision as _archive_delivery_translation's source_type.
+    qa_passed = bool(quality_summary.get("passed", run.get("status") == "passed"))
     provider, model = _deliverable_provider_model(metadata, quality_summary)
     input_label = _input_artifact_label(run, run["project_id"])
     processed = (
@@ -337,9 +343,10 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
         "provider": provider,
         "model": model,
         "input_label": input_label,
-        "qa_status": "passed" if quality_summary.get("passed", run.get("status") == "passed") else "failed",
+        "qa_status": "passed" if qa_passed else "failed",
         "qa_hard_errors": int(quality_summary.get("hard_errors") or 0),
         "qa_soft_warnings": _soft_warning_count(quality_summary),
+        "delivered_with_issues": not qa_passed,
         "files": files,
         "source_artifacts": {
             "qa_final_workbook": final_artifact["id"] if final_artifact["kind"] == "qa_final_workbook" else "",

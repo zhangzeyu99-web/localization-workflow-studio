@@ -455,6 +455,7 @@ export type DeliverableTask = {
   qa_status?: string
   qa_hard_errors?: number
   qa_soft_warnings?: number
+  delivered_with_issues?: boolean
   files: {
     final?: DeliveryFile
     changes?: DeliveryFile

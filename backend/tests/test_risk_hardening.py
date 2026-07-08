@@ -221,6 +221,26 @@ def test_delivery_skips_empty_workbook_but_keeps_failed_review_artifact(tmp_path
     assert [item["run_id"] for item in deliverables] == [passed_run["id"], failed_run["id"]]
 
 
+def test_deliverable_summaries_flag_delivered_with_issues(tmp_path: Path) -> None:
+    project = db.insert_project("Delivery issue flag", "QA", "", "🎮")
+    failed_run = db.insert_run(project["id"], "qa", "en", metadata={"quality_summary": {"passed": False, "hard_errors": 2}})
+    failed_path = tmp_path / "failed-flag.xlsx"
+    _write_qa_source_workbook(failed_path, translated=True)
+    db.add_artifact(project["id"], "failed final", failed_path, "qa_final_workbook", run_id=failed_run["id"])
+    db.update_run(failed_run["id"], status="failed", metadata={"quality_summary": {"passed": False, "hard_errors": 2}})
+
+    passed_run = db.insert_run(project["id"], "qa", "en", metadata={"quality_summary": {"passed": True}})
+    passed_path = tmp_path / "passed-flag.xlsx"
+    _write_qa_source_workbook(passed_path, translated=True)
+    db.add_artifact(project["id"], "passed final", passed_path, "qa_final_workbook", run_id=passed_run["id"])
+    db.update_run(passed_run["id"], status="passed", metadata={"quality_summary": {"passed": True}})
+
+    deliverables = {item["run_id"]: item for item in workflow.list_project_deliverables(project["id"])}
+
+    assert deliverables[failed_run["id"]]["delivered_with_issues"] is True
+    assert deliverables[passed_run["id"]]["delivered_with_issues"] is False
+
+
 def test_failed_qa_delivery_archives_translation_with_issue_source(tmp_path: Path) -> None:
     project = db.insert_project("Delivery archive failed QA", "QA", "", "🎮")
     failed_run = db.insert_run(project["id"], "qa", "en", metadata={"quality_summary": {"passed": False, "hard_errors": 1}})
