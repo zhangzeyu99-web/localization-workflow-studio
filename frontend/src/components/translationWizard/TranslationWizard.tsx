@@ -9,6 +9,7 @@ import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, 
 import { ProjectMetaTable } from '../project/ProjectMeta'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
+import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
 import { issueCountPhrase, runStatusLabel, runStatusTagClass, shortIdLabel } from '../../uiText'
 import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, LargeTextRunState, Project, ProjectHarness, ProjectMaterialAnalysis, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
 
@@ -298,6 +299,7 @@ export function Wizard(props: {
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
   onTranslateMissingCandidates: (batchId: string) => void
   busy: boolean
+  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
   const { project, step, setStep } = props
   const sourceReadiness = props.sourceArtifact && props.translationReadiness?.artifact_id === props.sourceArtifact.id ? props.translationReadiness : null
@@ -1316,7 +1318,8 @@ export function StepQA({
   selectedLanguages,
   toggleSelectedLanguage,
   onGoDelivery,
-  showHistory = true
+  showHistory = true,
+  confirm
 }: {
   project: Project
   latestRun: Run | null
@@ -1340,6 +1343,7 @@ export function StepQA({
   toggleSelectedLanguage: (language: LanguageCode) => void
   onGoDelivery?: () => void
   showHistory?: boolean
+  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
   const latestQaRun = latestRun?.kind === 'qa' ? latestRun : latestRunOfKind(project, 'qa')
   const projectQuality = latestQaRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
@@ -1365,10 +1369,15 @@ export function StepQA({
       : qaRole === 'language_source' && !canSkipModelTranslation(selectedReadiness)
         ? '这份语言表还不是完整译文表，不能跳过 QA 直接归档。'
         : '只在外部已经完成校对，或临时需要先入库供公告反查时使用。'
-  const handleSkipArchive = () => {
+  const handleSkipArchive = async () => {
     const artifact = effectiveQaArtifact
     if (!artifact || !canArchiveWithoutQA) return
-    const confirmed = window.confirm('跳过 QA 会把当前译文直接写入译文归档，系统不会检查术语、变量、中文残留。确认继续？')
+    const confirmed = await confirm('跳过 QA 会把当前译文直接写入译文归档，系统不会检查术语、变量、中文残留。确认继续？', {
+      title: '跳过 QA 直接归档',
+      confirmLabel: '确认跳过',
+      cancelLabel: '取消',
+      tone: 'warn'
+    })
     if (confirmed) onSkipQAArchive(artifact)
   }
   const originText = effectiveQaArtifact?.run_id && previousTranslationRun?.id === effectiveQaArtifact.run_id

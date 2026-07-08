@@ -4,6 +4,7 @@ import { artifactDownloadHref, artifactFileName, artifactLanguageLabel, artifact
 import { aiProviderConfigurationReminder, isAiProviderReady, providerLabel } from '../../domain/providerSettings'
 import { ActionStatus, ArtifactNote, FileBox, FileBoxWithTemplate, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
+import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
 
 export const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译', '校对回填', '交付']
@@ -161,7 +162,8 @@ export function AnnouncementWizard({
   onCancelAnnouncementHold,
   announcementCancelHoldTaskId,
   initialTaskId,
-  onBack
+  onBack,
+  confirm
 }: {
   project: Project
   busy: boolean
@@ -185,6 +187,7 @@ export function AnnouncementWizard({
   announcementCancelHoldTaskId: string
   initialTaskId: string
   onBack: () => void
+  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
   const allTasks = activeAnnouncementTasks(project.announcement_tasks || [])
   const tasks = initialTaskId ? allTasks : unfinishedAnnouncementTasks(allTasks)
@@ -478,9 +481,15 @@ export function AnnouncementWizard({
                 <button
                   className="btn btn-primary"
                   disabled={!activeTask || busy || !providerReady}
-                  onClick={() => {
+                  onClick={async () => {
                     const needsBudgetConfirm = activeTask?.metadata?.reason === 'api_budget_confirmation_required'
-                    const confirmed = needsBudgetConfirm ? window.confirm('该公告翻译预计 API token 用量超过提醒阈值。确认后会从已完成批次继续。是否继续？') : false
+                    const confirmed = needsBudgetConfirm
+                      ? await confirm('该公告翻译预计 API token 用量超过提醒阈值。确认后会从已完成批次继续。是否继续？', {
+                          title: 'API 用量确认',
+                          confirmLabel: '继续翻译',
+                          cancelLabel: '暂不继续'
+                        })
+                      : false
                     if (needsBudgetConfirm && !confirmed) return
                     run(announcementTranslateEndpoint(activeTask), undefined, { confirm_api_budget: confirmed })
                   }}
@@ -531,6 +540,7 @@ export function AnnouncementWizard({
               activeTask={activeTask}
               busy={busy}
               onDeliver={(force = false) => run('deliver', 9, { date_stamp: new Date().toISOString().slice(0, 10).replace(/-/g, ''), force })}
+              confirm={confirm}
             />
           )}
 
@@ -778,7 +788,7 @@ export function announcementTaskCanCancel(task: AnnouncementTask): boolean {
   return !['delivered', 'canceled'].includes(task.status || '')
 }
 
-export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { activeTask: AnnouncementTask | null; busy: boolean; onDeliver: (force?: boolean) => void }) {
+export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver, confirm }: { activeTask: AnnouncementTask | null; busy: boolean; onDeliver: (force?: boolean) => void; confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean> }) {
   const deliveryArtifacts = (activeTask?.artifacts || []).filter((artifact) => ['announcement_delivery_package', 'announcement_docx_delivery_package'].includes(artifact.kind))
   const delivered = Boolean(activeTask?.status === 'delivered' && deliveryArtifacts.length)
   const hardBlockers = announcementHardBlockerCount(activeTask)
@@ -806,8 +816,14 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
           <button
             className="btn btn-primary"
             disabled={!activeTask || busy}
-            onClick={() => {
-              if (window.confirm(`当前还有 ${hardBlockers} 个 严重问题。确认生成带 QA 摘要的交付包？`)) onDeliver(true)
+            onClick={async () => {
+              const confirmed = await confirm(`当前还有 ${hardBlockers} 个 严重问题。确认生成带 QA 摘要的交付包？`, {
+                title: '带问题交付',
+                confirmLabel: '确认生成',
+                cancelLabel: '取消',
+                tone: 'warn'
+              })
+              if (confirmed) onDeliver(true)
             }}
           >
             生成带 QA 摘要的交付包
@@ -820,8 +836,13 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver }: { acti
           <button
             className="btn btn-ghost btn-sm"
             disabled={busy}
-            onClick={() => {
-              if (window.confirm('已存在公告交付包。确认重新生成会新增一版交付记录。是否继续？')) onDeliver(true)
+            onClick={async () => {
+              const confirmed = await confirm('已存在公告交付包。确认重新生成会新增一版交付记录。是否继续？', {
+                title: '重新生成交付包',
+                confirmLabel: '确认重新生成',
+                cancelLabel: '取消'
+              })
+              if (confirmed) onDeliver(true)
             }}
           >
             重新生成交付总包

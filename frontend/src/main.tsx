@@ -5,6 +5,7 @@ import { API, api } from './apiClient'
 import { WIDE_TABLE_PAGE_SIZE, pagedRows } from './assetTableState'
 import { announcementLanguages, refreshLanguageOptions, supportedLanguages, unsupportedLanguages, languageSpec, languageChipTitle, languageQuery, normalizeLanguageCode, normalizeLanguageArray, type LanguageCode, type LanguageOption } from './languages'
 import { SettingsModal } from './SettingsModal'
+import { useConfirmDialog, type ConfirmDialogOptions } from './components/modals/ConfirmModal'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from './components/shared/WorkflowPrimitives'
 import { GlossaryTab, TranslationArchiveTab } from './components/assets/ProjectAssetTabs'
 import { QuickTaskWizard } from './components/quickTask/QuickTaskWizard'
@@ -75,6 +76,7 @@ function App() {
   const translationBatchSize = 90
   const [announcementText, setAnnouncementText] = useState('')
   const [announcementLookupResult, setAnnouncementLookupResult] = useState<AnnouncementLookupResult | null>(null)
+  const { confirm, alertDialog, dialog: confirmDialog } = useConfirmDialog()
 
   useEffect(() => {
     refreshProjects()
@@ -639,7 +641,11 @@ function App() {
       setStatus(`${currentLang.short} 项目分析完成：已读取 ${summary.parsed ?? 0}/${summary.total ?? 0} 个资料${warning ? `；${warning}` : ''}`)
       const candidates = result.analysis?.language_table_candidates || []
       if (candidates.length) {
-        const confirmScan = window.confirm(`识别到 ${candidates.length} 个完整语言表。是否现在扫描术语候选？候选不会直接进入项目术语库。`)
+        const confirmScan = await confirm(`识别到 ${candidates.length} 个完整语言表。是否现在扫描术语候选？候选不会直接进入项目术语库。`, {
+          title: '扫描术语候选',
+          confirmLabel: '现在扫描',
+          cancelLabel: '暂不扫描'
+        })
         if (confirmScan) {
           const candidate = candidates[0]
           const artifacts = result.project.artifacts || []
@@ -989,7 +995,7 @@ function App() {
     return languages.filter((language, index) => languages.indexOf(language) === index)
   }
 
-  function confirmTermGapBeforeTranslate(language: LanguageCode): boolean {
+  async function confirmTermGapBeforeTranslate(language: LanguageCode): Promise<boolean> {
     if (!current || termArtifact) return true
     const confirmedTerms = (current.glossary || []).filter((term) => term.language === language && String(term.target || '').trim()).length
     const readyCandidates = glossaryCandidates.filter((item) =>
@@ -998,16 +1004,24 @@ function App() {
       String(item.target || '').trim()
     ).length
     if (confirmedTerms > 0 || readyCandidates === 0) return true
-    const shouldContinue = window.confirm(
+    const shouldContinue = await confirm(
       `检测到 ${languageSpec(language).short} 有 ${readyCandidates} 条候选术语尚未加入项目术语库。\n\n` +
       '这些候选术语默认不会参与本次翻译，可能导致译文不按术语表执行。\n\n' +
-      '建议返回「术语候选」步骤先确认术语。仍要继续无术语翻译吗？'
+      '建议返回「术语候选」步骤先确认术语。仍要继续无术语翻译吗？',
+      { title: '有未确认的候选术语', confirmLabel: '继续翻译', cancelLabel: '先去确认术语', tone: 'warn' }
     )
     if (!shouldContinue) {
       setStep(5)
       setStatusForProject(current.id, '已暂停翻译：请先在「术语候选」步骤确认候选术语，再启动 AI 翻译。')
     }
     return shouldContinue
+  }
+
+  async function confirmTermGapForLanguages(languages: LanguageCode[]): Promise<boolean> {
+    for (const language of languages) {
+      if (!(await confirmTermGapBeforeTranslate(language))) return false
+    }
+    return true
   }
 
   async function runTranslate(taskCode: 'A' | 'T' = 'T') {
@@ -1029,7 +1043,7 @@ function App() {
       setStatus(`无法开始翻译：${blockReason}`)
       return
     }
-    const confirmedTermGap = confirmTermGapBeforeTranslate(selectedLanguage)
+    const confirmedTermGap = await confirmTermGapBeforeTranslate(selectedLanguage)
     if (!confirmedTermGap) return
     setBusy(true)
     setStatusForProject(projectId, `${currentLang.short} 翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
@@ -1058,7 +1072,11 @@ function App() {
       setLatestRun(run)
       const needsBudgetConfirm = run.metadata?.reason === 'api_budget_confirmation_required'
       const confirmedBudget = needsBudgetConfirm
-        ? window.confirm('该任务预计 API token 用量超过设置的提醒阈值。确认后会从已完成批次继续，不会重跑已落盘批次。是否继续？')
+        ? await confirm('该任务预计 API token 用量超过设置的提醒阈值。确认后会从已完成批次继续，不会重跑已落盘批次。是否继续？', {
+            title: 'API 用量确认',
+            confirmLabel: '继续翻译',
+            cancelLabel: '暂不继续'
+          })
         : false
       if (needsBudgetConfirm && !confirmedBudget) {
         setStatusForProject(projectId, '已暂停：等待确认 API 用量预算后继续。')
@@ -1122,7 +1140,7 @@ function App() {
     setBusyForProject(projectId, true)
     setStatusForProject(projectId, `正在启动多语言翻译队列：${languages.map((language) => languageSpec(language).short).join(' / ')}`)
     try {
-      const confirmedTermGap = languages.every((language) => confirmTermGapBeforeTranslate(language))
+      const confirmedTermGap = await confirmTermGapForLanguages(languages)
       if (!confirmedTermGap) return
       const result = await api<MultilingualQueueStatus>(`/api/projects/${current.id}/multilingual/translate/start`, {
         method: 'POST',
@@ -1436,7 +1454,7 @@ function App() {
       const message = errorText(error)
       setStatusForProject(projectId, `公告任务失败：${message}`)
       if (/约束文件|语言表|表头|可反查词条/.test(message)) {
-        window.alert(`公告约束文件没有被正确读取：${message}`)
+        void alertDialog(`公告约束文件没有被正确读取：${message}`, { title: '约束文件读取失败', tone: 'warn' })
       }
       return null
     } finally {
@@ -1873,6 +1891,7 @@ function App() {
                 setSelectedLanguage={setPrimaryLanguage}
                 selectedLanguages={selectedLanguages}
                 toggleSelectedLanguage={toggleTargetLanguage}
+                confirm={confirm}
               />
             ) : view === 'quick' ? (
               <QuickTaskWizard
@@ -1911,6 +1930,7 @@ function App() {
                 announcementCancelHoldTaskId={announcementCancelHoldTaskId}
                 initialTaskId={announcementFocusTaskId}
                 settings={settings}
+                confirm={confirm}
               />
             ) : (
               <Wizard
@@ -1970,6 +1990,7 @@ function App() {
                 onResolveCandidates={resolveGlossaryCandidates}
                 onTranslateMissingCandidates={translateMissingGlossaryCandidates}
                 busy={busy}
+                confirm={confirm}
               />
             )}
           </main>
@@ -1990,6 +2011,7 @@ function App() {
       {announcementCancelTarget ? <CancelAnnouncementTaskModal task={announcementCancelTarget} busy={busy} onClose={() => { longPressTriggeredAnnouncementTaskId.current = ''; setAnnouncementCancelTarget(null) }} onCancelTask={cancelAnnouncementTask} /> : null}
       {settingsOpen ? <SettingsModal onClose={() => { setSettingsOpen(false); refreshSettings() }} /> : null}
       {freqOpen ? <FrequencyModal onClose={() => setFreqOpen(false)} /> : null}
+      {confirmDialog}
     </div>
   )
 }
@@ -2057,7 +2079,8 @@ function ProjectOverview({
   selectedLanguage,
   setSelectedLanguage,
   selectedLanguages,
-  toggleSelectedLanguage
+  toggleSelectedLanguage,
+  confirm
 }: {
   project: Project
   tab: ProjectTab
@@ -2118,6 +2141,7 @@ function ProjectOverview({
   setSelectedLanguage: (language: LanguageCode) => void
   selectedLanguages: LanguageCode[]
   toggleSelectedLanguage: (language: LanguageCode) => void
+  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
   const glossaryRows = glossaryWideRows(project)
   const archiveRows = translationWideRows(project)
@@ -2269,6 +2293,7 @@ function ProjectOverview({
           selectedLanguages={selectedLanguages}
           toggleSelectedLanguage={toggleSelectedLanguage}
           onGoDelivery={() => setTab('delivery')}
+          confirm={confirm}
         />
       ) : null}
       {tab === 'archive' ? (
