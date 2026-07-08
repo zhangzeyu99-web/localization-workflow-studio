@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import shutil
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -296,6 +297,124 @@ class AsyncTokenRateLimiter:
                 sleep_for = max(0.25, min([value for value in waits if value > 0] or [1.0]))
             await asyncio.sleep(min(sleep_for, 5.0))
             waited += min(sleep_for, 5.0)
+
+
+class SharedRateLimiter:
+    """Process-wide rate limiter shared by every concurrent run that targets
+    the same ``(provider, api_key)`` bucket.
+
+    Each background job runs on its own thread with its own asyncio event
+    loop, so an ``asyncio.Lock`` created by one run is useless to another
+    run's loop (M2/M3 handoff risk). This limiter therefore guards its
+    sliding-window state with a plain ``threading.Lock`` instead, and never
+    sleeps while holding it: ``acquire`` takes the lock only long enough to
+    prune the window and either reserve a slot or compute how long to wait,
+    then releases the lock before ``await``-ing the sleep. This keeps the
+    critical section short (no blocking syscalls or sleeps under the lock)
+    and lets every waiting run observe the freshest window as soon as it
+    reacquires the lock.
+    """
+
+    def __init__(self, requests_per_minute: int, tokens_per_minute: int, window_seconds: float = 60.0) -> None:
+        self.requests_per_minute = max(1, int(requests_per_minute or 12))
+        self.tokens_per_minute = max(1000, int(tokens_per_minute or 120000))
+        # Overridable only for tests that need a short, deterministic window;
+        # production callers always use the default 60s (RPM/TPM) semantics.
+        self._window_seconds = max(0.05, float(window_seconds or 60.0))
+        self._lock = threading.Lock()
+        self._requests: deque[float] = deque()
+        self._tokens: deque[tuple[float, int]] = deque()
+
+    def _try_reserve(self, requested_tokens: int) -> float | None:
+        """Attempt to reserve a slot; return ``None`` on success or the
+        number of seconds the caller should sleep before retrying.
+        """
+        window = self._window_seconds
+        with self._lock:
+            now = time.monotonic()
+            while self._requests and now - self._requests[0] >= window:
+                self._requests.popleft()
+            while self._tokens and now - self._tokens[0][0] >= window:
+                self._tokens.popleft()
+            token_sum = sum(item[1] for item in self._tokens)
+            if len(self._requests) < self.requests_per_minute and token_sum + requested_tokens <= self.tokens_per_minute:
+                self._requests.append(now)
+                self._tokens.append((now, requested_tokens))
+                return None
+            waits = []
+            if self._requests:
+                waits.append(window - (now - self._requests[0]))
+            if self._tokens:
+                waits.append(window - (now - self._tokens[0][0]))
+            floor = min(0.25, window / 4)
+            return max(floor, min([value for value in waits if value > 0] or [window]))
+
+    async def acquire(self, tokens: int) -> float:
+        waited = 0.0
+        requested_tokens = min(max(1, int(tokens or 1)), self.tokens_per_minute)
+        while True:
+            sleep_for = self._try_reserve(requested_tokens)
+            if sleep_for is None:
+                return waited
+            sleep_for = min(sleep_for, 5.0)
+            await asyncio.sleep(sleep_for)
+            waited += sleep_for
+
+
+_shared_rate_limiter_registry_lock = threading.Lock()
+_shared_rate_limiter_registry: dict[str, SharedRateLimiter] = {}
+
+
+def _api_key_fingerprint(api_key: str) -> str:
+    text = str(api_key or "").strip()
+    if not text:
+        return "none"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def shared_rate_limiter_bucket_key(provider: str, api_key: str) -> str:
+    return f"{str(provider or '').strip() or 'unknown'}:{_api_key_fingerprint(api_key)}"
+
+
+def get_shared_rate_limiter(
+    provider: str,
+    api_key: str,
+    requests_per_minute: int,
+    tokens_per_minute: int,
+    *,
+    window_seconds: float = 60.0,
+) -> SharedRateLimiter:
+    """Return the process-wide limiter bucket for ``(provider, api_key)``.
+
+    Buckets are created lazily on first use and reused for the life of the
+    process (or until :func:`reset_shared_rate_limiter_registry` clears the
+    registry, which is a test-only escape hatch). The RPM/TPM budget passed
+    on the *first* call that creates a bucket wins for that bucket's
+    lifetime -- later calls with different settings only take effect when
+    they resolve to a different bucket (a different provider or api_key).
+    This is intentional: an in-flight run must not have its rate budget
+    shift mid-run just because another user tweaked settings while sharing
+    the same provider/api_key, but a genuinely new bucket (e.g. after
+    rotating the API key) picks up the current settings immediately.
+    """
+    key = shared_rate_limiter_bucket_key(provider, api_key)
+    with _shared_rate_limiter_registry_lock:
+        limiter = _shared_rate_limiter_registry.get(key)
+        if limiter is None:
+            limiter = SharedRateLimiter(requests_per_minute, tokens_per_minute, window_seconds=window_seconds)
+            _shared_rate_limiter_registry[key] = limiter
+        return limiter
+
+
+def reset_shared_rate_limiter_registry() -> None:
+    """Test-only helper: drop all process-wide limiter buckets.
+
+    Without this, buckets created by one test (keyed only by provider +
+    api_key fingerprint) would leak into the next test running in the same
+    pytest process and silently throttle it.
+    """
+    with _shared_rate_limiter_registry_lock:
+        _shared_rate_limiter_registry.clear()
 
 
 def provider_retry_delay_seconds(exc: Exception, attempt: int) -> float:

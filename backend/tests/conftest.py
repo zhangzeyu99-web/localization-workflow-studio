@@ -6,8 +6,23 @@ import shutil
 import time
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("LWS_DATA_ROOT", str(Path(os.environ.get("TEMP", ".")) / "lws-test-data"))
 os.environ.setdefault("LWS_ENABLE_TEST_PROVIDER", "1")
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_rate_limiter_registry():
+    """Process-wide rate limiter buckets (keyed by provider+api_key) must not
+    leak between tests running in the same pytest process, or one test's
+    quota usage would silently throttle an unrelated later test.
+    """
+    from app.translation_batches import reset_shared_rate_limiter_registry
+
+    reset_shared_rate_limiter_registry()
+    yield
+    reset_shared_rate_limiter_registry()
 
 
 def wait_for_background_jobs(timeout: float = 15.0) -> None:
