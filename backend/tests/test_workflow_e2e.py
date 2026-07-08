@@ -1033,6 +1033,61 @@ def test_announcement_task_extract_terms_calls_provider_for_ai_supplement(tmp_pa
         }.issubset(artifact_kinds)
 
 
+def test_announcement_ai_supplement_falls_back_to_packet_without_provider_key(tmp_path: Path) -> None:
+    table_path = tmp_path / "language.xlsx"
+    notice_path = tmp_path / "notice.txt"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append(["T1", "秘境", "Trial Realm"])
+    ws.append(["S1", "开启星界裂隙挑战", "Unlock Astral Rift Challenge"])
+    wb.save(table_path)
+    wb.close()
+    notice_path.write_text("新增秘境和星界裂隙玩法。", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Announcement AI Fallback", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice.txt", fh, "text/plain")},
+            ).json()
+
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": notice_artifact["id"], "language_table_artifact_ids": [table_artifact["id"]], "languages": ["en"]},
+        ).json()
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en"],
+                "ai_supplement": True,
+            },
+        )
+
+        assert extracted.status_code == 200, extracted.text
+        payload = extracted.json()
+        ai_summary = payload["summary"]["ai_supplement"]
+        assert ai_summary["provider_status"] == "packet_fallback"
+        assert ai_summary["added_to_main"] == 0
+        # Deterministic lookup result stays intact; no unbacked AI terms enter the workbook.
+        assert [term["source"] for term in payload["task"]["metadata"]["terms"]] == ["秘境"]
+        artifact_kinds = {artifact["kind"] for artifact in payload["artifacts"]}
+        assert {"announcement_ai_supplement_packet", "announcement_ai_supplement_report"}.issubset(artifact_kinds)
+        assert "announcement_ai_supplement_response" not in artifact_kinds
+        packet_artifact = next(artifact for artifact in payload["artifacts"] if artifact["kind"] == "announcement_ai_supplement_packet")
+        packet_payload = json.loads(Path(packet_artifact["path"]).read_text(encoding="utf-8"))
+        assert "api_key" not in json.dumps(packet_payload)
+
+
 def test_announcement_task_can_import_edit_and_export_existing_terms(tmp_path: Path) -> None:
     source_path = tmp_path / "notice.txt"
     terms_path = tmp_path / "announcement_terms.xlsx"
