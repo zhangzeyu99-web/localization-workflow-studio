@@ -257,7 +257,10 @@ function App() {
     if (current?.id && (tab === 'delivery' || (view === 'wizard' && step === 9))) {
       refreshDeliverables()
     }
-  }, [current?.id, current?.runs?.length, tab, selectedLanguage, view, step])
+    // current?.artifacts?.length is a dep because delivery generation registers
+    // new artifacts (readback gate / retro), which resets deliverables above and
+    // must trigger a refetch to keep download links visible.
+  }, [current?.id, current?.runs?.length, current?.artifacts?.length, tab, selectedLanguage, view, step])
 
   useEffect(() => {
     if (!sourceArtifact?.id) {
@@ -300,9 +303,13 @@ function App() {
   useEffect(() => {
     if (!latestRun || !['queued', 'running'].includes(latestRun.status)) return
     const runProjectId = latestRun.project_id
+    // Ticks awaiting a response when the poller is cleaned up must not apply
+    // stale status text over a fresher terminal message (e.g. manual fix done).
+    let cancelled = false
     const poller = window.setInterval(async () => {
       try {
         const updated = await api<Run>(`/api/runs/${latestRun.id}`)
+        if (cancelled) return
         if (!isCurrentProject(runProjectId)) return
         setLatestRun(updated)
         const latestEvent = updated.events?.[updated.events.length - 1]
@@ -351,10 +358,13 @@ function App() {
           if (tab === 'delivery') await refreshDeliverables()
         }
       } catch (error) {
-        setStatusForProject(runProjectId, `后台任务进度刷新失败：${errorText(error)}`)
+        if (!cancelled) setStatusForProject(runProjectId, `后台任务进度刷新失败：${errorText(error)}`)
       }
     }, 2000)
-    return () => window.clearInterval(poller)
+    return () => {
+      cancelled = true
+      window.clearInterval(poller)
+    }
   }, [latestRun?.id, latestRun?.status, tab])
 
   useEffect(() => {
@@ -1057,7 +1067,7 @@ function App() {
       const started = await api<Run>(`/api/runs/${run.id}/translate/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget, confirm_term_gap: confirmedTermGap })
+        body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget, confirm_term_gap: confirmedTermGap, large_text_mode: 'auto' })
       })
       if (!isCurrentProject(projectId)) return
       setLatestRun(started)
@@ -1123,7 +1133,8 @@ function App() {
           task_code: taskCode,
           term_artifact_id: termArtifact?.id || null,
           confirm_api_budget: false,
-          confirm_term_gap: confirmedTermGap
+          confirm_term_gap: confirmedTermGap,
+          large_text_mode: 'auto'
         })
       })
       if (!isCurrentProject(projectId)) return

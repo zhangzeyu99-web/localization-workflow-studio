@@ -282,6 +282,15 @@ def test_version_endpoint_returns_runtime_version() -> None:
     assert isinstance(payload.get("frontend_assets"), list)
 
 
+def test_api_responses_are_marked_no_store() -> None:
+    with TestClient(app) as client:
+        version_response = client.get("/api/version")
+        health_response = client.get("/api/health")
+
+    assert version_response.headers.get("cache-control") == "no-store"
+    assert health_response.headers.get("cache-control") == "no-store"
+
+
 def test_context_cap_keeps_project_prompt_under_batch_budget() -> None:
     rows = [{"id": 1, "source": "开始游戏"}]
     long_prompt = "项目规则开始\n" + ("超长项目背景 " * 2000) + "\n输出协议：只返回 JSONL"

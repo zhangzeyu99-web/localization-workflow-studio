@@ -9,9 +9,27 @@ import { languageQuery, languageSpec, supportedLanguages, unsupportedLanguages, 
 import { ProjectMetaTable } from '../project/ProjectMeta'
 import { ActionStatus, ArtifactNote, AssetSelect, CheckItem, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector, SelectedInput, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
-import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, Project, ProjectHarness, ProjectMaterialAnalysis, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
+import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, HistoryKind, LargeTextRunState, Project, ProjectHarness, ProjectMaterialAnalysis, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../types'
 
 export const steps = ['项目资料', 'AI 分析', '术语表', '判定输入', '术语候选', '目标语言', 'AI 翻译', 'QA 校对', '交付']
+
+function LargeTextPanel({ run, readiness, selectedLanguageCount }: { run?: Run | null; readiness?: TranslationReadiness | null; selectedLanguageCount: number }) {
+  const state = run?.metadata?.large_text as LargeTextRunState | undefined
+  const preflight = state?.preflight
+  const estimatedCells = readiness ? readiness.source_rows * Math.max(1, selectedLanguageCount) : preflight?.estimated_target_cells
+  const large = Boolean(preflight?.large_pack || (estimatedCells && estimatedCells > 25000) || (readiness && readiness.source_rows > 5000) || selectedLanguageCount > 4)
+  const cache = state?.cache_lint
+  return (
+    <div className={`large-text-panel ${large ? 'large' : ''}`} data-testid="large-text-panel">
+      <div className="readiness-head">
+        <strong>大文本处理</strong>
+        <span>{large ? '已启用自动门禁' : '普通规模'}</span>
+      </div>
+      <p>{preflight ? `${preflight.unique_items || 0} 条唯一文本 / ${preflight.estimated_target_cells || 0} 个目标单元 / 长文本 ${preflight.long_text_items || 0} 条` : `预计 ${estimatedCells || '-'} 个目标单元`}</p>
+      {cache ? <p>cache-lint: {cache.status || '-'}{typeof cache.hard_blockers === 'number' ? ` / hard ${cache.hard_blockers}` : ''}</p> : <p>启动后会记录 preflight 和 cache-lint。</p>}
+    </div>
+  )
+}
 
 export function TranslationTab({
   project,
@@ -1207,6 +1225,7 @@ export function StepTranslate({
           </div>
           <p>{readinessText}</p>
         </div>
+        <LargeTextPanel run={currentTranslationRun} readiness={readiness} selectedLanguageCount={selectedLanguages.length} />
         <div className="translation-batch-panel compact">
           <div className="batch-control-head">
             <div>
@@ -1833,6 +1852,9 @@ export function downloadableArtifact(artifacts: Artifact[], kind: HistoryKind): 
 export function RunDetail({ project, run, kind }: { project: Project; run: Run; kind: HistoryKind }) {
   const artifacts = runArtifacts(project, run.id)
   const visibleArtifacts = pickerArtifacts(artifacts.filter((artifact) => downloadableArtifact([artifact], kind)))
+  const largeTextState = run.metadata?.large_text as LargeTextRunState | undefined
+  const largeTextGateKinds = ['large_text_preflight', 'large_text_cache_lint', 'delivery_readback_gate', 'large_text_retro']
+  const largeTextArtifacts = pickerArtifacts(artifacts.filter((artifact) => largeTextGateKinds.includes(artifact.kind)))
   const inputs = (run.metadata?.input_artifacts || {}) as Record<string, string>
   const artifactById = new Map((project.artifacts || []).map((artifact) => [artifact.id, artifact]))
   const task = runTaskSummary(project, run)
@@ -1844,6 +1866,8 @@ export function RunDetail({ project, run, kind }: { project: Project; run: Run; 
     ['提示词快照', inputs.prompt_snapshot],
     ['规则快照', inputs.harness_snapshot],
     ['临时参考快照', inputs.quick_reference_snapshot],
+    ['大文本预检', largeTextState?.preflight_artifact_id],
+    ['大文本复盘', largeTextState?.retro_artifact_id],
   ].filter(([, id]) => Boolean(id))
   return (
     <div className="history-detail">
@@ -1872,6 +1896,13 @@ export function RunDetail({ project, run, kind }: { project: Project; run: Run; 
         ))}
         {!visibleArtifacts.length ? <span className="muted-left">暂无可下载结果；若任务已通过，请到“交付”页生成最终交付文件。</span> : null}
       </div>
+      {largeTextArtifacts.length ? (
+        <div className="artifact-links">
+          {largeTextArtifacts.map((artifact) => (
+            <a key={artifact.id} className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}</a>
+          ))}
+        </div>
+      ) : null}
       {inputItems.length ? (
         <div className="run-inputs">
           {inputItems.map(([label, id]) => {

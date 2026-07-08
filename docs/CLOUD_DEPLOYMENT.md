@@ -70,7 +70,20 @@ server {
   index index.html;
   client_max_body_size 1024m;
 
+  # index.html 不带 hash，必须每次回源验证，否则浏览器会长期使用旧 bundle 引用。
+  location = /index.html {
+    add_header Cache-Control "no-cache" always;
+    try_files $uri =404;
+  }
+
+  # Vite 构建产物带内容 hash，可以长期缓存。
+  location /assets/ {
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    try_files $uri =404;
+  }
+
   location / {
+    add_header Cache-Control "no-cache" always;
     try_files $uri $uri/ /index.html;
   }
 

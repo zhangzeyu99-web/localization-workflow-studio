@@ -993,6 +993,22 @@ a { color: #a5b4fc; text-decoration: none; }
   color: #cbd5e1;
   font-size: 13px;
 }
+.large-text-panel {
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255,255,255,.03);
+  margin-top: 12px;
+}
+.large-text-panel.large {
+  border-color: rgba(245,158,11,.35);
+  background: rgba(245,158,11,.08);
+}
+.large-text-panel p {
+  margin: 6px 0 0;
+  color: #a1a1aa;
+  font-size: 12px;
+}
 .input-source-grid {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr);

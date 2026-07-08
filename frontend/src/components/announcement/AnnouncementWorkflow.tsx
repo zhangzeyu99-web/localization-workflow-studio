@@ -592,15 +592,21 @@ export function AnnouncementTermsStep({
   const extracted = activeTask?.status === 'terms_ready' || Number(activeTask?.current_step || 0) >= 5 || Boolean(meta.terms_summary)
   const hasTerms = draftTerms.length > 0
   const termsResultText = hasTerms ? `${draftTerms.length} 条` : extracted ? '未命中，可手动补充' : '未提取'
+  const aiAddedCount = Number(aiMeta.added_to_main || 0)
+  const aiReportOnlyCount = Number(aiMeta.report_only || 0)
+  const aiCountsText = aiAddedCount || aiReportOnlyCount ? `：补充 ${aiAddedCount} 条，仅报告 ${aiReportOnlyCount} 条` : ''
   const aiStatus = aiSupplement
     ? aiMeta.provider_status === 'provider_response'
-      ? 'API 已复查'
-      : aiMeta.provider_status === 'provider_error'
-        ? 'API 失败，已保留本地结果'
-        : aiPacketArtifact
-          ? '已生成检查包'
-          : '默认开启'
+      ? `API 已复查${aiCountsText}`
+      : aiMeta.provider_status === 'uploaded_response'
+        ? `已导入外部结果${aiCountsText}`
+        : aiMeta.provider_status === 'provider_error'
+          ? 'API 失败，已保留本地结果'
+          : aiPacketArtifact
+            ? '未调用模型，已生成检查包和报告'
+            : '默认开启'
     : '已关闭'
+  const projectNameMissing = Boolean(aiMeta.project_name_translation_missing)
 
   useEffect(() => {
     setDraftTerms(announcementTermsFromTask(activeTask))
@@ -652,6 +658,9 @@ export function AnnouncementTermsStep({
         <div><strong>提取结果</strong><span>{termsResultText}</span></div>
         <div><strong>AI 复查</strong><span>{aiStatus}</span></div>
       </div>
+      {projectNameMissing ? (
+        <div className="warn-line">项目名暂无官方译名：不会自动写入术语表，请人工确认后再补充（详见 AI 报告）。</div>
+      ) : null}
       {!hasTerms && extracted ? (
         <div className="announcement-terms-empty">
           <div>
