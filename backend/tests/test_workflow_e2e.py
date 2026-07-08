@@ -1828,6 +1828,39 @@ def test_formal_translation_is_blocked_without_configured_api_key(tmp_path: Path
         assert result["artifacts"] == []
 
 
+def test_keyless_provider_preflight_parks_run_without_calling_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workbook = tmp_path / "sample-language.xlsx"
+    _sample_workbook(workbook)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("provider translate_batch must not be called when api_key is missing")
+
+    monkeypatch.setattr("app.workflow.translation_orchestrator.translate_batch", _fail_if_called)
+    monkeypatch.setattr("app.providers.translate_batch", _fail_if_called)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Keyless Preflight", "type": "QA"}).json()
+        with workbook.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("sample-language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": source_artifact["id"]},
+        ).json()
+
+        translate_response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "openai"})
+        assert translate_response.status_code == 200
+        result = translate_response.json()
+        assert result["run"]["status"] == "needs_input"
+        assert "api_key is required" in result["run"]["metadata"]["reason"]
+        assert result["artifacts"] == []
+
+        parked_run = client.get(f"/api/runs/{run['id']}").json()
+        assert parked_run["status"] == "needs_input"
+
+
 def test_assets_register_role_and_origin_with_legacy_kind_mapping(tmp_path: Path) -> None:
     workbook = tmp_path / "sample-language.xlsx"
     _sample_workbook(workbook)

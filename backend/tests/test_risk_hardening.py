@@ -805,3 +805,37 @@ def test_user_facing_error_from_route_maps_status_and_sanitized_detail(monkeypat
         assert provider_response.status_code == 502
         _assert_error_detail_is_safe(provider_response.json()["detail"])
 
+
+def test_upload_unsupported_format_returns_readable_error() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Upload Format Guard", "type": "QA"}).json()
+        rejected = client.post(
+            f"/api/projects/{project['id']}/files?kind=language_table",
+            files={"file": ("notes.docx", b"not a workbook", "application/octet-stream")},
+        )
+        assert rejected.status_code == 400
+        detail = rejected.json()["detail"]
+        assert "不支持 .docx" in detail
+        assert "XLSX" in detail
+        _assert_error_detail_is_safe(detail)
+
+
+def test_deliverable_disappears_when_final_file_deleted_on_disk(tmp_path: Path) -> None:
+    project = db.insert_project("Delivery missing file", "QA", "", "🎮")
+    run = db.insert_run(project["id"], "qa", "en", metadata={"quality_summary": {"passed": True}})
+    final_path = tmp_path / "delivered.xlsx"
+    _write_qa_source_workbook(final_path, translated=True)
+    db.add_artifact(project["id"], "delivered final", final_path, "qa_final_workbook", run_id=run["id"])
+    db.update_run(run["id"], status="passed", metadata={"quality_summary": {"passed": True}})
+
+    with TestClient(app) as client:
+        listed = client.get(f"/api/projects/{project['id']}/deliverables")
+        assert listed.status_code == 200
+        assert [item["run_id"] for item in listed.json()["deliverables"]] == [run["id"]]
+
+        final_path.unlink()
+
+        refreshed = client.get(f"/api/projects/{project['id']}/deliverables")
+        assert refreshed.status_code == 200
+        assert refreshed.json()["deliverables"] == []
+
