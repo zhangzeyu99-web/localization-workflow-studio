@@ -2,16 +2,14 @@ import React, { useEffect, useState } from 'react'
 import { announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { artifactDownloadHref, artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
 import { aiProviderConfigurationReminder, isAiProviderReady, providerLabel } from '../../domain/providerSettings'
+import { announcementStatusLabel } from '../../domain/announcementText'
+import { activeAnnouncementTasks, announcementLanguageSummary, announcementTaskCanCancel } from './AnnouncementProjectPanel'
 import { ActionStatus, ArtifactNote, FileBox, FileBoxWithTemplate, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
 
 export const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译', '校对回填', '交付']
-
-export function activeAnnouncementTasks(tasks: AnnouncementTask[]): AnnouncementTask[] {
-  return tasks.filter((task) => task.status !== 'canceled')
-}
 
 export function unfinishedAnnouncementTasks(tasks: AnnouncementTask[]): AnnouncementTask[] {
   return activeAnnouncementTasks(tasks).filter((task) => task.status !== 'delivered')
@@ -20,85 +18,6 @@ export function unfinishedAnnouncementTasks(tasks: AnnouncementTask[]): Announce
 export function hasAnnouncementPreparedAiInput(task: AnnouncementTask | null): boolean {
   const ids = task?.metadata?.workpack_artifact_ids
   return Boolean(ids && typeof ids === 'object' && !Array.isArray(ids) && Object.keys(ids as Record<string, unknown>).length)
-}
-
-export function AnnouncementProjectPanel({
-  tasks,
-  holdTaskId,
-  onStartAnnouncement,
-  onStartTask,
-  onBeginCancelHold,
-  onCancelHold
-}: {
-  tasks: AnnouncementTask[]
-  holdTaskId: string
-  onStartAnnouncement: () => void
-  onStartTask: (task: AnnouncementTask) => void
-  onBeginCancelHold: (task: AnnouncementTask) => void
-  onCancelHold: () => void
-}) {
-  const activeTasks = activeAnnouncementTasks(tasks)
-  const latest = activeTasks[0]
-  return (
-    <div className="card tight announcement-project-panel">
-      <div className="card-title">
-        <div className="left">📣 公告任务 / 外文本</div>
-        <button className="btn btn-ghost btn-sm" onClick={onStartAnnouncement}>进入公告工作流</button>
-      </div>
-      {!activeTasks.length ? (
-        <div className="panel-desc">暂无公告任务。公告翻译归属于当前项目，用项目术语、QA归档和项目提示词约束游戏外文本。</div>
-      ) : (
-        <div className="announcement-task-list">
-          {activeTasks.slice(0, 4).map((task) => {
-            const isDelivered = task.status === 'delivered'
-            return (
-              <div
-                key={task.id}
-                className={`announcement-task-row ${holdTaskId === task.id ? 'cancel-hold' : ''}`}
-                onPointerDown={(event) => { if (event.button === 0 && announcementTaskCanCancel(task)) onBeginCancelHold(task) }}
-                onPointerUp={onCancelHold}
-                onPointerLeave={onCancelHold}
-                onPointerCancel={onCancelHold}
-              >
-                <div>
-                  <strong>{task.title || task.id}</strong>
-                  <span>{task.source_format?.toUpperCase() || '-'} · STEP {task.current_step || 1}/9 · {announcementStatusLabel(task.status)}</span>
-                  <span>{announcementLanguageSummary(task)}</span>
-                </div>
-                <button className="btn btn-ghost btn-sm" onPointerDown={(event) => event.stopPropagation()} onClick={() => onStartTask(task)}>{isDelivered ? '查看交付' : '继续'}</button>
-              </div>
-            )
-          })}
-          {latest ? <div className="panel-desc">最近任务：{latest.title || latest.id}</div> : null}
-        </div>
-      )}
-    </div>
-  )
-}
-
-export function announcementStatusLabel(status?: string): string {
-  const labels: Record<string, string> = {
-    created: '已创建',
-    constraints_ready: '约束已识别',
-    languages_ready: '目标语言已确认',
-    terms_ready: '术语已提取',
-    lookup_ready: '译文已反查',
-    prepared: '翻译准备完成',
-    queued: '后台排队',
-    running: '后台翻译中',
-    needs_input: '需要确认/继续',
-    translated: '译文已导入',
-    applied: '已回填',
-    delivered: '已交付',
-    canceled: '已取消',
-    failed: '失败',
-  }
-  return labels[status || ''] || status || '未开始'
-}
-
-export function announcementLanguageSummary(task: AnnouncementTask): string {
-  const languages = normalizeLanguageArray(task.selected_languages || [])
-  return languages.length ? `目标语言：${languages.map((lang) => languageSpec(lang).short).join(' / ')}` : '目标语言：待识别'
 }
 
 export function getAnnouncementTranslationProgress(task: AnnouncementTask | null): TranslationProgress | null {
@@ -782,10 +701,6 @@ export function announcementTermLanguages(task: AnnouncementTask | null, effecti
     })
   }
   return supportedLanguages.map((language) => language.code).filter((code) => found.has(code))
-}
-
-export function announcementTaskCanCancel(task: AnnouncementTask): boolean {
-  return !['delivered', 'canceled'].includes(task.status || '')
 }
 
 export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver, confirm }: { activeTask: AnnouncementTask | null; busy: boolean; onDeliver: (force?: boolean) => void; confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean> }) {

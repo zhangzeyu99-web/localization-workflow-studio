@@ -1,5 +1,5 @@
 import { apiErrorText, sanitizeUserFacingError } from './apiClient'
-import { announcementStatusLabel } from './components/announcement/AnnouncementWorkflow'
+import { announcementStatusLabel } from './domain/announcementText'
 import type { AnnouncementTask } from './types'
 
 export function errorText(error: unknown): string {

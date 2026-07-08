@@ -124,7 +124,6 @@ export function StepQA({
   const qaStatus = qaRunSummaryText(qaStatusRun, pendingIssueCount)
   const qaNextAction = qaRunActionText(qaStatusRun, pendingIssueCount)
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
-  const multiQaMode = selectedLanguages.length > 1
   const currentLanguageText = languageSpec(selectedLanguage).short
   const qaTone = qaStatusRun?.status === 'passed' ? 'ready' : qaStatusRun?.status === 'failed' ? 'warn' : busy ? 'running' : 'neutral'
   const qaStatusLabel = qaStatusRun ? qaStatusBadge(qaStatusRun.status) : '等待运行'

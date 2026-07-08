@@ -72,16 +72,18 @@ export function WideTablePager({
   testIdPrefix,
   page,
   totalRows,
-  onPageChange
+  onPageChange,
+  pageSize = WIDE_TABLE_PAGE_SIZE
 }: {
   testIdPrefix: string
   page: number
   totalRows: number
   onPageChange: (page: number) => void
+  pageSize?: number
 }) {
-  const totalPages = Math.max(1, Math.ceil(totalRows / WIDE_TABLE_PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize))
   const currentPage = Math.min(page, totalPages)
-  if (totalRows <= WIDE_TABLE_PAGE_SIZE) {
+  if (totalRows <= pageSize) {
     return <div className="wide-table-pager muted-left">第 1 页 / 共 1 页</div>
   }
   return (
@@ -111,7 +113,7 @@ export function WideTablePager({
   )
 }
 
-export function GlossaryTab({
+function GlossaryTabImpl({
   project,
   sourceArtifact,
   termArtifact,
@@ -258,6 +260,8 @@ export function GlossaryTab({
   )
 }
 
+export const GlossaryTab = React.memo(GlossaryTabImpl)
+
 export function GlossaryToolsPanel({
   project,
   sourceArtifact,
@@ -308,7 +312,7 @@ export function GlossaryToolsPanel({
   )
 }
 
-export function WideGlossaryTermRow({
+function WideGlossaryTermRowImpl({
   row,
   visibleLanguages,
   onUpdateTerm,
@@ -411,7 +415,9 @@ export function WideGlossaryTermRow({
   )
 }
 
-export function TranslationArchiveTab({
+export const WideGlossaryTermRow = React.memo(WideGlossaryTermRowImpl)
+
+function TranslationArchiveTabImpl({
   project,
   archiveArtifact,
   busy,
@@ -561,6 +567,8 @@ export function TranslationArchiveTab({
   )
 }
 
+export const TranslationArchiveTab = React.memo(TranslationArchiveTabImpl)
+
 export function TranslationArchiveImportModal({
   archiveArtifact,
   busy,
@@ -647,7 +655,7 @@ export function TranslationArchiveExportPanel({
   )
 }
 
-export function WideTranslationEntryRow({
+function WideTranslationEntryRowImpl({
   row,
   visibleLanguages,
   onUpdate,
@@ -745,3 +753,5 @@ export function WideTranslationEntryRow({
     </tr>
   )
 }
+
+export const WideTranslationEntryRow = React.memo(WideTranslationEntryRowImpl)

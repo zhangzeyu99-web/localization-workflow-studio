@@ -17,31 +17,6 @@ function projectMaterialAnalysis(project: Project): ProjectMaterialAnalysis | nu
 }
 
 
-function materialTypeLabel(value: unknown): string {
-  const key = String(value || '').toLowerCase()
-  const labels: Record<string, string> = {
-    markdown: '\u9879\u76ee brief',
-    text: '\u6587\u672c\u8d44\u6599',
-    document: '\u6587\u6863\u8d44\u6599',
-    spreadsheet: '\u8868\u683c\u8d44\u6599',
-    image: '\u56fe\u7247\u8d44\u6599',
-    video: '\u89c6\u9891\u8d44\u6599',
-    json: 'JSON \u8d44\u6599',
-  }
-  return labels[key] || '\u8d44\u6599'
-}
-
-function materialStatusLabel(value: unknown): string {
-  const key = String(value || '').toLowerCase()
-  if (key.startsWith('vision_analyzed')) return '\u5df2\u505a\u753b\u9762\u5206\u6790'
-  if (key.startsWith('parsed')) return '\u5df2\u8bfb\u53d6'
-  if (key.startsWith('language_table')) return '\u5df2\u8bc6\u522b\u8bed\u8a00\u8868'
-  if (key.startsWith('archived_only')) return '\u5df2\u5f52\u6863\uff0c\u672a\u8fdb\u5165 AI \u5206\u6790'
-  if (key.includes('unsupported')) return '\u6682\u672a\u652f\u6301\u89e3\u6790'
-  if (!key || key === '\u672a\u89e3\u6790') return '\u672a\u89e3\u6790'
-  return '\u5df2\u5904\u7406'
-}
-
 function StepAnalyzeMaterialStatus({ project }: { project: Project }) {
   const analysis = projectMaterialAnalysis(project)
   if (!analysis) return null

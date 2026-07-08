@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from '../apiClient'
 import { errorText } from '../appText'
@@ -45,6 +46,14 @@ export interface UseProjectActionsParams {
 // passed in (forwarded via a ref in main.tsx) because `runAnalysis` here can
 // trigger a glossary scan, while the actual glossary logic lives in
 // useGlossaryActions, which itself depends on useTranslationActions.
+//
+// Every returned handler is wrapped in `useCallback` so components that
+// receive them as props (e.g. the memoized sidebar `ProjectListItem`) can
+// skip re-rendering when the underlying dependencies haven't changed, even
+// though this hook itself re-runs on every `App` render. Declaration order
+// below matters: functions that call another function from this same hook
+// are declared after the function they depend on (useCallback uses `const`,
+// which isn't hoisted like the original `function` declarations were).
 export function useProjectActions(params: UseProjectActionsParams) {
   const {
     current,
@@ -78,15 +87,15 @@ export function useProjectActions(params: UseProjectActionsParams) {
     runGlossaryExtract
   } = params
 
-  function cancelProjectDeleteHold() {
+  const cancelProjectDeleteHold = useCallback(() => {
     if (deleteHoldTimer.current !== null) {
       window.clearTimeout(deleteHoldTimer.current)
       deleteHoldTimer.current = null
     }
     setDeleteHoldProjectId('')
-  }
+  }, [deleteHoldTimer, setDeleteHoldProjectId])
 
-  function beginProjectDeleteHold(project: Project) {
+  const beginProjectDeleteHold = useCallback((project: Project) => {
     if (busy) return
     cancelProjectDeleteHold()
     setDeleteHoldProjectId(project.id)
@@ -96,9 +105,20 @@ export function useProjectActions(params: UseProjectActionsParams) {
       setDeleteHoldProjectId('')
       setDeleteProjectTarget(project)
     }, 850)
-  }
+  }, [busy, cancelProjectDeleteHold, deleteHoldTimer, longPressTriggeredProjectId, setDeleteHoldProjectId, setDeleteProjectTarget])
 
-  function selectProject(project: Project, event: React.MouseEvent<HTMLButtonElement>) {
+  const refreshProjects = useCallback(async (selectId?: string, signal?: AbortSignal) => {
+    const loaded = await api<Project[]>('/api/projects', signal ? { signal } : undefined)
+    const preferred = selectId && loaded.some((item) => item.id === selectId)
+      ? selectId
+      : (loaded.some((item) => item.id === currentIdRef.current) ? currentIdRef.current : '')
+    const nextId = preferred || loaded[0]?.id || ''
+    setProjects((prev) => mergeProjectListSummaries(prev, loaded))
+    currentIdRef.current = nextId
+    setCurrentId(nextId)
+  }, [currentIdRef, setProjects, setCurrentId])
+
+  const selectProject = useCallback((project: Project, event: React.MouseEvent<HTMLButtonElement>) => {
     if (longPressTriggeredProjectId.current === project.id) {
       event.preventDefault()
       longPressTriggeredProjectId.current = ''
@@ -109,9 +129,9 @@ export function useProjectActions(params: UseProjectActionsParams) {
     setCurrentId(project.id)
     setView('overview')
     setTab('meta')
-  }
+  }, [longPressTriggeredProjectId, currentId, resetProjectTransientState, currentIdRef, setCurrentId, setView, setTab])
 
-  async function deleteProject(project: Project) {
+  const deleteProject = useCallback(async (project: Project) => {
     const targetId = project.id
     const targetName = project.name
     setBusy(true)
@@ -143,53 +163,42 @@ export function useProjectActions(params: UseProjectActionsParams) {
     } finally {
       setBusy(false)
     }
-  }
+  }, [setBusy, setStatus, currentIdRef, setProjects, setCurrentId, setView, setTab, longPressTriggeredProjectId, setDeleteProjectTarget, refreshProjects])
 
-  async function refreshProjects(selectId?: string) {
-    const loaded = await api<Project[]>('/api/projects')
-    const preferred = selectId && loaded.some((item) => item.id === selectId)
-      ? selectId
-      : (loaded.some((item) => item.id === currentIdRef.current) ? currentIdRef.current : '')
-    const nextId = preferred || loaded[0]?.id || ''
-    setProjects((prev) => mergeProjectListSummaries(prev, loaded))
-    currentIdRef.current = nextId
-    setCurrentId(nextId)
-  }
-
-  async function refreshCurrent(projectId = currentIdRef.current): Promise<Project | null> {
+  const refreshCurrent = useCallback(async (projectId = currentIdRef.current): Promise<Project | null> => {
     if (!projectId) return null
     const loaded = await api<Project>(`/api/projects/${projectId}`)
     if (!isCurrentProject(projectId)) return loaded
     setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
     return loaded
-  }
+  }, [currentIdRef, isCurrentProject, setProjects])
 
-  async function refreshProjectSnapshot(projectId: string): Promise<Project | null> {
+  const refreshProjectSnapshot = useCallback(async (projectId: string, signal?: AbortSignal): Promise<Project | null> => {
     if (!projectId) return null
     try {
-      const loaded = await api<Project>(`/api/projects/${projectId}`)
+      const loaded = await api<Project>(`/api/projects/${projectId}`, signal ? { signal } : undefined)
       setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
       return loaded
     } catch (error) {
       if (/not found/i.test(errorText(error))) await refreshProjects()
       return null
     }
-  }
+  }, [setProjects, refreshProjects])
 
-  async function refreshRuntimeVersion() {
+  const refreshRuntimeVersion = useCallback(async () => {
     try {
       const payload = await api<AppRuntimeVersion>('/api/version')
       setRuntimeVersion(payload)
     } catch {
       setRuntimeVersion({ version: 'unknown', deployment_mode: 'unknown' })
     }
-  }
+  }, [setRuntimeVersion])
 
-  async function refreshSettings() {
+  const refreshSettings = useCallback(async () => {
     setSettings(await api<AppSettings>('/api/settings'))
-  }
+  }, [setSettings])
 
-  async function saveProjectMeta(updates: Partial<Project>) {
+  const saveProjectMeta = useCallback(async (updates: Partial<Project>) => {
     if (!current) return
     await api<Project>(`/api/projects/${current.id}`, {
       method: 'PATCH',
@@ -198,9 +207,9 @@ export function useProjectActions(params: UseProjectActionsParams) {
     })
     await refreshCurrent()
     setStatus('项目元信息已保存')
-  }
+  }, [current, refreshCurrent, setStatus])
 
-  async function loadQualityIssues(runId: string, projectId = currentIdRef.current): Promise<QualityIssue[]> {
+  const loadQualityIssues = useCallback(async (runId: string, projectId = currentIdRef.current): Promise<QualityIssue[]> => {
     try {
       const result = await api<{ issues: QualityIssue[] }>(`/api/runs/${runId}/quality-issues`)
       if (isCurrentProject(projectId)) setQualityIssues(result.issues)
@@ -209,9 +218,9 @@ export function useProjectActions(params: UseProjectActionsParams) {
       setStatusForProject(projectId, `QA 问题加载失败：${errorText(error)}`)
       return []
     }
-  }
+  }, [currentIdRef, isCurrentProject, setQualityIssues, setStatusForProject])
 
-  async function createProject(form: FormData) {
+  const createProject = useCallback(async (form: FormData) => {
     const created = await api<Project>('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -227,9 +236,9 @@ export function useProjectActions(params: UseProjectActionsParams) {
     setView('overview')
     setTab('meta')
     setStatus(created.duplicate ? `项目“${created.name}”已存在，已切换到已有项目。` : `项目“${created.name}”已创建。`)
-  }
+  }, [setNewProjectOpen, refreshProjects, setView, setTab, setStatus])
 
-  async function upload(file: File, kind: string, purpose = ''): Promise<Artifact | null> {
+  const upload = useCallback(async (file: File, kind: string, purpose = ''): Promise<Artifact | null> => {
     if (!current) return null
     setBusy(true)
     setStatus(`正在上传：${file.name}`)
@@ -250,9 +259,9 @@ export function useProjectActions(params: UseProjectActionsParams) {
     } finally {
       setBusy(false)
     }
-  }
+  }, [current, setBusy, setStatus, refreshCurrent])
 
-  async function runAnalysis() {
+  const runAnalysis = useCallback(async () => {
     if (!current) return
     setBusy(true)
     setStatus('正在读取项目资料并调用 AI 分析...')
@@ -294,9 +303,9 @@ export function useProjectActions(params: UseProjectActionsParams) {
     } finally {
       setBusy(false)
     }
-  }
+  }, [current, setBusy, setStatus, intro, assetArtifacts, selectedLanguage, isCurrentProject, setProjects, currentLang, confirm, setSourceArtifact, runGlossaryExtract])
 
-  async function saveHarness(updates: Partial<ProjectHarness>) {
+  const saveHarness = useCallback(async (updates: Partial<ProjectHarness>) => {
     if (!current) return
     await api(`/api/projects/${current.id}/harness`, {
       method: 'PATCH',
@@ -305,25 +314,25 @@ export function useProjectActions(params: UseProjectActionsParams) {
     })
     await refreshCurrent()
     setStatus('项目规则已保存，仅对当前项目生效')
-  }
+  }, [current, refreshCurrent, setStatus])
 
-  async function uploadAsset(file: File): Promise<Artifact | null> {
+  const uploadAsset = useCallback(async (file: File): Promise<Artifact | null> => {
     const artifact = await upload(file, 'asset')
     if (artifact) {
       setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
       setStatus(artifact.duplicate ? `参考素材已存在，已复用：${artifactPickerLabel(artifact)}` : `参考素材已归档：${artifactPickerLabel(artifact)}`)
     }
     return artifact
-  }
+  }, [upload, setAssetArtifacts, setStatus])
 
-  async function uploadProjectMaterial(file: File): Promise<Artifact | null> {
+  const uploadProjectMaterial = useCallback(async (file: File): Promise<Artifact | null> => {
     const artifact = await upload(file, 'asset', 'project_material')
     if (artifact) {
       setAssetArtifacts((prev) => uniqueArtifactsByContent([artifact, ...prev.filter((item) => item.id !== artifact.id)]))
       setStatus(artifact.duplicate ? `参考素材已存在，已复用：${artifactPickerLabel(artifact)}` : `参考素材已归档：${artifactPickerLabel(artifact)}`)
     }
     return artifact
-  }
+  }, [upload, setAssetArtifacts, setStatus])
 
   return {
     cancelProjectDeleteHold,

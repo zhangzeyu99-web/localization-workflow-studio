@@ -31,11 +31,11 @@ export function useRunStatusPolling(
 ) {
   const enabled = Boolean(latestRun && ['queued', 'running'].includes(latestRun.status))
 
-  usePolling(async (isStale) => {
+  usePolling(async (isStale, signal) => {
     if (!latestRun) return
     const runProjectId = latestRun.project_id
     try {
-      const updated = await api<Run>(`/api/runs/${latestRun.id}`)
+      const updated = await api<Run>(`/api/runs/${latestRun.id}`, { signal })
       if (isStale()) return
       if (!isCurrentProject(runProjectId)) return
       setLatestRun(updated)
@@ -46,7 +46,8 @@ export function useRunStatusPolling(
         if (modelFixStatus === 'running' || updated.status === 'running') {
           setStatus('模型修复后台运行中：正在调用 AI 修复问题，完成后会自动重跑 QA。')
         } else if (modelFixResultRunId) {
-          const resultRun = await api<Run>(`/api/runs/${modelFixResultRunId}`)
+          const resultRun = await api<Run>(`/api/runs/${modelFixResultRunId}`, { signal })
+          if (isStale()) return
           if (!isCurrentProject(runProjectId)) return
           setLatestRun(resultRun)
           setStep((prev) => (prev < 8 ? 8 : prev))
@@ -87,5 +88,5 @@ export function useRunStatusPolling(
     } catch (error) {
       if (!isStale()) setStatusForProject(runProjectId, `后台任务进度刷新失败：${errorText(error)}`)
     }
-  }, { intervalMs: 2000, enabled }, [latestRun?.id, latestRun?.status, tab])
+  }, { intervalMs: 2000, enabled, skipWhenHidden: true }, [latestRun?.id, latestRun?.status, tab])
 }

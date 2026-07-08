@@ -1,19 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { API } from './apiClient'
 import { refreshLanguageOptions, languageSpec, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { useConfirmDialog } from './components/modals/ConfirmModal'
-import { QuickTaskWizard } from './components/quickTask/QuickTaskWizard'
-import { AnnouncementWizard } from './components/announcement/AnnouncementWorkflow'
-import { Wizard } from './components/translationWizard/TranslationWizard'
 import { DeleteProjectModal } from './components/modals/DeleteProjectModal'
 import { CancelAnnouncementTaskModal } from './components/modals/CancelAnnouncementTaskModal'
 import { NewProjectModal } from './components/modals/NewProjectModal'
 import { FrequencyModal } from './components/modals/FrequencyModal'
 import { EmptyState } from './components/project/EmptyState'
 import { ProjectOverview } from './components/project/ProjectOverview'
+import { ProjectListItem } from './components/project/ProjectListItem'
 import { useProjectListPolling } from './hooks/useProjectListPolling'
 import { useProjectSnapshotPolling } from './hooks/useProjectSnapshotPolling'
 import { useRunStatusPolling } from './hooks/useRunStatusPolling'
@@ -24,9 +22,13 @@ import { useGlossaryActions } from './hooks/useGlossaryActions'
 import { useAnnouncementActions } from './hooks/useAnnouncementActions'
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { preferredTranslationResultArtifact } from './domain/projectState'
-import { projectActiveTaskCount, projectTranslationPassedStatusText, visibleAnnouncementTaskCount } from './domain/projectActivity'
+import { projectTranslationPassedStatusText } from './domain/projectActivity'
 import { canSkipModelTranslation } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
+
+const QuickTaskWizard = lazy(() => import('./components/quickTask/QuickTaskWizard').then((m) => ({ default: m.QuickTaskWizard })))
+const AnnouncementWizard = lazy(() => import('./components/announcement/AnnouncementWorkflow').then((m) => ({ default: m.AnnouncementWizard })))
+const Wizard = lazy(() => import('./components/translationWizard/TranslationWizard').then((m) => ({ default: m.Wizard })))
 
 declare global {
   interface Window {
@@ -89,19 +91,19 @@ function App() {
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
   const currentLang = languageSpec(selectedLanguage)
 
-  function setPrimaryLanguage(language: LanguageCode) {
+  const setPrimaryLanguage = useCallback((language: LanguageCode) => {
     setSelectedLanguage(language)
     setSelectedLanguages((prev) => prev.includes(language) ? prev : [...prev, language])
-  }
+  }, [])
 
-  function setPrimaryLanguages(languages: LanguageCode[], primary?: LanguageCode | null) {
+  const setPrimaryLanguages = useCallback((languages: LanguageCode[], primary?: LanguageCode | null) => {
     const normalized = languages.length ? languages : [primary || selectedLanguage]
     const nextPrimary = primary && normalized.includes(primary) ? primary : normalized[0]
     setSelectedLanguages(normalized)
     setSelectedLanguage(nextPrimary)
-  }
+  }, [selectedLanguage])
 
-  function toggleTargetLanguage(language: LanguageCode) {
+  const toggleTargetLanguage = useCallback((language: LanguageCode) => {
     setSelectedLanguages((prev) => {
       const wasSelected = prev.includes(language)
       const next = wasSelected
@@ -112,21 +114,21 @@ function App() {
       if (!wasSelected) setSelectedLanguage(language)
       return normalized
     })
-  }
+  }, [selectedLanguage])
 
-  function isCurrentProject(projectId?: string | null): boolean {
+  const isCurrentProject = useCallback((projectId?: string | null): boolean => {
     return Boolean(projectId) && currentIdRef.current === projectId
-  }
+  }, [])
 
-  function setStatusForProject(projectId: string, message: string) {
+  const setStatusForProject = useCallback((projectId: string, message: string) => {
     if (isCurrentProject(projectId)) setStatus(message)
-  }
+  }, [isCurrentProject])
 
-  function setBusyForProject(projectId: string, value: boolean) {
+  const setBusyForProject = useCallback((projectId: string, value: boolean) => {
     if (isCurrentProject(projectId)) setBusy(value)
-  }
+  }, [isCurrentProject])
 
-  function resetProjectTransientState(message = '准备就绪') {
+  const resetProjectTransientState = useCallback((message = '准备就绪') => {
     setBusy(false)
     setStatus(message)
     setSourceArtifact(null)
@@ -146,7 +148,7 @@ function App() {
     setTranslationReadiness(null)
     setAnnouncementText('')
     setAnnouncementLookupResult(null)
-  }
+  }, [])
 
   const {
     cancelProjectDeleteHold, beginProjectDeleteHold, selectProject, deleteProject, refreshProjects,
@@ -160,6 +162,12 @@ function App() {
     setSourceArtifact, setAssetArtifacts, resetProjectTransientState, confirm,
     runGlossaryExtract: (inputArtifact) => runGlossaryExtractRef.current(inputArtifact)
   })
+  const handleUploadTerm = useCallback(async (file: File) => {
+    setTermArtifact(await upload(file, 'term_base'))
+  }, [upload])
+  const handleProjectPointerDown = useCallback((project: Project, event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button === 0) beginProjectDeleteHold(project)
+  }, [beginProjectDeleteHold])
   const {
     refreshTranslationReadiness, selectSourceArtifact, selectQaArtifact, syncLanguageFromArtifact,
     classifySourceArtifact, inspectTranslationTargets, startQuickTask, runTranslate,
@@ -224,7 +232,9 @@ function App() {
     if (currentId) refreshCurrent()
   }, [currentId])
 
-  useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus)
+  const activeRunPolling = Boolean(latestRun && ['queued', 'running'].includes(latestRun.status))
+  const activeAnnouncementPolling = Boolean(current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status)))
+  useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus, activeRunPolling || activeAnnouncementPolling)
 
   useEffect(() => {
     if (deleteProjectTarget && !projects.some((project) => project.id === deleteProjectTarget.id)) {
@@ -371,22 +381,17 @@ function App() {
             <div className="sidebar-title">📁 我的项目</div>
             <div className="project-list">
               {projects.map((project) => (
-                <button
+                <ProjectListItem
                   key={project.id}
-                  className={`project-item ${project.id === currentId ? 'active' : ''} ${deleteHoldProjectId === project.id ? 'delete-hold' : ''}`}
-                  title="点击切换项目；长按删除项目"
-                  onPointerDown={(event) => { if (event.button === 0) beginProjectDeleteHold(project) }}
+                  project={project}
+                  isActive={project.id === currentId}
+                  isDeleteHold={deleteHoldProjectId === project.id}
+                  onPointerDown={handleProjectPointerDown}
                   onPointerUp={cancelProjectDeleteHold}
                   onPointerLeave={cancelProjectDeleteHold}
                   onPointerCancel={cancelProjectDeleteHold}
-                  onContextMenu={(event) => event.preventDefault()}
-                  onClick={(event) => selectProject(project, event)}
-                >
-                  <span className="pname">{project.icon ? `${project.icon} ` : ''}{project.name}</span>
-                  <span className="pmeta">语言包 {project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))} · 公告 {visibleAnnouncementTaskCount(project)} · 归档 {project.stats.archived_rows || 0}</span>
-                  {projectActiveTaskCount(project) ? <span className="ptag ptag-live">后台 {projectActiveTaskCount(project)}</span> : null}
-                  {project.type ? <span className="ptag">{project.type}</span> : null}
-                </button>
+                  onSelect={selectProject}
+                />
               ))}
             </div>
             <button className="new-project-btn" onClick={() => setNewProjectOpen(true)}>+ 新建项目</button>
@@ -429,7 +434,7 @@ function App() {
                 onSaveMeta={saveProjectMeta}
                 onAnalyze={runAnalysis}
                 onUploadSource={uploadSourceWorkbook}
-                onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
+                onUploadTerm={handleUploadTerm}
                 onGlossaryPreview={previewGlossaryImport}
                 onGlossaryImport={importGlossaryArtifact}
                 onGlossaryExtract={runGlossaryExtract}
@@ -465,105 +470,109 @@ function App() {
                 toggleSelectedLanguage={toggleTargetLanguage}
                 confirm={confirm}
               />
-            ) : view === 'quick' ? (
-              <QuickTaskWizard
-                project={current}
-                busy={busy}
-                status={status}
-                settings={settings}
-                latestRun={latestRun}
-                onBack={() => setView('overview')}
-                onUploadFile={upload}
-                onInspectTargets={inspectTranslationTargets}
-                onStartQuickTask={startQuickTask}
-                onViewResult={(run) => { setView('overview'); setTab(run?.kind === 'qa' ? 'qa' : 'translation') }}
-              />
-            ) : view === 'announcement' ? (
-              <AnnouncementWizard
-                project={current}
-                busy={busy}
-                status={status}
-                selectedLanguage={selectedLanguage}
-                setSelectedLanguage={setSelectedLanguage}
-                assetArtifacts={assetArtifacts}
-                announcementText={announcementText}
-                setAnnouncementText={setAnnouncementText}
-                lookupResult={announcementLookupResult}
-                onUploadAsset={uploadAsset}
-                onUploadConstraint={uploadAnnouncementConstraint}
-                onUploadTermsFile={uploadAnnouncementTermsFile}
-                onCreateTask={createAnnouncementTask}
-                onTaskAction={runAnnouncementTaskAction}
-                onLookup={runAnnouncementLookup}
-                onBack={() => setView('overview')}
-                onUploadResponse={uploadAnnouncementResponse}
-                onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
-                onCancelAnnouncementHold={cancelAnnouncementCancelHold}
-                announcementCancelHoldTaskId={announcementCancelHoldTaskId}
-                initialTaskId={announcementFocusTaskId}
-                settings={settings}
-                confirm={confirm}
-              />
             ) : (
-              <Wizard
-                project={currentScoped || current}
-                step={step}
-                setStep={setStep}
-                intro={intro}
-                setIntro={setIntro}
-                sourceArtifact={sourceArtifact}
-                termArtifact={termArtifact}
-                qaArtifact={qaArtifact}
-                assetArtifacts={assetArtifacts}
-                latestRun={latestRun}
-                translationReadiness={translationReadiness}
-                sourceInputNotice={sourceInputNotice}
-                invalidSourceArtifactIds={invalidSourceArtifactIds}
-                glossaryBatches={glossaryBatches}
-                glossaryCandidates={glossaryCandidates}
-                qualityIssues={qualityIssues}
-                deliverables={deliverables}
-                generatedDeliveryRunId={generatedDelivery?.projectId === current.id ? generatedDelivery.runId : undefined}
-                generatedDeliveryFiles={generatedDelivery?.projectId === current.id ? generatedDelivery.files : []}
-                selectedLanguage={selectedLanguage}
-                setSelectedLanguage={setPrimaryLanguage}
-                selectedLanguages={selectedLanguages}
-                toggleSelectedLanguage={toggleTargetLanguage}
-                setSourceArtifact={selectSourceArtifact}
-                setTermArtifact={setTermArtifact}
-                setQaArtifact={selectQaArtifact}
-                glossaryPreview={glossaryPreview}
-                settings={settings}
-                status={status}
-                onBack={() => setView('overview')}
-                onUploadSource={uploadSourceWorkbook}
-                onUploadTerm={async (file) => setTermArtifact(await upload(file, 'term_base'))}
-                onUploadAsset={uploadProjectMaterial}
-                onAnalyze={runAnalysis}
-                onGlossaryExtract={runGlossaryExtract}
-                onGlossaryPreview={previewGlossaryImport}
-                onGlossaryImport={importGlossaryArtifact}
-                onTranslate={() => runTranslate('A')}
-                onTranslateQueue={() => startMultilingualTranslationQueue('T')}
-                onCancelTranslate={cancelTranslateRun}
-                onDirectQA={(artifact) => runDirectQA('QA', artifact)}
-                onDirectQAQueue={() => startMultilingualQAQueue('QA')}
-                onSkipQAArchive={skipQAArchive}
-                allowSkipQAArchive
-                onManualFixes={applyManualFixes}
-                onModelFixes={applyModelFixes}
-                onUploadTranslation={uploadTranslationWorkbook}
-                onCreateDelivery={createDeliveryPackage}
-                onCreateMergedDelivery={createMergedDeliveryPackage}
-                onFinishDelivery={finishWizardDelivery}
-                onFreq={() => setFreqOpen(true)}
-                onSaveHarness={saveHarness}
-                onUpdateCandidate={updateGlossaryCandidate}
-                onResolveCandidates={resolveGlossaryCandidates}
-                onTranslateMissingCandidates={translateMissingGlossaryCandidates}
-                busy={busy}
-                confirm={confirm}
-              />
+              <Suspense fallback={<span className="loading" />}>
+                {view === 'quick' ? (
+                  <QuickTaskWizard
+                    project={current}
+                    busy={busy}
+                    status={status}
+                    settings={settings}
+                    latestRun={latestRun}
+                    onBack={() => setView('overview')}
+                    onUploadFile={upload}
+                    onInspectTargets={inspectTranslationTargets}
+                    onStartQuickTask={startQuickTask}
+                    onViewResult={(run) => { setView('overview'); setTab(run?.kind === 'qa' ? 'qa' : 'translation') }}
+                  />
+                ) : view === 'announcement' ? (
+                  <AnnouncementWizard
+                    project={current}
+                    busy={busy}
+                    status={status}
+                    selectedLanguage={selectedLanguage}
+                    setSelectedLanguage={setSelectedLanguage}
+                    assetArtifacts={assetArtifacts}
+                    announcementText={announcementText}
+                    setAnnouncementText={setAnnouncementText}
+                    lookupResult={announcementLookupResult}
+                    onUploadAsset={uploadAsset}
+                    onUploadConstraint={uploadAnnouncementConstraint}
+                    onUploadTermsFile={uploadAnnouncementTermsFile}
+                    onCreateTask={createAnnouncementTask}
+                    onTaskAction={runAnnouncementTaskAction}
+                    onLookup={runAnnouncementLookup}
+                    onBack={() => setView('overview')}
+                    onUploadResponse={uploadAnnouncementResponse}
+                    onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
+                    onCancelAnnouncementHold={cancelAnnouncementCancelHold}
+                    announcementCancelHoldTaskId={announcementCancelHoldTaskId}
+                    initialTaskId={announcementFocusTaskId}
+                    settings={settings}
+                    confirm={confirm}
+                  />
+                ) : (
+                  <Wizard
+                    project={currentScoped || current}
+                    step={step}
+                    setStep={setStep}
+                    intro={intro}
+                    setIntro={setIntro}
+                    sourceArtifact={sourceArtifact}
+                    termArtifact={termArtifact}
+                    qaArtifact={qaArtifact}
+                    assetArtifacts={assetArtifacts}
+                    latestRun={latestRun}
+                    translationReadiness={translationReadiness}
+                    sourceInputNotice={sourceInputNotice}
+                    invalidSourceArtifactIds={invalidSourceArtifactIds}
+                    glossaryBatches={glossaryBatches}
+                    glossaryCandidates={glossaryCandidates}
+                    qualityIssues={qualityIssues}
+                    deliverables={deliverables}
+                    generatedDeliveryRunId={generatedDelivery?.projectId === current.id ? generatedDelivery.runId : undefined}
+                    generatedDeliveryFiles={generatedDelivery?.projectId === current.id ? generatedDelivery.files : []}
+                    selectedLanguage={selectedLanguage}
+                    setSelectedLanguage={setPrimaryLanguage}
+                    selectedLanguages={selectedLanguages}
+                    toggleSelectedLanguage={toggleTargetLanguage}
+                    setSourceArtifact={selectSourceArtifact}
+                    setTermArtifact={setTermArtifact}
+                    setQaArtifact={selectQaArtifact}
+                    glossaryPreview={glossaryPreview}
+                    settings={settings}
+                    status={status}
+                    onBack={() => setView('overview')}
+                    onUploadSource={uploadSourceWorkbook}
+                    onUploadTerm={handleUploadTerm}
+                    onUploadAsset={uploadProjectMaterial}
+                    onAnalyze={runAnalysis}
+                    onGlossaryExtract={runGlossaryExtract}
+                    onGlossaryPreview={previewGlossaryImport}
+                    onGlossaryImport={importGlossaryArtifact}
+                    onTranslate={() => runTranslate('A')}
+                    onTranslateQueue={() => startMultilingualTranslationQueue('T')}
+                    onCancelTranslate={cancelTranslateRun}
+                    onDirectQA={(artifact) => runDirectQA('QA', artifact)}
+                    onDirectQAQueue={() => startMultilingualQAQueue('QA')}
+                    onSkipQAArchive={skipQAArchive}
+                    allowSkipQAArchive
+                    onManualFixes={applyManualFixes}
+                    onModelFixes={applyModelFixes}
+                    onUploadTranslation={uploadTranslationWorkbook}
+                    onCreateDelivery={createDeliveryPackage}
+                    onCreateMergedDelivery={createMergedDeliveryPackage}
+                    onFinishDelivery={finishWizardDelivery}
+                    onFreq={() => setFreqOpen(true)}
+                    onSaveHarness={saveHarness}
+                    onUpdateCandidate={updateGlossaryCandidate}
+                    onResolveCandidates={resolveGlossaryCandidates}
+                    onTranslateMissingCandidates={translateMissingGlossaryCandidates}
+                    busy={busy}
+                    confirm={confirm}
+                  />
+                )}
+              </Suspense>
             )}
           </main>
         </div>

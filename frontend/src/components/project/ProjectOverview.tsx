@@ -1,8 +1,10 @@
+import React, { useCallback, useEffect, useState } from 'react'
 import type { LanguageCode } from '../../languages'
+import { HISTORY_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import { glossaryWideRows, translationWideRows } from '../../domain/projectAssets'
 import { projectActivityRuns, projectRunStatusText, projectRunTitle, visibleAnnouncementTaskCount } from '../../domain/projectActivity'
-import { AnnouncementProjectPanel } from '../announcement/AnnouncementWorkflow'
-import { GlossaryTab, TranslationArchiveTab } from '../assets/ProjectAssetTabs'
+import { AnnouncementProjectPanel } from '../announcement/AnnouncementProjectPanel'
+import { GlossaryTab, TranslationArchiveTab, WideTablePager } from '../assets/ProjectAssetTabs'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
 import { DeliveryTab, TranslationTab } from '../translationWizard/ProjectTabs'
 import { StepQA } from '../translationWizard/steps/StepQA'
@@ -72,7 +74,7 @@ export interface ProjectOverviewProps {
   confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }
 
-export function ProjectOverview({
+function ProjectOverviewImpl({
   project,
   tab,
   setTab,
@@ -145,6 +147,16 @@ export function ProjectOverview({
   ).length
   const deliverableCount = project.stats.deliverables ?? fallbackDeliverableCount
   const activityRuns = projectActivityRuns(project)
+  const [activityPage, setActivityPage] = useState(1)
+  const activityTotalPages = Math.max(1, Math.ceil(activityRuns.length / HISTORY_TABLE_PAGE_SIZE))
+  const activityCurrentPage = Math.min(activityPage, activityTotalPages)
+  const currentActivityRuns = pagedRows(activityRuns, activityCurrentPage, HISTORY_TABLE_PAGE_SIZE)
+
+  useEffect(() => {
+    setActivityPage(1)
+  }, [project.id, activityRuns.length])
+
+  const goToQaTab = useCallback(() => setTab('qa'), [setTab])
   return (
     <>
       <div className="proj-head">
@@ -179,7 +191,7 @@ export function ProjectOverview({
             </div>
           </div>
           <div className="activity-list">
-            {activityRuns.map((run) => (
+            {currentActivityRuns.map((run) => (
               <div key={run.id} className={`activity-item ${run.status}`}>
                 <div>
                   <strong>{projectRunTitle(run)}</strong>
@@ -191,6 +203,9 @@ export function ProjectOverview({
               </div>
             ))}
           </div>
+          {activityRuns.length > HISTORY_TABLE_PAGE_SIZE ? (
+            <WideTablePager testIdPrefix="activity" page={activityCurrentPage} totalRows={activityRuns.length} onPageChange={setActivityPage} pageSize={HISTORY_TABLE_PAGE_SIZE} />
+          ) : null}
         </div>
       ) : null}
       <AnnouncementProjectPanel
@@ -301,7 +316,7 @@ export function ProjectOverview({
           onDeleteTranslation={onDeleteTranslation}
           selectedLanguage={selectedLanguage}
           setSelectedLanguage={setSelectedLanguage}
-          onGoQA={() => setTab('qa')}
+          onGoQA={goToQaTab}
         />
       ) : null}
       {tab === 'delivery' ? (
@@ -319,3 +334,5 @@ export function ProjectOverview({
     </>
   )
 }
+
+export const ProjectOverview = React.memo(ProjectOverviewImpl)
