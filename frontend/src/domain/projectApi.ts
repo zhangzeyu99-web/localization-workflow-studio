@@ -19,7 +19,7 @@ export async function uploadProjectFile(
     return api<Artifact>(`/api/projects/${projectId}/files?${query.toString()}`, {
       method: 'POST',
       body: data
-    })
+    }, '上传')
   }
   const total = Math.ceil(file.size / UPLOAD_CHUNK_BYTES)
   const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -41,7 +41,7 @@ export async function uploadProjectFile(
         body: data
       })
     } catch (error) {
-      throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error)))
+      throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error), undefined, '上传'))
     }
     if (!response.ok) {
       const text = await response.text()
@@ -50,7 +50,7 @@ export async function uploadProjectFile(
       if (response.status >= 500 && (!trimmed || (!contentType.includes('application/json') && /^(Internal Server Error|Error occurred while trying to proxy)/i.test(trimmed)))) {
         throw new Error('连接工作台后端失败。后端可能正在重启或未启动，请等几秒后重试；如果反复出现，请重启本地/局域网工作台。')
       }
-      throw new Error(apiErrorText(text, response.statusText))
+      throw new Error(apiErrorText(text, response.statusText, '上传'))
     }
     const payload = await response.json() as { complete?: boolean; artifact?: Artifact; received?: number; total?: number }
     onProgress(index + 1, total)
