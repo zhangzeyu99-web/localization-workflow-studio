@@ -63,7 +63,6 @@ NUMBER_WORDS = {
     "tiga": Decimal("3"),
     "empat": Decimal("4"),
     "lima": Decimal("5"),
-    "seis": Decimal("6"),
     "tujuh": Decimal("7"),
     "delapan": Decimal("8"),
     "sembilan": Decimal("9"),
@@ -396,7 +395,6 @@ def cache_lint(cache_jsonl: Path, *, target_langs: list[str]) -> dict[str, Any]:
             unauthorized[lang] += 1
             add_issue(issues, "unauthorized_language", key, lang, "translation cache contains a language that was not requested")
 
-        src = source_text(row)
         src_numbers = source_numeric_values(row)
         tokens = protected_tokens(row)
         for lang in target_langs:

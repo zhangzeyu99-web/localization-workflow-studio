@@ -247,7 +247,6 @@ def render_report(metrics: dict[str, Any]) -> str:
     phases = timing.get("phases") or []
     top_phase = max(phases, key=lambda row: row.get("seconds", 0), default={})
     delivery = metrics.get("delivery") or {}
-    deliver_log = metrics.get("deliver_log") or {}
     proof = metrics.get("proofread") or {}
     feishu = metrics.get("feishu_readback") or {}
     preflight = metrics.get("preflight") or {"exists": False}
