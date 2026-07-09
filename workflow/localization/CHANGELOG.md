@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-09 - 翻译 harness 语言支持扩充到历史需求全集
+
+- `SUPPORTED_TRANSLATION_LANGUAGES` 从 6 语（en/ko/ja/th/vi/idn）扩充到 14 语，新增 fr/de/ru/it/es/pt/tr/ar。
+- 依据：扫描历史交付记录（530 个 workbook 表头 + manifest/QA JSON）确认需求过的语言——土拨鼠 8 语深校（法/德/俄/意/西/葡/土/泰表头 33 文件）、明日2 全语种需求表（de/es/fr/pt/ru/tr 表头 20-30 文件）、勇者西葡全量、闪电突击 EN/IDN/ES/PT 四语、KR勇者公告、公告 harness 已有的 AR 列。
+- `language_config.py` 六个注册表全部补齐 14 语（NAMES/ALIASES/FILE_HINTS/OUTPUT_SUFFIX/TARGET_HEADERS），中文别名（如"西班牙语""巴葡""阿语"）和常见代码变体（kr/jp/tk/pt-br）均可归一化。
+- 新增 `tests/test_language_config.py` 注册表一致性守护：任何进 SUPPORTED 的语言必须六表齐全，防止半注册语言。
+- `test_translation_harness.py` 新增 es/pt/ru/tr/ar 的 prepare+apply 端到端用例（含术语命中、目标列回填、缓存命名）和不支持语言拒绝用例。
+- `run_translation_harness.py --lang` 帮助文案改为从注册表动态生成；AGENTS.md 语言清单指向 `language_config.py` 单一事实源。
+- 回归：181 passed + 64 subtests（此前 174+25），ruff 0 error。
+
 ## 2026-07-09 - 移除旧版 Tkinter GUI
 
 - 删除 `gui.py`（旧版人工复制粘贴流程入口，AGENTS 已长期声明不默认使用）；人工操作场景改用 `cli.py` 交互模式。

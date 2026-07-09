@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from process_language import process
+from utils.language_config import SUPPORTED_TRANSLATION_LANGUAGES
 from utils.translation_harness import apply_translation_response, prepare_translation_harness
 
 
@@ -20,7 +21,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare or apply an agent-operated full-translation harness")
     parser.add_argument("--input", required=True, help="Language workbook")
     parser.add_argument("--term-base", default=None, help="Term-base workbook or JSON")
-    parser.add_argument("--lang", default="en", help="Target language; supported: en, ko, ja, th, vi, idn")
+    parser.add_argument(
+        "--lang",
+        default="en",
+        help=f"Target language; supported: {', '.join(SUPPORTED_TRANSLATION_LANGUAGES)}",
+    )
     parser.add_argument("--output-dir", default=None, help="Output directory for harness artifacts")
     parser.add_argument("--lang-index", type=int, default=0, help="Target language column index")
     parser.add_argument("--response", default=None, help="translation_response.jsonl to validate and apply")

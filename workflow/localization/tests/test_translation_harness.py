@@ -474,6 +474,72 @@ class TranslationHarnessTests(unittest.TestCase):
                 wb.close()
             self.assertEqual(applied.cache_path.name, "ko.jsonl")
 
+    def test_prepare_and_apply_support_european_and_arabic_targets(self):
+        cases = {
+            "es": ("ES", "Reclamar recompensa", "西班牙语"),
+            "pt": ("PT", "Resgatar recompensa", "葡萄牙语"),
+            "ru": ("RU", "Получить награду", "俄语"),
+            "tr": ("TR", "Ödülü al", "土耳其语"),
+            "ar": ("AR", "استلام المكافأة", "阿拉伯语"),
+        }
+        for lang, (header, translation, cn_header) in cases.items():
+            with self.subTest(lang=lang):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    lang_path = tmp_path / "lang.xlsx"
+                    out_dir = tmp_path / "out"
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = "Sheet1"
+                    ws.append(["ID", "CN", header])
+                    ws.append([1, SRC_CLAIM, ""])
+                    wb.save(lang_path)
+
+                    term_path = tmp_path / "terms.xlsx"
+                    term_wb = Workbook()
+                    term_ws = term_wb.active
+                    term_ws.title = "术语表"
+                    term_ws.append(["CN", cn_header])
+                    term_ws.append([SRC_CLAIM, translation])
+                    term_wb.save(term_path)
+
+                    prepared = prepare_translation_harness(
+                        input_path=lang_path,
+                        term_base_path=term_path,
+                        lang=lang,
+                        output_dir=out_dir,
+                    )
+                    self.assertEqual(prepared.manifest["language"], lang)
+                    rows = [
+                        json.loads(line)
+                        for line in prepared.workpack_path.read_text(encoding="utf-8").splitlines()
+                    ]
+                    self.assertIn(translation, [term["target"] for term in rows[0]["term_hits"]])
+
+                    response_path = tmp_path / f"translation_response_{lang}.jsonl"
+                    _write_jsonl(response_path, [{"id": 1, "translation": translation}])
+                    applied = apply_translation_response(
+                        input_path=lang_path,
+                        manifest_path=prepared.manifest_path,
+                        response_path=response_path,
+                        output_dir=out_dir,
+                        lang=lang,
+                    )
+                    wb = load_workbook(applied.final_workbook_path, read_only=True, data_only=False)
+                    try:
+                        self.assertEqual(wb.active.cell(2, 3).value, translation)
+                    finally:
+                        wb.close()
+                    self.assertEqual(applied.cache_path.name, f"{lang}.jsonl")
+
+    def test_prepare_rejects_unsupported_language_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            _write_language_workbook(lang_path)
+            with self.assertRaisesRegex(ValueError, "supports only"):
+                prepare_translation_harness(lang_path, lang="xx", output_dir=tmp_path / "out")
+
 
 if __name__ == "__main__":
     unittest.main()
