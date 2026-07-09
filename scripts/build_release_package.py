@@ -35,6 +35,7 @@ DEFAULT_EXCLUDE_DIRS = {
     "artifacts",
     "outputs",
     "release_archives",
+    "frontend-v2",
 }
 DEFAULT_EXCLUDE_SUFFIXES = {
     ".pyc",
@@ -342,7 +343,8 @@ def build(output_dir: Path, package_label: str, settings_file: Path | None = Non
     zip_path = output_dir / f"{package_label}-v{version}-{stamp}.zip"
     if zip_path.exists():
         zip_path.unlink()
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    # strict_timestamps=False：个别文件带 1980 年前的异常时间戳时自动钳到 1980，避免整包失败。
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
         for path in staging_root.rglob("*"):
             if path.is_file():
                 archive.write(path, path.relative_to(staging_root.parent).as_posix())
