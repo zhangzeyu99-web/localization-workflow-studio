@@ -301,6 +301,7 @@ python scripts/import_curated_glossary.py /path/to/final_glossary.xlsx \
 
 - [CHANGELOG.md](CHANGELOG.md)：版本记录
 - [docs/workflow.md](docs/workflow.md)：完整提炼流程
+- [docs/terminology-thread-handoff.md](docs/terminology-thread-handoff.md)：术语提取执行线程 handoff 与边界
 - [docs/maintenance.md](docs/maintenance.md)：维护与回归规范
 - [docs/source-only-delivery-retrospective.md](docs/source-only-delivery-retrospective.md)：源文-only 术语提取、预翻译、分类整理和标准命名复盘
 
