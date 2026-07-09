@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from .. import db
 from .announcement_shared import (
     _count_lookup_hits,
     _rank_translation_lookup_source,
     _suppress_overlapping_lookup_hits,
 )
+
+REFERENCE_HIT_MIN_LENGTH = 4
+REFERENCE_HIT_LIMIT_PER_ROW = 20
 
 
 def lookup_terms(text: str, terms: list[dict[str, Any]], *, min_length: int, limit: int) -> list[dict[str, Any]]:
@@ -68,3 +72,43 @@ def lookup_translation_entries(text: str, entries: list[dict[str, Any]], *, min_
     for row in accepted:
         row.pop("_priority", None)
     return accepted
+
+
+def compact_reference_hit(hit: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": hit.get("source", ""),
+        "target": hit.get("target", ""),
+        "target_alt": hit.get("target_alt", ""),
+        "source_type": hit.get("source_type", ""),
+        "sheet": hit.get("sheet", ""),
+        "row_number": hit.get("row_number", 0),
+    }
+
+
+def attach_reference_hits(rows: list[dict[str, Any]], project_id: str, language: str) -> dict[str, Any]:
+    """Attach translation-archive ``reference_hits`` to workpack rows in place.
+
+    Returns an audit summary. Rows with no archive match get an empty list so
+    downstream consumers (prompt builder, batch fingerprint) see a stable shape.
+    """
+    archive_rows = db.list_translation_entries(project_id, language=language)
+    hit_rows = 0
+    total_hits = 0
+    for row in rows:
+        source = str(row.get("source") or "")
+        hits = (
+            lookup_translation_entries(source, archive_rows, min_length=REFERENCE_HIT_MIN_LENGTH, limit=REFERENCE_HIT_LIMIT_PER_ROW)
+            if archive_rows
+            else []
+        )
+        row["reference_hits"] = [compact_reference_hit(hit) for hit in hits]
+        if hits:
+            hit_rows += 1
+            total_hits += len(hits)
+    return {
+        "language": language,
+        "archive_entries": len(archive_rows),
+        "total_rows": len(rows),
+        "reference_hit_rows": hit_rows,
+        "reference_hits": total_hits,
+    }

@@ -17,7 +17,7 @@ from .prompt_snapshots import (
     create_prompt_and_harness_snapshots,
     create_quick_reference_snapshot,
 )
-from .reference_lookup import lookup_terms as _lookup_terms, lookup_translation_entries as _lookup_translation_entries
+from .reference_lookup import attach_reference_hits, lookup_terms as _lookup_terms
 from .translation_orchestrator import _translate_rows_with_orchestration
 
 
@@ -96,27 +96,15 @@ def _quick_text_glossary_rows(glossary_snapshot: dict[str, Any], language: str) 
 
 def _quick_text_rows_with_context(project_id: str, language: str, rows: list[dict[str, Any]], glossary_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     glossary_rows = _quick_text_glossary_rows(glossary_snapshot, language)
-    archive_rows = db.list_translation_entries(project_id, language=language)
     enriched = []
     for row in rows:
         source = str(row.get("source") or "")
         term_hits = _lookup_terms(source, glossary_rows, min_length=2, limit=20)
-        reference_hits = _lookup_translation_entries(source, archive_rows, min_length=4, limit=20)
         enriched.append({
             **row,
             "term_hits": [{"source": hit.get("source", ""), "target": hit.get("target", ""), "target_alt": hit.get("target_alt", "")} for hit in term_hits],
-            "reference_hits": [
-                {
-                    "source": hit.get("source", ""),
-                    "target": hit.get("target", ""),
-                    "target_alt": hit.get("target_alt", ""),
-                    "source_type": hit.get("source_type", ""),
-                    "sheet": hit.get("sheet", ""),
-                    "row_number": hit.get("row_number", 0),
-                }
-                for hit in reference_hits
-            ],
         })
+    attach_reference_hits(enriched, project_id, language)
     return enriched
 
 

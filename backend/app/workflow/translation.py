@@ -38,6 +38,7 @@ from .prompt_snapshots import (
     create_quick_reference_snapshot,
 )
 from .qa import run_localization_qa
+from .reference_lookup import attach_reference_hits
 from .subprocess_runner import (
     UserFacingWorkflowError,
     _friendly_unsupported_language_file_message,
@@ -296,6 +297,14 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         run_subprocess(prepare_args, LOCALIZATION_ROOT, run_id)
         workpack_path = work_dir / "translation_workpack.jsonl"
         rows = read_jsonl(workpack_path)
+        reference_audit = attach_reference_hits(rows, project["id"], language)
+        write_jsonl(workpack_path, rows)
+        db.merge_run_metadata(run_id, {"reference_audit": reference_audit})
+        db.add_event(
+            run_id,
+            "translation archive lookup: "
+            f"entries={reference_audit['archive_entries']}, hit_rows={reference_audit['reference_hit_rows']}, hits={reference_audit['reference_hits']}",
+        )
         large_text_mode = normalize_large_text_mode(getattr(request, "large_text_mode", None) or metadata.get("large_text_mode"))
         large_text_preflight = build_large_text_preflight(
             rows,
