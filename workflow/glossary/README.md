@@ -12,6 +12,16 @@
 
 Current repository version: **v0.4.0**. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
+## Downstream Sync
+
+This repository is the single maintenance source for the glossary extraction workflow. Localization Workflow Studio embeds a read-only sync artifact at `workflow/glossary` (see its `SYNC.md`). After landing changes here, sync the studio copy from the studio repo root:
+
+```powershell
+python scripts/sync_workflow_sources.py glossary
+```
+
+Never edit the embedded studio copy directly.
+
 Main supported workflows:
 
 - Full language-table glossary extraction: `ID / CN / EN / EN2`.
