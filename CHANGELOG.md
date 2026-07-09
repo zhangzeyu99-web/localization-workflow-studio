@@ -2,6 +2,25 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.2.0 - 2026-07-09
+
+Translation-archive lookup in the formal translation flow, and an opt-in in-product line-by-line AI proofreading pass. Planned in `docs/superpowers` plan "译文归档注入与逐行校对".
+
+Archive lookup injection (P1):
+
+- Formal translation workpack rows now carry `reference_hits` looked up from the project's translation archive (QA-passed/imported/manual entries), the same way quick tasks already did; the batch prompt's existing Archive rule now actually receives data in formal runs. The lookup helper is shared (`reference_lookup.attach_reference_hits`) and quick tasks reuse it.
+- Run metadata records a `reference_audit` (archive entries, hit rows, total hits) and the event stream logs one summary line per run.
+- The first lookup is frozen into a run-scoped `reference_hits_snapshot.json` (same pattern as glossary/prompt snapshots): a passed run imports its own rows into the archive, so a live lookup on resume would change the batch fingerprint and wipe the resume cache. New runs pick up the grown archive; resumed runs keep their original hits.
+- Known effect: batch fingerprints of *new* runs differ from pre-1.2.0 manifests once the archive has data (expected; resume caches of in-flight runs are protected by the snapshot).
+
+In-product line proofreading (P2, opt-in):
+
+- `TranslateRequest`/`MultilingualQueueRequest` gained `enable_line_proofread: bool = false`. Default off, matching the collaboration rule that deep per-line proofreading only runs when explicitly requested; the multilingual queue passes the flag through to child runs.
+- New `backend/app/workflow/line_proofread.py`: after machine QA passes/fails, the model reviews the QA workbook in ~50-row batches (source + current target + term_hits) and returns strict-JSON suggestions; a deterministic audit gate rejects suggestions that lose protected tokens (placeholders/tags/escaped newlines), drift from term_hits targets, drop numbers, or change nothing. Accepted fixes are applied to a copy via the shared workbook-fix path and machine QA is re-run on the result; the run's final status comes from that second QA pass.
+- Artifacts: audited suggestions land in a `line_proofread_suggestions` JSONL artifact (internal, not a delivery file); run metadata records `line_proofread: {reviewed_rows, batches, suggested, rejected_by_audit, applied}`.
+- Frontend: Step 7 gained a "深度逐行校对" checkbox (default unchecked, with a time-cost hint) and shows the proofread summary after the run; RunDetail shows the same summary line; copy lives in `uiText.ts`.
+- With the test-fake provider the reviewer deterministically suggests nothing, so dev/e2e flows exercise the full pipeline without a real key; real providers reuse the existing keyless-run preflight block.
+
 ## 1.1.1 - 2026-07-09
 
 Workflow source-of-truth consolidation. `workflow/localization` and `workflow/glossary` are now declared sync artifacts mirrored from their standalone source repos; no product/backend behavior change.

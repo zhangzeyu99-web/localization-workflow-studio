@@ -17,6 +17,8 @@
 | 多语言队列 | `test_start_multilingual_translation_creates_missing_child_runs`、`test_multilingual_qa_skips_languages_without_translated_input` | `new translation task exposes the full supported language set` |
 | 大文本产品化门禁（大语言表/多语言包在 Step 7 显示 preflight，翻译写入前跑 cache-lint，交付时跑 readback gate，并生成 retro artifact） | `backend/tests/test_large_text_productization.py`、`backend/tests/test_long_text_orchestration.py` | `frontend/e2e/studio-ui-flow.spec.ts`（`interrupted translation run resumes instead of creating a new run` 断言 `large-text-panel`） |
 | 多人并发（项目级锁 `long_text:{project_id}`、全局并发上限 `max_concurrent_ai_jobs`、`GET /api/system/active-jobs`、共享限流器、settings 快照、删除防护） | `backend/tests/test_concurrency_lease.py`、`backend/tests/test_shared_rate_limiter.py`、`backend/tests/test_shared_resource_protection.py`、`scripts/concurrency_smoke.py` | `frontend/e2e/studio-ui-flow.spec.ts`（`active jobs badge and panel show the running project name and task type`、`starting a second task on a busy project shows a queue hint that opens the active jobs panel`） |
+| 译文归档注入正式翻译（workpack 行附 `reference_hits`，run metadata 记 `reference_audit`，命中随批次 prompt 的 Archive rule 进模型；首跑结果冻结为 run 级快照，续跑不受归档增长影响） | `backend/tests/test_reference_archive_injection.py` | -（后端行为，随既有翻译 e2e 覆盖） |
+| 产品内深度逐行校对（Step 7 显式勾选，默认关闭；机器 QA 后模型逐行审校，确定性审计回退破坏占位符/术语漂移/数字丢失的建议，采纳修改写回后重跑机器 QA；metadata 记 `line_proofread` 摘要与建议 JSONL artifact） | `backend/tests/test_line_proofread.py` | `frontend/e2e/studio-ui-flow.spec.ts`（`interrupted translation run resumes instead of creating a new run` 断言 `line-proofread-toggle`） |
 
 ## 重构默认门禁
 
