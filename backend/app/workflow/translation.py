@@ -37,8 +37,9 @@ from .prompt_snapshots import (
     create_prompt_and_harness_snapshots,
     create_quick_reference_snapshot,
 )
+from .line_proofread import run_line_proofread
 from .qa import run_localization_qa
-from .reference_lookup import attach_reference_hits
+from .reference_lookup import attach_reference_hits_with_snapshot
 from .subprocess_runner import (
     UserFacingWorkflowError,
     _friendly_unsupported_language_file_message,
@@ -297,7 +298,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         run_subprocess(prepare_args, LOCALIZATION_ROOT, run_id)
         workpack_path = work_dir / "translation_workpack.jsonl"
         rows = read_jsonl(workpack_path)
-        reference_audit = attach_reference_hits(rows, project["id"], language)
+        reference_audit = attach_reference_hits_with_snapshot(rows, project["id"], language, work_dir / "reference_hits_snapshot.json")
         write_jsonl(workpack_path, rows)
         db.merge_run_metadata(run_id, {"reference_audit": reference_audit})
         db.add_event(
@@ -443,6 +444,36 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             language=language,
             settings=settings,
         )
+        line_proofread_state: dict[str, Any] | None = None
+        if bool(getattr(request, "enable_line_proofread", False) or metadata.get("enable_line_proofread")):
+            db.add_event(run_id, "line proofread requested: reviewing QA workbook line by line")
+            line_proofread_state = run_line_proofread(
+                run_id=run_id,
+                project=project,
+                language=language,
+                qa_workbook_path=Path(qa_result["qa_workbook"]),
+                workpack_rows=rows,
+                settings=settings,
+                output_dir=work_dir / "line_proofread",
+                cancel_event=cancel_event,
+            )
+            if line_proofread_state["applied"] > 0:
+                db.add_event(run_id, "line proofread applied fixes; re-running machine QA on proofread workbook")
+                qa_result = run_localization_qa(
+                    project=project,
+                    run_id=run_id,
+                    workbook_path=Path(line_proofread_state["workbook_path"]),
+                    output_dir=work_dir / "qa_line_proofread",
+                    glossary_snapshot=glossary_snapshot,
+                    harness_snapshot=harness_snapshot,
+                    workbook_artifact=raw_artifact,
+                    run_metadata=metadata,
+                    manual_fixes=line_proofread_state["fixes"],
+                    language=language,
+                    settings=settings,
+                )
+            line_proofread_state = {key: value for key, value in line_proofread_state.items() if key != "fixes"}
+            db.merge_run_metadata(run_id, {"line_proofread": line_proofread_state})
         status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
         artifacts = [
             raw_artifact,

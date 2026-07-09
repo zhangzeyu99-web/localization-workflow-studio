@@ -6,6 +6,8 @@ import { ActionStatus, AssetSelect, TranslationProgressBar } from '../../shared/
 import { AiInputAuditPanel } from '../../shared/AiInputAudit'
 import type { AppSettings, Artifact, LargeTextRunState, Project, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../../types'
 import { formalTranslationBlockReason, translationReadinessBlockReason } from '../translationGuards'
+import { LINE_PROOFREAD_HINT, LINE_PROOFREAD_LABEL, lineProofreadSummaryText } from '../../../uiText'
+import type { LineProofreadState } from '../../../types'
 import { TaskRunSummary } from '../TaskRunSummary'
 import { WorkflowFactList, WorkflowSideCard, WorkflowStepShell } from '../WorkflowStepShell'
 
@@ -45,7 +47,9 @@ export function StepTranslate({
   setQaArtifact,
   setStep,
   selectedLanguage,
-  selectedLanguages
+  selectedLanguages,
+  lineProofread,
+  setLineProofread
 }: {
   project: Project
   settings: AppSettings | null
@@ -65,6 +69,8 @@ export function StepTranslate({
   setStep: (step: number) => void
   selectedLanguage: LanguageCode
   selectedLanguages: LanguageCode[]
+  lineProofread: boolean
+  setLineProofread: (value: boolean) => void
 }) {
   const lang = languageSpec(selectedLanguage)
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
@@ -108,6 +114,7 @@ export function StepTranslate({
               : '待处理'
     return { code, run, progress: itemProgress, percent, blocked, done, active, label }
   })
+  const lineProofreadState = currentTranslationRun?.metadata?.line_proofread as LineProofreadState | undefined
   const activeTranslation = Boolean(currentTranslationRun && ['queued', 'running'].includes(currentTranslationRun.status))
   const finishingTranslation = Boolean(activeTranslation && progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows)
   const resumable = Boolean(currentTranslationRun && isTranslationRunResumable(currentTranslationRun))
@@ -219,6 +226,25 @@ export function StepTranslate({
             <em>{alreadyTranslated ? '下一步：QA 校对' : progress?.total_batches ? `后台实际 ${progress.total_batches} 批 · 当前第 ${progress.current_batch || '-'} 批` : `${batchSize} 行/批 · 启动前估算 ${estimatedBatches || '-'} 批`}</em>
           </div>
         </div>
+        {!alreadyTranslated ? (
+          <label className="line-proofread-toggle" data-testid="line-proofread-toggle">
+            <input
+              type="checkbox"
+              checked={lineProofread}
+              disabled={busy || activeTranslation}
+              onChange={(event) => setLineProofread(event.target.checked)}
+            />
+            <span>
+              <strong>{LINE_PROOFREAD_LABEL}</strong>
+              <em>{LINE_PROOFREAD_HINT}</em>
+            </span>
+          </label>
+        ) : null}
+        {lineProofreadState ? (
+          <div className="info-line compact" data-testid="line-proofread-summary">
+            {LINE_PROOFREAD_LABEL}：{lineProofreadSummaryText(lineProofreadState)}
+          </div>
+        ) : null}
         <div className="translation-actions">
           {alreadyTranslated ? (
             <>

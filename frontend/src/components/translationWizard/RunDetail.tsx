@@ -1,8 +1,8 @@
 import { artifactDownloadHref, artifactPickerLabel, pickerArtifacts, runArtifacts } from '../../domain/artifacts'
 import { shortRunId } from '../../domain/format'
 import { normalizeLanguageCode, languageSpec } from '../../languages'
-import { runStatusLabel, shortIdLabel } from '../../uiText'
-import type { Artifact, HistoryKind, LargeTextRunState, Project, Run, TranslationProgress, TranslationReadiness } from '../../types'
+import { LINE_PROOFREAD_LABEL, lineProofreadSummaryText, runStatusLabel, shortIdLabel } from '../../uiText'
+import type { Artifact, HistoryKind, LargeTextRunState, LineProofreadState, Project, Run, TranslationProgress, TranslationReadiness } from '../../types'
 import { runDeliveryState } from './QaIssuePanel'
 
 export function downloadableArtifact(artifacts: Artifact[], kind: HistoryKind): Artifact | null {
@@ -16,6 +16,7 @@ export function RunDetail({ project, run, kind }: { project: Project; run: Run; 
   const artifacts = runArtifacts(project, run.id)
   const visibleArtifacts = pickerArtifacts(artifacts.filter((artifact) => downloadableArtifact([artifact], kind)))
   const largeTextState = run.metadata?.large_text as LargeTextRunState | undefined
+  const lineProofreadState = run.metadata?.line_proofread as LineProofreadState | undefined
   const largeTextGateKinds = ['large_text_preflight', 'large_text_cache_lint', 'delivery_readback_gate', 'large_text_retro']
   const largeTextArtifacts = pickerArtifacts(artifacts.filter((artifact) => largeTextGateKinds.includes(artifact.kind)))
   const inputs = (run.metadata?.input_artifacts || {}) as Record<string, string>
@@ -52,6 +53,7 @@ export function RunDetail({ project, run, kind }: { project: Project; run: Run; 
         <div><strong>本次归档</strong><span>{archiveCount > 0 ? `${archiveCount} 条` : '未归档'}</span></div>
         <div><strong>累计归档</strong><span>{project.stats.archived_rows || 0} 条</span></div>
         <div><strong>交付状态</strong><span>{runDeliveryState(run, visibleArtifacts)}</span></div>
+        {lineProofreadState ? <div data-testid="run-line-proofread"><strong>{LINE_PROOFREAD_LABEL}</strong><span>{lineProofreadSummaryText(lineProofreadState)}</span></div> : null}
       </div>
       <div className="artifact-links">
         {visibleArtifacts.map((artifact) => (

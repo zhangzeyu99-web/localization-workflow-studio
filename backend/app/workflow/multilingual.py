@@ -75,6 +75,7 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
             "multilingual_queue": True,
             "multilingual_source_artifact_id": source["id"],
             "large_text_mode": payload.large_text_mode or "auto",
+            "enable_line_proofread": bool(payload.enable_line_proofread),
         }
         run = db.insert_run(project_id, "translation", language, metadata)
         created.append(run["id"])
@@ -99,6 +100,7 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
                     confirm_api_budget=payload.confirm_api_budget,
                     confirm_term_gap=payload.confirm_term_gap,
                     large_text_mode=payload.large_text_mode or "auto",
+                    enable_line_proofread=bool(payload.enable_line_proofread),
                 )
                 run_translate_sync(run["id"], request, cancel_event=cancel_event)
             except Exception as exc:

@@ -16,7 +16,7 @@ import app.db as db
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
 from app.translation_batches import batch_input_fingerprint
-from app.workflow.reference_lookup import attach_reference_hits
+from app.workflow.reference_lookup import attach_reference_hits, attach_reference_hits_with_snapshot
 from conftest import reset_data_root, wait_for_background_jobs
 
 
@@ -123,6 +123,27 @@ def test_batch_fingerprint_changes_when_reference_hits_change() -> None:
     fp_with = batch_input_fingerprint(rows_with, "", settings, 90, "en")
 
     assert fp_without != fp_with
+
+
+def test_snapshot_keeps_hits_stable_when_archive_changes(tmp_path: Path) -> None:
+    """Resume safety: archive growth after the first lookup (e.g. the run's own
+    import) must not change reference_hits, or the batch fingerprint would
+    invalidate the resume cache."""
+    project = db.insert_project("archive-snapshot-project")
+    snapshot_path = tmp_path / "reference_hits_snapshot.json"
+
+    rows_first = _sample_rows()
+    first_audit = attach_reference_hits_with_snapshot(rows_first, project["id"], "en", snapshot_path)
+    assert first_audit["source"] == "live_lookup"
+    assert first_audit["reference_hits"] == 0
+    assert snapshot_path.exists()
+
+    _seed_archive(project["id"])
+    rows_second = _sample_rows()
+    second_audit = attach_reference_hits_with_snapshot(rows_second, project["id"], "en", snapshot_path)
+    assert second_audit["source"] == "snapshot"
+    assert second_audit["reference_hits"] == 0
+    assert [row["reference_hits"] for row in rows_second] == [row["reference_hits"] for row in rows_first]
 
 
 def _sample_workbook(path: Path) -> None:

@@ -60,6 +60,20 @@ export function shortIdLabel(id: string, length = 8): string {
   return value.length > length ? `${value.slice(0, length)}…` : value || '-'
 }
 
+// Line proofread (深度逐行校对) copy shared by StepTranslate and RunDetail.
+export const LINE_PROOFREAD_LABEL = '深度逐行校对'
+export const LINE_PROOFREAD_HINT = '逐句 AI 审校译文，自动回退破坏占位符/术语/数字的建议；耗时明显增加。'
+
+export function lineProofreadSummaryText(state?: {
+  reviewed_rows?: number
+  suggested?: number
+  rejected_by_audit?: number
+  applied?: number
+} | null): string {
+  if (!state) return '未启用'
+  return `审校 ${state.reviewed_rows ?? 0} 行 / 建议 ${state.suggested ?? 0} / 审计回退 ${state.rejected_by_audit ?? 0} / 采纳 ${state.applied ?? 0}`
+}
+
 // Job kinds as reported by GET /api/system/active-jobs (job_kind field,
 // see backend/app/jobs.py's _JOB_KIND_PREFIXES/describe_job_kind). Both
 // multilingual job kinds collapse into one "多语言队列" label here since the

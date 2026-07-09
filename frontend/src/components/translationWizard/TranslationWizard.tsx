@@ -41,6 +41,8 @@ export function Wizard(props: {
   setSelectedLanguage: (language: LanguageCode) => void
   selectedLanguages: LanguageCode[]
   toggleSelectedLanguage: (language: LanguageCode) => void
+  lineProofread: boolean
+  setLineProofread: (value: boolean) => void
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
   setQaArtifact: (artifact: Artifact | null) => void

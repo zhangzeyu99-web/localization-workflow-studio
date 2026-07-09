@@ -331,6 +331,18 @@ export type LargeTextRunState = {
   retro_artifact_id?: string
 }
 
+export type LineProofreadState = {
+  status?: string
+  provider?: string
+  model?: string
+  reviewed_rows?: number
+  batches?: number
+  suggested?: number
+  rejected_by_audit?: number
+  applied?: number
+  suggestions_artifact_id?: string
+}
+
 export type MultilingualQueueLanguage = {
   language: LanguageCode
   visible_language: string

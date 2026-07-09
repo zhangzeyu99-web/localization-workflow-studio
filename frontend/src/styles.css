@@ -1257,6 +1257,30 @@ a { color: var(--c-indigo-300); text-decoration: none; }
   background: var(--surface-bg-1);
   margin-top: 12px;
 }
+.line-proofread-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-bg-1);
+  cursor: pointer;
+}
+.line-proofread-toggle input {
+  margin-top: 3px;
+}
+.line-proofread-toggle span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.line-proofread-toggle em {
+  font-style: normal;
+  color: var(--c-neutral-400);
+  font-size: var(--fs-sm);
+}
 .large-text-panel.large {
   border-color: rgba(245,158,11,.35);
   background: var(--tint-yellow-bg);

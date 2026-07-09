@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from .. import db
@@ -83,6 +85,48 @@ def compact_reference_hit(hit: dict[str, Any]) -> dict[str, Any]:
         "sheet": hit.get("sheet", ""),
         "row_number": hit.get("row_number", 0),
     }
+
+
+def attach_reference_hits_with_snapshot(
+    rows: list[dict[str, Any]],
+    project_id: str,
+    language: str,
+    snapshot_path: "Path",
+) -> dict[str, Any]:
+    """Per-run snapshot wrapper around :func:`attach_reference_hits`.
+
+    A passed run imports its own translations into the archive, so a live
+    lookup on resume would change the batch fingerprint and wipe the batch
+    cache of the very run being resumed. Freezing the first lookup in a
+    run-scoped snapshot (same pattern as the glossary/prompt snapshots) keeps
+    the fingerprint stable across resumes.
+    """
+    if snapshot_path.exists():
+        data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        hits_by_id = data.get("hits_by_id") or {}
+        hit_rows = 0
+        total_hits = 0
+        for row in rows:
+            hits = hits_by_id.get(str(row.get("id"))) or []
+            row["reference_hits"] = hits
+            if hits:
+                hit_rows += 1
+                total_hits += len(hits)
+        audit = dict(data.get("audit") or {})
+        audit.update({"source": "snapshot", "total_rows": len(rows), "reference_hit_rows": hit_rows, "reference_hits": total_hits})
+        return audit
+    audit = attach_reference_hits(rows, project_id, language)
+    audit["source"] = "live_lookup"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(
+        json.dumps(
+            {"audit": audit, "hits_by_id": {str(row.get("id")): row.get("reference_hits") or [] for row in rows}},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return audit
 
 
 def attach_reference_hits(rows: list[dict[str, Any]], project_id: str, language: str) -> dict[str, Any]:

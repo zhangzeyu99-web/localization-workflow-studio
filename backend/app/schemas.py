@@ -302,6 +302,7 @@ class TranslateRequest(BaseModel):
     confirm_api_budget: bool = False
     confirm_term_gap: bool = False
     large_text_mode: str | None = None
+    enable_line_proofread: bool = False
 
 
 class MultilingualQueueRequest(BaseModel):
@@ -314,6 +315,7 @@ class MultilingualQueueRequest(BaseModel):
     confirm_api_budget: bool = False
     confirm_term_gap: bool = False
     large_text_mode: str | None = None
+    enable_line_proofread: bool = False
 
 
 class SettingsUpdate(BaseModel):

@@ -76,6 +76,7 @@ function App() {
   const [latestRun, setLatestRun] = useState<Run | null>(null)
   const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>('en')
   const [selectedLanguages, setSelectedLanguages] = useState<LanguageCode[]>(['en'])
+  const [lineProofread, setLineProofread] = useState(false)
   const [glossaryPreview, setGlossaryPreview] = useState<GlossaryPreviewRow[]>([])
   const [glossaryBatches, setGlossaryBatches] = useState<GlossaryBatch[]>([])
   const [glossaryCandidates, setGlossaryCandidates] = useState<GlossaryCandidate[]>([])
@@ -144,6 +145,7 @@ function App() {
     setLatestRun(null)
     setSelectedLanguage('en')
     setSelectedLanguages(['en'])
+    setLineProofread(false)
     setGlossaryPreview([])
     setGlossaryBatches([])
     setGlossaryCandidates([])
@@ -183,7 +185,7 @@ function App() {
   } = useTranslationActions({
     current, currentIdRef, sourceArtifact, termArtifact, qaArtifact, archiveArtifact, latestRun,
     translationReadiness, glossaryCandidates, settings, translationBatchSize, tab, selectedLanguage,
-    selectedLanguages, currentLang, isCurrentProject,
+    selectedLanguages, lineProofread, currentLang, isCurrentProject,
     setSourceArtifact, setQaArtifact, setArchiveArtifact, setTranslationReadiness, setSourceInputNotice,
     setInvalidSourceArtifactIds, setStep, setBusy, setStatus, setStatusForProject, setBusyForProject,
     setQualityIssues, setLatestRun, setDeliverables, setGeneratedDelivery, setTab, setView,
@@ -548,6 +550,8 @@ function App() {
                     setSelectedLanguage={setPrimaryLanguage}
                     selectedLanguages={selectedLanguages}
                     toggleSelectedLanguage={toggleTargetLanguage}
+                    lineProofread={lineProofread}
+                    setLineProofread={setLineProofread}
                     setSourceArtifact={selectSourceArtifact}
                     setTermArtifact={setTermArtifact}
                     setQaArtifact={selectQaArtifact}

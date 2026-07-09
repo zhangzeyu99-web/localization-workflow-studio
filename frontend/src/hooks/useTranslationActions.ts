@@ -49,6 +49,7 @@ export interface UseTranslationActionsParams {
   tab: ProjectTab
   selectedLanguage: LanguageCode
   selectedLanguages: LanguageCode[]
+  lineProofread: boolean
   currentLang: { short: string }
   isCurrentProject: (projectId?: string | null) => boolean
   setSourceArtifact: (artifact: Artifact | null) => void
@@ -96,6 +97,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     tab,
     selectedLanguage,
     selectedLanguages,
+    lineProofread,
     currentLang,
     isCurrentProject,
     setSourceArtifact,
@@ -429,7 +431,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
       const started = await api<Run>(`/api/runs/${run.id}/translate/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget, confirm_term_gap: confirmedTermGap, large_text_mode: 'auto' })
+        body: JSON.stringify({ batch_size: batchSize, confirm_api_budget: confirmedBudget, confirm_term_gap: confirmedTermGap, large_text_mode: 'auto', enable_line_proofread: lineProofread })
       })
       if (!isCurrentProject(projectId)) return
       setLatestRun(started)
@@ -494,7 +496,8 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
           term_artifact_id: termArtifact?.id || null,
           confirm_api_budget: false,
           confirm_term_gap: confirmedTermGap,
-          large_text_mode: 'auto'
+          large_text_mode: 'auto',
+          enable_line_proofread: lineProofread
         })
       })
       if (!isCurrentProject(projectId)) return
