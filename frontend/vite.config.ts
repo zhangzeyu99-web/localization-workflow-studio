@@ -8,7 +8,9 @@ const appVersion = readFileSync(fileURLToPath(new URL('../VERSION', import.meta.
 export default defineConfig({
   plugins: [react()],
   define: {
-    __APP_VERSION__: JSON.stringify(appVersion)
+    __APP_VERSION__: JSON.stringify(appVersion),
+    // 线上部署包构建时设 LWS_HIDE_SETTINGS=1，彻底隐藏设置入口（不依赖后端 deployment_mode）。
+    __HIDE_SETTINGS__: JSON.stringify(process.env.LWS_HIDE_SETTINGS === '1')
   },
   server: {
     proxy: {

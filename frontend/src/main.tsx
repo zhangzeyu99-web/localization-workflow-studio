@@ -365,7 +365,7 @@ function App() {
   useAnnouncementTaskPolling(current, refreshProjectSnapshot, isCurrentProject, setBusyForProject, setStatusForProject)
 
   const isCloudDeployment = runtimeVersion?.deployment_mode === 'cloud'
-  const showSettingsButton = runtimeVersion?.deployment_mode === 'local'
+  const showSettingsButton = !__HIDE_SETTINGS__ && runtimeVersion?.deployment_mode === 'local'
   const bundleVersion = __APP_VERSION__
   const backendVersion = runtimeVersion?.version || ''
   const versionMismatch = Boolean(backendVersion) && backendVersion !== 'unknown' && backendVersion !== bundleVersion

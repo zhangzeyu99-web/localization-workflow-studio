@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import zipfile
@@ -112,11 +113,26 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _write_install_doc(target_root: Path, version: str, sha: str, *, includes_settings: bool) -> None:
+def _build_frontend(*, hide_settings: bool) -> None:
+    env = dict(os.environ)
+    if hide_settings:
+        env["LWS_HIDE_SETTINGS"] = "1"
+    else:
+        env.pop("LWS_HIDE_SETTINGS", None)
+    subprocess.check_call(["npm", "run", "build"], cwd=ROOT / "frontend", env=env, shell=(os.name == "nt"))
+
+
+def _write_install_doc(target_root: Path, version: str, sha: str, *, includes_settings: bool, hide_settings: bool) -> None:
     settings_note = (
         "本包已包含 settings.local.json。部署时请复制到 $LWS_DATA_ROOT/settings.local.json，并确认该文件只保留在服务器数据目录，不提交到 Git。"
         if includes_settings
         else "本包不包含 settings.local.json。请基于 settings.example.json 创建 $LWS_DATA_ROOT/settings.local.json。"
+    )
+    frontend_build_cmd = "LWS_HIDE_SETTINGS=1 npm run build" if hide_settings else "npm run build"
+    hide_settings_note = (
+        "\n本包前端已在构建时隐藏「设置」入口（LWS_HIDE_SETTINGS=1）。如需在服务器重新构建，必须保留该环境变量，否则设置按钮会重新出现。\n"
+        if hide_settings
+        else ""
     )
     text = f"""# 本地化工作台线上部署说明
 
@@ -144,7 +160,7 @@ def _write_install_doc(target_root: Path, version: str, sha: str, *, includes_se
 
 ## 配置
 
-{settings_note}
+{settings_note}{hide_settings_note}
 
 推荐环境变量：
 
@@ -173,11 +189,11 @@ python3.11 -m pip install -r workflow/localization/requirements.txt
 
 cd frontend
 npm install
-npm run build
+{frontend_build_cmd}
 cd ..
 ```
 
-如果包内已有 `frontend/dist/`，仍建议在目标服务器上重新执行一次 `npm run build`，确认 Node 环境兼容。
+如果包内已有 `frontend/dist/`，仍建议在目标服务器上重新执行一次 `{frontend_build_cmd}`，确认 Node 环境兼容。
 
 ## 启动后端
 
@@ -254,7 +270,7 @@ python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.gz4399.com
 """
     (target_root / "ONLINE_DEPLOY_README.zh-CN.md").write_text(text, encoding="utf-8")
 
-def _write_manifest(target_root: Path, version: str, sha: str, files: list[Path], *, includes_settings: bool) -> None:
+def _write_manifest(target_root: Path, version: str, sha: str, files: list[Path], *, includes_settings: bool, hide_settings: bool) -> None:
     manifest = {
         "name": "localization-workflow-studio",
         "version": version,
@@ -265,6 +281,7 @@ def _write_manifest(target_root: Path, version: str, sha: str, files: list[Path]
         "file_count": len(files),
         "contains_frontend_dist": (target_root / "frontend" / "dist" / "index.html").exists(),
         "contains_settings_local": includes_settings,
+        "frontend_settings_button_hidden": hide_settings,
         "excluded_runtime_data": True,
         "entrypoints": {
             "linux_backend": "start-lws.sh",
@@ -285,9 +302,11 @@ def _write_sha256sums(target_root: Path) -> None:
     (target_root / "SHA256SUMS.txt").write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
-def build(output_dir: Path, package_label: str, settings_file: Path | None = None) -> Path:
+def build(output_dir: Path, package_label: str, settings_file: Path | None = None, *, hide_settings: bool = False, rebuild_frontend: bool = True) -> Path:
     version = _version()
     sha = _git_sha()
+    if rebuild_frontend:
+        _build_frontend(hide_settings=hide_settings)
     stamp = datetime.now().strftime("%Y%m%d")
     root_name = f"localization-workflow-studio-v{version}-{stamp}"
     staging_root = ROOT.parent / "release-staging" / root_name
@@ -312,9 +331,9 @@ def build(output_dir: Path, package_label: str, settings_file: Path | None = Non
         copied.append(Path("settings.local.json"))
         includes_settings = True
 
-    _write_install_doc(staging_root, version, sha, includes_settings=includes_settings)
+    _write_install_doc(staging_root, version, sha, includes_settings=includes_settings, hide_settings=hide_settings)
     copied.append(Path("ONLINE_DEPLOY_README.zh-CN.md"))
-    _write_manifest(staging_root, version, sha, copied, includes_settings=includes_settings)
+    _write_manifest(staging_root, version, sha, copied, includes_settings=includes_settings, hide_settings=hide_settings)
     copied.append(Path("PACKAGE_MANIFEST.json"))
     _write_sha256sums(staging_root)
     copied.append(Path("SHA256SUMS.txt"))
@@ -335,9 +354,17 @@ def main() -> int:
     parser.add_argument("--output-dir", default=str(Path.home() / "Desktop"))
     parser.add_argument("--label", default="本地化工作台线上部署包")
     parser.add_argument("--settings-file", default="", help="Optional settings.local.json to include in the package root.")
+    parser.add_argument("--hide-settings", action="store_true", help="Build the frontend with the settings button hidden (LWS_HIDE_SETTINGS=1).")
+    parser.add_argument("--no-rebuild-frontend", action="store_true", help="Package the existing frontend/dist without rebuilding.")
     args = parser.parse_args()
     settings = Path(args.settings_file) if args.settings_file else None
-    zip_path = build(Path(args.output_dir), args.label, settings)
+    zip_path = build(
+        Path(args.output_dir),
+        args.label,
+        settings,
+        hide_settings=args.hide_settings,
+        rebuild_frontend=not args.no_rebuild_frontend,
+    )
     print(zip_path)
     return 0
 
