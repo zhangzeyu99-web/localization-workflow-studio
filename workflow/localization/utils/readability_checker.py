@@ -36,8 +36,12 @@ ALLOWED_GAME_ABBREVIATIONS = {
     "EXP",
     "FPS",
     "GM",
+    "BOSS",
+    "HD",
     "HP",
     "ID",
+    "MAX",
+    "MT",
     "NPC",
     "OK",
     "PVE",
@@ -50,6 +54,14 @@ ALLOWED_GAME_ABBREVIATIONS = {
     "UI",
     "URL",
     "VIP",
+    "II",
+    "III",
+    "IV",
+    "V",
+    "VI",
+    "VII",
+    "VIII",
+    "IX",
 }
 
 _CLIPPED_WORD_PATTERN = re.compile(
@@ -302,7 +314,7 @@ def check_readability(row_id: int, original: str, translation: str, lang: str = 
     HP, ATK, DEF, DMG, PVP, and VIP, but flags opaque internal codes and clipped
     English fragments that are not user-facing text.
     """
-    if lang not in {'en', 'idn', 'fr', 'de', 'tr', 'es', 'pt', 'ru'}:
+    if lang not in {'en', 'idn', 'th', 'vi', 'fr', 'de', 'tr', 'es', 'pt', 'ru'}:
         return []
 
     results: list[CheckResult] = []

@@ -102,6 +102,20 @@ class TermCheckerTests(unittest.TestCase):
 
         self.assertEqual(results, [])
 
+    def test_accepts_phrase_alias_when_placeholder_follows_term(self):
+        term_lookup = {
+            "伤害率": {"primary": "DMG Rate", "variants": []},
+        }
+
+        results = check_term_hit(
+            row_id=25,
+            original="伤害率{0}",
+            translation="Damage rate{0} per hit",
+            term_lookup=term_lookup,
+        )
+
+        self.assertEqual(results, [])
+
     def test_accepts_attack_alias_for_atk_term(self):
         term_lookup = {
             "攻击": {"primary": "ATK", "variants": []},
@@ -111,6 +125,34 @@ class TermCheckerTests(unittest.TestCase):
             row_id=3,
             original="不能攻击盟友",
             translation="Cannot attack allies",
+            term_lookup=term_lookup,
+        )
+
+        self.assertEqual(results, [])
+
+    def test_keeps_visible_square_bracket_labels_for_term_matching(self):
+        term_lookup = {
+            "guild": {"primary": "Alliance", "variants": []},
+        }
+
+        results = check_term_hit(
+            row_id=26,
+            original="guild",
+            translation="[Alliance]",
+            term_lookup=term_lookup,
+        )
+
+        self.assertEqual(results, [])
+
+    def test_literal_newline_does_not_break_term_word_boundary(self):
+        term_lookup = {
+            "guild": {"primary": "Alliance", "variants": []},
+        }
+
+        results = check_term_hit(
+            row_id=27,
+            original="guild",
+            translation="Header\\nAlliance managers",
             term_lookup=term_lookup,
         )
 

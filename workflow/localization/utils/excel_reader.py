@@ -18,9 +18,9 @@ _ORIG_PATTERNS = re.compile(
 )
 _TRANS_PATTERNS = re.compile(
     r'^(译文|翻译|translation|target'
-    r'|英语|英文|印尼语|法语|德语|土耳其语|西班牙语|葡萄牙语|俄语|日语|韩语'
-    r'|English|Indonesian|French|German|Turkish|Spanish|Portuguese|Russian|Japanese|Korean'
-    r'|en|idn|fr|de|tr|es|pt|ru|ja|jp|ko|kr)$',
+    r'|英语|英文|泰语|泰文|越南语|越南文|印尼语|法语|德语|土耳其语|西班牙语|葡萄牙语|俄语|日语|韩语'
+    r'|English|Thai|Vietnamese|Indonesian|French|German|Turkish|Spanish|Portuguese|Russian|Japanese|Korean'
+    r'|en|th|vi|id(?:\.\d+)?|idn|fr|de|tr|es|pt|ru|ja|jp|ko|kr)$',
     re.IGNORECASE,
 )
 _NOTE_PATTERNS = re.compile(r'^(备注|note|notes|comment)$', re.IGNORECASE)

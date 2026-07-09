@@ -17,6 +17,7 @@ from typing import Iterable, Sequence
 
 from openpyxl import load_workbook
 
+from utils.language_config import normalize_language_code
 from utils.quality_harness_rules import (  # noqa: F401  (re-exported)
     BROKEN_BULLET_PATTERN,
     CJK_PATTERN,
@@ -61,10 +62,14 @@ from utils.quality_harness_rules import (  # noqa: F401  (re-exported)
     check_row,
 )
 from utils.quality_harness_terms import (  # noqa: F401  (re-exported)
+    AUTO_SOFT_SOURCE_TERMS,
+    AUTO_SOFT_TARGET_WORDS,
     GENERIC_ROLE_TARGETS,
     GLOSSARY_SHEET_NAMES,
     LANGUAGE_TARGET_HEADERS,
     LANGUAGE_VARIANT_HEADERS,
+    LEGAL_TERM_CHECK_MIN_LENGTH,
+    LEGAL_TERM_CHECK_SKIP_MARKERS,
     OUTPUT_DIR_NAME_HINTS,
     PERSON_NAME_CATEGORY_MARKERS,
     SOFT_TERM_CATEGORY_MARKERS,
@@ -81,6 +86,8 @@ from utils.quality_harness_terms import (  # noqa: F401  (re-exported)
     _discover_term_base_paths,
     _fallback_index,
     _find_header,
+    _has_explicit_language_header,
+    _is_auto_soft_term,
     _is_generic_role_target,
     _is_glossary_sheet,
     _is_person_name_category,
@@ -89,6 +96,7 @@ from utils.quality_harness_terms import (  # noqa: F401  (re-exported)
     _iter_term_base_paths,
     _looks_like_output_dir,
     _resolve_term_base_paths,
+    _should_skip_term_checks,
     _split_term_variants,
     _target_header_candidates,
     _truthy_cell,
@@ -144,6 +152,7 @@ def scan_workbook(
     The scanner expects either headers containing ID/CN/EN-like names or a
     simple first-three-column layout: ID, source, target.
     """
+    lang = normalize_language_code(lang)
     fail_set = set(fail_on or DEFAULT_HARD_ISSUES)
     result = HarnessResult(passed=True)
     workbook_path = Path(path)
@@ -184,9 +193,10 @@ def scan_workbook(
                 })
                 row_issues = check_row(row_id, source, target, lang=lang)
                 row_issues.extend(_check_ui_length(row_id, source, target, lang=lang))
-                row_issues.extend(_check_terms(row_id, source, target, strong_term_lookup, lang=lang))
-                row_issues.extend(_check_terms(row_id, source, target, soft_term_lookup, soft=True, lang=lang))
-                row_issues.extend(_check_person_name_terms(row_id, source, target, person_name_terms))
+                if not _should_skip_term_checks(source):
+                    row_issues.extend(_check_terms(row_id, source, target, strong_term_lookup, lang=lang))
+                    row_issues.extend(_check_terms(row_id, source, target, soft_term_lookup, soft=True, lang=lang))
+                    row_issues.extend(_check_person_name_terms(row_id, source, target, person_name_terms))
                 for issue in row_issues:
                     result.issue_counts[issue.check_type] += 1
                     if issue.check_type in fail_set:

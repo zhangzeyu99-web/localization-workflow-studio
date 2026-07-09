@@ -23,6 +23,7 @@ TARGET_LANGUAGES: tuple[tuple[str, str], ...] = (
     ("ES", "es"),
     ("PT", "pt"),
     ("TR", "tr"),
+    ("VI", "vi"),
     ("IDN", "idn"),
     ("TH", "th"),
     ("AR", "ar"),

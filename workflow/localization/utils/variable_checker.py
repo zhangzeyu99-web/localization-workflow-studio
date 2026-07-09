@@ -74,13 +74,15 @@ def check_variables(row_id: int, original: str, translation: str) -> list[CheckR
             translation=translation,
         ))
 
-    if not missing_vars and not extra_vars and len(orig_vars) > 1:
-        if orig_vars != trans_vars:
+    ordered_orig_vars = [var for var in orig_vars if not var.startswith('#')]
+    ordered_trans_vars = [var for var in trans_vars if not var.startswith('#')]
+    if not missing_vars and not extra_vars and len(ordered_orig_vars) > 1:
+        if ordered_orig_vars != ordered_trans_vars:
             results.append(CheckResult(
                 row_id=row_id,
                 check_type='variable_order',
                 severity='warning',
-                message=f"Variable order differs: original={orig_vars}, translation={trans_vars}",
+                message=f"Variable order differs: original={ordered_orig_vars}, translation={ordered_trans_vars}",
                 original=original,
                 translation=translation,
                 confidence=0.6,

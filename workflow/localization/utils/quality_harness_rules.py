@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from utils.readability_checker import check_readability
 from utils.term_checker import check_chinese_residue, check_term_hit
+from utils.text_normalize import strip_tags_and_vars
 from utils.ui_detector import is_ui_text
 from utils.ui_length_checker import check_ui_length
 from utils.variable_checker import CheckResult, check_all as check_variables
@@ -468,7 +469,7 @@ def _looks_like_allowed_runtime_code(token: str, source: str) -> bool:
 def _visible_start(text: str) -> str:
     stripped = str(text)
     token_pattern = re.compile(
-        r'^\s*(?:\\n|\n|<[^>]+>|\{[^}]+\}|##\d+|'
+        r'^\s*(?:\\n|\n|<[^>]+>|#\{[^,{}]+,\{[^}]+\}\}|#\{[^,{}]+,[^}]*\}|#L\{[^}]*\}|\{[^}]+\}|##\d+|'
         r'\[(?:/?size(?:=\d+)?|/?color(?:=[^\]]+)?|[A-Za-z]+\d+|\d+)\])+',
         re.IGNORECASE,
     )
@@ -486,6 +487,9 @@ def _has_leading_lowercase(source: str, translation: str) -> bool:
         return False
     if _starts_with_runtime_payload(translation):
         return False
+    visible_words = strip_tags_and_vars(translation).replace('\\n', ' ')
+    if not WORD_START_PATTERN.search(visible_words):
+        return False
     visible = _visible_start(translation)
     match = WORD_START_PATTERN.search(visible)
     if not match:
@@ -499,7 +503,7 @@ def _has_leading_lowercase(source: str, translation: str) -> bool:
 
 def _starts_with_runtime_payload(text: str) -> bool:
     return bool(re.match(
-        r'^\s*(?:<[^>]+>\s*)*(?:##\d+|\{[^}]+\}|\[[A-Za-z]+\d+\])',
+        r'^\s*(?:<[^>]+>\s*)*(?:##\d+|#\{[^,{}]+,\{[^}]+\}\}|#\{[^,{}]+,[^}]*\}|#L\{[^}]*\}|\{[^}]+\}|\[[A-Za-z]+\d+\])',
         str(text),
     ))
 

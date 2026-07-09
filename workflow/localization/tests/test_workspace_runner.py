@@ -135,6 +135,25 @@ class WorkspaceRunnerTests(unittest.TestCase):
                 [("土拨鼠", "en"), ("土拨鼠", "idn")],
             )
 
+    def test_auto_discovers_english_thai_vietnamese_and_indonesian_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for hint in ("english", "thai", "vietnamese", "idn"):
+                (root / f"common_术_{hint}.xlsx").write_text(f"common-{hint}", encoding="utf-8")
+
+            project = root / "project"
+            project.mkdir()
+            for hint in ("english", "thai", "vietnamese", "idn"):
+                (project / f"project_{hint}_language.xlsx").write_text(f"lang-{hint}", encoding="utf-8")
+                (project / f"project_术_{hint}_constraints.xlsx").write_text(f"term-{hint}", encoding="utf-8")
+
+            tasks = discover_workspace_tasks(root, lang="auto")
+
+            self.assertEqual(
+                [(task.project_name, task.lang) for task in tasks],
+                [("project", "en"), ("project", "th"), ("project", "vi"), ("project", "idn")],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

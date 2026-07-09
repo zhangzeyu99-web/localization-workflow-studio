@@ -23,6 +23,20 @@ class LanguageDetectionTests(unittest.TestCase):
         ])
         self.assertEqual(lang, "idn")
 
+    def test_detects_thai_text(self):
+        lang = detect_text_language([
+            "รับรางวัล",
+            "เส้นทางเอาชีวิตรอด",
+        ])
+        self.assertEqual(lang, "th")
+
+    def test_detects_vietnamese_text(self):
+        lang = detect_text_language([
+            "Nhận thưởng",
+            "Con Đường Sinh Tồn",
+        ])
+        self.assertEqual(lang, "vi")
+
     def test_detects_chinese_text(self):
         lang = detect_text_language([
             "建筑不存在于配置中",
@@ -125,6 +139,33 @@ class LanguageDetectionTests(unittest.TestCase):
             self.assertEqual(ko_terms["战机"]["primary"], "전투기")
             self.assertIn("보상 수령", ko_terms["领取奖励"]["variants"])
 
+
+    def test_load_term_base_uses_requested_multilingual_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "terms.xlsx"
+            df = pd.DataFrame(
+                {
+                    "CN": ["领取奖励", "求生之路"],
+                    "EN": ["Claim Reward", "Survival Road"],
+                    "EN2": ["Claim", ""],
+                    "TH": ["รับรางวัล", "เส้นทางเอาชีวิตรอด"],
+                    "TH2": ["รับ", ""],
+                    "VI": ["Nhận thưởng", "Con Đường Sinh Tồn"],
+                    "VI2": ["Nhận", ""],
+                    "ID": ["Klaim Hadiah", "Jalan Bertahan Hidup"],
+                    "ID2": ["Klaim", ""],
+                }
+            )
+            df.to_excel(path, index=False)
+
+            th_terms = _load_term_base(str(path), lang="th")
+            vi_terms = _load_term_base(str(path), lang="vi")
+            idn_terms = _load_term_base(str(path), lang="idn")
+
+            self.assertEqual(th_terms["领取奖励"]["primary"], "รับรางวัล")
+            self.assertIn("รับ", th_terms["领取奖励"]["variants"])
+            self.assertEqual(vi_terms["求生之路"]["primary"], "Con Đường Sinh Tồn")
+            self.assertEqual(idn_terms["求生之路"]["primary"], "Jalan Bertahan Hidup")
 
     def test_load_term_base_uses_supported_visible_language_columns(self):
         with tempfile.TemporaryDirectory() as tmp:

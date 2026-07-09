@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,17 +36,20 @@ from utils.announcement_docx_harness import (
     prepare_announcement_docx_harness,
 )
 from utils.language_detection import inspect_language_file
+from utils.language_config import (
+    LANGUAGE_OUTPUT_SUFFIX,
+    SUPPORTED_TRANSLATION_LANGUAGES,
+    language_file_hints,
+    normalize_language_code,
+)
 
 
 LANG_HINTS = {
-    'en': ('英语', '英文', 'english'),
-    'idn': ('印尼', '印度尼西亚', 'indonesian', 'idn'),
+    code: language_file_hints(code)
+    for code in SUPPORTED_TRANSLATION_LANGUAGES
 }
 
-LANG_OUTPUT_SUFFIX = {
-    'en': 'english',
-    'idn': 'indonesian',
-}
+LANG_OUTPUT_SUFFIX = LANGUAGE_OUTPUT_SUFFIX
 
 IGNORED_PROJECT_DIR_NAMES = {
     '新建文件夹',
@@ -78,9 +82,19 @@ def _is_temp_file(path: Path) -> bool:
 def _lang_matches(path: Path, lang: str) -> bool:
     if lang == 'auto':
         return True
+    lang = normalize_language_code(lang)
     lowered = path.stem.lower()
+    tokens = {token for token in re.split(r'[^a-z0-9]+', lowered) if token}
     hints = LANG_HINTS.get(lang, (lang.lower(),))
-    return any(hint.lower() in lowered for hint in hints)
+    for hint in hints:
+        hint = hint.lower()
+        if re.fullmatch(r'[a-z0-9]{2,3}', hint):
+            if hint in tokens:
+                return True
+            continue
+        if hint in lowered:
+            return True
+    return False
 
 
 def _is_term_file(path: Path) -> bool:
@@ -230,7 +244,7 @@ def _discover_project_term_files(project_root: Path, lang: str) -> list[Path]:
 def discover_workspace_tasks(root: str | Path, lang: str = 'en') -> list[WorkspaceTask]:
     workspace_root = Path(root)
     tasks: list[WorkspaceTask] = []
-    candidate_langs = list(LANG_HINTS.keys()) if lang == 'auto' else [lang]
+    candidate_langs = list(SUPPORTED_TRANSLATION_LANGUAGES) if lang == 'auto' else [normalize_language_code(lang)]
 
     for child in sorted(path for path in workspace_root.iterdir() if path.is_dir()):
         if child.name in IGNORED_PROJECT_DIR_NAMES:
@@ -457,7 +471,7 @@ def run_workspace_task(
 def main():
     parser = argparse.ArgumentParser(description='按约定目录批量处理本地化项目')
     parser.add_argument('--workspace', required=True, help='工作区根目录')
-    parser.add_argument('--lang', default='auto', help='目标语言：en / idn / auto')
+    parser.add_argument('--lang', default='auto', help='目标语言：en / th / vi / idn / auto')
     parser.add_argument('--project', default=None, help='只处理指定项目目录名')
     parser.add_argument('--mode', default='machine', choices=[
         'machine',

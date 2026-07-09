@@ -19,6 +19,11 @@ IDN_STOPWORDS = {
     'hadiah', 'persekutuan', 'pemimpin', 'gunakan', 'dalam',
 }
 
+VI_STOPWORDS = {
+    'và', 'của', 'cho', 'không', 'trong', 'bạn', 'đã', 'để', 'nhận',
+    'thưởng', 'nâng', 'cấp', 'đường', 'sinh', 'tồn',
+}
+
 
 def detect_text_language(texts: list[str]) -> str:
     joined = ' '.join(str(text) for text in texts if str(text).strip())
@@ -33,14 +38,19 @@ def detect_text_language(texts: list[str]) -> str:
 
     if re.search(r'[\u4e00-\u9fff]', joined):
         return 'zh'
+    if re.search(r'[\u0e00-\u0e7f]', joined):
+        return 'th'
 
-    words = re.findall(r"[A-Za-z']+", joined.lower())
+    words = re.findall(r"[A-Za-zÀ-ỹĐđ']+", joined.lower())
     if not words:
         return 'unknown'
 
     en_hits = sum(1 for word in words if word in EN_STOPWORDS)
     idn_hits = sum(1 for word in words if word in IDN_STOPWORDS)
+    vi_hits = sum(1 for word in words if word in VI_STOPWORDS)
 
+    if vi_hits > max(en_hits, idn_hits):
+        return 'vi'
     if idn_hits > en_hits:
         return 'idn'
     if en_hits > idn_hits:
@@ -49,6 +59,8 @@ def detect_text_language(texts: list[str]) -> str:
     # Fallback heuristics for short UI phrases.
     if any(word.endswith(('kan', 'nya')) for word in words):
         return 'idn'
+    if re.search(r'[ăâêôơưđáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]', joined.lower()):
+        return 'vi'
     if any(word in {'the', 'and', 'building', 'reward'} for word in words):
         return 'en'
     return 'unknown'

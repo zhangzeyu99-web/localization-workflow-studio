@@ -35,7 +35,7 @@ def _write_terms(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["ID", "CN", "EN", "KR", "JP", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH", "AR"])
+    ws.append(["ID", "CN", "EN", "KR", "JP", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "VI", "ID", "TH", "AR"])
     ws.append([
         "term_notice",
         "\u516c\u544a",
@@ -49,6 +49,7 @@ def _write_terms(path: Path) -> None:
         "Anuncio",
         "Anúncio",
         "Duyuru",
+        "Thông báo",
         "Pengumuman",
         "ประกาศ",
         "إعلان",
@@ -66,6 +67,7 @@ def _write_terms(path: Path) -> None:
         "Hora del servidor",
         "Horário de servidor",
         "Sunucu Saati",
+        "Giờ máy chủ",
         "Waktu Server",
         "เวลาเซิร์ฟเวอร์",
         "وقت الخادم",
@@ -83,6 +85,7 @@ def _write_terms(path: Path) -> None:
         "Hora del servidor 2026",
         "Horário de servidor 2026",
         "Sunucu Saati 2026",
+        "Giờ máy chủ 2026",
         "Waktu Server 2026",
         "เวลาเซิร์ฟเวอร์ 2026",
         "وقت الخادم 2026",
@@ -100,6 +103,7 @@ def _write_terms(path: Path) -> None:
         "Mantenimiento",
         "Manutenção",
         "Bakım",
+        "Bảo trì",
         "Maintenance",
         "ปรับปรุง",
         "صيانة",
@@ -117,6 +121,7 @@ def _write_terms(path: Path) -> None:
         "Entrenador",
         "Treinador",
         "Eğitmen",
+        "Huấn luyện viên",
         "Pelatih",
         "เทรนเนอร์",
         "مدرب",
@@ -217,7 +222,7 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
             id_specs = [spec for spec in terms.languages if spec.header == "IDN"]
             self.assertEqual(len(id_specs), 1)
             self.assertEqual(id_specs[0].code, "idn")
-            self.assertEqual(id_specs[0].column_index, 13)
+            self.assertEqual(id_specs[0].column_index, 14)
             self.assertEqual(terms.by_language["IDN"]["\u8bad\u7ec3\u5e08"].target, "Pelatih")
 
     def test_prepare_uses_canonical_full_language_headers_and_alias_inputs(self):
@@ -254,39 +259,42 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
             self.assertTrue((prepared.work_dir / "workpack_en.jsonl").exists())
 
             wb = load_workbook(prepared.translation_workbook, read_only=True, data_only=True)
-            ws = wb["Translations"]
-            headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
-            self.assertEqual(
-                headers,
-                [
-                    "source_file",
-                    "para_id",
-                    "para_index",
-                    "style",
-                    "CN",
-                    "protected_tokens",
-                    "term_hits_json",
-                    "EN",
-                    "KR",
-                    "JP",
-                    "FR",
-                    "DE",
-                    "RU",
-                    "IT",
-                    "ES",
-                    "PT",
-                    "TR",
-                    "IDN",
-                    "TH",
-                    "AR",
-                ],
-            )
-            first_hits = json.loads(ws.cell(2, headers.index("term_hits_json") + 1).value)
-            self.assertIn("\u670d\u52a1\u5668\u65f6\u95f4", [hit["source"] for hit in first_hits])
-            self.assertNotIn("\u670d\u52a1\u5668\u65f6\u95f4 2026", [hit["source"] for hit in first_hits])
-            self.assertNotIn("\u516c\u544a", [hit["source"] for hit in first_hits])
-            self.assertEqual(ws.max_row, 4)
-            wb.close()
+            try:
+                ws = wb["Translations"]
+                headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
+                self.assertEqual(
+                    headers,
+                    [
+                        "source_file",
+                        "para_id",
+                        "para_index",
+                        "style",
+                        "CN",
+                        "protected_tokens",
+                        "term_hits_json",
+                        "EN",
+                        "KR",
+                        "JP",
+                        "FR",
+                        "DE",
+                        "RU",
+                        "IT",
+                        "ES",
+                        "PT",
+                        "TR",
+                        "VI",
+                        "IDN",
+                        "TH",
+                        "AR",
+                    ],
+                )
+                first_hits = json.loads(ws.cell(2, headers.index("term_hits_json") + 1).value)
+                self.assertIn("\u670d\u52a1\u5668\u65f6\u95f4", [hit["source"] for hit in first_hits])
+                self.assertNotIn("\u670d\u52a1\u5668\u65f6\u95f4 2026", [hit["source"] for hit in first_hits])
+                self.assertNotIn("\u516c\u544a", [hit["source"] for hit in first_hits])
+                self.assertEqual(ws.max_row, 4)
+            finally:
+                wb.close()
 
     def test_prepare_filters_generic_terms_before_term_hits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -413,8 +421,8 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
             doc.save(task_dir / "sample.docx")
             wb = Workbook()
             ws = wb.active
-            ws.append(["ID", "CN", "EN", "KR", "JP", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH", "AR"])
-            ws.append(["t1", "8\u5c0f\u65f6", "8H", "8시간", "8H", "8 heures", "8 Std.", "8 \u0447.", "8 ore", "8 horas", "8 horas", "8 Saat", "8 jam", "8 \u0e0a\u0e21.", "8 ساعات"])
+            ws.append(["ID", "CN", "EN", "KR", "JP", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "VI", "ID", "TH", "AR"])
+            ws.append(["t1", "8\u5c0f\u65f6", "8H", "8시간", "8H", "8 heures", "8 Std.", "8 \u0447.", "8 ore", "8 horas", "8 horas", "8 Saat", "8 giờ", "8 jam", "8 \u0e0a\u0e21.", "8 ساعات"])
             wb.save(task_dir / "sample_announcement_terms_20260526.xlsx")
 
             prepared = prepare_announcement_docx_harness(task_dir)

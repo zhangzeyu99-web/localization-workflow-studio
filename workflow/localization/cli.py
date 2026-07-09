@@ -23,7 +23,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from process_language import (
-    run_machine_review, write_outputs, prepare_ai_review, _load_term_base,
+    _load_term_base,
+    ensure_final_delivery_ready,
+    prepare_ai_review,
+    rerun_quality_review,
+    run_machine_review,
+    write_outputs,
 )
 from utils.ai_checker import (
     apply_corrections,
@@ -366,13 +371,24 @@ def agent_merge(args):
 
     _header("生成最终输出")
     term_lookup = _load_term_base(args.term_base, lang=args.lang)
+    final_states, final_groups = rerun_quality_review(
+        states,
+        term_lookup=term_lookup,
+        lang=args.lang,
+    )
     summary = write_outputs(
-        df, col_map, states, groups,
+        df, col_map, final_states, final_groups,
         args.input, args.lang, args.output_dir, args.lang_index,
         term_lookup=term_lookup,
         term_only_view=args.term_only_view,
         ai_reviewed_ids=ai_reviewed_ids,
         ai_corrected_ids=ai_corrected_ids,
+    )
+    ensure_final_delivery_ready(
+        final_states,
+        result_path=summary['result_path'],
+        term_base_path=args.term_base,
+        lang=args.lang,
     )
 
     _section("merge 完成")
@@ -417,7 +433,7 @@ def main():
     parser.add_argument('--term-only-view', action='store_true', help='在结果文件新增“术语行筛选”sheet')
     parser.add_argument('--ai-scope', default='issues_only', choices=['all', 'issues_only', 'term_hit'],
                         help='AI审查范围: all=全量, issues_only=仅机审问题行, term_hit=仅术语命中行')
-    parser.add_argument('--strict-review', action='store_true',
+    parser.add_argument('--strict-review', action=argparse.BooleanOptionalAction, default=True,
                         help='启用严格 AI 回复校验：必须逐条覆盖批次 ID，且输入指纹必须一致')
 
     args = parser.parse_args()
@@ -447,12 +463,24 @@ def main():
 
     _header("生成输出文件")
     term_lookup = _load_term_base(args.term_base, lang=args.lang)
+    final_states, final_groups = rerun_quality_review(
+        states,
+        term_lookup=term_lookup,
+        lang=args.lang,
+    )
     summary = write_outputs(
-        df, col_map, states, groups,
+        df, col_map, final_states, final_groups,
         args.input, args.lang, args.output_dir, args.lang_index,
         term_lookup=term_lookup,
         term_only_view=args.term_only_view,
     )
+    if not args.skip_ai:
+        ensure_final_delivery_ready(
+            final_states,
+            result_path=summary['result_path'],
+            term_base_path=args.term_base,
+            lang=args.lang,
+        )
 
     _section("最终汇总")
     print(f"  总行数:       {summary['total_processed']}")

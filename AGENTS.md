@@ -1,5 +1,14 @@
 # Localization Workflow Studio 协作规则
 
+## 工作流目录同步关系（先读这条再改代码）
+
+- `workflow/localization` 和 `workflow/glossary` 是**同步产物**，禁止直接修改；两者的维护源分别是：
+  - 本地化工作流（翻译校对/大文本）：`D:\project\localization-workflow-project`（github.com/zhangzeyu99-web/localization-workflow）
+  - 术语提取（项目 brief/术语提取）：`D:\codex\glossary-extraction-workflow`（github.com/zhangzeyu99-web/glossary-extraction-workflow）
+- 修改流程：改源仓库 → 源仓库测试全绿并提交 → 在 studio 根跑 `python scripts/sync_workflow_sources.py <localization|glossary|all>`（自动镜像 + 哈希读回校验）→ 跑同步后门禁。
+- 同步后门禁：glossary 跑 `python -m pytest workflow/glossary/tests -q`；localization 必须额外跑 `python -m pytest backend/tests -q`（`process_language.py`、`run_quality_harness.py`、`run_translation_harness.py` 是 backend subprocess 依赖）。
+- 细则见各目录 `SYNC.md`；每个入口脚本的 `Boundary:` docstring 标注 product-runtime / agent-only 归属。
+
 ## 翻译执行边界
 
 - 正式翻译默认使用项目上下文、术语表、历史已验收交付和 AI provider；除非用户明确要求，不使用 Google Translate、`deep_translator`、`googletrans` 或浏览器机翻做初译。

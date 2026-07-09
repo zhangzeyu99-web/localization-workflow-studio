@@ -7,24 +7,18 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from utils.language_config import LANGUAGE_NAMES, language_name
+
 REVIEW_PROTOCOL_VERSION = 2
 
 LANG_NAMES = {
-    "en": "English",
-    "ko": "Korean",
-    "ja": "Japanese",
-    "idn": "Indonesian",
-    "fr": "French",
-    "de": "German",
-    "tr": "Turkish",
-    "es": "Spanish",
-    "pt": "Portuguese",
-    "ru": "Russian",
+    code: name
+    for code, name in LANGUAGE_NAMES.items()
 }
 
 
 def _make_prompt_header(lang: str = "en") -> str:
-    lang_name = LANG_NAMES.get(lang, lang)
+    lang_name = language_name(lang)
     neutral = (
         f"You are reviewing {lang_name} game localization.\n"
         "Check each row for meaning errors, missing content, unnatural style, and term compliance.\n"
@@ -81,7 +75,7 @@ def _make_ui_length_section() -> str:
 
 
 def _make_term_section(lang: str = "en", has_constraints: bool = False) -> str:
-    lang_name = LANG_NAMES.get(lang, lang)
+    lang_name = language_name(lang)
     header_cols = (
         "Source term | Primary target | Accepted variants | Constraint"
         if has_constraints
@@ -307,7 +301,7 @@ def format_recheck_prompt(
     """Generate focused recheck prompt for unresolved term issues."""
 
     prompt = (
-        f"Second-pass terminology review for {LANG_NAMES.get(lang, lang)} localization.\n"
+        f"Second-pass terminology review for {language_name(lang)} localization.\n"
         "These rows still need term compliance confirmation.\n"
         "\n"
         "Output protocol (mandatory):\n"

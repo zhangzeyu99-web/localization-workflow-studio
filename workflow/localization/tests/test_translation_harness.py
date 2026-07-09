@@ -48,6 +48,26 @@ def _write_korean_language_workbook(path: Path) -> None:
     wb.save(path)
 
 
+def _write_multilang_language_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["ID", "CN", "EN", "TH", "VI", "ID"])
+    ws.append([1, SRC_CLAIM, "", "", "", ""])
+    ws.append([2, SRC_SURVIVAL, SRC_SURVIVAL, SRC_SURVIVAL, SRC_SURVIVAL, SRC_SURVIVAL])
+    wb.save(path)
+
+
+def _write_multilang_term_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "\u672f\u8bed\u8868"
+    ws.append(["CN", "EN", "TH", "VI", "ID"])
+    ws.append([SRC_CLAIM, "Claim Reward", "รับรางวัล", "Nhận thưởng", "Klaim Hadiah"])
+    ws.append(["\u6c42\u751f\u4e4b\u8def", "Survival Road", "เส้นทางเอาชีวิตรอด", "Con Đường Sinh Tồn", "Jalan Bertahan Hidup"])
+    wb.save(path)
+
+
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text(
         "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
@@ -56,6 +76,24 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 class TranslationHarnessTests(unittest.TestCase):
+    def test_translation_harness_has_no_external_mt_client(self):
+        source_path = Path(__file__).resolve().parents[1] / "utils" / "translation_harness.py"
+        source = source_path.read_text(encoding="utf-8").lower()
+        forbidden_markers = [
+            "deep_translator",
+            "googletranslator",
+            "googletrans",
+            "translate.googleapis",
+            "translate_a/single",
+            "requests.",
+            "httpx.",
+            "aiohttp",
+        ]
+
+        for marker in forbidden_markers:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, source)
+
     def test_prepare_builds_workpack_for_empty_or_chinese_target_column(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -88,6 +126,81 @@ class TranslationHarnessTests(unittest.TestCase):
             self.assertEqual(rows[1]["placeholders"], ["{0}"])
             self.assertIn("Survival Road", [term["target"] for term in rows[1]["term_hits"]])
             self.assertIn("[size=80]", rows[2]["tags"])
+
+    def test_prepare_supports_thai_vietnamese_and_indonesian_targets(self):
+        expected_terms = {
+            "th": "เส้นทางเอาชีวิตรอด",
+            "vi": "Con Đường Sinh Tồn",
+            "idn": "Jalan Bertahan Hidup",
+        }
+        lang_indexes = {"th": 1, "vi": 2, "idn": 3}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            term_path = tmp_path / "terms.xlsx"
+            _write_multilang_language_workbook(lang_path)
+            _write_multilang_term_workbook(term_path)
+
+            for lang, expected_term in expected_terms.items():
+                with self.subTest(lang=lang):
+                    out_dir = tmp_path / f"out_{lang}"
+                    prepared = prepare_translation_harness(
+                        input_path=lang_path,
+                        term_base_path=term_path,
+                        lang=lang,
+                        output_dir=out_dir,
+                        lang_index=lang_indexes[lang],
+                    )
+                    rows = [
+                        json.loads(line)
+                        for line in prepared.workpack_path.read_text(encoding="utf-8").splitlines()
+                    ]
+
+                    self.assertEqual(prepared.manifest["language"], lang)
+                    self.assertIn(expected_term, [term["target"] for term in rows[1]["term_hits"]])
+
+    def test_apply_writes_non_english_target_column_and_language_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            term_path = tmp_path / "terms.xlsx"
+            out_dir = tmp_path / "out_th"
+            _write_multilang_language_workbook(lang_path)
+            _write_multilang_term_workbook(term_path)
+            prepared = prepare_translation_harness(
+                input_path=lang_path,
+                term_base_path=term_path,
+                lang="th",
+                output_dir=out_dir,
+                lang_index=1,
+            )
+            response_path = tmp_path / "translation_response_th.jsonl"
+            _write_jsonl(
+                response_path,
+                [
+                    {"id": 1, "translation": "รับรางวัล"},
+                    {"id": 2, "translation": "เข้าร่วมเส้นทางเอาชีวิตรอด {0} ครั้ง"},
+                ],
+            )
+
+            applied = apply_translation_response(
+                input_path=lang_path,
+                manifest_path=prepared.manifest_path,
+                response_path=response_path,
+                output_dir=out_dir,
+                lang="th",
+            )
+
+            wb = load_workbook(applied.final_workbook_path, read_only=True, data_only=False)
+            try:
+                ws = wb.active
+                self.assertEqual(ws.cell(2, 4).value, "รับรางวัล")
+                self.assertEqual(ws.cell(3, 4).value, "เข้าร่วมเส้นทางเอาชีวิตรอด {0} ครั้ง")
+                self.assertIsNone(ws.cell(2, 3).value)
+            finally:
+                wb.close()
+            self.assertTrue((tmp_path / ".translation_cache" / "th.jsonl").exists())
 
     def test_prepare_includes_project_style_hint_and_scopes_cache_by_hint(self):
         with tempfile.TemporaryDirectory() as tmp:

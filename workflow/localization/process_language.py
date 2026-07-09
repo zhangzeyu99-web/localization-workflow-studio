@@ -22,10 +22,12 @@ the CLI entry point plus the top-level pipeline orchestration.
 """
 import argparse
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 from utils.excel_reader import read_language_file, get_text_pairs
 from utils.language_detection import inspect_language_file
+from utils.quality_harness import scan_workbook
 from utils.process_language_terms import (  # noqa: F401  (re-exported)
     LANG_TERM_PATTERNS,
     _load_term_base,
@@ -45,6 +47,7 @@ from utils.process_language_review import (  # noqa: F401  (re-exported)
     _run_variable_checks,
     _safe_apply_fix,
     prepare_ai_review,
+    rerun_quality_review,
 )
 from utils.process_language_outputs import (  # noqa: F401  (re-exported)
     _build_report_sheets,
@@ -53,6 +56,32 @@ from utils.process_language_outputs import (  # noqa: F401  (re-exported)
     _build_term_only_view,
     write_outputs,
 )
+
+
+FINAL_BLOCKING_CHECK_TYPES = {
+    'variable_missing',
+    'variable_extra',
+    'variable_order',
+    'bbcode_open_mismatch',
+    'bbcode_close_mismatch',
+    'bbcode_unclosed',
+    'bbcode_color_mismatch',
+    'newline_mismatch',
+    'chinese_residue',
+    'html_entity_leak',
+    'internal_token_leak',
+    'punctuation_corruption',
+    'orphan_leading_clitic',
+    'leading_lowercase',
+    'ui_length_overflow',
+    'opaque_abbreviation',
+    'clipped_word',
+    'hash_code_abbreviation',
+    'placeholder_compaction',
+    'placeholder_word_glue',
+    'fullwidth_punctuation',
+    'workbook_scan_empty',
+}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -122,6 +151,44 @@ def run_machine_review(
     print(f"\n       机审发现 {total_issues} 个问题")
 
     return df, col_map, states, groups
+
+
+def ensure_final_delivery_ready(
+    states: dict[RowId, RowState],
+    *,
+    result_path: str | None = None,
+    term_base_path: str | None = None,
+    lang: str = 'en',
+) -> None:
+    """Block delivery when final structural/readability gates still have issues."""
+
+    blockers: dict[str, list[str]] = defaultdict(list)
+    for state in states.values():
+        for issue in state.issues:
+            check_type = getattr(issue, 'check_type', '')
+            if check_type in FINAL_BLOCKING_CHECK_TYPES and len(blockers[check_type]) < 5:
+                blockers[check_type].append(str(state.row_id))
+
+    if result_path:
+        harness_result = scan_workbook(
+            result_path,
+            lang=lang,
+            fail_on=FINAL_BLOCKING_CHECK_TYPES,
+            term_base=term_base_path,
+        )
+        for issue in harness_result.issues:
+            check_type = str(issue.get('check_type', ''))
+            if check_type in FINAL_BLOCKING_CHECK_TYPES and len(blockers[check_type]) < 5:
+                blockers[check_type].append(str(issue.get('id', '')))
+
+    if not blockers:
+        return
+
+    parts = []
+    for check_type in sorted(blockers):
+        examples = ','.join(blockers[check_type])
+        parts.append(f"{check_type} (example IDs: {examples})")
+    raise ValueError("Final delivery blocked by hard gate issues: " + "; ".join(parts))
 
 
 def process(

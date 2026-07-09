@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.1.1 - 2026-07-09
+
+Workflow source-of-truth consolidation. `workflow/localization` and `workflow/glossary` are now declared sync artifacts mirrored from their standalone source repos; no product/backend behavior change.
+
+- Established `D:\project\localization-workflow-project` (github.com/zhangzeyu99-web/localization-workflow) as the single maintenance source for the localization workflow. A month of studio-side evolution (large-text multilingual runner/gate/retro, module splits with re-export facades, AI-review helper dedup) was merged upstream together with the standalone repo's unpublished refactor (`utils/language_config.py` centralization, `term_rewrite_checker`, term-alias expansion, rich-text macro protection, th/vi support with VI in announcement `TARGET_LANGUAGES`), then mirrored back here.
+- Added `scripts/sync_workflow_sources.py`: one command per target (`glossary` / `localization`) that mirrors the source repo into the embedded copy with exclusion rules, deletes out-of-scope leftovers, and hash-verifies every synced file on readback.
+- Added `workflow/localization/SYNC.md` and rewrote `workflow/glossary/SYNC.md` as AI-readable sync contracts (source repo, sync command, verification gates); `AGENTS.md` now forbids editing the embedded copies directly.
+- Post-sync gates all green: `workflow/localization` tests 174 passed + 25 subtests (now runnable from the repo root via a new `tests/conftest.py`), `workflow/glossary` tests 44 passed, backend suite 218 passed, ruff clean.
+
 ## 1.1.0 - 2026-07-09
 
 Multi-user concurrency (backend) and a frontend optimization pass, planned in `docs/superpowers/plans/2026-07-08-multiuser-concurrency.md` and `docs/superpowers/plans/2026-07-08-frontend-optimization.md`.

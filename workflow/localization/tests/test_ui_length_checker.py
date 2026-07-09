@@ -17,6 +17,9 @@ class UILengthCheckerTests(unittest.TestCase):
     def test_budget_for_english_and_indonesian_short_texts(self):
         self.assertEqual(compute_ui_length_budget(4, lang="en"), 22)
         self.assertEqual(compute_ui_length_budget(4, lang="idn"), 23)
+        self.assertEqual(compute_ui_length_budget(4, lang="id"), 23)
+        self.assertEqual(compute_ui_length_budget(4, lang="vi"), 23)
+        self.assertEqual(compute_ui_length_budget(4, lang="th"), 22)
         self.assertEqual(compute_ui_length_budget(10, lang="en"), 32)
 
     def test_ui_rows_use_hard_policy(self):

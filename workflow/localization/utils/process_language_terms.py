@@ -9,6 +9,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from utils.language_config import (
+    all_language_target_headers,
+    normalize_language_code,
+    target_header_candidates,
+    variant_header_candidates,
+)
 from utils.term_checker import merge_builtin_name_terms
 
 
@@ -114,6 +120,10 @@ LANG_TERM_PATTERNS = {
         'primary': [r'^th$', r'thai', r'泰语', r'泰文', r'ภาษาไทย'],
         'variant': [r'^th2$', r'th\s*2', r'thai2', r'泰语2', r'泰文2', r'补充形式', r'另一词性', r'动词译法'],
     },
+    'vi': {
+        'primary': [r'越南语', r'越南文', r'vietnamese', r'^vi$', r'^vie$'],
+        'variant': [r'越南语2', r'越南文2', r'vietnamese2', r'^vi2$', r'^vie2$', r'补充形式', r'另一词性', r'动词译法'],
+    },
     'ar': {
         'primary': [r'^ar$', r'arabic', r'阿拉伯语', r'阿拉伯文', r'العربية'],
         'variant': [r'^ar2$', r'ar\s*2', r'arabic2', r'阿拉伯语2', r'阿拉伯文2', r'补充形式', r'另一词性', r'动词译法'],
@@ -127,6 +137,7 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
     Excel format: same as language table — ID / 原文 / 译文.
     JSON format:  {"lookup": {"中文": "English"}} or flat {"中文": "English"}.
     """
+    lang = normalize_language_code(lang)
     if not path or not Path(path).exists():
         return merge_builtin_name_terms({}, lang)
 
@@ -136,18 +147,40 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
         cols = [str(c).strip() for c in df.columns]
         col_map = {str(c).strip(): c for c in df.columns}
 
-        def _pick(patterns: list[str]) -> str | None:
-            for c in cols:
+        def _pick(patterns: list[str], *, skip_first_id: bool = False) -> str | None:
+            for idx, c in enumerate(cols):
                 lc = c.lower()
+                if skip_first_id and idx == 0 and lc == 'id':
+                    continue
                 for p in patterns:
                     if re.search(p, lc):
                         return col_map[c]
             return None
 
+        def _literal_patterns(headers: set[str]) -> list[str]:
+            patterns = []
+            for header in sorted(headers, key=len, reverse=True):
+                escaped = re.escape(header)
+                if header == 'id':
+                    patterns.append(r'^id(?:\.\d+)?$')
+                else:
+                    patterns.append(rf'^{escaped}$')
+            return patterns
+
         cn_col = _pick([r'中文术语', r'简体中文', r'中文原文', r'原文', r'中文', r'^cn$', r'^zh$', r'source', r'original'])
-        lang_patterns = LANG_TERM_PATTERNS.get(lang, LANG_TERM_PATTERNS['en'])
-        target_col = _pick(lang_patterns['primary']) or _pick([r'^en$', r'译文', r'翻译', r'translation', r'target'])
-        alt_col = _pick(lang_patterns['variant']) or _pick([r'^en2$', r'variant', r'variants', r'alternate'])
+        lang_patterns = LANG_TERM_PATTERNS.get(lang, {'primary': [], 'variant': []})
+        language_target_patterns = _literal_patterns(target_header_candidates(lang))
+        language_variant_patterns = _literal_patterns(variant_header_candidates(lang))
+        target_col = (
+            _pick([*language_target_patterns, *lang_patterns['primary']], skip_first_id=True)
+            or _pick([r'^en$', r'译文', r'翻译', r'translation', r'target'], skip_first_id=True)
+        )
+        alt_col = (
+            _pick([*language_variant_patterns, *lang_patterns['variant']], skip_first_id=True)
+            or _pick([r'^en2$', r'variant', r'variants', r'alternate'])
+        )
+        if target_col is None and any(c.lower() in all_language_target_headers() for c in cols):
+            return merge_builtin_name_terms({}, lang)
         constraint_col = _pick([r'约束', r'constraint'])
 
         from utils.text_normalize import strip_tags_and_vars

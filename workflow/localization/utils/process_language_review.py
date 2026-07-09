@@ -236,6 +236,32 @@ def _run_readability_checks(states: dict[RowId, RowState], lang: str):
             state.review_confidence = issue.confidence
 
 
+def rerun_quality_review(
+    states: dict[RowId, RowState],
+    *,
+    term_lookup: dict | None,
+    lang: str,
+) -> tuple[dict[RowId, RowState], list]:
+    """Re-run machine QA after AI merge so reports reflect final translations."""
+
+    refreshed: dict[RowId, RowState] = {}
+    for row_id, state in states.items():
+        new_state = RowState(row_id, state.original, state.fixed_translation)
+        new_state.fixed_translation = state.fixed_translation
+        new_state.notes = list(state.notes)
+        refreshed[row_id] = new_state
+
+    _run_surface_fixes(refreshed, auto_fix=True, lang=lang)
+    _run_variable_checks(refreshed, auto_fix=False)
+    _run_term_checks(refreshed, term_lookup or {}, auto_fix=False, lang=lang)
+    groups = _run_pattern_checks(refreshed, auto_fix=False)
+    _run_chinese_residue_checks(refreshed, lang=lang)
+    _run_ui_detection(refreshed)
+    _run_ui_length_checks(refreshed, lang)
+    _run_readability_checks(refreshed, lang)
+    return refreshed, groups
+
+
 def prepare_ai_review(
     states: dict[RowId, RowState],
     batch_size: int = 200,

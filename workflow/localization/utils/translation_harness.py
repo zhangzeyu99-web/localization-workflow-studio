@@ -1,4 +1,4 @@
-"""Agent-operated full translation harness for English language tables.
+"""Agent-operated full translation harness for language tables.
 
 The harness does not call any model API. It prepares row-level workpacks for the
 main agent, validates the agent-written response, and writes translations back
@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 
 from process_language import _load_term_base
 from utils.excel_reader import get_text_pairs, read_language_file
+from utils.language_config import SUPPORTED_TRANSLATION_LANGUAGES, normalize_language_code
 from utils.text_normalize import extract_vars, strip_tags_and_vars
 from utils.ui_detector import is_ui_text
 from utils.ui_length_checker import assess_ui_length, is_short_text_candidate
@@ -74,7 +75,6 @@ _RULE_HINTS = (
 )
 
 RowId = int | str
-SUPPORTED_HARNESS_LANGS = {"en", "ko", "ja"}
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ def prepare_translation_harness(
     style_hint: str = "",
 ) -> PreparedTranslationHarness:
     """Prepare a translation workpack and strict manifest."""
-    lang = _require_supported_lang(lang)
+    lang = _require_supported_translation_lang(lang)
 
     input_path = Path(input_path)
     output_dir = Path(output_dir) if output_dir else input_path.parent / "translation_harness"
@@ -199,12 +199,10 @@ def apply_translation_response(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest_lang = str(manifest.get("language") or "").strip().lower()
-    if lang == "en" and manifest_lang and manifest_lang != "en":
-        lang = manifest_lang
-    lang = _require_supported_lang(lang)
-    if manifest_lang and manifest_lang != lang:
-        raise ValueError(f"manifest language {manifest_lang!r} does not match requested language {lang!r}")
+    lang = _require_supported_translation_lang(lang)
+    manifest_lang = _require_supported_translation_lang(manifest.get("language", lang))
+    if lang != manifest_lang:
+        raise ValueError(f"language mismatch: response apply requested {lang}, manifest is {manifest_lang}")
     if _sha256_file(input_path) != manifest.get("input_sha256"):
         raise ValueError("input drift detected before applying translation response")
 
@@ -511,10 +509,11 @@ def _normalize_style_hint(style_hint: Any) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def _require_supported_lang(lang: Any) -> str:
-    code = str(lang or "en").strip().lower()
-    if code not in SUPPORTED_HARNESS_LANGS:
-        raise ValueError(f"translation harness supports only {sorted(SUPPORTED_HARNESS_LANGS)}, got {code!r}")
+def _require_supported_translation_lang(lang: str | None) -> str:
+    code = normalize_language_code(lang)
+    if code not in SUPPORTED_TRANSLATION_LANGUAGES:
+        supported = ", ".join(SUPPORTED_TRANSLATION_LANGUAGES)
+        raise ValueError(f"translation harness supports only: {supported}")
     return code
 
 

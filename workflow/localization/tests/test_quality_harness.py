@@ -200,6 +200,109 @@ class QualityHarnessTests(unittest.TestCase):
             self.assertEqual(result.issue_counts["term_soft_missing"], 1)
             self.assertEqual(result.issues, [])
 
+    def test_explicit_term_base_suppresses_nearby_auto_discovered_terms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN"])
+            ws.append([1, "ABC message", "Message"])
+            wb.save(workbook_path)
+
+            explicit_path = Path(tmp) / "selected_terms.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "glossary"
+            ws.append(["CN", "EN", "EN2", "category"])
+            ws.append(["ABC", "Canonical", None, "soft"])
+            wb.save(explicit_path)
+
+            stale_path = Path(tmp) / "stale_glossary.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "glossary"
+            ws.append(["CN", "EN", "EN2", "category"])
+            ws.append(["ABC", "Canonical", None, "hard"])
+            wb.save(stale_path)
+
+            result = scan_workbook(workbook_path, term_base=explicit_path)
+
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.issue_counts["term_soft_missing"], 1)
+            self.assertEqual(result.issue_counts["term_missing"], 0)
+
+    def test_scan_workbook_skips_game_terms_for_long_legal_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "legal.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN"])
+            source = "四三九九游戏隐私政策" + (
+                "我们的合作伙伴将按照用户协议处理信息。" * 80
+            )
+            ws.append([1, source, "Our partners process information under the user agreement."])
+            wb.save(workbook_path)
+
+            term_path = Path(tmp) / "terms.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "术语表"
+            ws.append(["CN", "EN", "EN2", "分类"])
+            ws.append(["伙伴", "Companion", None, "强术语"])
+            wb.save(term_path)
+
+            result = scan_workbook(workbook_path, term_base=term_path)
+
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.issue_counts["term_missing"], 0)
+
+    def test_scan_workbook_auto_softens_uncategorized_generic_terms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN"])
+            ws.append([1, "获得奖励成功", "Rewards delivered"])
+            wb.save(workbook_path)
+
+            term_path = Path(tmp) / "terms.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "术语表"
+            ws.append(["ID", "CN", "EN"])
+            ws.append([1, "获得", "Obtain"])
+            ws.append([2, "成功", "Success"])
+            wb.save(term_path)
+
+            result = scan_workbook(workbook_path, term_base=term_path)
+
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.issue_counts["term_soft_missing"], 2)
+            self.assertEqual(result.issues, [])
+
+    def test_scan_workbook_keeps_uncategorized_domain_terms_hard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN"])
+            ws.append([1, "战机升级", "Fighter upgrade"])
+            wb.save(workbook_path)
+
+            term_path = Path(tmp) / "terms.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "术语表"
+            ws.append(["ID", "CN", "EN"])
+            ws.append([1, "战机", "Warplane"])
+            wb.save(term_path)
+
+            result = scan_workbook(workbook_path, term_base=term_path)
+
+            self.assertFalse(result.passed)
+            self.assertEqual(result.issue_counts["term_missing"], 1)
+            self.assertEqual(result.issues[0]["check_type"], "term_missing")
+
     def test_scan_workbook_applies_ui_length_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ui_length.xlsx"
@@ -451,6 +554,25 @@ class QualityHarnessTests(unittest.TestCase):
             self.assertTrue(result.passed, result.issues)
             self.assertEqual(result.rows_scanned, 1)
 
+    def test_scan_workbook_skips_result_review_sheet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "result_en.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "完整结果"
+            ws.append(["ID", "CN", "EN"])
+            ws.append([1, "系统错误", "System error"])
+
+            ws = wb.create_sheet("需确认")
+            ws.append(["ID", "CN", "EN"])
+            ws.append([2, "系统错误", "System Error"])
+            wb.save(workbook_path)
+
+            result = scan_workbook(workbook_path)
+
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.rows_scanned, 1)
+
     def test_runtime_placeholder_sentence_does_not_trigger_leading_lowercase(self):
         fixture = {
             "cases": [
@@ -458,6 +580,54 @@ class QualityHarnessTests(unittest.TestCase):
                     "id": "runtime-message",
                     "source": "<color=#457B9F>##1</color>已同意<color=#457B9F>##2</color>加入军团！",
                     "translation": "<color=#457B9F>##1</color> approved <color=#457B9F>##2</color> to join the Legion!",
+                    "expected_issues": [],
+                }
+            ]
+        }
+
+        result = run_fixture(fixture)
+
+        self.assertTrue(result.passed, result.failures)
+
+    def test_placeholder_only_literal_newline_does_not_trigger_leading_lowercase(self):
+        fixture = {
+            "cases": [
+                {
+                    "id": "placeholder-only-newline",
+                    "source": "[{0}]\\n{2}",
+                    "translation": "[{0}]\\n{2}",
+                    "expected_issues": [],
+                }
+            ]
+        }
+
+        result = run_fixture(fixture)
+
+        self.assertTrue(result.passed, result.failures)
+
+    def test_rich_text_macro_display_text_does_not_trigger_variable_drift(self):
+        fixture = {
+            "cases": [
+                {
+                    "id": "rich-text-display",
+                    "source": "#{item_blue,{0,PlayerName}}手气爆棚，在#{item_blue,{1,PlayerName}}的红包中豪夺#{luck_red,运气王}！",
+                    "translation": "#{item_blue,{0,PlayerName}} is extremely lucky and won #{luck_red,Luck King} from #{item_blue,{1,PlayerName}}'s red packet!",
+                    "expected_issues": [],
+                }
+            ]
+        }
+
+        result = run_fixture(fixture)
+
+        self.assertTrue(result.passed, result.failures)
+
+    def test_link_macro_display_text_does_not_trigger_variable_drift(self):
+        fixture = {
+            "cases": [
+                {
+                    "id": "link-macro-display",
+                    "source": "#L{linkType:Url;url:www.baidu.com,item_red,www.baidu.com 点击前往 }",
+                    "translation": "#L{linkType:Url;url:www.baidu.com,item_red,www.baidu.com Click to go }",
                     "expected_issues": [],
                 }
             ]
@@ -602,6 +772,42 @@ class QualityHarnessTests(unittest.TestCase):
         result = run_fixture(fixture)
 
         self.assertTrue(result.passed, result.failures)
+
+    def test_scan_workbook_uses_requested_target_language_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN", "TH", "VI", "ID"])
+            ws.append([1, "领取奖励", "领取奖励", "รับรางวัล", "Nhận thưởng", "Klaim Hadiah"])
+            wb.save(workbook_path)
+
+            result = scan_workbook(workbook_path, lang="vi", auto_discover_terms=False)
+
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.rows_scanned, 1)
+
+    def test_scan_workbook_uses_requested_language_term_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "VI"])
+            ws.append([1, "求生之路", "Con Đường Sinh Tồn"])
+            wb.save(workbook_path)
+
+            term_path = Path(tmp) / "terms.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "术语表"
+            ws.append(["CN", "EN", "VI"])
+            ws.append(["求生之路", "Survival Road", "Con Đường Sinh Tồn"])
+            wb.save(term_path)
+
+            result = scan_workbook(workbook_path, lang="vi", term_base=term_path)
+
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.issue_counts["term_missing"], 0)
 
 
 if __name__ == "__main__":

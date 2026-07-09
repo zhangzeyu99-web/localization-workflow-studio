@@ -12,6 +12,15 @@ from typing import Sequence
 
 from openpyxl import load_workbook
 
+from utils.language_config import (
+    LANGUAGE_NAMES,
+    SOURCE_HEADERS,
+    all_language_target_headers,
+    normalize_language_code,
+    target_header_candidates,
+    variant_header_candidates,
+)
+
 GLOSSARY_SHEET_NAMES = {'术语表', 'glossary', 'terms', 'term base', 'termbase'}
 TERM_BASE_FILENAME_KEYWORDS = {'术语', 'glossary', 'term', 'termbase'}
 OUTPUT_DIR_NAME_HINTS = {'output', 'out', 'final', 'result'}
@@ -19,13 +28,137 @@ SUPPORT_SHEET_NAME_KEYWORDS = {
     '裁决',
     '审计',
     '返修',
+    '需确认',
+    '总览',
+    '错误模式',
+    '学习笔记',
+    '详细记录',
+    '术语行筛选',
+    'review',
+    'summary',
+    'overview',
+    'details',
     'audit',
     'decision',
     'review log',
     'fix log',
 }
+LEGAL_TERM_CHECK_SKIP_MARKERS = {'隐私政策', '用户协议'}
+LEGAL_TERM_CHECK_MIN_LENGTH = 1000
 PERSON_NAME_CATEGORY_MARKERS = {'人名', '角色', 'person', 'name', 'character'}
 SOFT_TERM_CATEGORY_MARKERS = {'soft', 'generic', 'common', '参考', '泛词', '通用词'}
+AUTO_SOFT_SOURCE_TERMS = {
+    '使用',
+    '激活',
+    '领取',
+    '解锁',
+    '购买',
+    '重置',
+    '刷新',
+    '失败',
+    '可领取',
+    '普通',
+    '增加',
+    '随机',
+    '提升',
+    '额外',
+    '唯一',
+    '时间',
+    '开启',
+    '自动',
+    '注意',
+    '选择',
+    '完成',
+    '通过',
+    '通关',
+    '成功',
+    '基础',
+    '击杀',
+    '发送',
+    '可获',
+    '数量',
+    '同时',
+    '需要',
+    '已领取',
+    '获得',
+    '获得了',
+    '任务',
+    '当前',
+    '操作',
+    '申请',
+    '达到',
+    '玩家',
+    '未解锁',
+    '创建',
+    '最大',
+    '匹配',
+    '分解',
+    '已有',
+    '加入',
+    '未开启',
+    '进阶',
+    '输出',
+    '提交',
+    '设置',
+    '跟随',
+    '穿戴',
+    '星级',
+    '属性',
+    '接取',
+    '冷却',
+    '全服',
+    '分钟',
+    '道具',
+    '邮件',
+    '主角',
+    '排名',
+    '每日',
+    '赠送',
+    '获取',
+    '兑换',
+    '取消',
+    '提示',
+    '其他',
+    '直接',
+    '团队',
+    '奖励',
+    '补偿',
+}
+AUTO_SOFT_TARGET_WORDS = {
+    'additional',
+    'amount',
+    'at',
+    'auto',
+    'available',
+    'base',
+    'basic',
+    'buy',
+    'claim',
+    'claimable',
+    'claimed',
+    'clear',
+    'complete',
+    'completed',
+    'death',
+    'extra',
+    'failed',
+    'kill',
+    'notice',
+    'obtain',
+    'open',
+    'random',
+    'refresh',
+    'required',
+    'reset',
+    'select',
+    'send',
+    'stage',
+    'success',
+    'time',
+    'unique',
+    'unlock',
+    'use',
+}
 GENERIC_ROLE_TARGETS = {
     'ally',
     'base',
@@ -44,39 +177,73 @@ GENERIC_ROLE_TARGETS = {
     'survivor',
 }
 
+_LANGUAGE_CODES = tuple(LANGUAGE_NAMES.keys())
+
 LANGUAGE_TARGET_HEADERS = {
-    'en': {'en', 'english', '英文', '英语', '译文', 'translation', 'target'},
-    'ko': {'ko', 'kr', 'korean', '韩语', '韓語', '한국어', '译文', 'translation', 'target'},
-    'ja': {'ja', 'jp', 'japanese', '日语', '日語', '日本語', '译文', 'translation', 'target'},
+    lang: target_header_candidates(lang, include_generic=True)
+    for lang in _LANGUAGE_CODES
 }
 
 LANGUAGE_VARIANT_HEADERS = {
-    'en': {'en2', 'english2', '英语2', '英文2', 'variant', 'variants', 'alternate', 'alternates'},
-    'ko': {'ko2', 'kr2', 'korean2', '韩语2', '韓語2', '한국어2', 'variant', 'variants', 'alternate', 'alternates'},
-    'ja': {'ja2', 'jp2', 'japanese2', '日语2', '日語2', '日本語2', 'variant', 'variants', 'alternate', 'alternates'},
+    lang: variant_header_candidates(lang)
+    for lang in _LANGUAGE_CODES
 }
 
 
 def _target_header_candidates(lang: str) -> set[str]:
-    return LANGUAGE_TARGET_HEADERS.get(lang, LANGUAGE_TARGET_HEADERS['en'])
+    return target_header_candidates(lang, include_generic=True)
 
 
 def _variant_header_candidates(lang: str) -> set[str]:
-    return LANGUAGE_VARIANT_HEADERS.get(lang, LANGUAGE_VARIANT_HEADERS['en'])
+    return variant_header_candidates(lang)
 
 
 def _all_target_header_candidates() -> set[str]:
-    values: set[str] = set()
-    for candidates in LANGUAGE_TARGET_HEADERS.values():
-        values.update(candidates)
-    return values
+    return all_language_target_headers()
 
 
 def _all_variant_header_candidates() -> set[str]:
     values: set[str] = set()
-    for candidates in LANGUAGE_VARIANT_HEADERS.values():
-        values.update(candidates)
+    for lang in _LANGUAGE_CODES:
+        values.update(variant_header_candidates(lang))
     return values
+
+
+def _has_explicit_language_header(headers: Sequence[str], language_headers: set[str]) -> bool:
+    return any(
+        header in language_headers and not (idx == 0 and header == 'id')
+        for idx, header in enumerate(headers)
+    )
+
+
+def _should_skip_term_checks(source: str) -> bool:
+    text = str(source or '')
+    return (
+        len(text) >= LEGAL_TERM_CHECK_MIN_LENGTH
+        and any(marker in text for marker in LEGAL_TERM_CHECK_SKIP_MARKERS)
+    )
+
+
+def _is_auto_soft_term(cn: str, target: str, category: str = '') -> bool:
+    """Downgrade obvious generic words when the glossary has no category.
+
+    Project glossaries often mix real domain terms with rows like
+    "获得 -> Obtain" and "成功 -> Success". When no category is present,
+    those rows should guide wording, not block delivery.
+    """
+    if _clean_term_cell(category):
+        return False
+    source_term = _clean_term_cell(cn)
+    if source_term in AUTO_SOFT_SOURCE_TERMS:
+        return True
+    if len(source_term) > 3:
+        return False
+    target_words = {
+        word
+        for word in re.findall(r'[A-Za-z]+', _clean_term_cell(target).lower())
+        if word not in {'a', 'an', 'the', 'to', 'of', 'for', 'in', 'on'}
+    }
+    return bool(target_words) and target_words.issubset(AUTO_SOFT_TARGET_WORDS)
 
 
 def _collect_term_context(
@@ -84,6 +251,7 @@ def _collect_term_context(
     term_base: str | Path | Sequence[str | Path] | None,
     lang: str = 'en',
 ) -> dict[str, object]:
+    lang = normalize_language_code(lang)
     strong_terms: dict[str, dict] = {}
     soft_terms: dict[str, dict] = {}
     person_name_terms: list[tuple[str, str]] = []
@@ -111,7 +279,7 @@ def _collect_term_context(
                 seen_person_names.add(key)
                 person_name_terms.append(key)
             return
-        bucket = soft_terms if _is_soft_term_category(category) else strong_terms
+        bucket = soft_terms if _is_soft_term_category(category) or _is_auto_soft_term(cn, target, category) else strong_terms
         _add_term_lookup_entry(bucket, cn, target, variants, enforce_case)
 
     _collect_terms_from_workbook(workbook, add, lang=lang)
@@ -143,19 +311,28 @@ def _collect_term_context(
 
 
 def _collect_terms_from_workbook(workbook, add, all_sheets: bool = False, lang: str = 'en') -> None:
+    lang = normalize_language_code(lang)
+    target_candidates = target_header_candidates(lang, include_generic=True)
+    variant_candidates = variant_header_candidates(lang)
+    language_headers = all_language_target_headers()
     for ws in workbook.worksheets:
         is_glossary_sheet = _is_glossary_sheet(ws)
         header = [str(value or '').strip().lower() for value in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())]
-        cn_idx = _find_header(header, {'cn', 'zh', '中文', '简体中文', '中文术语', '原文', 'source', 'original'})
-        target_idx = _find_header(header, _target_header_candidates(lang))
-        variant_idx = _find_header(header, _variant_header_candidates(lang))
+        cn_idx = _find_header(header, set(SOURCE_HEADERS))
+        target_idx = _find_header(header, target_candidates)
+        variant_idx = _find_header(header, variant_candidates)
         category_idx = _find_header(header, {'分类', '类别', 'category', 'type', 'tag', 'tags'})
         enforce_idx = _find_header(header, {'enforce_case', '大小写', '大小写约束'})
+        has_language_header = _has_explicit_language_header(header, language_headers)
 
         if is_glossary_sheet:
             cn_idx = cn_idx if cn_idx is not None else _fallback_index(header, 0)
-            target_idx = target_idx if target_idx is not None else _fallback_index(header, 1)
-            variant_idx = variant_idx if variant_idx is not None else _fallback_index(header, 2)
+            if target_idx is None:
+                if has_language_header:
+                    continue
+                target_idx = _fallback_index(header, 1)
+            if variant_idx is None and not has_language_header:
+                variant_idx = _fallback_index(header, 2)
             category_idx = category_idx if category_idx is not None else _fallback_index(header, 3)
         elif not all_sheets:
             continue
@@ -270,10 +447,11 @@ def _resolve_term_base_paths(
         seen.add(key)
         paths.append(candidate)
 
-    for path in _iter_term_base_paths(term_base):
+    explicit_paths = _iter_term_base_paths(term_base)
+    for path in explicit_paths:
         add(path)
 
-    if auto_discover_terms:
+    if auto_discover_terms and not explicit_paths:
         for path in _discover_term_base_paths(workbook_path):
             add(path)
 
@@ -334,18 +512,23 @@ def _fallback_index(headers: list[str], fallback: int) -> int | None:
 
 
 def _detect_columns(ws, lang: str = 'en') -> tuple[int | None, int | None, int | None]:
+    lang = normalize_language_code(lang)
     first = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
     headers = [str(v or '').strip().lower() for v in first]
 
-    def pick(candidates: set[str], fallback: int | None) -> int | None:
+    def pick(candidates: set[str], fallback: int | None = None) -> int | None:
         for idx, header in enumerate(headers):
             if header in candidates:
                 return idx
         return fallback if fallback is None or fallback < len(headers) else None
 
     id_col = pick({'id', 'key'}, 0)
-    src_col = pick({'cn', 'zh', '中文', '简体中文', '原文', 'source', 'original'}, 1)
-    tgt_col = pick(_target_header_candidates(lang), 2)
+    src_col = pick(set(SOURCE_HEADERS), 1)
+    tgt_col = pick(target_header_candidates(lang, include_generic=True))
+    if tgt_col is None and _has_explicit_language_header(headers, all_language_target_headers()):
+        return id_col, src_col, None
+    if tgt_col is None:
+        tgt_col = 2 if len(headers) > 2 else None
     return id_col, src_col, tgt_col
 
 
