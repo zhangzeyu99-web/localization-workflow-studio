@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-09 - 移除旧版 Tkinter GUI
+
+- 删除 `gui.py`（旧版人工复制粘贴流程入口，AGENTS 已长期声明不默认使用）；人工操作场景改用 `cli.py` 交互模式。
+- 清理 README、`工作流说明.md`、`docs/使用说明书.md`、AGENTS.md 中的 GUI 入口引用；同步范围随之不再包含 `gui.py`。
+- 如需找回历史实现，见 tag `pre-merge-20260709` 之前的 Git 历史。
+
 ## 2026-07-09 - Studio 演化合流与单一维护源确立
 
 - 双向合并：吸收 studio 侧 `workflow/localization` 一个月的演化——large-text 多语言三件套（runner/gate/retro + 测试）、三个千行模块的职责拆分（announcement_docx_common/terms/prepare/apply、quality_harness_rules/terms、process_language_terms/review/outputs，原模块保留 re-export facade 和 `Boundary:` 标注）、AI review 辅助函数去重进 `utils/ai_checker.py`。

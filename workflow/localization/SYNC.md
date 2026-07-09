@@ -23,7 +23,7 @@ python -m pytest workflow/localization/tests -q   # 本目录测试
 python -m pytest backend/tests -q                 # 产品契约门禁，必须全绿
 ```
 
-5. 同步范围：源仓库的代码与测试（`cli.py`、`gui.py`、`process_language.py`、`workspace_runner.py`、`scripts/`、`utils/`、`tests/`、`templates/`、`fixtures/`、`requirements.txt`）。不同步源仓库私有资产：`docs/`、`tools/`、`examples/`、根目录中文文档/PDF/样例 xlsx、`README.md`、`AGENTS.md`。`SYNC.md` 保留在 studio 侧。
+5. 同步范围：源仓库的代码与测试（`cli.py`、`process_language.py`、`workspace_runner.py`、`scripts/`、`utils/`、`tests/`、`templates/`、`fixtures/`、`requirements.txt`）。不同步源仓库私有资产：`docs/`、`tools/`、`examples/`、根目录中文文档/PDF/样例 xlsx、`README.md`、`AGENTS.md`。`SYNC.md` 保留在 studio 侧。
 6. backend 里的 `app/workflow/large_text.py` 是从本目录 `utils/large_text_multilingual_gate.py` port 的受控复制，规则以本目录为准；改 gate 规则后要检查 `backend/tests/test_large_text_productization.py` parity 测试。
 
 ## 当前同步基线

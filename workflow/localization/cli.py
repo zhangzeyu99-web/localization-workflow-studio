@@ -2,7 +2,7 @@
 
 Boundary: AGENT-ONLY tooling. Not imported or subprocessed by the backend.
 
-Interactive command-line interface with the same two-phase workflow as the GUI:
+Interactive command-line interface with a two-phase workflow:
   Phase 1: Machine review (automatic)
   Phase 2: AI review (clipboard-guided, batch by batch)
 
