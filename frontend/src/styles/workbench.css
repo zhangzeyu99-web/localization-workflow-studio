@@ -575,6 +575,11 @@ table {
   background: #ffffff;
 }
 
+.pending-term-table th {
+  background: #f3f5f6;
+  color: #47545f;
+}
+
 th,
 td {
   border-bottom-color: #e7eaed;
@@ -1038,6 +1043,12 @@ a {
   background: #fff8eb;
 }
 
+.readiness-head span {
+  border-color: #b9dcd7;
+  background: #eef8f7;
+  color: #0f766e;
+}
+
 .progress-track {
   background: #e3e7ea;
 }
@@ -1061,6 +1072,14 @@ a {
 .constraint-source-card.selected {
   border-color: #0f766e;
   background: #eef8f7;
+}
+
+.announcement-lang-card.selected,
+.announcement-language-chip.selected,
+.announcement-subflow-card.selected {
+  border-color: #0f766e;
+  background: #eef8f7;
+  color: #27323a;
 }
 
 .line-proofread-toggle {

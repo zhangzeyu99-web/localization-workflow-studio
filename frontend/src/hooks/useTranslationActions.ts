@@ -595,7 +595,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     const projectId = current.id
     const inputArtifact = sourceArtifact || qaArtifact
     if (!inputArtifact) {
-      setStatusForProject(projectId, '请先选择语言表或已译 workbook，再运行多语言 QA。')
+      setStatusForProject(projectId, '请先选择语言表或已译表格，再运行多语言 QA。')
       return
     }
     const languages = selectedQueueLanguages()

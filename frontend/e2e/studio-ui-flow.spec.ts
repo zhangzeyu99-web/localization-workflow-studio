@@ -12,6 +12,53 @@ const inlineStatus = (page: any, text: string) => page.locator('.inline-status',
 
 test.use({ acceptDownloads: true })
 
+test('spreadsheet column errors are shown as actionable Chinese', async ({ page }) => {
+  await page.goto(baseURL)
+  const message = await page.evaluate(async () => {
+    const { sanitizeUserFacingError } = await import('/src/apiClient.ts')
+    return sanitizeUserFacingError('target column not found in sheet: fminth')
+  })
+  expect(message).toBe('所选工作表“fminth”中找不到目标译文列。请确认译文列存在，或返回“判定输入”重新选择语言表。')
+})
+
+test('announcement artifact labels do not expose internal English names', async ({ page }) => {
+  await page.goto(baseURL)
+  const labels = await page.evaluate(async () => {
+    const { artifactKindLabel } = await import('/src/domain/artifacts.ts')
+    return [
+      artifactKindLabel({ kind: 'announcement_workpack' } as any),
+      artifactKindLabel({ kind: 'announcement_lookup_manifest' } as any),
+      artifactKindLabel({ kind: 'announcement_lookup_prompt_context' } as any)
+    ]
+  })
+  expect(labels).toEqual(['公告工作包', '公告清单', '公告提示词上下文'])
+})
+
+test('generated result filenames use a user-facing picker label', async ({ page }) => {
+  await page.goto(baseURL)
+  const label = await page.evaluate(async () => {
+    const { artifactPickerLabel } = await import('/src/domain/artifacts.ts')
+    return artifactPickerLabel({
+      kind: 'qa_final_workbook',
+      label: 'QA final workbook',
+      path: 'result_en.xlsx',
+      origin: 'generated',
+      metadata: { language: 'en' },
+      created_at: '2026-07-10T00:00:00Z'
+    } as any)
+  })
+  expect(label).toBe('已译语言表｜EN｜翻译结果｜2026-07-10')
+})
+
+test('failed announcement tasks do not show stale child runs as translating', async ({ page }) => {
+  await page.goto(baseURL)
+  const label = await page.evaluate(async () => {
+    const { announcementStatusLabel } = await import('/src/domain/announcementText.ts')
+    return announcementStatusLabel('running', 'failed')
+  })
+  expect(label).toBe('需继续/修复')
+})
+
 test('runtime version badge shows bundle version without mismatch warning', async ({ page }) => {
   await page.goto(baseURL)
   const badge = page.locator('.runtime-version-badge')
@@ -168,7 +215,9 @@ test('user can complete the EN localization workflow from project tabs', async (
 
   await page.getByRole('button', { name: '校对', exact: true }).click()
   await expect(page.locator('.qa-outcome-panel')).toContainText('QA 已通过')
-  await expect(page.locator('.qa-outcome-panel')).toContainText('QA final workbook')
+  await expect(page.locator('.qa-outcome-panel')).toContainText('已译语言表（EN）')
+  await expect(page.locator('.qa-outcome-panel')).not.toContainText('QA final workbook')
+  await expect(page.locator('.qa-outcome-panel')).not.toContainText('result_en')
   await expect(page.locator('.qa-outcome-panel')).toContainText('上一翻译结果')
 
   await page.getByRole('button', { name: '交付', exact: true }).click()
@@ -823,7 +872,7 @@ wb.close()
   await expect(page.locator('.announcement-artifacts')).toHaveCount(0)
   await page.getByText('\u8fc7\u7a0b\u6587\u4ef6\u4e0e\u5ba1\u8ba1\uff08\u53ef\u9009\uff09').click()
   const processArtifacts = page.locator('.asset-list', { hasText: '\u51c6\u5907\u4ea7\u7269\u4e0b\u8f7d' })
-  await expect(processArtifacts.getByText(/\u516c\u544a Workpack.*EN/)).toBeVisible()
+  await expect(processArtifacts.getByText(/公告工作包.*EN/)).toBeVisible()
   await expect(processArtifacts.getByText(/\u516c\u544a\u7ffb\u8bd1\u4e2d\u8f6c\u8868/)).toBeVisible()
 
   const taskResponse = await request.get(`${baseURL}/api/projects/${project.id}/announcement-tasks`)

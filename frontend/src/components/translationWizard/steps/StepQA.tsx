@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle2, PackageCheck, ShieldAlert, Wrench } from 'lucide-react'
-import { artifactDownloadHref, artifactRole, newestArtifact, pickerArtifacts, runArtifacts } from '../../../domain/artifacts'
+import { artifactDownloadHref, artifactKindLabel, artifactLanguageLabel, artifactRole, newestArtifact, pickerArtifacts, runArtifacts } from '../../../domain/artifacts'
 import { canSkipModelTranslation, latestRunOfKind } from '../../../domain/translationFlow'
 import { qaOutcomePresentation } from '../../../domain/workflowPresentation'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../../languages'
@@ -78,6 +78,9 @@ export function StepQA({
     ? newestArtifact(runArtifacts(project, previousTranslationRun.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
     : null
   const effectiveQaArtifact = qaArtifact || previousTranslationArtifact || null
+  const qaArtifactLabel = effectiveQaArtifact
+    ? `${artifactKindLabel(effectiveQaArtifact)}${artifactLanguageLabel(effectiveQaArtifact) ? `（${artifactLanguageLabel(effectiveQaArtifact)}）` : ''}`
+    : '未选择'
   const translationQaRun = previousTranslationRun && previousTranslationArtifact ? previousTranslationRun : null
   const qaStatusRun = latestQaRun && (!translationQaRun || latestQaRun.created_at >= translationQaRun.created_at) ? latestQaRun : translationQaRun
   const qaStatusArtifacts = qaStatusRun ? pickerArtifacts(qaStatusRun.artifacts?.length ? qaStatusRun.artifacts : runArtifacts(project, qaStatusRun.id)) : []
@@ -148,7 +151,7 @@ export function StepQA({
               </div>
             </div>
             <div className="qa-current-grid">
-              <div><span>校对文件</span><strong>{effectiveQaArtifact ? effectiveQaArtifact.label : '未选择'}</strong></div>
+              <div><span>校对文件</span><strong>{qaArtifactLabel}</strong></div>
               <div><span>文件来源</span><strong>{originText}</strong></div>
               <div><span>质量问题</span><strong>{qaStatusRun ? `${pendingIssueCount} 个待处理` : '尚未检查'}</strong></div>
               <div><span>归档规则</span><strong>{qaStatusRun?.status === 'passed' ? '标准交付后记为 QA 已通过' : qaStatusRun?.status === 'failed' ? '带问题交付后记为待复核' : `项目术语 ${glossaryCount} 条`}</strong></div>

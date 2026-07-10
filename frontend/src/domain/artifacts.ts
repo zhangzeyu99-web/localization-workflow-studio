@@ -56,6 +56,7 @@ export function artifactSourceStem(artifact: Artifact): string {
     .replace(/_workpack_[A-Z]+$/i, '')
     .replace(/_ai_response_[A-Z]+$/i, '')
     .replace(/_prompt_[A-Z]+$/i, '')
+  if (/^result_[a-z_]{2,8}$/i.test(stem)) return '翻译结果'
   return stem || artifact.label
 }
 
@@ -88,9 +89,9 @@ export function artifactKindLabel(artifact: Artifact): string {
   if (artifact.kind === 'announcement_delivery_package' || artifact.kind === 'announcement_docx_delivery_package') return '公告交付 ZIP'
   if (artifact.kind === 'announcement_output_file' || artifact.kind === 'announcement_docx_output_docx') return '公告成品'
   if (artifact.kind === 'announcement_qa_summary' || artifact.kind === 'announcement_docx_qa_summary') return '公告 QA 摘要'
-  if (artifact.kind === 'announcement_workpack') return '公告 Workpack'
-  if (artifact.kind === 'announcement_docx_manifest' || artifact.kind === 'announcement_lookup_manifest' || artifact.kind === 'announcement_terms_manifest') return '公告 Manifest'
-  if (artifact.kind === 'announcement_lookup_prompt_context') return '公告 Prompt Context'
+  if (artifact.kind === 'announcement_workpack') return '公告工作包'
+  if (artifact.kind === 'announcement_docx_manifest' || artifact.kind === 'announcement_lookup_manifest' || artifact.kind === 'announcement_terms_manifest') return '公告清单'
+  if (artifact.kind === 'announcement_lookup_prompt_context') return '公告提示词上下文'
   if (artifact.kind === 'announcement_ai_supplement_packet') return 'AI 补充包'
   if (artifact.kind === 'announcement_ai_supplement_report') return 'AI 补充报告'
   if (artifact.kind === 'announcement_terms_validation') return '公告术语校验'

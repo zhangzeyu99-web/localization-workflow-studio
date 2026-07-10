@@ -836,7 +836,7 @@ export function AnnouncementLanguageSubflows({
             <button key={lang.code} className={`announcement-subflow-card ${selected ? 'selected' : ''} ${child ? child.status : 'is-empty'}`} onClick={() => onToggleLanguage(lang.code)}>
               <strong>{lang.label}</strong>
               <span>{child ? `STEP ${child.current_step}/9` : selected ? '已选择' : '未选择'}</span>
-              <em>{child ? announcementStatusLabel(child.status) : (detectedLanguages.includes(lang.code) ? '检测到约束' : '待选择')}</em>
+              <em>{child ? announcementStatusLabel(child.status, task.status) : (detectedLanguages.includes(lang.code) ? '检测到约束' : '待选择')}</em>
             </button>
           )
         })}

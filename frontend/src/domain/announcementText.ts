@@ -2,7 +2,8 @@
 // appText.ts/uiText.ts (which are statically imported by main.tsx's hot path)
 // don't force-bundle the whole announcement wizard, letting it be code-split
 // via React.lazy.
-export function announcementStatusLabel(status?: string): string {
+export function announcementStatusLabel(status?: string, parentStatus?: string): string {
+  if (parentStatus === 'failed' && ['queued', 'running'].includes(status || '')) return '需继续/修复'
   const labels: Record<string, string> = {
     created: '已创建',
     constraints_ready: '约束已识别',

@@ -25,6 +25,11 @@ export function sanitizeUserFacingError(text: string, fallback?: string, operati
   if (unsupported) {
     return `\u5f53\u524d\u5165\u53e3\u4e0d\u652f\u6301 ${unsupported[1]} \u6587\u4ef6\u3002\u8bed\u8a00\u5305\u7ffb\u8bd1\u8bf7\u4e0a\u4f20 XLSX/XLS/CSV \u8bed\u8a00\u8868\uff1bTXT/DOCX \u957f\u6587\u672c\u8bf7\u4f7f\u7528\u516c\u544a\u7ffb\u8bd1/\u5916\u6587\u672c\u6d41\u7a0b\u3002`
   }
+  const missingTargetColumn = raw.match(/target column not found in sheet:\s*([^,;\r\n]+)/i)
+  if (missingTargetColumn) {
+    const sheet = missingTargetColumn[1].trim().replace(/^['"]|['"]$/g, '')
+    return `所选工作表“${sheet}”中找不到目标译文列。请确认译文列存在，或返回“判定输入”重新选择语言表。`
+  }
   if (/another long-text AI job is active/i.test(raw)) {
     // Legacy pre-M2 message (single global lease); kept as a fallback in case
     // an older backend build is still deployed alongside this frontend.
