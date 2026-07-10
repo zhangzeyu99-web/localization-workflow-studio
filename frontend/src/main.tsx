@@ -386,7 +386,7 @@ function App() {
             </div>
           </div>
           <div className="header-actions">
-            <span className={`status ${busy ? 'running' : ''}`}>{busy ? <span className="loading" /> : null}{status}</span>
+            <span className={`status ${busy ? 'running' : ''}`} role="status" aria-live="polite">{busy ? <span className="loading" /> : null}{status}</span>
             <div className="active-jobs-anchor">
               <ActiveJobsBadge jobs={activeJobs} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
               {activeJobsPanelOpen ? <ActiveJobsPanel jobs={activeJobs} onClose={() => setActiveJobsPanelOpen(false)} /> : null}
@@ -434,7 +434,8 @@ function App() {
           </aside>
 
           <main className="main">
-            {!current ? <EmptyState onCreate={() => setNewProjectOpen(true)} /> : view === 'overview' ? (
+            <div className="main-content">
+              {!current ? <EmptyState onCreate={() => setNewProjectOpen(true)} /> : view === 'overview' ? (
               <ProjectOverview
                 project={current}
                 tab={tab}
@@ -602,7 +603,8 @@ function App() {
                   />
                 )}
               </Suspense>
-            )}
+              )}
+            </div>
           </main>
         </div>
       </div>

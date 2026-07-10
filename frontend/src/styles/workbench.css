@@ -307,6 +307,11 @@ summary {
   background: #f6f7f8;
 }
 
+.main-content {
+  width: min(100%, 1600px);
+  margin-inline: auto;
+}
+
 .proj-head {
   align-items: center;
   margin-bottom: 18px;
@@ -450,11 +455,11 @@ select:focus {
 
 .stat-grid {
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .stat-card {
-  min-height: 98px;
+  min-height: 88px;
   padding: 14px;
 }
 
@@ -476,10 +481,20 @@ select:focus {
 }
 
 .view-tabs {
+  position: sticky;
+  top: 64px;
+  z-index: 9;
   gap: 18px;
   margin-bottom: 16px;
+  padding-top: 4px;
   overflow-x: auto;
   border-bottom-color: #d9dee3;
+  background: #f6f7f8;
+  scrollbar-width: none;
+}
+
+.view-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .view-tab {
@@ -549,6 +564,15 @@ table {
   border-radius: 7px;
   background: #ffffff;
   color: #27323a;
+}
+
+.meta-table th {
+  background: #eef8f7;
+  color: #34414a;
+}
+
+.meta-table td {
+  background: #ffffff;
 }
 
 th,
@@ -1449,6 +1473,11 @@ details > summary {
     display: flex;
     gap: 5px;
     overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .project-list::-webkit-scrollbar {
+    display: none;
   }
 
   .project-list .project-item {
@@ -1496,6 +1525,20 @@ details > summary {
 
   .main {
     padding: 16px 12px 44px;
+  }
+
+  .stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .stat-card {
+    min-height: 82px;
+    padding: 11px 12px;
+  }
+
+  .view-tabs {
+    top: 0;
   }
 
   .proj-head {
