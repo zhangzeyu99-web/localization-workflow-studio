@@ -339,7 +339,13 @@ export function linesToFixedTerms(value: string): ProjectHarness['fixed_terms'] 
 export function normalizeGlossaryNote(value: string | undefined): string {
   const note = String(value || '')
   if (/高频词扫描补全 (EN|JP|JA|KR|KO)\/(EN2|JP2|JA2|KR2|KO2)\?+/.test(note)) return '高频词候选，需人工确认'
-  return note
+  const cleaned = note
+    .replace(/^AI 漏词补充候选，需人工确认[；;]\s*/i, '')
+    .replace(/置信度\s+(?:high|medium|low)[；;]\s*/gi, '')
+    .replace(/\bexisting_candidates\b/gi, '已有候选')
+    .replace(/\s*已有候选\s*中/g, '已有候选中的')
+    .trim()
+  return cleaned || '需人工确认'
 }
 
 export function fieldText(value: unknown, fallback = '未生成'): string {

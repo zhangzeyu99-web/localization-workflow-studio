@@ -25,15 +25,15 @@ export function StepLang({
   const selectedLabels = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 6</span>选择目标语言</div>
-      <div className="panel-desc">目标语言优先从「判定输入」步骤的表头自动识别；识别到的语言会默认勾选。后续翻译 / QA 仍按语言拆成单语言任务执行。</div>
+      <div className="panel-title"><span className="badge">步骤 6/9</span>目标语言</div>
+      <div className="panel-desc">选择本次翻译语言。</div>
       {readyForQa ? (
         <div className="translation-readiness-box ready">
           <div className="readiness-head">
-            <strong>已译表已完成语言判定</strong>
-            <span>无需进入 AI 翻译</span>
+            <strong>已识别目标语言</strong>
+            <span>可直接校对</span>
           </div>
-          <p>当前表已经有完整译文，已选目标语言为 {selectedLabels || languageSpec(selectedLanguage).short}。建议直接进入「QA 校对」步骤。</p>
+          <p>{selectedLabels || languageSpec(selectedLanguage).short}</p>
           {sourceArtifact && setQaArtifact && setStep ? <button className="btn btn-primary btn-sm" onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>去校对</button> : null}
         </div>
       ) : null}
@@ -44,8 +44,7 @@ export function StepLang({
             type="button"
             className={`lang-chip ${selectedLanguages.includes(lang.code) ? 'selected' : ''} ${selectedLanguage === lang.code ? 'current' : ''}`}
             onClick={() => toggleSelectedLanguage(lang.code)}
-            onDoubleClick={() => setSelectedLanguage(lang.code)}
-            title={selectedLanguage === lang.code ? '当前预览 / 当前执行语言' : '点击勾选并设为当前语言'}
+            title={selectedLanguage === lang.code ? '当前语言' : '选择语言'}
           >
             <span className="lang-check">{selectedLanguages.includes(lang.code) ? '✓' : ''}</span>
             {lang.label}

@@ -91,22 +91,30 @@ export function StepAnalyze({
   const hasPrompt = Boolean(projectPromptForLanguage(project, selectedLanguage))
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 2</span>AI 分析项目资料</div>
-      <div className="panel-desc">读取「项目资料」步骤投入的资料，生成项目元信息和翻译提示词。已上传 {assetArtifacts.length} 个资料；重复资料会在资料包里去重。</div>
+      <div className="panel-title"><span className="badge">步骤 2/9</span>AI 分析</div>
+      <div className="panel-desc">确认项目信息与分析结果。</div>
       <div className="step-brief-card">
         <div>
-          <strong>{hasPrompt ? '已生成项目提示词' : '尚未生成项目提示词'}</strong>
-          <span>后续 AI 翻译和 QA 会读取这里生成的项目信息；人工编辑后也会影响后续任务。</span>
+          <strong>{hasPrompt ? '分析完成' : '等待分析'}</strong>
+          <span>{assetArtifacts.length} 个参考资料</span>
         </div>
-        <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>{hasPrompt ? '重新分析项目资料' : '启动 AI 分析'}</button>
+        <button className="btn btn-primary" disabled={busy} onClick={onAnalyze}>{hasPrompt ? '重新分析' : '开始分析'}</button>
       </div>
-      <StepAnalyzeMaterialStatus project={project} />
-      <details className="history-collapsed">
-        <summary>查看本次 AI 输入摘要</summary>
-        <AiInputAuditPanel endpoint={`/api/projects/${project.id}/ai-input-summary`} title="项目资料 AI 输入摘要" />
+      <div className="analysis-summary">
+        <div><span>项目</span><strong>{project.name}</strong></div>
+        <div><span>目标语言</span><strong>{lang.label}</strong></div>
+        <div><span>参考资料</span><strong>{assetArtifacts.length} 个</strong></div>
+        <div><span>提示词</span><strong>{hasPrompt ? '已生成' : '未生成'}</strong></div>
+      </div>
+      <details className="analysis-details">
+        <summary>查看分析详情</summary>
+        <div className="analysis-details-body">
+          <StepAnalyzeMaterialStatus project={project} />
+          <AiInputAuditPanel endpoint={`/api/projects/${project.id}/ai-input-summary`} title="项目资料 AI 输入摘要" />
+          <div className="ai-card"><div className="ai-header">{lang.short} 提示词</div><pre>{projectPromptForLanguage(project, selectedLanguage) || '尚未生成'}</pre></div>
+          <ProjectMetaTable project={project} />
+        </div>
       </details>
-      <div className="ai-card"><div className="ai-header">当前 {lang.short} 提示词</div><pre>{projectPromptForLanguage(project, selectedLanguage) || '尚未生成'}</pre></div>
-      <ProjectMetaTable project={project} />
     </>
   )
 }

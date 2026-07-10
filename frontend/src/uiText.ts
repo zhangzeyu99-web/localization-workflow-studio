@@ -60,9 +60,9 @@ export function shortIdLabel(id: string, length = 8): string {
   return value.length > length ? `${value.slice(0, length)}…` : value || '-'
 }
 
-// Line proofread (深度逐行校对) copy shared by StepTranslate and RunDetail.
-export const LINE_PROOFREAD_LABEL = '深度逐行校对'
-export const LINE_PROOFREAD_HINT = '逐句 AI 审校译文，自动回退破坏占位符/术语/数字的建议；耗时明显增加。'
+// Line proofread copy shared by StepTranslate and RunDetail.
+export const LINE_PROOFREAD_LABEL = '深度校对'
+export const LINE_PROOFREAD_HINT = '更严格，耗时更长。'
 
 export function lineProofreadSummaryText(state?: {
   reviewed_rows?: number

@@ -1007,7 +1007,26 @@ def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id
                     sheet_name = ws.title
             target_col = _first_col(_header_map(ws), WORKBOOK_TARGET_HEADER_ALIASES)
             if target_col is None:
-                raise KeyError(f"target column not found in sheet: {sheet_name}")
+                # Generated QA confirmation sheets are evidence only. Keep the
+                # issue in the rerun summary, but do not let it abort fixes for
+                # rows that are actually writable in the translation sheet.
+                applied.append(
+                    {
+                        "id": db.new_id("fix"),
+                        "source_run_id": source_run_id,
+                        "issue_id": fix.get("issue_id") or "",
+                        "sheet": sheet_name,
+                        "row": row_index,
+                        "column": None,
+                        "previous_translation": "",
+                        "translation": "",
+                        "note": "跳过：该工作表没有译文列，请在原译文表处理此问题。",
+                        "rule_source": str(fix.get("rule_source") or "manual_fix").strip() or "manual_fix",
+                        "applied_at": db.now_iso(),
+                        "skipped": True,
+                    }
+                )
+                continue
             cell = ws.cell(row_index, target_col)
             previous = _cell_text(cell.value)
             translation = str(fix.get("translation") or "").strip()

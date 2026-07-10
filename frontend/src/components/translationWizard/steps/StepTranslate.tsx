@@ -160,36 +160,21 @@ export function StepTranslate({
         : '点击开始 AI 翻译'
   return (
     <WorkflowStepShell
-      stepLabel="STEP 7"
-      title={`${lang.short} AI 翻译`}
-      description="确认输入、启动或续跑 AI 翻译；已有译文的表格直接进入 QA。"
+      stepLabel="步骤 7/9"
+      title="AI 翻译"
+      description="确认输入并开始翻译。"
       status={readinessState.label}
       statusTone={statusTone}
       nextAction={nextAction}
       side={
-        <>
-          <WorkflowSideCard title="下一步" tone={canEnterQa ? 'ready' : blockReason ? 'blocked' : 'neutral'}>
-            <p>{canEnterQa ? '翻译结果已可用于 QA，下一步检查术语、变量和中文残留。' : blockReason || '准备好输入后启动 AI 翻译，系统会自动拆批并保存进度。'}</p>
-            <button className="btn btn-primary btn-sm" disabled={!canEnterQa || busy} onClick={enterQa}>进入 QA 校对</button>
-          </WorkflowSideCard>
-          <WorkflowSideCard title="输入与门槛">
-            <WorkflowFactList items={[
-              { label: '语言表', value: sourceArtifact ? artifactPickerLabel(sourceArtifact) : '未选择' },
-              { label: '项目术语库', value: `${glossaryCount} 条` },
-              { label: `${lang.short} 提示词`, value: projectPromptForLanguage(project, selectedLanguage) ? '已生成' : '未生成' },
-              { label: '后台批次', value: progress?.total_batches ? `${progress.completed_batches}/${progress.total_batches} 批` : `${estimatedBatches || '-'} 批估算` },
-            ]} />
-          </WorkflowSideCard>
-          <WorkflowSideCard title="参考证据" tone={referenceAuditState?.reference_hits ? 'ready' : 'neutral'}>
-            <ReferenceAuditPanel state={referenceAuditState} />
-          </WorkflowSideCard>
-          <WorkflowSideCard title="本步产物" tone={translationArtifacts.length ? 'ready' : 'neutral'}>
-            <div className="artifact-grid compact-artifact-grid">
-              {translationArtifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
-              {!translationArtifacts.length ? <div className="muted-left">翻译完成后这里会出现可用于 QA 的译文表。</div> : null}
-            </div>
-          </WorkflowSideCard>
-        </>
+        <WorkflowSideCard title="本次输入" tone={canEnterQa ? 'ready' : blockReason ? 'blocked' : 'neutral'}>
+          <WorkflowFactList items={[
+            { label: '文件', value: sourceArtifact ? artifactPickerLabel(sourceArtifact) : '未选择' },
+            { label: '语言', value: lang.short },
+            { label: '术语', value: `${glossaryCount} 条` },
+            { label: '历史译文', value: referenceAuditState ? `${Number(referenceAuditState.archive_entries || 0)} 条` : `${project.stats.archived_rows || 0} 条` },
+          ]} />
+        </WorkflowSideCard>
       }
     >
       {selectedLanguages.length > 1 ? (
@@ -197,7 +182,7 @@ export function StepTranslate({
           <div className="section-head">
             <div>
               <strong>多语言处理进度</strong>
-              <span>已选 {selectedLanguageText}；点击一次后工作台会按语言排队执行。每种语言独立保存进度，失败后只续跑对应语言。</span>
+              <span>{selectedLanguageText}</span>
             </div>
           </div>
           <div className="translation-language-grid">
@@ -209,27 +194,14 @@ export function StepTranslate({
               </div>
             ))}
           </div>
-          <div className="info-line compact">操作方式：点击“开始多语言翻译”，工作台会自动逐个处理已选语言；无需反复回「目标语言」步骤手动切换。</div>
         </div>
       ) : null}
       <div className="action-card workflow-block">
-        <AssetSelect label="语言表输入" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
-        <div className={`translation-readiness-box ${readinessState.tone}`}>
-          <div className="readiness-head">
-            <strong>译文检查</strong>
-            <span>{readinessState.label}</span>
-          </div>
-          <p>{readinessText}</p>
-        </div>
-        <LargeTextPanel run={currentTranslationRun} readiness={readiness} selectedLanguageCount={selectedLanguages.length} />
-        <div className="translation-batch-panel compact">
-          <div className="batch-control-head">
-            <div>
-              <strong>{alreadyTranslated ? '分流结果' : '后台编排'}</strong>
-              <span>{alreadyTranslated ? '已识别为完整译文表，本步骤不调用 AI。' : '系统按预设自动拆批、限流、重试和断点续跑。'}</span>
-            </div>
-            <em>{alreadyTranslated ? '下一步：QA 校对' : progress?.total_batches ? `后台实际 ${progress.total_batches} 批 · 当前第 ${progress.current_batch || '-'} 批` : `${batchSize} 行/批 · 启动前估算 ${estimatedBatches || '-'} 批`}</em>
-          </div>
+        <AssetSelect label="输入文件" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
+        <div className="translation-input-summary">
+          <div><span>状态</span><strong>{readinessState.label}</strong></div>
+          <div><span>规模</span><strong>{readiness ? `${readiness.source_rows} 行` : '-'}</strong></div>
+          <div><span>批次</span><strong>{progress?.total_batches ? `${progress.completed_batches}/${progress.total_batches}` : estimatedBatches || '-'}</strong></div>
         </div>
         {!alreadyTranslated ? (
           <label className="line-proofread-toggle" data-testid="line-proofread-toggle">
@@ -252,10 +224,12 @@ export function StepTranslate({
           </div>
         ) : null}
         <div className="translation-actions">
-          {alreadyTranslated ? (
+          {canEnterQa ? (
+            <button className="btn btn-primary" disabled={busy} onClick={enterQa}>进入 QA</button>
+          ) : alreadyTranslated ? (
             <>
-              <div className="ok-line">检测到这份表已有译文：无需 AI 翻译，默认进入 QA；如确需跳过 QA，可在「QA 校对」步骤使用“临时跳过 QA 直接归档”。</div>
-              <button className="btn btn-primary" disabled={busy} onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>跳到校对</button>
+              <div className="ok-line">已检测到完整译文。</div>
+              <button className="btn btn-primary" disabled={busy} onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>进入 QA</button>
             </>
           ) : (
             <>
@@ -275,7 +249,7 @@ export function StepTranslate({
             </div>
           </div>
         ) : null}
-        {finishingTranslation ? <div className="info-line compact">译文批次已完成，正在执行收尾校验并保存结果。完成后会自动接到「QA 校对」步骤；请不要重复启动。</div> : null}
+        {finishingTranslation ? <div className="info-line compact">正在校验并保存结果。</div> : null}
         {currentTranslationRun?.metadata?.reason === 'api_budget_confirmation_required' ? (
           <div className="warn-line">预计 API token 超过提醒阈值；点击“继续后台翻译”会二次确认预算，并从已完成批次继续。</div>
         ) : null}
@@ -283,18 +257,32 @@ export function StepTranslate({
           <div className="warn-line">上次后台任务被中断；点击“继续后台翻译”可从已落盘批次恢复。</div>
         ) : null}
         {progress?.failed_batch && currentTranslationRun ? <BatchDebugLinks runId={currentTranslationRun.id} batchIndex={progress.failed_batch} /> : null}
-        {currentTranslationRun ? (
-          <AiInputAuditPanel endpoint={`/api/runs/${currentTranslationRun.id}/ai-input-summary`} title={`${lang.short} 本次翻译 AI 输入`} buttonLabel="查看本次 AI 输入" />
-        ) : (
-          <div className="muted-left">开始翻译后，可查看本次 AI 实际收到的项目要求、术语命中和样例行。</div>
-        )}
+        <details className="translation-details">
+          <summary>查看处理详情</summary>
+          <div className="translation-details-body">
+            <div className="muted-left">{readinessText}</div>
+            <LargeTextPanel run={currentTranslationRun} readiness={readiness} selectedLanguageCount={selectedLanguages.length} />
+            <div className="translation-batch-panel compact">
+              <div className="batch-control-head">
+                <div><strong>后台批次</strong></div>
+                <em>{alreadyTranslated ? '无需翻译' : progress?.total_batches ? `${progress.completed_batches}/${progress.total_batches} 批` : `预计 ${estimatedBatches || '-'} 批`}</em>
+              </div>
+            </div>
+            <ReferenceAuditPanel state={referenceAuditState} />
+            {translationArtifacts.length ? (
+              <div className="artifact-grid compact-artifact-grid">
+                {translationArtifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
+              </div>
+            ) : null}
+            {currentTranslationRun ? <AiInputAuditPanel endpoint={`/api/runs/${currentTranslationRun.id}/ai-input-summary`} title={`${lang.short} 本次翻译 AI 输入`} buttonLabel="查看本次 AI 输入" /> : null}
+            <div className="translation-guard-strip">
+              <span>提示词 <strong>{projectPromptForLanguage(project, selectedLanguage) ? '已生成' : '未生成'}</strong></span>
+              <span>术语 <strong>{glossaryCount} 条</strong></span>
+            </div>
+            {currentTranslationRun ? <TaskRunSummary run={currentTranslationRun} issues={qualityIssues} /> : null}
+          </div>
+        </details>
       </div>
-      <div className="translation-guard-strip">
-        <span>项目术语库 <strong>{glossaryCount} 条</strong></span>
-        <span>{lang.short} 提示词 <strong>{projectPromptForLanguage(project, selectedLanguage) ? '已生成' : '未生成'}</strong></span>
-        <span>交付规则 <strong>通过则标准交付；未通过可修复或带摘要交付</strong></span>
-      </div>
-      {currentTranslationRun ? <TaskRunSummary run={currentTranslationRun} issues={qualityIssues} /> : null}
     </WorkflowStepShell>
   )
 }

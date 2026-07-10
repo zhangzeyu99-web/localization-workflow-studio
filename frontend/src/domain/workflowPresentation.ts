@@ -52,7 +52,7 @@ export function qaOutcomePresentation(
   if (run.status === 'queued' || run.status === 'running') {
     return {
       label: '校对中',
-      summary: '系统正在检查结构、术语、变量和文本质量。',
+      summary: '检查结构、术语、变量和文本质量。',
       nextAction: '等待校对完成',
       tone: 'running',
       canDeliver: false,
@@ -62,7 +62,7 @@ export function qaOutcomePresentation(
   if (run.status === 'passed') {
     return {
       label: 'QA 已通过',
-      summary: '当前译文符合项目质量门槛，可生成标准交付并写入可信归档。',
+      summary: '可生成标准交付。',
       nextAction: '进入标准交付',
       tone: 'ready',
       canDeliver: hasFinalWorkbook,
@@ -72,7 +72,7 @@ export function qaOutcomePresentation(
   if (run.status === 'failed' && hasFinalWorkbook) {
     return {
       label: 'QA 未通过',
-      summary: `仍有 ${issueCount} 个待处理问题。译文已保留，可继续修复，也可生成附带问题摘要的交付。`,
+      summary: `${issueCount} 个问题待处理；可修复或带问题交付。`,
       nextAction: issueCount > 0 ? '优先修复，或带问题交付' : '复核结果，或带问题交付',
       tone: 'warn',
       canDeliver: true,
@@ -82,7 +82,7 @@ export function qaOutcomePresentation(
   if (run.status === 'failed') {
     return {
       label: 'QA 未通过',
-      summary: '本次没有生成可交付译文，请修复输入或重新运行 QA。',
+      summary: '未生成可交付译文，请重跑 QA。',
       nextAction: '返回修复并重跑',
       tone: 'blocked',
       canDeliver: false,
@@ -91,7 +91,7 @@ export function qaOutcomePresentation(
   }
   return {
     label: '等待处理',
-    summary: '任务尚未形成最终 QA 结论。',
+    summary: '尚无 QA 结论。',
     nextAction: '继续当前任务',
     tone: 'neutral',
     canDeliver: false,

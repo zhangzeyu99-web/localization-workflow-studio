@@ -9,6 +9,11 @@ const sourceWorkbook = process.env.E2E_SOURCE_WORKBOOK ?? path.resolve('..', 'ex
 const fileName = (value: string) => path.basename(value.replace(/\\/g, '/'))
 const fileStem = (value: string) => fileName(value).replace(/\.[^.]+$/, '')
 const inlineStatus = (page: any, text: string) => page.locator('.inline-status', { hasText: text })
+const selectWizardStep = async (page: any, step: number, scope?: string) => {
+  const root = scope ? page.locator(scope) : page
+  await root.getByTestId('step-menu-toggle').click()
+  await root.getByTestId(`step-${step}`).click()
+}
 
 test.use({ acceptDownloads: true })
 
@@ -19,6 +24,74 @@ test('spreadsheet column errors are shown as actionable Chinese', async ({ page 
     return sanitizeUserFacingError('target column not found in sheet: fminth')
   })
   expect(message).toBe('所选工作表“fminth”中找不到目标译文列。请确认译文列存在，或返回“判定输入”重新选择语言表。')
+})
+
+test('glossary scan events do not expose backend diagnostics', async ({ page }) => {
+  await page.goto(baseURL)
+  const messages = await page.evaluate(async () => {
+    const { humanBackendEvent } = await import('/src/appText.ts')
+    return [
+      humanBackendEvent('running local workflow step'),
+      humanBackendEvent('INPUT=D:\\data\\source.xlsx\nDETAIL_OUTPUT=D:\\runs\\details.xlsx'),
+      humanBackendEvent('Glossary backfill strategy: dedupe by normalized CN; stage only missing CN as review candidates.'),
+      humanBackendEvent('Glossary backfill result: candidates=2, unique=2, inserted=2, updated=0, existing=0, duplicates=0, conflicts=0, empty=0.'),
+      humanBackendEvent('AI glossary supplement added 21 candidates, skipped 9.')
+    ]
+  })
+  expect(messages).toEqual([
+    '正在执行本地流程。',
+    '正在读取输入文件。',
+    '正在整理术语候选。',
+    '已整理 2 个术语候选，待确认 2 个。',
+    'AI 已补充 21 个候选，跳过 9 个。'
+  ])
+})
+
+test('glossary candidate notes hide model metadata', async ({ page }) => {
+  await page.goto(baseURL)
+  const note = await page.evaluate(async () => {
+    const { normalizeGlossaryNote } = await import('/src/domain/projectAssets.ts')
+    return normalizeGlossaryNote('AI 漏词补充候选，需人工确认；置信度 high；特训玩法的具体类型，不与 existing_candidates 中“特训”重复。')
+  })
+  expect(note).toBe('特训玩法的具体类型，不与已有候选中的“特训”重复。')
+})
+
+test('inline status does not repeat running prefixes', async ({ page }) => {
+  await page.goto(baseURL)
+  const messages = await page.evaluate(async () => {
+    const { actionStatusText } = await import('/src/components/shared/WorkflowPrimitives.tsx')
+    return [
+      actionStatusText('后台任务处理中：正在执行本地流程。', true),
+      actionStatusText('正在导入术语表...', true),
+      actionStatusText('检测到已有完整译文。', false),
+      actionStatusText('当前状态：已完成。', false)
+    ]
+  })
+  expect(messages).toEqual([
+    '后台任务处理中：正在执行本地流程。',
+    '正在导入术语表...',
+    '当前状态：检测到已有完整译文。',
+    '当前状态：已完成。'
+  ])
+})
+
+test('QA issue labels do not expose internal enum names', async ({ page }) => {
+  await page.goto(baseURL)
+  const labels = await page.evaluate(async () => {
+    const { issueHumanMessage, issueTypeLabel } = await import('/src/components/translationWizard/QaIssuePanel.tsx')
+    return [
+      issueTypeLabel('quality_issue'),
+      issueTypeLabel('person_name_term_mismatch'),
+      issueHumanMessage({ check_type: 'quality_issue', message: 'Source meaning needs review.' } as any),
+      issueHumanMessage({ check_type: 'person_name_term_mismatch', message: "Person name '埃蒙' must use glossary spelling 'Eamon'" } as any)
+    ]
+  })
+  expect(labels).toEqual([
+    '文本质量问题',
+    '人名术语不一致',
+    '模型发现译文含义或表达需要复核，请查看 QA 报告。',
+    '人名「埃蒙」应使用术语表译法：Eamon。'
+  ])
 })
 
 test('announcement artifact labels do not expose internal English names', async ({ page }) => {
@@ -275,11 +348,68 @@ test('announcement AI translation shows API reminder when provider is not config
   await page.locator('.check-row', { hasText: 'api_reminder_notice.txt' }).locator('input').check()
   await page.getByRole('button', { name: '创建公告任务' }).click()
   await expect(page.locator('.panel-title', { hasText: '约束来源' })).toBeVisible({ timeout: 20000 })
-  await page.locator('.announcement-wizard .substep-item').nth(6).click()
+  await selectWizardStep(page, 7, '.announcement-wizard')
   await expect(page.locator('.panel-title', { hasText: 'AI 翻译' })).toBeVisible()
   await expect(page.locator('.warn-line', { hasText: '需要先配置 API' })).toBeVisible()
   await expect(page.locator('.warn-line', { hasText: '设置' })).toBeVisible()
   await expect(page.getByRole('button', { name: /^AI\s?\u7ffb\u8bd1$/ })).toBeDisabled()
+})
+
+test('translation workflow keeps all steps available without showing nine labels at once', async ({ page, request }) => {
+  const projectName = `E2E Compact Workflow ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'workflow-ui', description: 'Compact workflow navigation smoke.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '新翻译任务', exact: true }).click()
+
+  const stepMenu = page.getByTestId('step-menu-toggle')
+  await expect(stepMenu).toContainText(/步骤 1\/9\s*·\s*项目资料/)
+  await expect(page.locator('.workflow-substeps')).toBeHidden()
+  await expect(page.locator('.panel-title')).toContainText('项目资料')
+  await expect(page.locator('.panel-desc')).toHaveText('补充本次翻译依据。')
+
+  const expectedSteps = [
+    ['项目资料', '补充本次翻译依据。'],
+    ['AI 分析', '确认项目信息与分析结果。'],
+    ['术语表', '导入已确认术语，可跳过。'],
+    ['判定输入', '上传语言表，系统自动分流。'],
+    ['术语候选', '扫描并确认术语候选。'],
+    ['目标语言', '选择本次翻译语言。'],
+    ['AI 翻译', '确认输入并开始翻译。'],
+    ['QA 校对', '检查译文并处理问题。'],
+    ['交付', '生成并下载交付文件。'],
+  ]
+  for (let index = 1; index <= expectedSteps.length; index += 1) {
+    await page.getByTestId('step-menu-toggle').click()
+    await expect(page.getByTestId(`step-${index}`)).toBeVisible()
+    await page.getByTestId(`step-${index}`).click()
+    await expect(page.locator('.workflow-substeps')).toBeHidden()
+    await expect(page.locator('.panel-title, .workflow-step-head h3').first()).toContainText(expectedSteps[index - 1][0])
+    await expect(page.locator('.panel-desc, .workflow-step-head p').first()).toHaveText(expectedSteps[index - 1][1])
+    if (index === 2) {
+      await expect(page.locator('.analysis-summary')).toBeVisible()
+      await expect(page.locator('.analysis-details')).not.toHaveAttribute('open', '')
+      await expect(page.locator('.analysis-details .status-grid')).toBeHidden()
+    }
+    if (index === 7) {
+      await expect(page.getByText('下一步', { exact: true })).toHaveCount(0)
+      await expect(page.getByText('本步产物', { exact: true })).toHaveCount(0)
+      await expect(page.getByText('交付规则', { exact: true })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: '去 QA 校对' })).toBeDisabled()
+    }
+    if (index === 8) {
+      await expect(page.locator('.workflow-step-status')).toHaveCount(0)
+      await expect(page.locator('.workflow-primary > .qa-outcome-panel')).toBeVisible()
+      await expect(page.getByText('建议处理', { exact: true })).toHaveCount(0)
+      await expect(page.locator('.qa-input-details')).toHaveAttribute('open', '')
+      await expect(page.getByRole('button', { name: '去交付' })).toBeDisabled()
+    }
+  }
+
+  await expect(page.getByText('完整语言表不要放这里')).toHaveCount(0)
 })
 
 test('new translation task exposes the full supported language set', async ({ page, request }) => {
@@ -291,7 +421,7 @@ test('new translation task exposes the full supported language set', async ({ pa
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '新翻译任务', exact: true }).click()
-  await page.getByRole('button', { name: '6 目标语言' }).click()
+  await selectWizardStep(page, 6)
 
   for (const label of [
     'EN 英语',
@@ -345,6 +475,36 @@ test('delivery empty state routes to next actions', async ({ page, request }) =>
   await expect(page.locator('.view-tab').nth(4)).toHaveClass(/active/)
   await expect(page.getByTestId('archive-empty-state')).toBeVisible()
   await expect(page.getByTestId('manual-archive-tools')).toBeVisible()
+})
+
+test('wizard does not claim delivery generated before files are downloadable', async ({ page }) => {
+  await page.goto(baseURL)
+  const counts = await page.evaluate(async () => {
+    const { wizardDeliveryFiles } = await import('/src/components/translationWizard/steps/StepDone.tsx')
+    const run = {
+      id: 'run_failed_qa',
+      kind: 'qa',
+      status: 'failed',
+      artifacts: [{ id: 'art_final', kind: 'qa_final_workbook' }]
+    } as any
+    const project = { runs: [run], artifacts: [] } as any
+    const placeholder = {
+      run_id: run.id,
+      files: {
+        final: { kind: 'final', filename: 'final.xlsx', path: '', download_url: '' },
+        qa_summary: { kind: 'qa_summary', filename: 'qa.xlsx', path: '', download_url: '' }
+      }
+    } as any
+    const ready = {
+      ...placeholder,
+      files: { final: { kind: 'final', filename: 'final.xlsx', download_url: '/api/final.xlsx' } }
+    } as any
+    return [
+      wizardDeliveryFiles(project, run, [placeholder]).length,
+      wizardDeliveryFiles(project, run, [ready]).length
+    ]
+  })
+  expect(counts).toEqual([0, 1])
 })
 
 test('new project modal shows API failure instead of silently staying stuck', async ({ page }) => {
@@ -422,13 +582,14 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('.quick-entry').first().click()
-  await page.getByTestId('step-4').click()
+  await selectWizardStep(page, 4)
   await page.locator('.asset-select select').selectOption(upload.id)
-  await page.getByTestId('step-7').click()
+  await selectWizardStep(page, 7)
+  await page.locator('details.translation-details > summary').click()
   await expect(page.getByTestId('large-text-panel')).toBeVisible()
   await expect(page.getByTestId('large-text-panel')).toContainText(/大文本处理/)
   await expect(page.getByTestId('line-proofread-toggle')).toBeVisible()
-  await expect(page.getByTestId('line-proofread-toggle')).toContainText(/深度逐行校对/)
+  await expect(page.getByTestId('line-proofread-toggle')).toContainText(/深度校对/)
   await expect(page.getByTestId('line-proofread-toggle').locator('input[type="checkbox"]')).not.toBeChecked()
   await expect(page.locator('.translation-actions .btn-primary')).toBeVisible({ timeout: 15000 })
   await page.locator('.translation-actions .btn-primary').click()
@@ -526,12 +687,12 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '新翻译任务', exact: true }).click()
-  await page.getByRole('button', { name: '3 术语表' }).click()
-  await page.locator('label.upload-box', { hasText: '上传已确认术语表 xlsx/csv/json' }).locator('input[type="file"]').setInputFiles(termWorkbook)
+  await selectWizardStep(page, 3)
+  await page.locator('label.upload-box', { hasText: '上传术语表' }).locator('input[type="file"]').setInputFiles(termWorkbook)
   await expect(inlineStatus(page, `已上传：上传术语表｜${fileStem(termWorkbook)}`)).toBeVisible({ timeout: 15000 })
   await page.getByRole('button', { name: '预览术语' }).click()
   await expect(inlineStatus(page, '术语表预览完成：2 条')).toBeVisible({ timeout: 20000 })
-  await page.getByRole('button', { name: '导入到项目术语' }).click()
+  await page.getByRole('button', { name: '导入术语' }).click()
   await expect(inlineStatus(page, '术语表已导入：2 条')).toBeVisible({ timeout: 20000 })
 
   const projects = await request.get(`${baseURL}/api/projects`)
@@ -570,15 +731,15 @@ wb.close()
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('main').getByRole('button', { name: '\u65b0\u7ffb\u8bd1\u4efb\u52a1', exact: true }).click()
 
-  await page.locator('label.upload-box', { hasText: /\u4e0a\u4f20 Markdown/ }).locator('input[type="file"]').setInputFiles(languageTable)
+  await page.locator('label.upload-box', { hasText: '上传参考资料' }).locator('input[type="file"]').setInputFiles(languageTable)
   await expect(inlineStatus(page, /\u5b8c\u6574\u8bed\u8a00\u8868|STEP4/)).toBeVisible({ timeout: 20000 })
   await expect.poll(async () => {
     const assets = await request.get(`${baseURL}/api/projects/${project.id}/assets?role=project_material`).then((response) => response.json())
     return assets.length
   }, { timeout: 20000 }).toBe(0)
 
-  await page.getByRole('button', { name: /4\s+\u5224\u5b9a\u8f93\u5165/ }).click()
-  await page.locator('label.upload-box', { hasText: /上传待翻译表|已译校对表/ }).locator('input[type="file"]').setInputFiles(languageTable)
+  await selectWizardStep(page, 4)
+  await page.locator('label.upload-box', { hasText: '上传语言表' }).locator('input[type="file"]').setInputFiles(languageTable)
   await expect.poll(async () => {
     const assets = await request.get(`${baseURL}/api/projects/${project.id}/assets?role=language_source`).then((response) => response.json())
     return assets.some((artifact: { kind: string }) => artifact.kind === 'language_table')
@@ -600,8 +761,8 @@ wb.close()
       }),
     })
   })
-  await page.getByTestId('step-5').click()
-  await page.getByRole('button', { name: /扫描术语候选/ }).click()
+  await selectWizardStep(page, 5)
+  await page.getByRole('button', { name: /扫描候选/ }).click()
   await expect.poll(() => extractPayload?.input_artifact_id || '', { timeout: 10000 }).toBe(uploadedLanguageTable.id)
   expect(extractPayload.language).toBe('ko')
 })
@@ -814,7 +975,7 @@ wb.close()
   await expect(page.locator('.panel-title', { hasText: '\u516c\u544a\u8d44\u6599' })).toBeVisible()
   await expect(page.locator('.announcement-side')).toHaveCount(0)
   await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
-  await page.locator('.announcement-wizard .substep-item').nth(1).click()
+  await selectWizardStep(page, 2, '.announcement-wizard')
   await expect(page.getByTestId('announcement-task-required')).toBeVisible()
   await page.getByRole('button', { name: '\u56de\u5230\u516c\u544a\u8d44\u6599' }).click()
   await page.locator('.check-row', { hasText: 'announcement_notice.txt' }).locator('input').check()
@@ -852,7 +1013,7 @@ wb.close()
   await expect(page.locator('.inline-status')).toContainText(fileStem(supplementResponse), { timeout: 15000 })
   await page.getByRole('button', { name: '\u63d0\u53d6\u672f\u8bed\u5e76 AI \u590d\u67e5' }).click()
   await expect(page.locator('.panel-title', { hasText: '\u8bd1\u6587\u53cd\u67e5' })).toBeVisible({ timeout: 30000 })
-  await page.locator('.announcement-wizard .substep-item').nth(3).click()
+  await selectWizardStep(page, 4, '.announcement-wizard')
   await expect(page.locator('.panel-title', { hasText: '\u672f\u8bed\u63d0\u53d6' })).toBeVisible()
   const termsTable = page.locator('.announcement-terms-table')
   await expect(termsTable.locator('tbody tr')).toHaveCount(2, { timeout: 30000 })
@@ -862,7 +1023,7 @@ wb.close()
   await expect(page.getByRole('link', { name: '\u5bfc\u51fa XLSX' })).toBeVisible()
   await expect(page.getByRole('link', { name: '\u4e0b\u8f7d\u68c0\u67e5\u5305' })).toBeVisible()
   await expect(page.getByRole('link', { name: '\u4e0b\u8f7d AI \u62a5\u544a' })).toBeVisible()
-  await page.locator('.announcement-wizard .substep-item').nth(4).click()
+  await selectWizardStep(page, 5, '.announcement-wizard')
   await expect(page.locator('.panel-title', { hasText: '\u8bd1\u6587\u53cd\u67e5' })).toBeVisible({ timeout: 20000 })
   await page.getByRole('button', { name: '\u53cd\u67e5\u672f\u8bed\u8bd1\u6587' }).click()
   await expect(page.locator('.panel-title', { hasText: '\u7ffb\u8bd1\u51c6\u5907' })).toBeVisible({ timeout: 20000 })
@@ -921,7 +1082,7 @@ wb.close()
 
   const stepTitles = ['\u516c\u544a\u8d44\u6599', '\u7ea6\u675f\u6765\u6e90', '\u76ee\u6807\u8bed\u8a00', '\u672f\u8bed\u63d0\u53d6', '\u8bd1\u6587\u53cd\u67e5', '\u7ffb\u8bd1\u51c6\u5907', 'AI \u7ffb\u8bd1', '\u6821\u5bf9\u56de\u586b', '\u4ea4\u4ed8']
   for (const [index, title] of stepTitles.entries()) {
-    await page.locator('.announcement-wizard .substep-item').nth(index).click()
+    await selectWizardStep(page, index + 1, '.announcement-wizard')
     await expect(page.locator('.panel-title', { hasText: title })).toBeVisible()
   }
 })
@@ -951,11 +1112,10 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '校对', exact: true }).click()
-  await page.locator('label.upload-box', { hasText: '上传新的译文表格' }).locator('input[type="file"]').setInputFiles(translatedWorkbook)
+  await page.locator('label.upload-box', { hasText: '上传译文' }).locator('input[type="file"]').setInputFiles(translatedWorkbook)
   await expect(inlineStatus(page, '已有译文已登记')).toBeVisible({ timeout: 15000 })
   await page.getByTestId('run-qa').click()
-  await expect(inlineStatus(page, '已有译文 QA 通过')).toBeVisible({ timeout: 60000 })
-  await expect(page.locator('.qa-outcome-panel.ready')).toContainText('QA 已通过')
+  await expect(page.locator('.qa-outcome-panel.ready')).toContainText('QA 已通过', { timeout: 60000 })
   await page.getByRole('button', { name: '交付', exact: true }).click()
   await expect(page.locator('.delivery-head span', { hasText: /QA-[0-9a-f]{6}/ }).first()).toBeVisible({ timeout: 30000 })
   await page.getByRole('button', { name: '\u751f\u6210\u4ea4\u4ed8\u6587\u4ef6' }).click()
@@ -991,26 +1151,26 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '\u65b0\u7ffb\u8bd1\u4efb\u52a1', exact: true }).click()
-  await page.getByRole('button', { name: '4 \u5224\u5b9a\u8f93\u5165' }).click()
-  await page.locator('label.upload-box', { hasText: /上传待翻译表|已译校对表/ }).locator('input[type="file"]').setInputFiles(translatedWorkbook)
+  await selectWizardStep(page, 4)
+  await page.locator('label.upload-box', { hasText: '上传语言表' }).locator('input[type="file"]').setInputFiles(translatedWorkbook)
   await expect(page.locator('.ai-card', { hasText: fileName(translatedWorkbook) }).last()).toBeVisible({ timeout: 15000 })
 
-  await page.getByRole('button', { name: '7 AI \u7ffb\u8bd1' }).click()
-  await expect(page.getByRole('button', { name: '\u8df3\u5230\u6821\u5bf9' })).toBeVisible({ timeout: 15000 })
+  await selectWizardStep(page, 7)
+  await expect(page.getByRole('button', { name: '进入 QA' })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('step-5')).toHaveClass(/skipped/)
   await expect(page.getByTestId('step-6')).toHaveClass(/skipped/)
   await expect(page.getByTestId('step-7')).not.toHaveClass(/skipped/)
-  await page.getByRole('button', { name: '\u8df3\u5230\u6821\u5bf9' }).click()
+  await page.getByRole('button', { name: '进入 QA' }).click()
   await expect(page.getByTestId('step-7')).toHaveClass(/skipped/)
 
-  const skipPanel = page.locator('details', { hasText: '\u4e34\u65f6\u8df3\u8fc7 QA \u76f4\u63a5\u5f52\u6863' })
+  const skipPanel = page.locator('details.manual-maintenance', { hasText: '\u4e34\u65f6\u8df3\u8fc7 QA \u76f4\u63a5\u5f52\u6863' })
   await expect(skipPanel).toBeVisible()
   await skipPanel.locator('summary').click()
   await skipPanel.getByRole('button', { name: '\u786e\u8ba4\u8df3\u8fc7 QA \u5e76\u5f52\u6863' }).click()
   await page.getByTestId('confirm-modal-confirm').click()
   await expect(inlineStatus(page, '\u5df2\u8df3\u8fc7 QA \u5e76\u5bfc\u5165\u8bd1\u6587\u5f52\u6863').first()).toBeVisible({ timeout: 30000 })
 
-  await page.getByRole('button', { name: /\u8fd4\u56de\u9879\u76ee\u6982\u89c8/ }).click()
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
   await page.getByRole('button', { name: /\u8bd1\u6587\u5f52\u6863/ }).click()
   await expect(page.getByText('\u9879\u76ee\u8bd1\u6587\u5f52\u6863')).toBeVisible()
   await expect(page.locator('.translation-archive-table')).toContainText('Claim rewards')
@@ -1072,10 +1232,10 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '\u65b0\u7ffb\u8bd1\u4efb\u52a1', exact: true }).click()
-  await page.getByRole('button', { name: '8 QA \u6821\u5bf9' }).click()
+  await selectWizardStep(page, 8)
   await page.locator('.step-panel.active label.asset-select select').selectOption(translatedArtifact.id)
 
-  const skipPanel = page.locator('details', { hasText: '\u4e34\u65f6\u8df3\u8fc7 QA \u76f4\u63a5\u5f52\u6863' })
+  const skipPanel = page.locator('details.manual-maintenance', { hasText: '\u4e34\u65f6\u8df3\u8fc7 QA \u76f4\u63a5\u5f52\u6863' })
   await skipPanel.locator('summary').click()
   await expect(skipPanel.getByRole('button', { name: '\u786e\u8ba4\u8df3\u8fc7 QA \u5e76\u5f52\u6863' })).toBeEnabled({ timeout: 15000 })
 })
@@ -1231,7 +1391,7 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
-  await page.getByTestId('step-7').click()
+  await selectWizardStep(page, 7)
   const referenceAudit = page.getByTestId('translation-reference-audit')
   await expect(referenceAudit).toContainText('已检索 2 条项目译文', { timeout: 20000 })
   await expect(referenceAudit).toContainText('命中原文')
@@ -1250,7 +1410,7 @@ test('workflow remains usable without page overflow at compact desktop and mobil
     await page.goto(baseURL)
     await page.getByRole('button', { name: projectName }).click()
     await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
-    await page.getByTestId('step-8').click()
+    await selectWizardStep(page, 8)
     await expect(page.locator('.phase-item.active')).toContainText('处理')
     await expect(page.locator('.actions .btn-primary')).toBeVisible()
     const dimensions = await page.evaluate(() => ({

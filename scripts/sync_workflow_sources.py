@@ -25,7 +25,6 @@ import filecmp
 import fnmatch
 import hashlib
 import shutil
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 

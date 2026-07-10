@@ -83,9 +83,16 @@ export function humanBackendEvent(message: unknown): string {
   const parsed = parseStructuredStatusText(text)
   const structured = parsed ? structuredQaStatusText(parsed) : null
   if (structured) return structured
+  if (/^running local workflow step$/i.test(text)) return '正在执行本地流程。'
+  if (/^input=/i.test(text)) return '正在读取输入文件。'
+  if (/^glossary backfill strategy:/i.test(text)) return '正在整理术语候选。'
+  let match = text.match(/^glossary backfill result:.*?\bunique=(\d+).*?\binserted=(\d+)/i)
+  if (match) return `已整理 ${match[1]} 个术语候选，待确认 ${match[2]} 个。`
+  match = text.match(/^ai glossary supplement added (\d+) candidates,\s*skipped (\d+)/i)
+  if (match) return `AI 已补充 ${match[1]} 个候选，跳过 ${match[2]} 个。`
   const sanitized = sanitizeUserFacingError(text, '')
   if (sanitized && sanitized !== text) return sanitized
-  let match = text.match(/^translating batch (\d+)\/(\d+): rows=(\d+), attempt=(\d+)\/(\d+)/i)
+  match = text.match(/^translating batch (\d+)\/(\d+): rows=(\d+), attempt=(\d+)\/(\d+)/i)
   if (match) return `正在翻译：第 ${match[1]}/${match[2]} 批，本批 ${match[3]} 行，第 ${match[4]} 次尝试。`
   match = text.match(/^translation preflight: source_rows=(\d+), translated_rows=(\d+), empty_target_rows=(\d+), .*estimated_batches=(\d+)/i)
   if (match) return `\u7ffb\u8bd1\u524d\u68c0\u67e5\u5b8c\u6210\uff1a${match[1]} \u884c\u6e90\u6587\uff0c\u7a7a\u8bd1\u6587 ${match[3]} \u884c\uff0c\u9884\u8ba1 ${match[4]} \u6279\u3002`

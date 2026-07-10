@@ -17,15 +17,15 @@ export function StepIntro({
 }) {
   return (
     <>
-      <div className="panel-title"><span className="badge">STEP 1</span>确认项目资料与参考素材</div>
-      <div className="panel-desc">已从项目描述带入基础信息；这里只需要补充本次任务特有的风格、玩法、角色或素材。</div>
-      <textarea value={intro} onChange={(event) => setIntro(event.target.value)} placeholder={'游戏名：《星际边境》\n类型：科幻 SLG\n目标用户：欧美移动端玩家\n玩法：基地建造 + 英雄养成 + 联盟战争'} />
+      <div className="panel-title"><span className="badge">步骤 1/9</span>项目资料</div>
+      <div className="panel-desc">补充本次翻译依据。</div>
+      <textarea value={intro} onChange={(event) => setIntro(event.target.value)} placeholder="本次内容、语气、角色或玩法要求" />
       <div className="field-foot">
         <span>{intro.trim().length} 字</span>
-        <span className={intro.trim().length > 20 || project.description ? 'ok' : 'warn'}>{intro.trim().length > 20 || project.description ? <><CheckCircle2 size={13} aria-hidden="true" />信息可用于生成提示词</> : <><AlertTriangle size={13} aria-hidden="true" />建议补充更多信息</>}</span>
+        <span className={intro.trim().length > 20 || project.description ? 'ok' : 'warn'}>{intro.trim().length > 20 || project.description ? <><CheckCircle2 size={13} aria-hidden="true" />可用于分析</> : <><AlertTriangle size={13} aria-hidden="true" />建议补充</>}</span>
       </div>
       <div className="upload-row">
-        <FileBox label="上传 Markdown / 文档 / 图片 / PDF / 音视频素材" onFile={onUploadAsset} />
+        <FileBox label="上传参考资料" onFile={onUploadAsset} />
         {assetArtifacts.length ? (
           <div className="asset-list">
             <div className="ai-header">已归档参考素材</div>

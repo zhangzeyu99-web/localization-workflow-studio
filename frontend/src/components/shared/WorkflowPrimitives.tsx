@@ -25,6 +25,12 @@ export function CheckItem({ ok, title, detail }: { ok: boolean; title: string; d
   )
 }
 
+export function actionStatusText(status: string, busy: boolean): string {
+  if (busy && /^(?:正在|后台任务)/.test(status)) return status
+  if (!busy && /^当前状态[：:]/.test(status)) return status
+  return `${busy ? '正在执行：' : '当前状态：'}${status}`
+}
+
 export function ActionStatus({ status, busy }: { status: string; busy: boolean }) {
   if (!status || (!busy && status === '准备就绪')) return null
   // A 409 project_busy/capacity rejection (see apiClient's sanitizeUserFacingError)
@@ -35,7 +41,7 @@ export function ActionStatus({ status, busy }: { status: string; busy: boolean }
   return (
     <div className={`inline-status ${busy ? 'running' : ''}`} role="status" aria-live="polite">
       {busy ? <span className="loading" /> : null}
-      <span>{busy ? '正在执行：' : '当前状态：'}{status}</span>
+      <span>{actionStatusText(status, busy)}</span>
       {queueConflict ? (
         <button
           type="button"

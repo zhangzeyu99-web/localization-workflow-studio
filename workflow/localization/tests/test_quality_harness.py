@@ -154,13 +154,13 @@ class QualityHarnessTests(unittest.TestCase):
                 [1],
             )
 
-    def test_scan_workbook_enforces_generic_terms_by_default(self):
+    def test_scan_workbook_enforces_glossary_term_for_standalone_ui_label(self):
         with tempfile.TemporaryDirectory() as tmp:
             workbook_path = Path(tmp) / "language.xlsx"
             wb = Workbook()
             ws = wb.active
             ws.append(["ID", "CN", "EN"])
-            ws.append([1, "战机升级", "Fighter upgrade"])
+            ws.append([1, "战机", "Fighter"])
             wb.save(workbook_path)
 
             term_path = Path(tmp) / "terms.xlsx"
@@ -280,7 +280,7 @@ class QualityHarnessTests(unittest.TestCase):
             self.assertEqual(result.issue_counts["term_soft_missing"], 2)
             self.assertEqual(result.issues, [])
 
-    def test_scan_workbook_keeps_uncategorized_domain_terms_hard(self):
+    def test_scan_workbook_does_not_force_subterm_into_natural_phrase(self):
         with tempfile.TemporaryDirectory() as tmp:
             workbook_path = Path(tmp) / "language.xlsx"
             wb = Workbook()
@@ -299,9 +299,30 @@ class QualityHarnessTests(unittest.TestCase):
 
             result = scan_workbook(workbook_path, term_base=term_path)
 
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.issue_counts["term_missing"], 0)
+
+    def test_scan_workbook_enforces_explicit_contextual_strong_term(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workbook_path = Path(tmp) / "language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN"])
+            ws.append([1, "战机升级", "Fighter upgrade"])
+            wb.save(workbook_path)
+
+            term_path = Path(tmp) / "terms.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "术语表"
+            ws.append(["CN", "EN", "EN2", "分类"])
+            ws.append(["战机", "Warplane", None, "强术语"])
+            wb.save(term_path)
+
+            result = scan_workbook(workbook_path, term_base=term_path)
+
             self.assertFalse(result.passed)
             self.assertEqual(result.issue_counts["term_missing"], 1)
-            self.assertEqual(result.issues[0]["check_type"], "term_missing")
 
     def test_scan_workbook_applies_ui_length_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -362,7 +383,7 @@ class QualityHarnessTests(unittest.TestCase):
             wb = Workbook()
             ws = wb.active
             ws.append(["ID", "CN", "KO"])
-            ws.append([1, "战机升级", "Fighter upgrade"])
+            ws.append([1, "战机", "Fighter"])
             wb.save(workbook_path)
 
             term_path = Path(tmp) / "terms.xlsx"
@@ -396,7 +417,7 @@ class QualityHarnessTests(unittest.TestCase):
             wb = Workbook()
             ws = wb.active
             ws.append(["ID", "CN", "Notes", "KR"])
-            ws.append([1, "战机升级", 123, "Fighter upgrade"])
+            ws.append([1, "战机", 123, "Fighter"])
             wb.save(ko_path)
 
             term_path = Path(tmp) / "terms.xlsx"

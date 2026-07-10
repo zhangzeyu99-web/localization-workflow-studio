@@ -8,7 +8,8 @@ export function WorkflowStepShell({
   statusTone = 'neutral',
   nextAction,
   children,
-  side
+  side,
+  showStatus = true
 }: {
   stepLabel: string
   title: string
@@ -17,25 +18,28 @@ export function WorkflowStepShell({
   statusTone?: 'neutral' | 'info' | 'ready' | 'warn' | 'blocked' | 'running'
   nextAction: string
   children: React.ReactNode
-  side: React.ReactNode
+  side?: React.ReactNode
+  showStatus?: boolean
 }) {
   return (
     <div className="workflow-step-shell">
-      <div className="workflow-step-head">
+      <div className={`workflow-step-head ${showStatus ? '' : 'single'}`}>
         <div>
           <span className="badge">{stepLabel}</span>
           <h3>{title}</h3>
           <p>{description}</p>
         </div>
-        <div className={`workflow-step-status ${statusTone}`}>
-          <span>当前状态</span>
-          <strong>{status}</strong>
-          <em>{nextAction}</em>
-        </div>
+        {showStatus ? (
+          <div className={`workflow-step-status ${statusTone}`}>
+            <span>当前状态</span>
+            <strong>{status}</strong>
+            <em>{nextAction}</em>
+          </div>
+        ) : null}
       </div>
-      <div className="workflow-step-grid">
+      <div className={`workflow-step-grid ${side ? '' : 'single'}`}>
         <div className="workflow-primary">{children}</div>
-        <aside className="workflow-side">{side}</aside>
+        {side ? <aside className="workflow-side">{side}</aside> : null}
       </div>
     </div>
   )

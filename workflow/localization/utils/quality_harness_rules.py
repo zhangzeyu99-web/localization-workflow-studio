@@ -46,7 +46,6 @@ DEFAULT_HARD_ISSUES = {
     'newline_mismatch',
     'chinese_residue',
     'term_missing',
-    'term_partial_hit',
     'term_capitalization',
     'ui_length_overflow',
     'opaque_abbreviation',
@@ -122,8 +121,21 @@ def _check_terms(
 ) -> list[CheckResult]:
     if not term_lookup:
         return []
+    source_key = str(source or '').strip()
+    # A glossary row is reliable as a hard gate for a standalone UI label.
+    # Inside a longer sentence, requiring every matched Chinese subterm to
+    # appear literally in English creates false blockers for natural phrasing
+    # (for example, "奖励已领取" -> "Claimed"). Projects can opt a term into
+    # contextual enforcement through a strong-term category.
+    applicable_terms = term_lookup if soft else {
+        term: entry
+        for term, entry in term_lookup.items()
+        if term == source_key or bool(entry.get('enforce_in_context'))
+    }
+    if not applicable_terms:
+        return []
     results: list[CheckResult] = []
-    for issue in check_term_hit(row_id, source, translation, term_lookup, lang=lang):
+    for issue in check_term_hit(row_id, source, translation, applicable_terms, lang=lang):
         check_type = issue.check_type
         severity = issue.severity
         message = issue.message

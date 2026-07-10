@@ -60,6 +60,8 @@ export function issueTypeLabel(value: string): string {
     tag_mismatch: '标签不一致',
     newline_mismatch: '换行不一致',
     raw_cn: '译文残留中文',
+    quality_issue: '文本质量问题',
+    person_name_term_mismatch: '人名术语不一致',
     global_harness: '通用 QA 规则',
     project_harness: '项目规则',
     semantic_qa: '模型语义校对'
@@ -82,6 +84,7 @@ export function issueSourceLabel(value: string): string {
 export function issueHumanMessage(issue: QualityIssue): string {
   const sourceTerm = issue.message.match(/for ['"](.+?)['"]/)?.[1]
   const expected = issue.message.match(/expected one of \[(.+?)\]/)?.[1]?.replace(/['"]/g, '').trim()
+  const personName = issue.message.match(/^Person name ['"](.+?)['"] must use glossary spelling ['"](.+?)['"]/i)
   if (issue.check_type === 'term_missing' && sourceTerm && expected) {
     return `原文术语「${sourceTerm}」未按项目术语表翻译，建议使用：${expected}。`
   }
@@ -90,6 +93,8 @@ export function issueHumanMessage(issue: QualityIssue): string {
   }
   if (issue.check_type === 'ui_length_overflow') return '译文可能超出按钮、弹窗或移动端 UI 宽度，需要缩短。'
   if (issue.check_type === 'title_case_overuse') return '译文大小写风格可能过度标题化，需要改成更自然的界面文案。'
+  if (issue.check_type === 'quality_issue') return '模型发现译文含义或表达需要复核，请查看 QA 报告。'
+  if (issue.check_type === 'person_name_term_mismatch' && personName) return `人名「${personName[1]}」应使用术语表译法：${personName[2]}。`
   return issue.message || issueTypeLabel(issue.check_type)
 }
 
@@ -99,7 +104,7 @@ export function IssueSummary({ issues }: { issues: QualityIssue[] }) {
       <div className="card-title"><div className="left">QA 问题摘要</div></div>
       <IssueGuide issues={issues} editableCount={0} />
       <IssueChips issues={issues} />
-      <div className="muted-left">这些问题缺少可直接编辑的表格行定位；请查看 QA 报告，或重新生成带行号的问题列表后再批量修复。</div>
+      <div className="muted-left">请下载 QA 报告查看。</div>
     </div>
   )
 }
@@ -124,10 +129,9 @@ export function IssueGuide({ issues, editableCount }: { issues: QualityIssue[]; 
   return (
     <div className="issue-guide">
       <div>
-        <strong>当前不适合作为标准交付</strong>
-        <span>{hard} 个必须修复，{soft} 个建议修复；其中 {editableCount} 个可在网页直接改后重跑 QA。</span>
+        <strong>{hard} 个必须修复</strong>
+        <span>{soft} 个建议修复 · {editableCount} 个可在线修复</span>
       </div>
-      <p>标准交付仍要求“必须修复问题 = 0”。如业务时间不允许继续修复，可生成带问题摘要的交付；系统会保留问题清单，并将对应译文归档标记为“待复核”。</p>
     </div>
   )
 }

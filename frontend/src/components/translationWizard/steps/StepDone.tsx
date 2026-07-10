@@ -59,48 +59,41 @@ export function StepDone({
           : '可生成最终交付'
   return (
     <WorkflowStepShell
-      stepLabel="STEP 9"
-      title="最终交付"
-      description="生成并下载交付文件。QA 通过输出标准交付；QA 未通过时输出带问题摘要的交付，并将归档标记为待复核。"
+      stepLabel="步骤 9/9"
+      title="交付"
+      description="生成并下载交付文件。"
       status={deliveryStatus}
       statusTone={generated ? 'ready' : deliveryBlocked ? 'blocked' : deliveryWarning ? 'warn' : 'neutral'}
       nextAction={generated ? '下载文件或点击完成' : canGenerateDelivery ? '生成交付文件' : '返回 QA 处理'}
+      showStatus={false}
       side={
         <>
           <WorkflowSideCard title="下载文件" tone={generated ? 'ready' : 'neutral'}>
             <DeliveryFileLinks files={deliveryFiles} projectId={project.id} />
           </WorkflowSideCard>
-          <WorkflowSideCard title="交付说明" tone={deliveryWarning ? 'warn' : deliveryBlocked ? 'blocked' : 'neutral'}>
-            {deliveryBlocked ? (
-              <>
-                <p>最近一次 QA 未返回可交付文件，请回到校对页重新运行 QA 或上传译文表。</p>
-                <button className="btn btn-primary btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
-              </>
-            ) : deliveryWarning ? (
-              <>
-                <p>仍有{issueCountPhrase(pendingIssueCount)} QA 问题未清零。交付文件会附带问题摘要，译文归档会标记为“待复核”。</p>
-                <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}><Wrench size={14} aria-hidden="true" />回到校对修复</button>
-              </>
-            ) : (
-              <p>{generated ? '交付文件已经生成，可直接下载；底部“完成”会回到项目交付页。' : '系统会把最终译文、修改记录和必要的 QA 摘要打到交付目录。'}</p>
-            )}
-          </WorkflowSideCard>
-          {deliveryRun ? (
-            <WorkflowSideCard title="归档结果" tone={deliveryWarning ? 'warn' : 'ready'}>
+          {deliveryBlocked ? (
+            <WorkflowSideCard title="需要处理" tone="blocked">
+              <p>缺少可交付译文。</p>
+              <button className="btn btn-primary btn-sm" onClick={() => setStep(8)}>回到 QA</button>
+            </WorkflowSideCard>
+          ) : null}
+          {deliveryRun && generated ? (
+            <WorkflowSideCard title={deliveryWarning ? '待复核归档' : '归档完成'} tone={deliveryWarning ? 'warn' : 'ready'}>
               <ArchiveProvenanceBadge sourceType={deliveryWarning ? 'delivered_with_issues' : 'qa_passed'} />
-              <p>{generated ? '交付生成时已同步写入项目译文归档。' : '生成交付后会同步写入项目译文归档，并保留当前质量来源。'}</p>
+              <p>{deliveryWarning ? `仍有 ${issueCountPhrase(pendingIssueCount)}问题，归档标记为待复核。` : '交付时已同步归档。'}</p>
+              {deliveryWarning ? <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}><Wrench size={14} aria-hidden="true" />回到 QA</button> : null}
             </WorkflowSideCard>
           ) : null}
         </>
       }
     >
       <div className="workflow-block delivery-workbench">
-        {deliveryRun ? <TaskRunSummary run={deliveryRun} issues={deliveryRun.id === latestRun?.id ? qualityIssues : []} /> : <div className="muted-left">暂无可交付任务。先完成翻译或校对。</div>}
+        {!deliveryRun ? <div className="muted-left">暂无可交付任务。</div> : null}
         {canGenerateDelivery ? (
           <div className={`delivery-primary-card ${generated ? 'ready' : ''}`}>
             <div>
-              <strong>{generated ? '交付文件已生成' : deliveryWarning ? '生成带问题摘要的交付' : '生成最终交付文件'}</strong>
-              <span>{generated ? '下载入口已在右侧出现；项目概览的交付页也会同步显示。' : '点击后会生成可下载文件，并立即显示在本页下载区。'}</span>
+              <strong>{generated ? `已生成 ${deliveryFiles.length} 个文件` : deliveryWarning ? '生成带问题交付' : '生成交付文件'}</strong>
+              <span>{generated ? '可在右侧下载' : deliveryWarning ? '附带 QA 摘要' : '生成后同步归档'}</span>
             </div>
             <button className="btn btn-primary" data-testid="wizard-generate-delivery" disabled={busy} onClick={() => deliveryRun && void onCreateDelivery(deliveryRun.id)}>
               {busy ? '生成中...' : generated ? <><RefreshCw size={15} aria-hidden="true" />重新生成交付文件</> : <><PackageCheck size={15} aria-hidden="true" />生成交付文件</>}
@@ -121,10 +114,17 @@ export function StepDone({
             <button className="btn btn-ghost" disabled={busy || !sourceArtifact || !onCreateMergedDelivery} onClick={onCreateMergedDelivery}>生成多语言合并交付</button>
           </div>
         ) : null}
-        <div className="artifact-grid compact-artifact-grid">
-          {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
-        </div>
-        {!generated ? <div className="muted-left">底部“完成”会在交付文件生成后启用。</div> : null}
+        {deliveryRun ? (
+          <details className="delivery-run-details">
+            <summary>查看交付详情</summary>
+            <div className="delivery-run-details-body">
+              <TaskRunSummary run={deliveryRun} issues={deliveryRun.id === latestRun?.id ? qualityIssues : []} />
+              <div className="artifact-grid compact-artifact-grid">
+                {artifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
+              </div>
+            </div>
+          </details>
+        ) : null}
       </div>
     </WorkflowStepShell>
   )
@@ -164,7 +164,7 @@ function deliveryFilesForRun(
   generatedRunId?: string,
   generatedFiles: DeliveryFile[] = []
 ): DeliveryFile[] {
-  const generated = runId && generatedRunId === runId ? generatedFiles : []
+  const generated = runId && generatedRunId === runId ? generatedFiles.filter(isDownloadableDeliveryFile) : []
   if (generated.length) return uniqueDeliveryFiles(generated)
   const task = runId ? deliverables.find((item) => item.run_id === runId) : null
   if (!task) return []
@@ -175,7 +175,11 @@ function deliveryFilesForRun(
     files.package,
     files.qa_summary || undefined,
     ...(files.outputs || []),
-  ].filter((file): file is DeliveryFile => Boolean(file)))
+  ].filter(isDownloadableDeliveryFile))
+}
+
+function isDownloadableDeliveryFile(file: DeliveryFile | null | undefined): file is DeliveryFile {
+  return Boolean(file?.download_url)
 }
 
 function uniqueDeliveryFiles(files: DeliveryFile[]): DeliveryFile[] {

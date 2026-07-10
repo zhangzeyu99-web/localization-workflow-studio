@@ -1,4 +1,5 @@
-import { Check, ChevronRight } from 'lucide-react'
+import { useRef } from 'react'
+import { Check, ChevronDown } from 'lucide-react'
 
 const phases = [
   { label: '准备', detail: '资料、分析、术语', from: 1, to: 3 },
@@ -18,6 +19,13 @@ export function PhaseStepper({
   skippedSteps?: number[]
   onStepChange: (step: number) => void
 }) {
+  const stepMenuRef = useRef<HTMLDetailsElement>(null)
+
+  const selectStep = (stepNumber: number) => {
+    stepMenuRef.current?.removeAttribute('open')
+    onStepChange(stepNumber)
+  }
+
   return (
     <nav className="phase-stepper" aria-label="任务进度">
       <div className="phase-list">
@@ -31,33 +39,41 @@ export function PhaseStepper({
               className={`phase-item ${active ? 'active' : ''} ${done ? 'done' : ''}`}
               onClick={() => onStepChange(active ? step : phase.from)}
               aria-current={active ? 'step' : undefined}
+              title={phase.detail}
             >
               <span className="phase-index">{done ? <Check size={14} aria-hidden="true" /> : index + 1}</span>
-              <span><strong>{phase.label}</strong><small>{phase.detail}</small></span>
-              {index < phases.length - 1 ? <ChevronRight className="phase-arrow" size={15} aria-hidden="true" /> : null}
+              <strong>{phase.label}</strong>
             </button>
           )
         })}
       </div>
-      <div className="workflow-substeps" aria-label="全部任务步骤">
-        {steps.map((title, index) => {
-          const stepNumber = index + 1
-          const skipped = skippedSteps.includes(stepNumber) && stepNumber !== step
-          return (
-            <button
-              key={title}
-              type="button"
-              data-testid={`step-${stepNumber}`}
-              className={`substep-item ${stepNumber === step ? 'active' : stepNumber < step ? 'done' : ''} ${skipped ? 'skipped' : ''}`}
-              onClick={() => onStepChange(stepNumber)}
-              aria-current={stepNumber === step ? 'step' : undefined}
-              aria-label={`${stepNumber} ${title}${skipped ? '，已跳过' : ''}`}
-            >
-              <span>{stepNumber}</span>{title}{skipped ? <em>跳过</em> : null}
-            </button>
-          )
-        })}
-      </div>
+      <details className="workflow-step-menu" ref={stepMenuRef}>
+        <summary data-testid="step-menu-toggle">
+          <span>步骤 {step}/{steps.length}</span>
+          <i aria-hidden="true">·</i>
+          <strong>{steps[step - 1]}</strong>
+          <ChevronDown size={15} aria-hidden="true" />
+        </summary>
+        <div className="workflow-substeps" aria-label="全部任务步骤">
+          {steps.map((title, index) => {
+            const stepNumber = index + 1
+            const skipped = skippedSteps.includes(stepNumber) && stepNumber !== step
+            return (
+              <button
+                key={title}
+                type="button"
+                data-testid={`step-${stepNumber}`}
+                className={`substep-item ${stepNumber === step ? 'active' : stepNumber < step ? 'done' : ''} ${skipped ? 'skipped' : ''}`}
+                onClick={() => selectStep(stepNumber)}
+                aria-current={stepNumber === step ? 'step' : undefined}
+                aria-label={`${stepNumber} ${title}${skipped ? '，已跳过' : ''}`}
+              >
+                <span>{stepNumber}</span>{title}{skipped ? <em>跳过</em> : null}
+              </button>
+            )
+          })}
+        </div>
+      </details>
     </nav>
   )
 }

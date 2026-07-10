@@ -612,6 +612,30 @@ def test_model_fix_resolves_generated_confirmation_sheet_by_record_id(tmp_path: 
         fixed.close()
 
 
+def test_model_fix_skips_confirmation_row_without_target_column(tmp_path: Path) -> None:
+    workbook = tmp_path / "language.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append([1, "开始游戏", "Start Game"])
+    review_ws = wb.create_sheet("需确认")
+    review_ws.append(["问题", "说明"])
+    review_ws.append(["开始游戏", "需要人工确认"])
+    wb.save(workbook)
+    wb.close()
+
+    applied = workflow._apply_workbook_fixes(
+        workbook,
+        [{"issue_id": "issue-1", "sheet": "需确认", "row": 2, "translation": "Start"}],
+        "run_test",
+    )
+
+    assert len(applied) == 1
+    assert applied[0]["skipped"] is True
+    assert "没有译文列" in applied[0]["note"]
+
+
 def test_quality_dedupes_generated_confirmation_sheet_duplicates() -> None:
     quality = {
         "passed": False,

@@ -47,6 +47,7 @@ LEGAL_TERM_CHECK_SKIP_MARKERS = {'隐私政策', '用户协议'}
 LEGAL_TERM_CHECK_MIN_LENGTH = 1000
 PERSON_NAME_CATEGORY_MARKERS = {'人名', '角色', 'person', 'name', 'character'}
 SOFT_TERM_CATEGORY_MARKERS = {'soft', 'generic', 'common', '参考', '泛词', '通用词'}
+CONTEXTUAL_HARD_TERM_CATEGORY_MARKERS = {'强术语', '强制', '固定译名', '专有名词', '专名'}
 AUTO_SOFT_SOURCE_TERMS = {
     '使用',
     '激活',
@@ -280,7 +281,14 @@ def _collect_term_context(
                 person_name_terms.append(key)
             return
         bucket = soft_terms if _is_soft_term_category(category) or _is_auto_soft_term(cn, target, category) else strong_terms
-        _add_term_lookup_entry(bucket, cn, target, variants, enforce_case)
+        _add_term_lookup_entry(
+            bucket,
+            cn,
+            target,
+            variants,
+            enforce_case,
+            enforce_in_context=_enforces_contextual_term(category),
+        )
 
     _collect_terms_from_workbook(workbook, add, lang=lang)
 
@@ -384,8 +392,9 @@ def _add_term_lookup_entry(
     target: str,
     variants: Sequence[str],
     enforce_case: bool,
+    enforce_in_context: bool = False,
 ) -> None:
-    entry = lookup.setdefault(cn, {'primary': target, 'variants': [], 'enforce_case': False})
+    entry = lookup.setdefault(cn, {'primary': target, 'variants': [], 'enforce_case': False, 'enforce_in_context': False})
     if not entry.get('primary'):
         entry['primary'] = target
     for variant in variants:
@@ -394,6 +403,7 @@ def _add_term_lookup_entry(
         if all(variant.lower() != str(existing).lower() for existing in entry.get('variants', [])):
             entry.setdefault('variants', []).append(variant)
     entry['enforce_case'] = bool(entry.get('enforce_case')) or enforce_case
+    entry['enforce_in_context'] = bool(entry.get('enforce_in_context')) or enforce_in_context
 
 
 def _split_term_variants(value) -> list[str]:
@@ -416,6 +426,11 @@ def _truthy_cell(value) -> bool:
 def _is_soft_term_category(category: str) -> bool:
     text = str(category or '').strip().lower()
     return any(marker in text for marker in SOFT_TERM_CATEGORY_MARKERS)
+
+
+def _enforces_contextual_term(category: str) -> bool:
+    text = str(category or '').strip().lower()
+    return any(marker in text for marker in CONTEXTUAL_HARD_TERM_CATEGORY_MARKERS)
 
 
 def _is_person_name_category(category: str) -> bool:
