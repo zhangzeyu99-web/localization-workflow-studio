@@ -129,6 +129,11 @@ export function DeliveryTab({
           const missingQaSummary = hasQaIssues && hasDelivery && !hasQaSummary
           const canRebuildMissingSummary = missingQaSummary && ['T', 'QA'].includes(String(task.task_code || '').toUpperCase())
           const outcome = deliverableOutcomePresentation(task)
+          const outcomeSummary = missingQaSummary
+            ? canRebuildMissingSummary
+              ? '这份历史交付缺少 QA 摘要，当前文件不完整。请重新生成交付，补齐问题清单后再下载。'
+              : '这份历史交付缺少 QA 摘要，当前文件不完整。请回到对应任务重新生成交付。'
+            : outcome.summary
           const resultLabel = missingQaSummary
             ? '历史交付缺少 QA 摘要'
             : hasPackage
@@ -145,17 +150,11 @@ export function DeliveryTab({
                 </div>
                 <span className={`tag ${hasQaIssues ? 'tag-warn' : task.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{deliveryStatusLabel(task)}</span>
               </div>
-              {hasQaIssues ? (
-                <div className="warn-line" data-testid={missingQaSummary ? 'delivery-missing-qa-summary' : 'delivery-problem-warning'}>
-                  {missingQaSummary
-                    ? canRebuildMissingSummary
-                      ? '这份历史交付缺少 QA 摘要，当前文件不完整。请重新生成交付，补齐问题清单后再下载。'
-                      : '这份历史交付缺少 QA 摘要，当前文件不完整。请回到对应任务重新生成交付。'
-                    : '这份任务还有 QA 问题。建议先复查并修复；继续交付时会附带问题摘要，并在译文归档中标记为“待复核”。'}
-                </div>
-              ) : null}
-              <div className={`delivery-outcome-strip ${outcome.tone}`}>
-                <strong>{outcome.label}</strong><span>{outcome.summary}</span>
+              <div
+                className={`delivery-outcome-strip ${outcome.tone}`}
+                data-testid={missingQaSummary ? 'delivery-missing-qa-summary' : hasQaIssues ? 'delivery-problem-warning' : undefined}
+              >
+                <strong>{outcome.label}</strong><span>{outcomeSummary}</span>
               </div>
               <div className="delivery-line-info">
                 <div><span>任务进度</span><strong>{deliveryProgressLabel(task)}</strong></div>

@@ -107,12 +107,23 @@ export function deliverableOutcomePresentation(task: DeliverableTask): QaOutcome
     || Number(task.qa_hard_errors || 0) > 0
   )
   if (deliveredWithIssues) {
+    const hasDelivery = Boolean(task.files.final?.download_url || task.files.package?.download_url)
     const hasQaSummary = Boolean(task.files.qa_summary?.download_url)
+    if (!hasDelivery) {
+      return {
+        label: '待生成带问题交付',
+        summary: '仍有 QA 问题。生成交付时会附带问题摘要，并将归档标记为待复核；建议先修复。',
+        nextAction: '生成交付或先修复',
+        tone: 'warn',
+        canDeliver: false,
+        deliveredWithIssues: true
+      }
+    }
     return {
-      label: '带问题交付',
+      label: hasQaSummary ? '带问题交付' : '交付不完整',
       summary: hasQaSummary
-        ? '交付文件包含 QA 问题摘要，归档记录标记为待复核。'
-        : '历史交付缺少 QA 问题摘要，请重新生成后再下载。',
+        ? '仍有 QA 问题。交付文件包含问题摘要，归档标记为待复核；建议修复后再作为标准交付。'
+        : '历史交付缺少 QA 问题摘要，当前文件不完整。',
       nextAction: hasQaSummary ? '下载并复核' : '重新生成交付',
       tone: 'warn',
       canDeliver: hasQaSummary,

@@ -7,6 +7,7 @@
 - Chrome 新扩展已完成真实工作台主功能点验，页面无横向溢出、无浏览器控制台错误。
 - 点验发现一项真实缺陷：历史“带问题交付”缺少 QA 摘要时，界面仍声称交付包含摘要。
 - 缺陷已修复：现在明确标记交付不完整，并提供“重新生成并补齐摘要”；重建后 QA 摘要下载入口恢复。
+- 交付卡片进一步收敛为单一结论区，明确区分“待生成带问题交付、已生成且摘要完整、历史交付缺摘要”三种状态，不再重复堆叠警告条。
 - Windows 桌面 `computer_use` 尚未完成。Codex Desktop 已真实重启，但当前接管任务的来源仍是 `subagent`，该类型任务不会获得 Computer Use 所需的受信任 native pipe；不能用 Chrome 扩展的页面 CUA 冒充桌面验收。
 
 ## Chrome 扩展覆盖
@@ -20,7 +21,7 @@
 | 快速任务 Step 1-3 | 3/3 可访问，缺少输入时启动按钮正确禁用 |
 | 设置弹窗 | 字段、预设、推理强度和保存入口完整 |
 | 新建项目弹窗 | 名称、类型、描述、取消和创建入口完整 |
-| 历史带问题交付 | 缺摘要时正确阻断并提供重建入口；重建后恢复 3 个文件 |
+| 带问题交付三态 | 待生成、已完整生成、历史缺摘要均有独立文案与操作；卡片内无重复警告条 |
 | 下载 | QA 摘要和公告交付包均触发真实浏览器下载事件 |
 | 浏览器日志 | 0 个 error / warning |
 
@@ -29,7 +30,7 @@
 | 检查 | 结果 |
 | --- | --- |
 | 前端生产构建 | 通过，Vite 7.3.6，1644 个模块 |
-| 完整前端 E2E | 27 项通过，`test-results/.last-run.json` 为 `passed` |
+| 完整前端 E2E | 27 项通过，耗时 2.5 分钟 |
 | 历史 QA 摘要缺失专项 E2E | 通过；覆盖删除摘要、显示阻断、重新生成和恢复下载 |
 | npm audit | 0 个漏洞 |
 
@@ -45,11 +46,11 @@
 
 ### 历史交付缺少 QA 摘要时的修复界面
 
-![缺少摘要提示](./assets/browser-qa-2026-07-10/05-historical-delivery-fixed-ui-extension.png)
+![缺少摘要提示](./assets/browser-qa-2026-07-10/05-historical-delivery-single-outcome.png)
 
 ### 重建后恢复 QA 摘要下载
 
-![重建后交付](./assets/browser-qa-2026-07-10/06-historical-delivery-repaired-crosscheck.png)
+![重建后交付](./assets/browser-qa-2026-07-10/06-historical-delivery-repaired-crosscheck.jpg)
 
 全部截图位于 `docs/superpowers/reports/assets/browser-qa-2026-07-10/`。
 
