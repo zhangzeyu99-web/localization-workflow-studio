@@ -125,8 +125,17 @@ export function DeliveryTab({
           const hasPackage = Boolean(packageFile?.download_url)
           const hasDelivery = hasFinal || hasPackage
           const hasQaIssues = task.status === 'failed' || task.qa_status === 'failed' || Number(task.qa_hard_errors || 0) > 0
+          const hasQaSummary = Boolean(qaSummaryFile?.download_url)
+          const missingQaSummary = hasQaIssues && hasDelivery && !hasQaSummary
+          const canRebuildMissingSummary = missingQaSummary && ['T', 'QA'].includes(String(task.task_code || '').toUpperCase())
           const outcome = deliverableOutcomePresentation(task)
-          const resultLabel = hasPackage ? '已生成公告交付包' : hasDelivery ? (hasChanges ? '已生成最终译文 + 修改记录' : '已生成最终译文') : '待生成'
+          const resultLabel = missingQaSummary
+            ? '历史交付缺少 QA 摘要'
+            : hasPackage
+              ? '已生成公告交付包'
+              : hasDelivery
+                ? (hasChanges ? '已生成最终译文 + 修改记录' : '已生成最终译文')
+                : '待生成'
           return (
             <div key={task.run_id} className="delivery-card delivery-line">
               <div className="delivery-head">
@@ -137,8 +146,12 @@ export function DeliveryTab({
                 <span className={`tag ${hasQaIssues ? 'tag-warn' : task.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{deliveryStatusLabel(task)}</span>
               </div>
               {hasQaIssues ? (
-                <div className="warn-line" data-testid="delivery-problem-warning">
-                  这份任务还有 QA 问题。建议先复查并修复；继续交付时会附带问题摘要，并在译文归档中标记为“待复核”。
+                <div className="warn-line" data-testid={missingQaSummary ? 'delivery-missing-qa-summary' : 'delivery-problem-warning'}>
+                  {missingQaSummary
+                    ? canRebuildMissingSummary
+                      ? '这份历史交付缺少 QA 摘要，当前文件不完整。请重新生成交付，补齐问题清单后再下载。'
+                      : '这份历史交付缺少 QA 摘要，当前文件不完整。请回到对应任务重新生成交付。'
+                    : '这份任务还有 QA 问题。建议先复查并修复；继续交付时会附带问题摘要，并在译文归档中标记为“待复核”。'}
                 </div>
               ) : null}
               <div className={`delivery-outcome-strip ${outcome.tone}`}>
@@ -154,7 +167,11 @@ export function DeliveryTab({
                 {qaSummaryFile?.download_url ? <a className="btn btn-ghost btn-sm" href={qaSummaryFile.download_url}>下载 QA 摘要</a> : null}
                 {finalFile?.download_url ? <a className="btn btn-primary btn-sm" href={finalFile.download_url}>下载最终译文</a> : null}
                 {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>下载修改记录</a> : null}
-                {!hasDelivery ? <button className="btn btn-primary btn-sm" data-testid={`delivery-generate-${task.run_id}`} disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>生成交付文件</button> : null}
+                {!hasDelivery || canRebuildMissingSummary ? (
+                  <button className="btn btn-primary btn-sm" data-testid={`delivery-generate-${task.run_id}`} disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>
+                    {canRebuildMissingSummary ? '重新生成并补齐摘要' : '生成交付文件'}
+                  </button>
+                ) : null}
               </div>
             </div>
           )

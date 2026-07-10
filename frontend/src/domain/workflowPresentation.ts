@@ -107,12 +107,15 @@ export function deliverableOutcomePresentation(task: DeliverableTask): QaOutcome
     || Number(task.qa_hard_errors || 0) > 0
   )
   if (deliveredWithIssues) {
+    const hasQaSummary = Boolean(task.files.qa_summary?.download_url)
     return {
       label: '带问题交付',
-      summary: '交付文件包含 QA 问题摘要，归档记录标记为待复核。',
-      nextAction: '下载并复核',
+      summary: hasQaSummary
+        ? '交付文件包含 QA 问题摘要，归档记录标记为待复核。'
+        : '历史交付缺少 QA 问题摘要，请重新生成后再下载。',
+      nextAction: hasQaSummary ? '下载并复核' : '重新生成交付',
       tone: 'warn',
-      canDeliver: true,
+      canDeliver: hasQaSummary,
       deliveredWithIssues: true
     }
   }
