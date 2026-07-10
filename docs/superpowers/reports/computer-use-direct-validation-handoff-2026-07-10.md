@@ -27,6 +27,7 @@
 
 新任务开始后先验证：
 
+- 在仓库根目录运行 `powershell -ExecutionPolicy Bypass -File scripts/verify-computer-use-runtime.ps1`，结果应为 `PASS`
 - `thread_source` 不再是 `subagent`
 - `nodeRepl.nativePipe.createConnection` 可用，或宿主提供等价的受信任启动能力
 - Computer Use skill 的标准 bootstrap 能读取 `sky.documentation("guidance")`
