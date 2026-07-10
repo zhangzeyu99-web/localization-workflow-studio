@@ -47,6 +47,7 @@ import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, App
 
 function App() {
   const [projects, setProjects] = useState<Project[]>([])
+  const [projectsReady, setProjectsReady] = useState(false)
   const [, setLanguageVersion] = useState(0)
   const [currentId, setCurrentId] = useState<string>('')
   const [view, setView] = useState<AppView>('overview')
@@ -218,7 +219,7 @@ function App() {
   })
 
   useEffect(() => {
-    refreshProjects()
+    refreshProjects().catch(() => undefined).finally(() => setProjectsReady(true))
     refreshSettings()
     refreshRuntimeVersion()
     refreshLanguageOptions(API)
@@ -435,7 +436,7 @@ function App() {
 
           <main className="main">
             <div className="main-content">
-              {!current ? <EmptyState onCreate={() => setNewProjectOpen(true)} /> : view === 'overview' ? (
+              {!current ? <EmptyState onCreate={() => setNewProjectOpen(true)} loading={!projectsReady} /> : view === 'overview' ? (
               <ProjectOverview
                 project={current}
                 tab={tab}
