@@ -7,7 +7,7 @@
 - Chrome 新扩展已完成真实工作台主功能点验，页面无横向溢出、无浏览器控制台错误。
 - 点验发现一项真实缺陷：历史“带问题交付”缺少 QA 摘要时，界面仍声称交付包含摘要。
 - 缺陷已修复：现在明确标记交付不完整，并提供“重新生成并补齐摘要”；重建后 QA 摘要下载入口恢复。
-- Windows 桌面 `computer_use` 尚未完成。当前 Codex Desktop 任务进程没有暴露 Computer Use 所需的 native pipe，不能用 Chrome 扩展的页面 CUA 冒充桌面验收。
+- Windows 桌面 `computer_use` 尚未完成。Codex Desktop 已真实重启，但当前接管任务的来源仍是 `subagent`，该类型任务不会获得 Computer Use 所需的受信任 native pipe；不能用 Chrome 扩展的页面 CUA 冒充桌面验收。
 
 ## Chrome 扩展覆盖
 
@@ -55,4 +55,6 @@
 
 ## Computer Use 阻塞
 
-`computer-use-client.mjs` 已安装，但当前任务的 Windows 控制运行时缺少 native pipe 能力，初始化无法完成。需要重启或更新 Codex Desktop，使新任务重新加载桌面控制运行时；恢复后仍需补做：Chrome 窗口识别、桌面级点击、窗口截图和下载结果可见性检查。
+`computer-use-client.mjs` 已安装。Codex Desktop 主进程已于 2026-07-10 16:53:26 重新启动，PID 也已更换；本地前后端在重启后继续返回 200。重启后的任务元数据仍明确显示 `thread_source=subagent`，同时 `nodeRepl.config`、`nodeRepl.nativePipe` 和 CUA 环境变量均未注入，因此阻塞属于任务权限边界，不是应用未重启。
+
+要补完桌面验收，必须从顶层用户任务调用 Computer Use。待进入顶层任务后仍需执行：Chrome 窗口识别、桌面级点击、窗口截图和下载结果可见性检查。
