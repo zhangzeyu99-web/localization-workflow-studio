@@ -1,5 +1,6 @@
 ﻿import { useEffect, useState } from 'react'
 
+import { Settings } from 'lucide-react'
 import { api } from './apiClient'
 import { getOperatorName, setOperatorName } from './operator'
 
@@ -46,7 +47,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     <div className="modal-mask show">
       <form className="modal settings-modal" onSubmit={(event) => { event.preventDefault(); submit(new FormData(event.currentTarget)) }}>
         <div className="settings-head">
-          <h3>⚙ 设置</h3>
+          <h3 className="icon-title"><Settings size={18} aria-hidden="true" />设置</h3>
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>关闭</button>
         </div>
         <div className="settings-grid">
@@ -73,7 +74,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           </label>
           <label>
             <span>模型</span>
-            <input name="model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-5.5" />
+            <input name="model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="留空则跟随预设" />
           </label>
           <label>
             <span>推理强度</span>

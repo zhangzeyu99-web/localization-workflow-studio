@@ -1,3 +1,4 @@
+import { Download, PackageCheck, RefreshCw, Wrench } from 'lucide-react'
 import { artifactDownloadHref, artifactKindLabel, artifactPickerLabel, pickerArtifacts, runArtifacts } from '../../../domain/artifacts'
 import { issueCountPhrase } from '../../../uiText'
 import { type LanguageCode, languageSpec } from '../../../languages'
@@ -5,6 +6,7 @@ import type { Artifact, DeliverableTask, DeliveryFile, Project, QualityIssue, Ru
 import { qaPendingIssueCount } from '../QaIssuePanel'
 import { TaskRunSummary } from '../TaskRunSummary'
 import { WorkflowSideCard, WorkflowStepShell } from '../WorkflowStepShell'
+import { ArchiveProvenanceBadge } from '../../shared/StatusPrimitives'
 
 export function StepDone({
   project,
@@ -45,6 +47,7 @@ export function StepDone({
   const deliveryFiles = deliveryFilesForRun(deliverables, deliveryRun?.id, generatedDeliveryRunId, generatedDeliveryFiles)
   const canGenerateDelivery = Boolean(deliveryRun && hasFinalWorkbook && !deliveryBlocked)
   const generated = deliveryFiles.length > 0
+  const hasQaSummary = deliveryFiles.some((file) => file.kind === 'qa_summary')
   const deliveryStatus = !deliveryRun
     ? '暂无可交付任务'
     : generated
@@ -58,7 +61,7 @@ export function StepDone({
     <WorkflowStepShell
       stepLabel="STEP 9"
       title="最终交付"
-      description="生成最终交付文件，并在当前页面直接下载；完成后回到项目概览交付页。"
+      description="生成并下载交付文件。QA 通过输出标准交付；QA 未通过时输出带问题摘要的交付，并将归档标记为待复核。"
       status={deliveryStatus}
       statusTone={generated ? 'ready' : deliveryBlocked ? 'blocked' : deliveryWarning ? 'warn' : 'neutral'}
       nextAction={generated ? '下载文件或点击完成' : canGenerateDelivery ? '生成交付文件' : '返回 QA 处理'}
@@ -75,13 +78,19 @@ export function StepDone({
               </>
             ) : deliveryWarning ? (
               <>
-                <p>仍有{issueCountPhrase(pendingIssueCount)} QA 问题未清零；交付文件会附带问题摘要和修改记录，便于后续复查。</p>
-                <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}>回到校对修复</button>
+                <p>仍有{issueCountPhrase(pendingIssueCount)} QA 问题未清零。交付文件会附带问题摘要，译文归档会标记为“待复核”。</p>
+                <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}><Wrench size={14} aria-hidden="true" />回到校对修复</button>
               </>
             ) : (
               <p>{generated ? '交付文件已经生成，可直接下载；底部“完成”会回到项目交付页。' : '系统会把最终译文、修改记录和必要的 QA 摘要打到交付目录。'}</p>
             )}
           </WorkflowSideCard>
+          {deliveryRun ? (
+            <WorkflowSideCard title="归档结果" tone={deliveryWarning ? 'warn' : 'ready'}>
+              <ArchiveProvenanceBadge sourceType={deliveryWarning ? 'delivered_with_issues' : 'qa_passed'} />
+              <p>{generated ? '交付生成时已同步写入项目译文归档。' : '生成交付后会同步写入项目译文归档，并保留当前质量来源。'}</p>
+            </WorkflowSideCard>
+          ) : null}
         </>
       }
     >
@@ -94,8 +103,13 @@ export function StepDone({
               <span>{generated ? '下载入口已在右侧出现；项目概览的交付页也会同步显示。' : '点击后会生成可下载文件，并立即显示在本页下载区。'}</span>
             </div>
             <button className="btn btn-primary" data-testid="wizard-generate-delivery" disabled={busy} onClick={() => deliveryRun && void onCreateDelivery(deliveryRun.id)}>
-              {busy ? '生成中...' : generated ? '重新生成交付文件' : '生成交付文件'}
+              {busy ? '生成中...' : generated ? <><RefreshCw size={15} aria-hidden="true" />重新生成交付文件</> : <><PackageCheck size={15} aria-hidden="true" />生成交付文件</>}
             </button>
+          </div>
+        ) : null}
+        {deliveryWarning && generated && !hasQaSummary ? (
+          <div className="warn-line" data-testid="delivery-missing-qa-summary">
+            这份历史交付未检测到 QA 摘要。请点击“重新生成交付文件”，确保问题清单随交付一起输出。
           </div>
         ) : null}
         {multiDelivery ? (
@@ -196,6 +210,7 @@ function DeliveryFileLinks({ files, projectId }: { files: DeliveryFile[]; projec
     <div className="workflow-file-list">
       {files.map((file, index) => (
         <a key={`${file.kind}-${file.filename}-${index}`} className="workflow-file-link" href={deliveryFileHref(file, projectId)}>
+          <Download size={15} aria-hidden="true" />
           <span>{deliveryFileLabel(file)}</span>
           <strong>{file.filename}</strong>
         </a>

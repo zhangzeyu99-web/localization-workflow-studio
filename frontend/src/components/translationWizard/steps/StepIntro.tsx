@@ -1,3 +1,4 @@
+import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { ArtifactNote, FileBox } from '../../shared/WorkflowPrimitives'
 import type { Artifact, Project } from '../../../types'
 
@@ -21,7 +22,7 @@ export function StepIntro({
       <textarea value={intro} onChange={(event) => setIntro(event.target.value)} placeholder={'游戏名：《星际边境》\n类型：科幻 SLG\n目标用户：欧美移动端玩家\n玩法：基地建造 + 英雄养成 + 联盟战争'} />
       <div className="field-foot">
         <span>{intro.trim().length} 字</span>
-        <span className={intro.trim().length > 20 || project.description ? 'ok' : 'warn'}>{intro.trim().length > 20 || project.description ? '✓ 信息可用于生成提示词' : '⚠ 建议补充更多信息'}</span>
+        <span className={intro.trim().length > 20 || project.description ? 'ok' : 'warn'}>{intro.trim().length > 20 || project.description ? <><CheckCircle2 size={13} aria-hidden="true" />信息可用于生成提示词</> : <><AlertTriangle size={13} aria-hidden="true" />建议补充更多信息</>}</span>
       </div>
       <div className="upload-row">
         <FileBox label="上传 Markdown / 文档 / 图片 / PDF / 音视频素材" onFile={onUploadAsset} />

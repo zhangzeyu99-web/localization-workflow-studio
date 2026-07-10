@@ -76,7 +76,7 @@ export function StepFreqV2({
         <div className="translation-readiness-box ready">
           <div className="readiness-head">
             <strong>这份表已有完整译文</strong>
-            <span>不需要扫描术语候选；请直接进入校对，QA 通过后写入译文归档并生成交付。</span>
+            <span>不需要扫描术语候选；请直接进入校对。通过后生成标准交付，未通过时可修复或带问题摘要交付。</span>
           </div>
           <button className="btn btn-primary btn-sm" onClick={() => { setQaArtifact(sourceArtifact); setStep(8) }}>去校对</button>
         </div>

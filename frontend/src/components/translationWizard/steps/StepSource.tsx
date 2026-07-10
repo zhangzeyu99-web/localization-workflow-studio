@@ -41,7 +41,7 @@ export function StepSource({
         ? '格式需要修正'
         : '等待检查'
   const nextActionText = mode === 'ready_for_qa'
-    ? '下一步：直接进入「QA 校对」步骤；QA 通过后写入译文归档并生成交付。'
+    ? '下一步：直接进入「QA 校对」。QA 通过后可标准交付；未通过时可继续修复，或带问题摘要交付。'
     : mode === 'needs_translation'
       ? '下一步：进入「术语候选」步骤扫描术语候选，再进入 AI 翻译。'
       : mode === 'invalid'

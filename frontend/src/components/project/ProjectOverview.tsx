@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
+import { Archive, BookOpenText, FileText, FolderKanban, Languages, Megaphone, PackageCheck, WandSparkles, Wrench } from 'lucide-react'
 import type { LanguageCode } from '../../languages'
 import { HISTORY_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import { glossaryWideRows, translationWideRows } from '../../domain/projectAssets'
@@ -160,12 +161,13 @@ function ProjectOverviewImpl({
   return (
     <>
       <div className="proj-head">
-        <div>
-          <h2>{project.icon ? <span className="project-icon">{project.icon}</span> : null}{project.name}</h2>
+        <div className="page-title-lockup">
+          <span className="page-title-icon"><FolderKanban size={20} aria-hidden="true" /></span>
+          <div><h2>{project.name}</h2><div className="desc">项目总览与当前任务入口</div></div>
         </div>
         <div className="row-actions">
-          <button className="btn btn-primary" onClick={onStartTask}>🚀 启动新翻译任务</button>
-          <button className="btn btn-ghost" onClick={onStartAnnouncement}>📣 公告翻译</button>
+          <button className="btn btn-primary" onClick={onStartTask}><WandSparkles size={16} aria-hidden="true" />新翻译任务</button>
+          <button className="btn btn-ghost" onClick={onStartAnnouncement}><Megaphone size={16} aria-hidden="true" />公告翻译</button>
         </div>
       </div>
       <div className="stat-grid">
@@ -217,12 +219,12 @@ function ProjectOverviewImpl({
         onCancelHold={onCancelAnnouncementHold}
       />
       <div className="view-tabs">
-        <button className={`view-tab ${tab === 'meta' ? 'active' : ''}`} onClick={() => setTab('meta')}>📝 元信息</button>
-        <button className={`view-tab ${tab === 'glossary' ? 'active' : ''}`} onClick={() => setTab('glossary')}>📚 术语表</button>
-        <button className={`view-tab ${tab === 'translation' ? 'active' : ''}`} onClick={() => setTab('translation')}>⚡ 翻译</button>
-        <button className={`view-tab ${tab === 'qa' ? 'active' : ''}`} onClick={() => setTab('qa')}>🔧 校对</button>
-        <button className={`view-tab ${tab === 'archive' ? 'active' : ''}`} onClick={() => setTab('archive')}>🗄️ 译文归档</button>
-        <button className={`view-tab ${tab === 'delivery' ? 'active' : ''}`} onClick={() => setTab('delivery')}>📥 交付</button>
+        <button className={`view-tab ${tab === 'meta' ? 'active' : ''}`} onClick={() => setTab('meta')}><FileText size={15} aria-hidden="true" />元信息</button>
+        <button className={`view-tab ${tab === 'glossary' ? 'active' : ''}`} onClick={() => setTab('glossary')}><BookOpenText size={15} aria-hidden="true" />术语表</button>
+        <button className={`view-tab ${tab === 'translation' ? 'active' : ''}`} onClick={() => setTab('translation')}><Languages size={15} aria-hidden="true" />翻译</button>
+        <button className={`view-tab ${tab === 'qa' ? 'active' : ''}`} onClick={() => setTab('qa')}><Wrench size={15} aria-hidden="true" />校对</button>
+        <button className={`view-tab ${tab === 'archive' ? 'active' : ''}`} onClick={() => setTab('archive')}><Archive size={15} aria-hidden="true" />译文归档</button>
+        <button className={`view-tab ${tab === 'delivery' ? 'active' : ''}`} onClick={() => setTab('delivery')}><PackageCheck size={15} aria-hidden="true" />交付</button>
       </div>
       {tab === 'meta' ? (
         <MetaTab

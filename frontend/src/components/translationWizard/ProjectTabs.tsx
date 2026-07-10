@@ -1,5 +1,6 @@
 import { formatDateTime } from '../../domain/format'
 import { projectPromptForLanguage } from '../../domain/projectAssets'
+import { deliverableOutcomePresentation } from '../../domain/workflowPresentation'
 import { languageSpec, type LanguageCode } from '../../languages'
 import { ActionStatus, AssetSelect, FileBox, LanguageSelector, SelectedInput } from '../shared/WorkflowPrimitives'
 import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, Project, QualityIssue, Run, TranslationReadiness } from '../../types'
@@ -64,10 +65,10 @@ export function TranslationTab({
         <div className="workflow-note-grid">
           <div><strong>{lang.short} 提示词</strong><span>{promptReady ? '已在元信息页生成' : '未生成'}</span></div>
           <div><strong>项目术语库</strong><span>{glossaryCount} 条，run 开始时生成快照</span></div>
-          <div><strong>质量门槛</strong><span>必须修复问题为 0 才能交付</span></div>
+          <div><strong>交付规则</strong><span>QA 通过生成标准交付；未通过可继续修复或带问题摘要交付</span></div>
         </div>
       </div>
-      <TaskHistoryTable project={project} kind="translation" title="🕒 翻译历史记录" />
+      <TaskHistoryTable project={project} kind="translation" title="翻译历史记录" />
       {latestRun && latestRun.kind === 'translation' ? <TaskRunSummary run={latestRun} /> : null}
     </>
   )
@@ -102,7 +103,7 @@ export function DeliveryTab({
         <div className="delivery-empty" data-testid="delivery-empty">
           <div>
             <strong>还没有可下载的交付文件</strong>
-            <span>先完成翻译或校对并通过 QA；通过后这里会显示最终译文和修改记录。</span>
+            <span>先完成翻译或校对。QA 通过可生成标准交付；未通过且保留译文时，也可生成附带问题摘要的交付。</span>
           </div>
           <div className="row-actions">
             <button className="btn btn-primary btn-sm" data-testid="delivery-empty-translate" onClick={onGoTranslate}>去翻译</button>
@@ -124,6 +125,7 @@ export function DeliveryTab({
           const hasPackage = Boolean(packageFile?.download_url)
           const hasDelivery = hasFinal || hasPackage
           const hasQaIssues = task.status === 'failed' || task.qa_status === 'failed' || Number(task.qa_hard_errors || 0) > 0
+          const outcome = deliverableOutcomePresentation(task)
           const resultLabel = hasPackage ? '已生成公告交付包' : hasDelivery ? (hasChanges ? '已生成最终译文 + 修改记录' : '已生成最终译文') : '待生成'
           return (
             <div key={task.run_id} className="delivery-card delivery-line">
@@ -136,9 +138,12 @@ export function DeliveryTab({
               </div>
               {hasQaIssues ? (
                 <div className="warn-line" data-testid="delivery-problem-warning">
-                  这份任务还有 QA 问题。建议先复查并修复；急需交付时，交付文件会附带问题摘要。
+                  这份任务还有 QA 问题。建议先复查并修复；继续交付时会附带问题摘要，并在译文归档中标记为“待复核”。
                 </div>
               ) : null}
+              <div className={`delivery-outcome-strip ${outcome.tone}`}>
+                <strong>{outcome.label}</strong><span>{outcome.summary}</span>
+              </div>
               <div className="delivery-line-info">
                 <div><span>任务进度</span><strong>{deliveryProgressLabel(task)}</strong></div>
                 <div><span>交付结果</span><strong>{resultLabel}</strong></div>
@@ -178,7 +183,8 @@ export function compactDeliveryInputLabel(value?: string): string {
 }
 
 export function deliveryStatusLabel(task: DeliverableTask): string {
-  if (task.status === 'delivered') return '可交付'
+  if (task.delivered_with_issues) return '带问题已交付'
+  if (task.status === 'delivered') return '已交付'
   if (task.status === 'passed' && Number(task.qa_hard_errors || 0) === 0) return '可交付'
   if (task.status === 'failed') return '带问题可交付'
   return task.status || '处理中'

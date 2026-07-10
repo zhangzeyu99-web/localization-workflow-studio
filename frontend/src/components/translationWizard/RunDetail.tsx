@@ -1,9 +1,10 @@
 import { artifactDownloadHref, artifactPickerLabel, pickerArtifacts, runArtifacts } from '../../domain/artifacts'
 import { shortRunId } from '../../domain/format'
 import { normalizeLanguageCode, languageSpec } from '../../languages'
-import { LINE_PROOFREAD_LABEL, lineProofreadSummaryText, runStatusLabel, shortIdLabel } from '../../uiText'
-import type { Artifact, HistoryKind, LargeTextRunState, LineProofreadState, Project, Run, TranslationProgress, TranslationReadiness } from '../../types'
+import { runStatusLabel, shortIdLabel } from '../../uiText'
+import type { Artifact, HistoryKind, LargeTextRunState, LineProofreadState, Project, ReferenceAuditState, Run, TranslationProgress, TranslationReadiness } from '../../types'
 import { runDeliveryState } from './QaIssuePanel'
+import { ArchiveProvenanceBadge, LineProofreadTimeline, ReferenceAuditPanel } from '../shared/StatusPrimitives'
 
 export function downloadableArtifact(artifacts: Artifact[], kind: HistoryKind): Artifact | null {
   const accepted = kind === 'translation'
@@ -17,6 +18,8 @@ export function RunDetail({ project, run, kind }: { project: Project; run: Run; 
   const visibleArtifacts = pickerArtifacts(artifacts.filter((artifact) => downloadableArtifact([artifact], kind)))
   const largeTextState = run.metadata?.large_text as LargeTextRunState | undefined
   const lineProofreadState = run.metadata?.line_proofread as LineProofreadState | undefined
+  const referenceAuditState = run.metadata?.reference_audit as ReferenceAuditState | undefined
+  const translationArchive = run.metadata?.translation_archive as { imported_count?: number; source_type?: string } | undefined
   const largeTextGateKinds = ['large_text_preflight', 'large_text_cache_lint', 'delivery_readback_gate', 'large_text_retro']
   const largeTextArtifacts = pickerArtifacts(artifacts.filter((artifact) => largeTextGateKinds.includes(artifact.kind)))
   const inputs = (run.metadata?.input_artifacts || {}) as Record<string, string>
@@ -52,9 +55,15 @@ export function RunDetail({ project, run, kind }: { project: Project; run: Run; 
         <div><strong>校对处理</strong><span>{runQaRowsText(run)}</span></div>
         <div><strong>本次归档</strong><span>{archiveCount > 0 ? `${archiveCount} 条` : '未归档'}</span></div>
         <div><strong>累计归档</strong><span>{project.stats.archived_rows || 0} 条</span></div>
+        {translationArchive?.source_type ? <div><strong>归档来源</strong><span><ArchiveProvenanceBadge sourceType={translationArchive.source_type} /></span></div> : null}
         <div><strong>交付状态</strong><span>{runDeliveryState(run, visibleArtifacts)}</span></div>
-        {lineProofreadState ? <div data-testid="run-line-proofread"><strong>{LINE_PROOFREAD_LABEL}</strong><span>{lineProofreadSummaryText(lineProofreadState)}</span></div> : null}
       </div>
+      {referenceAuditState || lineProofreadState ? (
+        <div className="run-evidence-grid">
+          {referenceAuditState ? <ReferenceAuditPanel state={referenceAuditState} /> : null}
+          {lineProofreadState ? <div data-testid="run-line-proofread"><LineProofreadTimeline state={lineProofreadState} /></div> : null}
+        </div>
+      ) : null}
       <div className="artifact-links">
         {visibleArtifacts.map((artifact) => (
           <a key={artifact.id} className="btn btn-ghost btn-sm" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}</a>

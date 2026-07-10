@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ArrowLeft, Zap } from 'lucide-react'
 import { api } from '../../apiClient'
 import { artifactDownloadHref, artifactPickerLabel, newestArtifact, uniqueArtifactsByContent } from '../../domain/artifacts'
 import { aiProviderConfigurationReminder } from '../../domain/providerSettings'
@@ -167,11 +168,14 @@ export function QuickTaskWizard({
   return (
     <>
       <div className="proj-head">
-        <div>
-          <h2>⚡ 快速任务 · 当前项目：{project.icon} {project.name}</h2>
-          <div className="desc">三步启动翻译或校对；项目提示词、术语库和 QA 归档自动带入，上传参考只对本次任务生效。</div>
+        <div className="page-title-lockup">
+          <span className="page-title-icon"><Zap size={20} aria-hidden="true" /></span>
+          <div>
+          <h2>快速任务</h2>
+          <div className="desc">三步启动翻译或校对；项目提示词、术语库和译文归档自动带入，上传参考只对本次任务生效。</div>
+          </div>
         </div>
-        <button className="btn btn-ghost" onClick={onBack}>← 返回项目概览</button>
+        <button className="btn btn-ghost" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />返回项目概览</button>
       </div>
       <div className="quick-steps">
         {['投入内容', '投入参考', '目标并启动'].map((title, index) => (
@@ -209,7 +213,7 @@ export function QuickTaskWizard({
         {quickStep === 2 ? (
           <>
             <div className="panel-title"><span className="badge">STEP 2</span>投入可选参考</div>
-            <div className="panel-desc">默认已经使用项目提示词、项目术语和 QA 归档；这里上传的术语表、风格说明或参考素材只作为本次 run 的临时约束。</div>
+            <div className="panel-desc">默认已经使用项目提示词、项目术语和译文归档；这里上传的术语表、风格说明或参考素材只作为本次任务的临时约束。</div>
             <div className="quick-reference-row">
               <FileBox label="上传本次参考（可选）" onFile={uploadReference} testId="quick-reference-upload" />
               <div className="quick-reference-summary">

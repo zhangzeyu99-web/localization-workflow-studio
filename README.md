@@ -85,10 +85,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  A["上传公告源文档"] --> B["选择约束来源：完整语言表/术语交付表 + 项目 QA 归档"]
+  A["上传公告源文档"] --> B["选择约束来源：完整语言表/术语交付表 + 项目译文归档"]
   B --> C["识别并确认目标语言"]
   C --> D["从公告原文提取本任务临时术语表"]
-  D --> E["按 QA 归档优先、语言表补充反查译文"]
+  D --> E["按 QA 已通过归档优先、其他归档和语言表补充反查译文"]
   E --> F["生成中转表、manifest、prompt snapshot、workpack"]
   F --> G{"已配置 OpenAI/Claude API？"}
   G -- "是" --> H["工作台直接调用 AI provider 分批翻译"]
@@ -292,14 +292,16 @@ API key 必须留在后端或本地私有配置中，不要写进前端、GitHub
 
 ## 质量门槛
 
-正式交付必须同时满足：
+标准交付必须同时满足：
 
 1. 本次 run 有 prompt snapshot、project harness snapshot、glossary snapshot。
 2. 翻译 workpack 记录 ID、源文、文本类型、占位符、标签、换行形态、术语命中、UI 长度和输入指纹。
 3. 模型返回必须遵守 JSONL 行协议：每行只允许 `id` 和 `translation`。
 4. 回填前校验 ID、顺序、占位符、标签、换行和输入指纹。
 5. 最终 workbook 通过规则 QA 和项目规则 QA，hard issue 必须为 0。
-6. QA 通过后才写入译文归档并进入最终交付页。
+6. QA 通过后生成标准交付，并以 `source_type=qa_passed` 写入可信译文归档。
+
+QA 未通过但已生成可用译文时，工作台允许生成“带问题交付”：交付文件必须附带 QA 问题摘要，对应译文继续写入归档，但标记为 `source_type=delivered_with_issues`（界面显示“待复核”）。这是一条有明确风险标记的应急路径，不等同于标准交付。
 
 直接上传已有译文 workbook 做 QA 是支持的，但它证明的是“Studio 做过校对”，不是“Studio 做过初译”。
 

@@ -3789,7 +3789,14 @@ def test_failed_qa_runs_remain_deliverable_with_qa_summary(tmp_path: Path) -> No
         package_response = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}")
         assert package_response.status_code == 200, package_response.text
         files = {item["kind"]: item for item in package_response.json()["files"]}
-        assert {"final", "changes"}.issubset(files)
+        assert {"final", "changes", "qa_summary"}.issubset(files)
+        assert files["qa_summary"]["filename"].endswith("_qa_summary.xlsx")
+        assert Path(files["qa_summary"]["path"]).exists()
+        qa_summary = load_workbook(files["qa_summary"]["path"], read_only=True, data_only=True)
+        try:
+            assert {"总览", "详细记录"}.issubset(qa_summary.sheetnames)
+        finally:
+            qa_summary.close()
 
 
 def test_semantic_qa_duplicate_hard_blocks_do_not_double_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

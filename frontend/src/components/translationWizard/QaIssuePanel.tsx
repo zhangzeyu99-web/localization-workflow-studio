@@ -27,7 +27,7 @@ export function qaRunTagClass(run: Run | null | undefined): string {
 export function qaRunSummaryText(run: Run | null | undefined, pendingIssueCount = 0): string {
   if (!run) return '尚未运行 QA。请选择译文表后点击“运行 QA”。'
   if (run.status === 'passed') return 'QA 已通过，可以进入交付页生成最终文件。'
-  if (run.status === 'failed') return `QA 未通过：发现${issueCountPhrase(pendingIssueCount)}问题。建议先修复并重跑；急需时可带问题摘要交付。`
+  if (run.status === 'failed') return `QA 未通过：发现${issueCountPhrase(pendingIssueCount)}问题。建议先修复并重跑；时间受限时可带问题摘要交付。`
   if (run.status === 'queued' || run.status === 'running') return 'QA 正在运行，请等待当前任务完成。'
   if (run.status === 'needs_input') return 'QA 需要补充输入后继续。'
   return `当前状态：${runStatusLabel(run.status)}`
@@ -36,13 +36,13 @@ export function qaRunSummaryText(run: Run | null | undefined, pendingIssueCount 
 export function qaRunActionText(run: Run | null | undefined, pendingIssueCount = 0): string {
   if (!run) return '运行 QA'
   if (run.status === 'passed') return '去交付页生成最终文件'
-  if (run.status === 'failed') return pendingIssueCount ? '先修复；急需时交付' : '查看 QA 报告后交付'
+  if (run.status === 'failed') return pendingIssueCount ? '先修复；时间受限时带摘要交付' : '查看 QA 报告后交付'
   if (run.status === 'queued' || run.status === 'running') return '等待任务完成'
   return '按提示补齐输入'
 }
 
 export function runDeliveryState(run: Run, visibleArtifacts: Artifact[]): string {
-  if (visibleArtifacts.some((artifact) => artifact.kind === 'qa_final_workbook' || artifact.role === 'translation_workbook')) return '可生成最终交付'
+  if (visibleArtifacts.some((artifact) => artifact.kind === 'qa_final_workbook' || artifact.role === 'translation_workbook')) return run.status === 'failed' ? '可生成带问题交付' : '可生成标准交付'
   if (run.status === 'passed') return '已通过，等待生成交付文件'
   if (run.status === 'needs_input') return '需要补充输入'
   if (run.status === 'failed') return 'QA 未通过，可带问题摘要交付'
@@ -124,10 +124,10 @@ export function IssueGuide({ issues, editableCount }: { issues: QualityIssue[]; 
   return (
     <div className="issue-guide">
       <div>
-        <strong>当前不能作为最终交付</strong>
+        <strong>当前不适合作为标准交付</strong>
         <span>{hard} 个必须修复，{soft} 个建议修复；其中 {editableCount} 个可在网页直接改后重跑 QA。</span>
       </div>
-      <p>这些是规则 QA 抓到的问题。模拟翻译通常会产生大量术语缺失；正式接入 GPT / Claude 后会按提示词和术语快照翻译，问题量会下降，但不会承诺自动清零，最终仍以“必须修复问题 = 0”作为交付标准。</p>
+      <p>标准交付仍要求“必须修复问题 = 0”。如业务时间不允许继续修复，可生成带问题摘要的交付；系统会保留问题清单，并将对应译文归档标记为“待复核”。</p>
     </div>
   )
 }

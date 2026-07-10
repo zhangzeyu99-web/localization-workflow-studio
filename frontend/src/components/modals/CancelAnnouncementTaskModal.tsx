@@ -1,10 +1,11 @@
+import { AlertTriangle } from 'lucide-react'
 import type { AnnouncementTask } from '../../types'
 
 export function CancelAnnouncementTaskModal({ task, busy, onClose, onCancelTask }: { task: AnnouncementTask; busy: boolean; onClose: () => void; onCancelTask: (task: AnnouncementTask) => void }) {
   return (
     <div className="modal-mask show">
       <div className="modal delete-project-modal" role="alertdialog" aria-modal="true" aria-labelledby="cancel-announcement-title">
-        <h3 id="cancel-announcement-title">⚠️ 取消公告任务</h3>
+        <h3 id="cancel-announcement-title" className="icon-title"><AlertTriangle size={18} aria-hidden="true" />取消公告任务</h3>
         <p>你正在取消 <strong>{task.title || task.id}</strong>。</p>
         <div className="delete-warning">
           <strong>取消后不再显示在活跃公告任务里</strong>

@@ -1,4 +1,5 @@
 import React from 'react'
+import { Folder } from 'lucide-react'
 import type { Project } from '../../types'
 import { projectActiveTaskCount, visibleAnnouncementTaskCount } from '../../domain/projectActivity'
 
@@ -25,7 +26,7 @@ function ProjectListItemImpl({
       onContextMenu={(event) => event.preventDefault()}
       onClick={(event) => onSelect(project, event)}
     >
-      <span className="pname">{project.icon ? `${project.icon} ` : ''}{project.name}</span>
+      <span className="pname"><Folder size={15} aria-hidden="true" />{project.name}</span>
       <span className="pmeta">语言包 {project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))} · 公告 {visibleAnnouncementTaskCount(project)} · 归档 {project.stats.archived_rows || 0}</span>
       {projectActiveTaskCount(project) ? <span className="ptag ptag-live">后台 {projectActiveTaskCount(project)}</span> : null}
       {project.type ? <span className="ptag">{project.type}</span> : null}

@@ -3,8 +3,9 @@ import { projectPromptForLanguage } from '../../../domain/projectAssets'
 import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, matchesTranslationRun } from '../../../domain/translationFlow'
 import { languageSpec, type LanguageCode } from '../../../languages'
 import { ActionStatus, AssetSelect, TranslationProgressBar } from '../../shared/WorkflowPrimitives'
+import { LineProofreadTimeline, ReferenceAuditPanel } from '../../shared/StatusPrimitives'
 import { AiInputAuditPanel } from '../../shared/AiInputAudit'
-import type { AppSettings, Artifact, LargeTextRunState, Project, QualityIssue, Run, TranslationProgress, TranslationReadiness } from '../../../types'
+import type { AppSettings, Artifact, LargeTextRunState, Project, QualityIssue, ReferenceAuditState, Run, TranslationProgress, TranslationReadiness } from '../../../types'
 import { formalTranslationBlockReason, translationReadinessBlockReason } from '../translationGuards'
 import { LINE_PROOFREAD_HINT, LINE_PROOFREAD_LABEL, lineProofreadSummaryText } from '../../../uiText'
 import type { LineProofreadState } from '../../../types'
@@ -115,6 +116,7 @@ export function StepTranslate({
     return { code, run, progress: itemProgress, percent, blocked, done, active, label }
   })
   const lineProofreadState = currentTranslationRun?.metadata?.line_proofread as LineProofreadState | undefined
+  const referenceAuditState = currentTranslationRun?.metadata?.reference_audit as ReferenceAuditState | undefined
   const activeTranslation = Boolean(currentTranslationRun && ['queued', 'running'].includes(currentTranslationRun.status))
   const finishingTranslation = Boolean(activeTranslation && progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows)
   const resumable = Boolean(currentTranslationRun && isTranslationRunResumable(currentTranslationRun))
@@ -178,6 +180,9 @@ export function StepTranslate({
               { label: '后台批次', value: progress?.total_batches ? `${progress.completed_batches}/${progress.total_batches} 批` : `${estimatedBatches || '-'} 批估算` },
             ]} />
           </WorkflowSideCard>
+          <WorkflowSideCard title="参考证据" tone={referenceAuditState?.reference_hits ? 'ready' : 'neutral'}>
+            <ReferenceAuditPanel state={referenceAuditState} />
+          </WorkflowSideCard>
           <WorkflowSideCard title="本步产物" tone={translationArtifacts.length ? 'ready' : 'neutral'}>
             <div className="artifact-grid compact-artifact-grid">
               {translationArtifacts.map((artifact) => <a key={artifact.id} className="artifact" href={artifactDownloadHref(artifact, project.id)}>{artifactPickerLabel(artifact)}<span>{artifactKindLabel(artifact)}</span></a>)}
@@ -240,9 +245,10 @@ export function StepTranslate({
             </span>
           </label>
         ) : null}
-        {lineProofreadState ? (
-          <div className="info-line compact" data-testid="line-proofread-summary">
-            {LINE_PROOFREAD_LABEL}：{lineProofreadSummaryText(lineProofreadState)}
+        {lineProofread || lineProofreadState ? (
+          <div data-testid={lineProofreadState ? 'line-proofread-summary' : undefined}>
+            <LineProofreadTimeline state={lineProofreadState} enabled={lineProofread} />
+            {lineProofreadState ? <span className="sr-only">{lineProofreadSummaryText(lineProofreadState)}</span> : null}
           </div>
         ) : null}
         <div className="translation-actions">
@@ -269,7 +275,7 @@ export function StepTranslate({
             </div>
           </div>
         ) : null}
-        {finishingTranslation ? <div className="info-line compact">译文批次已完成，正在做 QA 校验和结果归档。完成后会自动接到「QA 校对」步骤；请不要在此时重复启动。</div> : null}
+        {finishingTranslation ? <div className="info-line compact">译文批次已完成，正在执行收尾校验并保存结果。完成后会自动接到「QA 校对」步骤；请不要重复启动。</div> : null}
         {currentTranslationRun?.metadata?.reason === 'api_budget_confirmation_required' ? (
           <div className="warn-line">预计 API token 超过提醒阈值；点击“继续后台翻译”会二次确认预算，并从已完成批次继续。</div>
         ) : null}
@@ -286,7 +292,7 @@ export function StepTranslate({
       <div className="translation-guard-strip">
         <span>项目术语库 <strong>{glossaryCount} 条</strong></span>
         <span>{lang.short} 提示词 <strong>{projectPromptForLanguage(project, selectedLanguage) ? '已生成' : '未生成'}</strong></span>
-        <span>校对门槛 <strong>QA 通过后交付</strong></span>
+        <span>交付规则 <strong>通过则标准交付；未通过可修复或带摘要交付</strong></span>
       </div>
       {currentTranslationRun ? <TaskRunSummary run={currentTranslationRun} issues={qualityIssues} /> : null}
     </WorkflowStepShell>

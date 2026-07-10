@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { ArrowLeft, Megaphone } from 'lucide-react'
 import { announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { artifactDownloadHref, artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
 import { aiProviderConfigurationReminder, isAiProviderReady, providerLabel } from '../../domain/providerSettings'
@@ -8,6 +9,7 @@ import { ActionStatus, ArtifactNote, FileBox, FileBoxWithTemplate, TranslationPr
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
 import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
+import { PhaseStepper } from '../translationWizard/PhaseStepper'
 
 export const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译', '校对回填', '交付']
 
@@ -232,20 +234,17 @@ export function AnnouncementWizard({
   return (
     <div className="wizard announcement-wizard">
       <div className="proj-head">
-        <div>
-          <h2>📣 公告翻译 · 当前项目：{project.icon} {project.name}</h2>
-          <div className="desc">单文档多语言外文本工作流：先提取公告术语，再按 QA 归档优先反查译文，最后走 AI 翻译、QA 回填和交付。不会使用谷歌机翻。</div>
+        <div className="page-title-lockup">
+          <span className="page-title-icon"><Megaphone size={20} aria-hidden="true" /></span>
+          <div>
+          <h2>公告翻译</h2>
+          <div className="desc">单文档多语言外文本工作流：先提取公告术语，再从项目译文归档反查既有译法，最后完成 AI 翻译、QA 回填和交付。不会使用谷歌机翻。</div>
+          </div>
         </div>
-        <button className="btn btn-ghost" onClick={onBack}>← 返回项目概览</button>
+        <button className="btn btn-ghost" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />返回项目概览</button>
       </div>
 
-      <div className="steps-nav announcement-steps">
-        {announcementSteps.map((title, index) => (
-          <button key={title} className={`step-item ${index + 1 === step ? 'active' : activeTask && (activeTask.current_step || 1) > index + 1 ? 'done' : ''}`} onClick={() => setStep(index + 1)}>
-            <span className="num">{index + 1}</span>{title}
-          </button>
-        ))}
-      </div>
+      <PhaseStepper step={step} steps={announcementSteps} onStepChange={setStep} />
       {busy || (status && status !== '准备就绪') ? <ActionStatus status={status} busy={busy} /> : null}
       {activeTask ? (
         <div
@@ -297,11 +296,11 @@ export function AnnouncementWizard({
           ) : step === 2 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 2</span>约束来源</div>
-              <div className="panel-desc">本步只选择二次翻译的约束来源：项目 QA 归档默认参与；如有完整语言表，再上传或勾选它用于反查生成公告术语表。</div>
+              <div className="panel-desc">本步选择二次翻译的约束来源：项目译文归档默认参与；如有完整语言表，可再上传或勾选，用于补充反查并生成公告术语表。</div>
               <div className="constraint-source-grid">
                 <div className="constraint-source-panel is-primary">
-                  <div className="constraint-source-title">项目 QA 归档</div>
-                  <p>默认使用当前项目里已经 QA 通过的译文和项目术语。冲突时优先级高于上传语言表。</p>
+                  <div className="constraint-source-title">项目译文归档</div>
+                  <p>默认使用当前项目的既有译文和术语；QA 已通过的记录优先，待复核和外部导入记录保留来源标记。</p>
                   <span className="tag tag-done">自动参与</span>
                 </div>
                 <div className="constraint-source-panel">
@@ -312,7 +311,7 @@ export function AnnouncementWizard({
               </div>
               <div className="asset-list compact-list">
                 <div className="ai-header">可选语言表</div>
-                {!constraintCandidates.length ? <div className="muted-left">当前没有可选完整语言表；可以只用项目 QA 归档继续。</div> : null}
+                {!constraintCandidates.length ? <div className="muted-left">当前没有可选完整语言表；可以只用项目译文归档继续。</div> : null}
                 {hiddenAnnouncementTermsArtifacts.length ? <div className="muted-left">已隐藏 {hiddenAnnouncementTermsArtifacts.length} 个已生成公告术语表；如需复用，请到「术语提取」步骤导入。</div> : null}
                 {constraintCandidates.map((artifact) => (
                   <label key={artifact.id} className="check-row">
@@ -322,7 +321,7 @@ export function AnnouncementWizard({
                 ))}
               </div>
               <div className="workflow-note-grid">
-                <div><strong>约束优先级</strong><span>项目 QA 归档 &gt; 完整语言表</span></div>
+                <div><strong>约束优先级</strong><span>QA 已通过归档 &gt; 其他项目归档 &gt; 完整语言表</span></div>
                 <div><strong>已选语言表</strong><span>{activeConstraintArtifactIds.length} 个</span></div>
                 <div><strong>当前任务</strong><span>{activeTask ? activeTask.title || activeTask.id : '-'}</span></div>
               </div>
@@ -360,7 +359,7 @@ export function AnnouncementWizard({
               aiSupplementResponseArtifactId={aiSupplementResponseArtifactId}
             />
           ) : step === 5 ? (
-            <AnnouncementActionStep title="译文反查" step={5} desc="按目标语言从项目 QA 归档和语言表反查译文，QA 归档优先；缺失术语会标记但不阻断翻译准备。" activeTask={activeTask} busy={busy} actionLabel="反查术语译文" onAction={() => run('lookup-translations', 6)} />
+            <AnnouncementActionStep title="译文反查" step={5} desc="按目标语言从项目译文归档和语言表反查译文；QA 已通过记录优先，缺失术语会标记但不阻断翻译准备。" activeTask={activeTask} busy={busy} actionLabel="反查术语译文" onAction={() => run('lookup-translations', 6)} />
           ) : step === 6 ? (
             <>
               <AnnouncementActionStep title="翻译准备" step={6} desc="按目标语言生成正文分段表和 AI 翻译上下文。正常流程下一步直接点 AI翻译，不需要手动下载过程文件。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备" onAction={() => run('prepare', 7)} />

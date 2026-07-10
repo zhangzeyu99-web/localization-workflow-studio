@@ -1,3 +1,4 @@
+import { AlertTriangle, Check, Download, FileUp } from 'lucide-react'
 import { artifactDownloadHref, artifactFileName, artifactPickerLabel, artifactsByRoles, pickerArtifacts } from '../../domain/artifacts'
 import { altColumnVisible } from '../../domain/projectAssets'
 import { formatDuration } from '../../domain/translationFlow'
@@ -18,14 +19,14 @@ export function SelectedInput({ label, artifact }: { label: string; artifact: Ar
 export function CheckItem({ ok, title, detail }: { ok: boolean; title: string; detail: string }) {
   return (
     <div className="check-item">
-      <div className={`check-icon ${ok ? 'check-pass' : 'check-warn'}`}>{ok ? '✓' : '!'}</div>
+      <div className={`check-icon ${ok ? 'check-pass' : 'check-warn'}`}>{ok ? <Check size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}</div>
       <div className="check-info"><div className="name">{title}</div><div className="detail">{detail}</div></div>
     </div>
   )
 }
 
 export function ActionStatus({ status, busy }: { status: string; busy: boolean }) {
-  if (!status) return null
+  if (!status || (!busy && status === '准备就绪')) return null
   // A 409 project_busy/capacity rejection (see apiClient's sanitizeUserFacingError)
   // lands here as plain status text from ~60 different call sites; detecting the
   // pattern once at the render point avoids wiring an "open active jobs panel"
@@ -117,7 +118,7 @@ export function GlossaryPreview({ rows, selectedLanguage = 'en' }: { rows: Gloss
 export function FileBox({ label, onFile, testId }: { label: string; onFile: (file: File) => void; testId?: string }) {
   return (
     <label className="upload-box" data-testid={testId}>
-      <div className="icon">📄</div>
+      <div className="icon"><FileUp size={28} strokeWidth={1.6} aria-hidden="true" /></div>
       <div className="label">{label}</div>
       <input type="file" hidden onChange={(event) => event.target.files?.[0] ? onFile(event.target.files[0]) : null} />
     </label>
@@ -125,7 +126,7 @@ export function FileBox({ label, onFile, testId }: { label: string; onFile: (fil
 }
 
 export function TemplateDownloadLink({ kind, label = '下载导入模板' }: { kind: string; label?: string }) {
-  return <a className="btn btn-ghost btn-sm" href={`/api/import-templates/${kind}`}>{label}</a>
+  return <a className="btn btn-ghost btn-sm" href={`/api/import-templates/${kind}`}><Download size={14} aria-hidden="true" />{label}</a>
 }
 
 export function FileBoxWithTemplate({

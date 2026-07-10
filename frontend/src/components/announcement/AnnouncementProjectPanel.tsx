@@ -5,6 +5,7 @@
 // from the "announcement" view and is loaded via React.lazy in main.tsx;
 // keeping this panel in its own module lets that lazy chunk actually split
 // instead of being pulled back into the main bundle through this import.
+import { Megaphone } from 'lucide-react'
 import { announcementStatusLabel } from '../../domain/announcementText'
 import { normalizeLanguageArray, languageSpec } from '../../languages'
 import type { AnnouncementTask } from '../../types'
@@ -42,11 +43,11 @@ export function AnnouncementProjectPanel({
   return (
     <div className="card tight announcement-project-panel">
       <div className="card-title">
-        <div className="left">📣 公告任务 / 外文本</div>
+        <div className="left icon-title"><Megaphone size={15} aria-hidden="true" />公告任务 / 外文本</div>
         <button className="btn btn-ghost btn-sm" onClick={onStartAnnouncement}>进入公告工作流</button>
       </div>
       {!activeTasks.length ? (
-        <div className="panel-desc">暂无公告任务。公告翻译归属于当前项目，用项目术语、QA归档和项目提示词约束游戏外文本。</div>
+        <div className="panel-desc">暂无公告任务。公告翻译归属于当前项目，并使用项目术语、译文归档和项目提示词约束游戏外文本。</div>
       ) : (
         <div className="announcement-task-list">
           {activeTasks.slice(0, 4).map((task) => {

@@ -227,7 +227,7 @@ export function useProjectActions(params: UseProjectActionsParams) {
       body: JSON.stringify({
         name: form.get('name'),
         type: form.get('type'),
-        icon: form.get('icon') || '🎮',
+        icon: form.get('icon') || '',
         description: form.get('description') || ''
       })
     })

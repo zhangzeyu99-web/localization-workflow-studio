@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import { CheckCircle2, PackageCheck, ShieldAlert, Wrench } from 'lucide-react'
 import { artifactDownloadHref, artifactRole, newestArtifact, pickerArtifacts, runArtifacts } from '../../../domain/artifacts'
 import { canSkipModelTranslation, latestRunOfKind } from '../../../domain/translationFlow'
+import { qaOutcomePresentation } from '../../../domain/workflowPresentation'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../../languages'
 import { ActionStatus, AssetSelect, FileBox } from '../../shared/WorkflowPrimitives'
 import type { ConfirmDialogOptions } from '../../modals/ConfirmModal'
@@ -13,10 +15,6 @@ import {
   issueSourceLabel,
   issueTypeLabel,
   qaPendingIssueCount,
-  qaRunActionText,
-  qaRunSummaryText,
-  qaRunTagClass,
-  qaStatusBadge,
   severityLabel
 } from '../QaIssuePanel'
 import { TaskHistoryTable } from '../TaskHistoryTable'
@@ -121,12 +119,10 @@ export function StepQA({
           : '请选择要校对的译文表'
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   const pendingIssueCount = qaPendingIssueCount(qaStatusRun, qaIssues)
-  const qaStatus = qaRunSummaryText(qaStatusRun, pendingIssueCount)
-  const qaNextAction = qaRunActionText(qaStatusRun, pendingIssueCount)
+  const qaOutcome = qaOutcomePresentation(qaStatusRun, pendingIssueCount, Boolean(qaFinalDownload))
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   const currentLanguageText = languageSpec(selectedLanguage).short
-  const qaTone = qaStatusRun?.status === 'passed' ? 'ready' : qaStatusRun?.status === 'failed' ? 'warn' : busy ? 'running' : 'neutral'
-  const qaStatusLabel = qaStatusRun ? qaStatusBadge(qaStatusRun.status) : '等待运行'
+  const qaTone = busy ? 'running' : qaOutcome.tone
   const qaActionStatus = status !== '准备就绪' ? status : ''
   const scrollToManualFixes = () => {
     document.querySelector('[data-testid="failed-row-editor"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -135,38 +131,35 @@ export function StepQA({
     <WorkflowStepShell
       stepLabel="STEP 8"
       title="QA 校对任务"
-      description="先确认校对输入，再运行 QA。未通过时先修复并重跑；急需时可带问题摘要交付。"
-      status={qaStatusLabel}
+      description="确认校对输入并运行 QA。通过后进入标准交付；未通过时可继续修复，或生成附带问题摘要的交付。"
+      status={qaOutcome.label}
       statusTone={qaTone}
-      nextAction={qaNextAction}
+      nextAction={qaOutcome.nextAction}
       side={
         <>
-          <div className={`qa-current-card ${qaStatusRun?.status === 'failed' ? 'qa-failed' : qaStatusRun?.status === 'passed' ? 'qa-passed' : ''}`}>
+          <div className={`qa-outcome-panel ${qaOutcome.tone}`} data-testid="qa-outcome-panel">
             <div className="qa-current-head">
-              <div>
-                <strong>QA 结论</strong>
-                <span>{qaStatus}</span>
+              <span className="qa-outcome-icon">
+                {qaOutcome.tone === 'ready' ? <CheckCircle2 size={19} aria-hidden="true" /> : qaOutcome.tone === 'warn' || qaOutcome.tone === 'blocked' ? <ShieldAlert size={19} aria-hidden="true" /> : <PackageCheck size={19} aria-hidden="true" />}
+              </span>
+              <div className="qa-outcome-copy">
+                <strong>{qaOutcome.label}</strong>
+                <span>{qaOutcome.summary}</span>
               </div>
-              <span className={`tag ${qaRunTagClass(qaStatusRun)}`}>{qaStatusRun ? qaStatusBadge(qaStatusRun.status) : '未运行'}</span>
             </div>
-            <div className="qa-current-grid compact-grid">
+            <div className="qa-current-grid">
               <div><span>校对文件</span><strong>{effectiveQaArtifact ? effectiveQaArtifact.label : '未选择'}</strong></div>
               <div><span>文件来源</span><strong>{originText}</strong></div>
-              <div><span>术语数量</span><strong>{glossaryCount} 条</strong></div>
-              <div><span>建议动作</span><strong>{qaNextAction}</strong></div>
+              <div><span>质量问题</span><strong>{qaStatusRun ? `${pendingIssueCount} 个待处理` : '尚未检查'}</strong></div>
+              <div><span>归档规则</span><strong>{qaStatusRun?.status === 'passed' ? '标准交付后记为 QA 已通过' : qaStatusRun?.status === 'failed' ? '带问题交付后记为待复核' : `项目术语 ${glossaryCount} 条`}</strong></div>
             </div>
-            {qaStatusRun?.status === 'failed' ? (
-              <div className="qa-blocker-line">
-                已保留译文文件和 QA 摘要。建议先修复并重跑；急需交付时，交付文件会附带问题摘要。
-              </div>
-            ) : null}
             {(qaFinalDownload || qaChangesDownload || (qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) && onGoDelivery)) ? (
               <div className="qa-result-actions">
                 {qaFinalDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-final" href={artifactDownloadHref(qaFinalDownload, project.id)}>下载校对后译文</a> : null}
                 {qaChangesDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-changes" href={artifactDownloadHref(qaChangesDownload, project.id)}>下载修改记录</a> : null}
                 {onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
                   <button className="btn btn-primary btn-sm" data-testid="qa-go-delivery" onClick={onGoDelivery}>
-                    {qaStatusRun.status === 'failed' ? '带问题摘要交付' : '进入交付'}
+                    <PackageCheck size={14} aria-hidden="true" />{qaStatusRun.status === 'failed' ? '生成带问题摘要的交付' : '进入标准交付'}
                   </button>
                 ) : null}
               </div>
@@ -174,7 +167,7 @@ export function StepQA({
           </div>
           <WorkflowSideCard title="建议处理" tone={qaStatusRun?.status === 'failed' ? 'warn' : 'neutral'}>
             <div className="workflow-action-stack">
-              <button className="btn btn-primary btn-sm" disabled={busy || !qaIssues.length} onClick={onModelFixes}>模型修复并重跑 QA</button>
+              <button className="btn btn-primary btn-sm" disabled={busy || !qaIssues.length} onClick={onModelFixes}><Wrench size={14} aria-hidden="true" />模型修复并重跑 QA</button>
               <button className="btn btn-ghost btn-sm" disabled={!qaIssues.length} onClick={scrollToManualFixes}>手动逐条修复</button>
               <button className="btn btn-ghost btn-sm" disabled={!onGoDelivery || !qaStatusRun || !['passed', 'failed'].includes(qaStatusRun.status)} onClick={() => onGoDelivery?.()}>查看交付页</button>
             </div>
@@ -311,7 +304,7 @@ export function FailedRowEditor({
           <strong>推荐处理顺序</strong>
           <span>先用模型批量修复并重跑 QA；仍失败的行再人工逐条改。</span>
         </div>
-        <button className="btn btn-primary btn-sm" disabled={busy || editable.length === 0} onClick={onModelFix}>🤖 模型修复并重跑 QA</button>
+        <button className="btn btn-primary btn-sm" disabled={busy || editable.length === 0} onClick={onModelFix}><Wrench size={14} aria-hidden="true" />模型修复并重跑 QA</button>
       </div>
       <details className="repair-panel" data-testid="failed-row-editor">
         <summary>展开可编辑问题（显示前 {visibleIssues.length} / {editable.length} 条）</summary>

@@ -255,6 +255,15 @@ def test_failed_qa_delivery_archives_translation_with_issue_source(tmp_path: Pat
     assert result["archive"]["artifact_id"] == final_artifact["id"]
     assert result["archive"]["source_type"] == "delivered_with_issues"
     assert result["archive"]["imported_count"] == 2
+    files = {item["kind"]: item for item in result["files"]}
+    assert Path(files["qa_summary"]["path"]).exists()
+    qa_summary = load_workbook(files["qa_summary"]["path"], read_only=True, data_only=True)
+    try:
+        assert {"总览", "详细记录"}.issubset(qa_summary.sheetnames)
+        summary = {row[0]: row[1] for row in qa_summary["总览"].iter_rows(min_row=2, values_only=True)}
+        assert summary["必须修复"] == 1
+    finally:
+        qa_summary.close()
     assert len(entries) == 2
     assert {entry["source_type"] for entry in entries} == {"delivered_with_issues"}
     assert {entry["target"] for entry in entries} == {"Start Game", "Claim Rewards"}
@@ -970,4 +979,3 @@ def test_deliverable_disappears_when_final_file_deleted_on_disk(tmp_path: Path) 
         refreshed = client.get(f"/api/projects/{project['id']}/deliverables")
         assert refreshed.status_code == 200
         assert refreshed.json()["deliverables"] == []
-

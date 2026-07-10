@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { FolderPlus } from 'lucide-react'
 import { errorText } from '../../appText'
 
 export function NewProjectModal({ onClose, onCreate }: { onClose: () => void; onCreate: (form: FormData) => Promise<void> }) {
@@ -23,7 +24,7 @@ export function NewProjectModal({ onClose, onCreate }: { onClose: () => void; on
   return (
     <div className="modal-mask show">
       <form className="modal" onSubmit={submit}>
-        <h3>🆕 新建本地化项目</h3>
+        <h3 className="icon-title"><FolderPlus size={18} aria-hidden="true" />新建本地化项目</h3>
         <p>填写基本信息即可创建，后续可在项目里完善提示词和术语表。</p>
         <label className="field-label">项目名称</label>
         <input name="name" placeholder="例如：星际边境 / 机甲纪元" required disabled={busy} />
@@ -40,8 +41,7 @@ export function NewProjectModal({ onClose, onCreate }: { onClose: () => void; on
         ) : (
           <input key="preset-type" name="type" type="hidden" value={typeMode} />
         )}
-        <label className="field-label">图标</label>
-        <input name="icon" placeholder="🎮" disabled={busy} />
+        <input name="icon" type="hidden" value="" />
         <label className="field-label">描述</label>
         <input name="description" placeholder="目标用户、题材、语气要求" disabled={busy} />
         {error ? <div className="inline-status error" data-testid="new-project-error">{error}</div> : null}

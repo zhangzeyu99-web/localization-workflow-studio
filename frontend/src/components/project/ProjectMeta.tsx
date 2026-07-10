@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Bot, Clipboard, FileInput, Pencil, Pin, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { api, sanitizeUserFacingError } from '../../apiClient'
 import { formatDate } from '../../domain/format'
 import { fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, linesToFixedTerms, linesToList, listToLines, linesToRules, projectPromptForLanguage, profileText, ruleSummary, rulesToLines } from '../../domain/projectAssets'
@@ -124,11 +125,11 @@ export function MetaTab({
     <>
       <div className="card reference-card">
         <div className="card-title">
-          <div className="left">🤖 当前项目翻译提示词（{lang.short}）</div>
+          <div className="left icon-title"><Bot size={16} aria-hidden="true" />当前项目翻译提示词（{lang.short}）</div>
           <div className="card-actions">
-            <button className="btn btn-ghost btn-sm" disabled={!promptText} onClick={copyPrompt}>📋 复制</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditingPrompt((value) => !value)}>✏️ 编辑</button>
-            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onAnalyze}>🔄 重新生成</button>
+            <button className="btn btn-ghost btn-sm" disabled={!promptText} onClick={copyPrompt}><Clipboard size={14} aria-hidden="true" />复制</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setEditingPrompt((value) => !value)}><Pencil size={14} aria-hidden="true" />编辑</button>
+            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onAnalyze}><RefreshCw size={14} aria-hidden="true" />重新生成</button>
           </div>
         </div>
         {editingPrompt ? (
@@ -153,7 +154,7 @@ export function MetaTab({
         onSave={saveMetaDraft}
       />
       <details className="advanced-panel meta-secondary-panel">
-        <summary>📥 资料与重新分析</summary>
+        <summary className="icon-title"><FileInput size={15} aria-hidden="true" />资料与重新分析</summary>
         <div className="advanced-body">
           <div className="card material-card">
             <div className="card-title">
@@ -185,7 +186,7 @@ export function MetaTab({
         </div>
       </details>
       <details className="advanced-panel meta-secondary-panel">
-        <summary>🧩 高级：项目 Harness / 规则包</summary>
+        <summary className="icon-title"><SlidersHorizontal size={15} aria-hidden="true" />高级：项目 Harness / 规则包</summary>
         <div className="advanced-body">
           <div className="card harness-card">
             <div className="card-title">
@@ -229,7 +230,7 @@ export function ProjectMetaTable({
   return (
     <div className="card reference-card">
       <div className="card-title">
-        <div className="left">📌 项目元信息</div>
+        <div className="left icon-title"><Pin size={15} aria-hidden="true" />项目元信息</div>
         <div className="card-actions">
           {editing ? (
             <>
@@ -237,7 +238,7 @@ export function ProjectMetaTable({
               <button className="btn btn-primary btn-sm" onClick={onSave}>保存元信息</button>
             </>
           ) : (
-            <button className="btn btn-ghost btn-sm" onClick={onEdit}>✏️ 编辑元信息</button>
+            <button className="btn btn-ghost btn-sm" onClick={onEdit}><Pencil size={14} aria-hidden="true" />编辑元信息</button>
           )}
         </div>
       </div>

@@ -320,7 +320,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         if (resultArtifact) setQaArtifact(resultArtifact)
         await refreshCurrent()
         if (tab === 'delivery') await refreshDeliverables()
-        setStatusForProject(projectId, `快速翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请到校对页修复；急需交付时可带问题摘要交付。`)
+        setStatusForProject(projectId, `快速翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请到校对页修复；时间受限时可生成带问题摘要的交付。`)
         return started
       }
       setStatusForProject(projectId, resumableRun
@@ -453,7 +453,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         const resultArtifact = newestArtifact(started.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
         if (resultArtifact) setQaArtifact(resultArtifact)
         setStep((prev) => (prev < 8 ? 8 : prev))
-        setStatusForProject(projectId, `翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请进入「QA 校对」步骤查看问题并修复；急需交付时可带问题摘要交付。`)
+        setStatusForProject(projectId, `翻译已完成，但 QA 未通过：${projectRunStatusText(started)}。请进入「QA 校对」步骤查看问题并修复；时间受限时可生成带问题摘要的交付。`)
         await refreshCurrent()
         if (tab === 'delivery') await refreshDeliverables()
         return
@@ -582,7 +582,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
       const hardCount = Number(result.quality_summary?.hard_errors || 0) || issues.filter((issue) => issue.severity === 'hard').length
       setStatusForProject(projectId, result.run.status === 'passed'
         ? '已有译文 QA 通过，可进入交付。'
-        : `QA 未通过：发现${issueCountPhrase(hardCount)}问题。建议先修复并重跑；急需交付时可带问题摘要进入交付。`)
+        : `QA 未通过：发现${issueCountPhrase(hardCount)}问题。建议先修复并重跑；时间受限时可生成带问题摘要的交付。`)
     } catch (error) {
       setStatusForProject(projectId, `已有译文 QA 失败：${errorText(error)}`)
     } finally {
@@ -684,7 +684,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         } else {
           const issues = await loadQualityIssues(resultRun.id, projectId)
           const hardCount = issues.filter((issue) => issue.severity === 'hard').length
-          setStatusForProject(projectId, `模型修复已完成，但 QA 仍有${issueCountPhrase(hardCount || issues.length)}问题。请继续修复；急需交付时可带问题摘要交付。`)
+          setStatusForProject(projectId, `模型修复已完成，但 QA 仍有${issueCountPhrase(hardCount || issues.length)}问题。请继续修复；时间受限时可生成带问题摘要的交付。`)
         }
       } else {
         setLatestRun(run)

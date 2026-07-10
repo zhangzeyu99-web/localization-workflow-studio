@@ -1,6 +1,8 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { FolderKanban, Languages, Plus, Settings, WandSparkles, Zap } from 'lucide-react'
 import './styles.css'
+import './styles/workbench.css'
 import { API } from './apiClient'
 import { refreshLanguageOptions, languageSpec, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
@@ -376,9 +378,12 @@ function App() {
     <div className="shell">
       <div className="app">
         <header className="header">
-          <div>
-            <h1>🎮 游戏翻译本地化 · 项目工作台</h1>
-            <p>Localization Workflow Studio</p>
+          <div className="brand-lockup">
+            <span className="brand-mark"><Languages size={22} aria-hidden="true" /></span>
+            <div>
+              <h1>本地化工作台</h1>
+              <p>Localization Workflow Studio</p>
+            </div>
           </div>
           <div className="header-actions">
             <span className={`status ${busy ? 'running' : ''}`}>{busy ? <span className="loading" /> : null}{status}</span>
@@ -386,13 +391,21 @@ function App() {
               <ActiveJobsBadge jobs={activeJobs} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
               {activeJobsPanelOpen ? <ActiveJobsPanel jobs={activeJobs} onClose={() => setActiveJobsPanelOpen(false)} /> : null}
             </div>
-            {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}>⚙ 设置</button> : null}
+            <span
+              className={versionMismatch ? 'runtime-version-badge version-mismatch' : 'runtime-version-badge'}
+              title={versionMismatch
+                ? `前端 v${bundleVersion} 与后端 v${backendVersion} 版本不一致，请刷新页面或重新部署前端`
+                : (runtimeVersion?.git_sha ? `commit ${runtimeVersion.git_sha}` : 'current deployment version')}
+            >
+              {versionMismatch ? `v${bundleVersion} / 后端 v${backendVersion} 版本不一致` : `v${bundleVersion}`}
+            </span>
+            {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}><Settings size={16} aria-hidden="true" />设置</button> : null}
           </div>
         </header>
 
         <div className="layout">
           <aside className="sidebar">
-            <div className="sidebar-title">📁 我的项目</div>
+            <div className="sidebar-title"><FolderKanban size={15} aria-hidden="true" />项目</div>
             <div className="project-list">
               {projects.map((project) => (
                 <ProjectListItem
@@ -408,14 +421,14 @@ function App() {
                 />
               ))}
             </div>
-            <button className="new-project-btn" onClick={() => setNewProjectOpen(true)}>+ 新建项目</button>
-            <div className="sidebar-title quick">⚡ 快捷入口</div>
+            <button className="new-project-btn" onClick={() => setNewProjectOpen(true)}><Plus size={15} aria-hidden="true" />新建项目</button>
+            <div className="sidebar-title quick"><Zap size={15} aria-hidden="true" />快捷入口</div>
             <button className="project-item quick-entry" onClick={() => current && setView('wizard')} disabled={!current}>
-              <span className="pname">🚀 开始新翻译任务</span>
+              <span className="pname"><WandSparkles size={16} aria-hidden="true" />新翻译任务</span>
               <span className="pmeta">基于当前项目启动工作流</span>
             </button>
             <button className="project-item quick-entry" data-testid="quick-task-entry" onClick={() => current && setView('quick')} disabled={!current}>
-              <span className="pname">⚡ 快速任务</span>
+              <span className="pname"><Zap size={16} aria-hidden="true" />快速任务</span>
               <span className="pmeta">三步完成翻译或校对</span>
             </button>
           </aside>
@@ -592,15 +605,6 @@ function App() {
             )}
           </main>
         </div>
-      </div>
-
-      <div
-        className={versionMismatch ? 'runtime-version-badge version-mismatch' : 'runtime-version-badge'}
-        title={versionMismatch
-          ? `前端 v${bundleVersion} 与后端 v${backendVersion} 版本不一致，请刷新页面或重新部署前端`
-          : (runtimeVersion?.git_sha ? `commit ${runtimeVersion.git_sha}` : 'current deployment version')}
-      >
-        {versionMismatch ? `v${bundleVersion} / 后端 v${backendVersion} 版本不一致` : `v${bundleVersion}`}
       </div>
 
       {newProjectOpen ? <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreate={createProject} /> : null}

@@ -343,6 +343,13 @@ export type LineProofreadState = {
   suggestions_artifact_id?: string
 }
 
+export type ReferenceAuditState = {
+  archive_entries?: number
+  reference_hit_rows?: number
+  reference_hits?: number
+  snapshot_artifact_id?: string
+}
+
 export type MultilingualQueueLanguage = {
   language: LanguageCode
   visible_language: string

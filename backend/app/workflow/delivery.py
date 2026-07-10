@@ -245,6 +245,9 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     if final_source["kind"] != "final_text" and _workbook_processed_rows(Path(final_source["path"]), run.get("language") or "en")["translated_rows"] <= 0:
         raise ValueError("最终译文为空，不能生成交付。请先完成翻译或 QA。")
     changes_source = _run_artifact(run["id"], "qa_changes")
+    quality_summary = run.get("metadata", {}).get("quality_summary") or {}
+    qa_passed = bool(quality_summary.get("passed", run.get("status") == "passed"))
+    qa_report_source = _run_artifact(run["id"], "qa_report")
 
     output_dir = project_dir(project_id) / "delivery"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -260,6 +263,7 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
         return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values()), "archive": None}
 
     final_path, changes_path = _delivery_output_paths(project, run)
+    qa_summary_path = _delivery_qa_summary_output_path(project, run)
     shutil.copy2(final_source["path"], final_path)
     _normalize_delivery_workbook_headers(final_path, run.get("language") or "en")
     if changes_source and Path(changes_source["path"]).exists():
@@ -267,6 +271,8 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     else:
         empty_changes = write_qa_changes_report(output_dir, [])
         empty_changes.replace(changes_path)
+    if not qa_passed:
+        _materialize_delivery_qa_summary(run, qa_report_source, qa_summary_path)
 
     _run_delivery_readback_gate(
         project_id,
@@ -281,6 +287,8 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
         "final": _delivery_file("final", final_path),
         "changes": _delivery_file("changes", changes_path),
     }
+    if not qa_passed:
+        summary["files"]["qa_summary"] = _delivery_file("qa_summary", qa_summary_path)
     archive_result = _archive_delivery_translation(project_id, run, final_source)
     return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values()), "archive": archive_result}
 
@@ -385,7 +393,9 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
 
 def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_artifact: dict[str, Any]) -> dict[str, Any]:
     changes_artifact = _run_artifact(run["id"], "qa_changes")
+    qa_report_artifact = _run_artifact(run["id"], "qa_report")
     final_path, changes_path = _delivery_output_paths(project, run)
+    qa_summary_path = _delivery_qa_summary_output_path(project, run)
     if final_artifact["kind"] == "final_text":
         final_path = _delivery_final_output_path(project, run, final_artifact)
     task_code, task_run_id = _effective_task_identity(run)
@@ -403,6 +413,8 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
     files = {"final": _delivery_file("final", final_path) if final_path.exists() else _expected_delivery_file("final", final_path)}
     if final_artifact["kind"] != "final_text":
         files["changes"] = _delivery_file("changes", changes_path) if changes_path.exists() else _expected_delivery_file("changes", changes_path)
+        if not qa_passed:
+            files["qa_summary"] = _delivery_file("qa_summary", qa_summary_path) if qa_summary_path.exists() else _expected_delivery_file("qa_summary", qa_summary_path)
     return _build_deliverable_summary(
         run_id=run["id"],
         task_code=task_code,
@@ -427,6 +439,7 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
             "qa_final_workbook": final_artifact["id"] if final_artifact["kind"] == "qa_final_workbook" else "",
             "final_text": final_artifact["id"] if final_artifact["kind"] == "final_text" else "",
             "qa_changes": changes_artifact["id"] if changes_artifact else "",
+            "qa_report": qa_report_artifact["id"] if qa_report_artifact else "",
         },
     )
 
@@ -497,6 +510,50 @@ def _delivery_output_paths(project: dict[str, Any], run: dict[str, Any]) -> tupl
     language = _visible_language_code(run.get("language") or "en")
     prefix = f"{_safe_delivery_name(project['name'])}_{language}_{timestamp}_{task_code}-{_short_run_id(task_run_id)}"
     return output_dir / f"{prefix}_final.xlsx", output_dir / f"{prefix}_changes.xlsx"
+
+
+def _delivery_qa_summary_output_path(project: dict[str, Any], run: dict[str, Any]) -> Path:
+    final_path, _ = _delivery_output_paths(project, run)
+    return final_path.with_name(f"{final_path.stem.removesuffix('_final')}_qa_summary.xlsx")
+
+
+def _materialize_delivery_qa_summary(run: dict[str, Any], source: dict[str, Any] | None, destination: Path) -> None:
+    if source and Path(str(source.get("path") or "")).exists():
+        shutil.copy2(source["path"], destination)
+        return
+
+    quality = run.get("metadata", {}).get("quality_summary") or {}
+    hard_errors = int(quality.get("hard_errors") or 0)
+    soft_warnings = _soft_warning_count(quality)
+    wb = Workbook()
+    summary = wb.active
+    summary.title = "总览"
+    summary.append(["指标", "值"])
+    summary.append(["QA 状态", "未通过"])
+    summary.append(["必须修复", hard_errors])
+    summary.append(["建议修复", soft_warnings])
+    summary.append(["说明", "原始 QA 报告缺失；本摘要根据任务质量元数据生成。"])
+    details = wb.create_sheet("详细记录")
+    details.append(["检查来源", "必须修复", "建议修复", "状态"])
+    for key, label in (
+        ("global_harness_quality", "通用规则"),
+        ("project_harness_quality", "项目规则"),
+        ("semantic_qa", "模型语义校对"),
+    ):
+        payload = quality.get(key) if isinstance(quality.get(key), dict) else {}
+        if not payload:
+            continue
+        details.append([
+            label,
+            int(payload.get("hard_errors") or 0),
+            int(payload.get("soft_warnings") or payload.get("warnings") or 0),
+            str(payload.get("status") or "未通过"),
+        ])
+    if details.max_row == 1:
+        details.append(["任务质量汇总", hard_errors, soft_warnings, "未通过"])
+    wb.save(destination)
+    wb.close()
+    db.add_event(run["id"], "delivery QA summary rebuilt from quality metadata because the original report was missing")
 
 
 def _delivery_final_output_path(project: dict[str, Any], run: dict[str, Any], source_artifact: dict[str, Any]) -> Path:

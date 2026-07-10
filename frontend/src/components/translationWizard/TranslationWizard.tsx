@@ -1,3 +1,4 @@
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, Languages } from 'lucide-react'
 import { matchesTranslationRun, translationInputMode, translationNextStep } from '../../domain/translationFlow'
 import { type LanguageCode } from '../../languages'
 import { ActionStatus } from '../shared/WorkflowPrimitives'
@@ -12,6 +13,7 @@ import { StepLang } from './steps/StepLang'
 import { StepTranslate } from './steps/StepTranslate'
 import { StepQA } from './steps/StepQA'
 import { StepDone, wizardDeliveryFiles } from './steps/StepDone'
+import { PhaseStepper } from './PhaseStepper'
 
 export const steps = ['项目资料', 'AI 分析', '术语表', '判定输入', '术语候选', '目标语言', 'AI 翻译', 'QA 校对', '交付']
 
@@ -84,6 +86,7 @@ export function Wizard(props: {
     ? wizardDeliveryFiles(project, props.latestRun, props.deliverables, props.generatedDeliveryRunId, props.generatedDeliveryFiles)
     : []
   const stepDeliveryReady = step !== 9 || stepDeliveryFiles.length > 0
+  const skippedSteps = translationInputMode(sourceReadiness) === 'ready_for_qa' ? [5, 6, 7] : []
   const goNext = () => {
     if (stepTranslationActive) return
     if (step === 4 && translationInputMode(props.sourceInputNotice) === 'invalid') {
@@ -103,20 +106,17 @@ export function Wizard(props: {
   return (
     <>
       <div className="proj-head">
-        <div>
-          <h2>🚀 新翻译任务 · 当前项目：{project.icon} {project.name}</h2>
-          <div className="desc">完成 9 个步骤即可输出译文，过程中的术语、提示词和产物将回写到本项目。</div>
+        <div className="page-title-lockup">
+          <span className="page-title-icon"><Languages size={20} aria-hidden="true" /></span>
+          <div>
+            <h2>新翻译任务</h2>
+            <div className="desc">{project.name} · 术语、提示词、QA 结果和交付记录会持续回写到项目。</div>
+          </div>
         </div>
-        <button className="btn btn-ghost" onClick={props.onBack}>← 返回项目概览</button>
+        <button className="btn btn-ghost" onClick={props.onBack}><ArrowLeft size={16} aria-hidden="true" />返回项目概览</button>
       </div>
-      <div className="steps-nav">
-        {steps.map((title, index) => (
-          <button key={title} data-testid={`step-${index + 1}`} className={`step-item ${index + 1 === step ? 'active' : index + 1 < step ? 'done' : ''}`} onClick={() => setStep(index + 1)}>
-            <span className="num">{index + 1}</span>{title}
-          </button>
-        ))}
-      </div>
-      {step !== 7 ? <ActionStatus status={props.status} busy={props.busy} /> : null}
+      <PhaseStepper step={step} steps={steps} skippedSteps={skippedSteps} onStepChange={setStep} />
+      {step !== 7 && (props.busy || props.status !== '准备就绪') ? <ActionStatus status={props.status} busy={props.busy} /> : null}
       <div className="step-panel active">
         {step === 1 ? <StepIntro {...props} /> : null}
         {step === 2 ? <StepAnalyze {...props} /> : null}
@@ -129,14 +129,14 @@ export function Wizard(props: {
         {step === 9 ? <StepDone {...props} /> : null}
       </div>
       <div className="actions">
-        <button className="btn btn-ghost" disabled={step === 1} onClick={() => setStep(step - 1)}>← 上一步</button>
+        <button className="btn btn-ghost" disabled={step === 1} onClick={() => setStep(step - 1)}><ChevronLeft size={16} aria-hidden="true" />上一步</button>
         <button
           className="btn btn-primary"
           disabled={props.busy || stepTranslationActive || (step === 9 && !stepDeliveryReady)}
           onClick={step === 9 ? props.onFinishDelivery : goNext}
           title={step === 9 && !stepDeliveryReady ? '请先生成交付文件，下载入口出现后再完成。' : undefined}
         >
-          {step === 9 ? '🏁 完成' : stepTranslationActive ? '等待翻译完成' : '下一步 →'}
+          {step === 9 ? <><Check size={16} aria-hidden="true" />完成</> : stepTranslationActive ? '等待翻译完成' : <>下一步<ChevronRight size={16} aria-hidden="true" /></>}
         </button>
       </div>
     </>

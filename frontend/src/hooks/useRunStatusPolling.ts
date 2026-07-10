@@ -57,7 +57,7 @@ export function useRunStatusPolling(
           } else {
             const issues = await loadQualityIssues(resultRun.id, runProjectId)
             const hardCount = issues.filter((issue) => issue.severity === 'hard').length
-            setStatus(`模型修复已完成，但 QA 仍有${issueCountPhrase(hardCount || issues.length)}问题。请继续修复；急需交付时可带问题摘要交付。`)
+            setStatus(`模型修复已完成，但 QA 仍有${issueCountPhrase(hardCount || issues.length)}问题。请继续修复；时间受限时可生成带问题摘要的交付。`)
           }
         } else if (modelFixStatus === 'failed') {
           setStatus(`模型修复失败：${String(updated.metadata?.model_fix_error || updated.metadata?.error || '请检查 API 配置和 QA 输入。')}`)
@@ -70,7 +70,7 @@ export function useRunStatusPolling(
       } else if (updated.kind === 'translation' && updated.status === 'failed') {
         const progress = getTranslationProgress(updated)
         if (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows) {
-          setStatus(`翻译已完成，但 QA 未通过：${projectRunStatusText(updated)}。请进入「QA 校对」步骤查看问题并修复；急需交付时可带问题摘要交付。`)
+          setStatus(`翻译已完成，但 QA 未通过：${projectRunStatusText(updated)}。请进入「QA 校对」步骤查看问题并修复；时间受限时可生成带问题摘要的交付。`)
           const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
           if (resultArtifact) setQaArtifact(resultArtifact)
           setStep((prev) => (prev < 8 ? 8 : prev))

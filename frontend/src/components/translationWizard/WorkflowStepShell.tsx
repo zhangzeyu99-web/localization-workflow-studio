@@ -14,7 +14,7 @@ export function WorkflowStepShell({
   title: string
   description: string
   status: string
-  statusTone?: 'neutral' | 'ready' | 'warn' | 'blocked' | 'running'
+  statusTone?: 'neutral' | 'info' | 'ready' | 'warn' | 'blocked' | 'running'
   nextAction: string
   children: React.ReactNode
   side: React.ReactNode

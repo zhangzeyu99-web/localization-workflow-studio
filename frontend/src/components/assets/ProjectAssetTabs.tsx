@@ -3,6 +3,7 @@ import { WIDE_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import { artifactPickerLabel } from '../../domain/artifacts'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
 import { ActionStatus, AssetSelect, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector } from '../shared/WorkflowPrimitives'
+import { ArchiveProvenanceBadge } from '../shared/StatusPrimitives'
 import { altColumnVisible, displayLanguagesForWideRows, glossaryWideRowMatches, glossaryWideRows, languageFromValue, normalizeGlossaryNote, rowRecords, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from '../../domain/projectAssets'
 import type { Artifact, GlossaryPreviewRow, GlossaryTerm, Project, TranslationEntry, WideGlossaryRow, WideTranslationRow } from '../../types'
 
@@ -459,7 +460,7 @@ function TranslationArchiveTabImpl({
   const currentPage = Math.min(page, totalPages)
   const currentRows = pagedRows(filteredRows, currentPage)
   const lang = languageSpec(selectedLanguage)
-  const colSpan = 4 + visibleLanguages.reduce((total, code) => total + (altColumnVisible(code) ? 2 : 1), 0)
+  const colSpan = 5 + visibleLanguages.reduce((total, code) => total + (altColumnVisible(code) ? 2 : 1), 0)
 
   useEffect(() => {
     setPage(1)
@@ -501,7 +502,7 @@ function TranslationArchiveTabImpl({
         <div className="empty-action-card asset-empty-state" data-testid="archive-empty-state">
           <div>
             <strong>还没有译文归档</strong>
-            <span>优先导入已翻译表，或先去校对已有译文；QA 通过后也会自动写入这里。</span>
+            <span>可导入已有译文表，或先运行 QA。标准交付会写入可信归档；带问题交付也会归档，并明确标记为“待复核”。</span>
           </div>
           <div className="row-actions compact-actions">
             <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button>
@@ -548,6 +549,7 @@ function TranslationArchiveTabImpl({
                       </React.Fragment>
                     )
                   })}
+                  <th>来源</th>
                   <th>备注</th>
                   <th>操作</th>
                 </tr>
@@ -737,6 +739,13 @@ function WideTranslationEntryRowImpl({
           {altColumnVisible(code) ? <td>{enAltCell()}</td> : null}
         </React.Fragment>
       ))}
+      <td>
+        <div className="provenance-list">
+          {[...new Set(rowRecords<TranslationEntry>(row).map((record) => record.source_type || ''))].map((sourceType) => (
+            <ArchiveProvenanceBadge key={sourceType || 'unknown'} sourceType={sourceType} />
+          ))}
+        </div>
+      </td>
       <td>{sharedCell('note')}</td>
       <td>
         <div className="table-actions">

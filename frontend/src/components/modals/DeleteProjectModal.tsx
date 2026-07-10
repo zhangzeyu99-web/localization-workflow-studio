@@ -1,10 +1,11 @@
+import { AlertTriangle } from 'lucide-react'
 import type { Project } from '../../types'
 
 export function DeleteProjectModal({ project, busy, onClose, onDelete }: { project: Project; busy: boolean; onClose: () => void; onDelete: (project: Project) => void }) {
   return (
     <div className="modal-mask show">
       <div className="modal delete-project-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title">
-        <h3 id="delete-project-title">⚠️ 删除项目</h3>
+        <h3 id="delete-project-title" className="icon-title"><AlertTriangle size={18} aria-hidden="true" />删除项目</h3>
         <p>你正在删除 <strong>{project.icon ? `${project.icon} ` : ''}{project.name}</strong>。</p>
         <div className="delete-warning">
           <strong>此操作不可撤销</strong>
