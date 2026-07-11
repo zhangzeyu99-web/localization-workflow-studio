@@ -30,6 +30,7 @@ export function StepQA({
   setQaArtifact,
   onDirectQA,
   onDirectQAQueue,
+  onCancelQa,
   onSkipQAArchive,
   allowSkipQAArchive = false,
   onManualFixes,
@@ -53,6 +54,7 @@ export function StepQA({
   setQaArtifact: (artifact: Artifact | null) => void
   onDirectQA: (artifact?: Artifact | null) => void
   onDirectQAQueue?: () => void
+  onCancelQa?: (run?: Run | null) => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
   allowSkipQAArchive?: boolean
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
@@ -117,7 +119,11 @@ export function StepQA({
   const qaOutcome = qaOutcomePresentation(qaStatusRun, pendingIssueCount, Boolean(qaFinalDownload))
   const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   const currentLanguageText = languageSpec(selectedLanguage).short
-  const qaTone = busy ? 'running' : qaOutcome.tone
+  // QA runs as a background job now: "running" comes from the run itself, not
+  // from the short-lived interactive busy flag.
+  const qaActive = Boolean(qaStatusRun && qaStatusRun.kind === 'qa' && ['queued', 'running'].includes(qaStatusRun.status))
+  const qaCancelRequested = Boolean(qaActive && qaStatusRun?.metadata?.cancel_requested_at)
+  const qaTone = busy || qaActive ? 'running' : qaOutcome.tone
   const scrollToManualFixes = () => {
     document.querySelector('[data-testid="failed-row-editor"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
@@ -208,11 +214,16 @@ export function StepQA({
                 <strong>运行 QA</strong>
                 <span>{effectiveQaArtifact ? currentLanguageText : '需先选择译文'}</span>
               </div>
-              <button className="btn btn-primary" data-testid="run-qa" disabled={!effectiveQaArtifact || busy} onClick={() => {
+              <button className="btn btn-primary" data-testid="run-qa" disabled={!effectiveQaArtifact || busy || qaActive} onClick={() => {
                 if (!qaArtifact && previousTranslationArtifact) setQaArtifact(previousTranslationArtifact)
                 onDirectQA(effectiveQaArtifact)
               }}>运行 {currentLanguageText} QA</button>
-              {(busy || status !== '准备就绪') ? <ActionStatus status={status} busy={busy} /> : null}
+              {qaActive && onCancelQa ? (
+                <button className="btn btn-ghost" data-testid="cancel-qa" disabled={busy || qaCancelRequested} onClick={() => onCancelQa(qaStatusRun)}>
+                  {qaCancelRequested ? '正在取消…' : '取消 QA'}
+                </button>
+              ) : null}
+              {(busy || qaActive || status !== '准备就绪') ? <ActionStatus status={status} busy={busy || qaActive} /> : null}
             </div>
           </div>
           {!effectiveQaArtifact ? <div className="warn-line">请选择译文文件。</div> : null}

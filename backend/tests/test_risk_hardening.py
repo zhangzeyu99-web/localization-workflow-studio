@@ -24,6 +24,10 @@ from app.main import app
 from app.providers import TranslationItem, call_text, openai_responses_translate_batch, translate_batch
 from conftest import reset_data_root, wait_for_background_jobs
 
+# Repo-layout tests must not depend on pytest's working directory (the suite
+# is run both from the repo root and from backend/).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 @pytest.fixture(autouse=True)
 def reset_test_state(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -799,11 +803,13 @@ def test_cancel_translation_run_matches_run_prefixed_lease_job_id() -> None:
 
 def test_core_python_files_do_not_have_utf8_bom() -> None:
     for relative in ("backend/app/config.py", "backend/app/workflow/common.py"):
-        assert not Path(relative).read_bytes().startswith(b"\xef\xbb\xbf")
+        assert not (_REPO_ROOT / relative).read_bytes().startswith(b"\xef\xbb\xbf")
 
 
 def test_workflow_modules_do_not_use_legacy_common_star_imports() -> None:
-    for path in Path("backend/app/workflow").glob("*.py"):
+    paths = list((_REPO_ROOT / "backend/app/workflow").glob("*.py"))
+    assert paths, "workflow package not found; repo-root anchoring is broken"
+    for path in paths:
         text = path.read_text(encoding="utf-8")
         assert "from .common import *" not in text
         assert "ruff: noqa: F403,F405" not in text
@@ -817,7 +823,7 @@ def test_no_read_modify_write_metadata_spread_pattern_regression() -> None:
     different projects run in parallel, so this must stay at zero).
     """
     offenders: list[str] = []
-    for path in Path("backend/app").rglob("*.py"):
+    for path in (_REPO_ROOT / "backend/app").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         if "metadata={**" in text:
             offenders.append(str(path))
@@ -913,7 +919,7 @@ def test_complete_language_table_classifier_boundary(tmp_path: Path, headers: li
 def test_deployment_check_frontend_asset_comparison(tmp_path: Path) -> None:
     import importlib.util
 
-    script_path = Path("scripts/deployment_check.py").resolve()
+    script_path = (_REPO_ROOT / "scripts/deployment_check.py").resolve()
     spec = importlib.util.spec_from_file_location("deployment_check", script_path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

@@ -58,6 +58,7 @@ export interface ProjectOverviewProps {
   onTranslateQueue?: () => void
   onDirectQA: (artifact?: Artifact | null) => void
   onDirectQAQueue?: () => void
+  onCancelQa?: (run?: Run | null) => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void
   onModelFixes: () => void
@@ -125,6 +126,7 @@ function ProjectOverviewImpl({
   onTranslateQueue,
   onDirectQA,
   onDirectQAQueue,
+  onCancelQa,
   onSkipQAArchive,
   onManualFixes,
   onModelFixes,
@@ -299,6 +301,7 @@ function ProjectOverviewImpl({
           setQaArtifact={setQaArtifact}
           onDirectQA={onDirectQA}
           onDirectQAQueue={onDirectQAQueue}
+          onCancelQa={onCancelQa}
           onSkipQAArchive={onSkipQAArchive}
           onManualFixes={onManualFixes}
           onModelFixes={onModelFixes}

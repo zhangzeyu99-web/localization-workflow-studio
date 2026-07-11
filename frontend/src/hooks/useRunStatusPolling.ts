@@ -28,7 +28,8 @@ export function useRunStatusPolling(
   setBusyForProject: (projectId: string, value: boolean) => void,
   loadQualityIssues: (runId: string, projectId?: string) => Promise<QualityIssue[]>,
   refreshCurrent: (projectId?: string) => Promise<Project | null>,
-  refreshDeliverables: (projectId?: string) => Promise<void>
+  refreshDeliverables: (projectId?: string) => Promise<void>,
+  refreshProjects?: () => Promise<void>
 ) {
   const enabled = Boolean(latestRun && ['queued', 'running'].includes(latestRun.status))
   const consecutiveFailuresRef = useRef(0)
@@ -84,6 +85,17 @@ export function useRunStatusPolling(
         } else {
           setStatus(`翻译中断：${projectRunStatusText(updated)}。可在「AI 翻译」步骤点击继续 AI 翻译。`)
         }
+      } else if (updated.kind === 'qa' && updated.status === 'passed') {
+        const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook'])
+        if (resultArtifact) setQaArtifact(resultArtifact)
+        setQualityIssues([])
+        setStatus('QA 通过，可进入交付。')
+      } else if (updated.kind === 'qa' && updated.status === 'failed') {
+        const issues = await loadQualityIssues(updated.id, runProjectId)
+        const hardCount = issues.filter((issue) => issue.severity === 'hard').length
+        setStatus(`QA 未通过：发现${issueCountPhrase(hardCount || issues.length)}问题。建议先修复并重跑；时间受限时可生成带问题摘要的交付。`)
+      } else if (updated.kind === 'qa' && updated.status === 'canceled') {
+        setStatus('QA 已取消，未写入任何结果；可重新运行 QA。')
       } else if (latestEvent?.message) {
         setStatus(`后台任务${humanTaskStatus(updated.status)}：${humanBackendEvent(latestEvent.message)}`)
       }
@@ -91,6 +103,9 @@ export function useRunStatusPolling(
         setBusyForProject(runProjectId, false)
         await refreshCurrent()
         if (tab === 'delivery') await refreshDeliverables()
+        // Refresh the project list immediately so sidebar badges reflect the
+        // terminal state now instead of after the next 10s list poll.
+        if (refreshProjects) refreshProjects().catch(() => undefined)
       }
     } catch (error) {
       if (isStale()) return

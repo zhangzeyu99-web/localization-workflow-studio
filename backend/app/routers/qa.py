@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from .. import db
-from ..jobs import active_job_id_for_project, start_singleton_job
+from ..config import load_settings
+from ..jobs import active_job_id_for_project, cancel_singleton_job, start_singleton_job
 from ..schemas import (
     ManualFixRequest,
     ModelFixRequest,
     MultilingualQueueRequest,
 )
 from ..workflow import (
+    QaCanceled,
     apply_manual_fixes,
     apply_model_fixes,
+    create_manual_fix_qa_run,
     create_project_improvement,
     create_improvement_review,
     create_semantic_qa_context,
@@ -39,6 +42,74 @@ def qa(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
+def _start_background_qa(run_id: str) -> dict[str, Any]:
+    """Start the QA pipeline for ``run_id`` as a background job.
+
+    Shares the per-project lease with translation/model-fix/announcement
+    jobs, so the same project serializes while other projects keep running.
+    """
+    run = db.get_run(run_id)  # KeyError -> caller maps to 404
+    project_id = run["project_id"]
+    job_id = f"qa:{run_id}"
+    active = active_job_id_for_project(project_id)
+    if active and active != job_id:
+        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
+    # Snapshot settings at the task entry point (same rule as model-fix /
+    # multilingual jobs): a settings PATCH mid-job must not switch the
+    # semantic QA provider halfway through this run.
+    job_settings = load_settings()
+    original_status = str(run.get("status") or "created")
+    db.merge_run_metadata(run_id, {"queued_at": db.now_iso()})
+    db.update_run(run_id, status="queued")
+
+    def worker(cancel_event: Any) -> None:
+        try:
+            run_qa_sync(run_id, settings=job_settings, cancel_event=cancel_event)
+        except QaCanceled:
+            try:
+                db.merge_run_metadata(run_id, {"canceled_at": db.now_iso()})
+                db.update_run(run_id, status="canceled")
+                db.add_event(run_id, "QA canceled before completion; no partial results were written")
+            except Exception:
+                pass
+        except Exception as exc:
+            try:
+                friendly = user_facing_error(exc)
+                db.merge_run_metadata(run_id, {"error": friendly})
+                db.update_run(run_id, status="failed")
+                db.add_event(run_id, f"qa failed: {friendly}", level="error")
+            except Exception:
+                pass
+
+    started, conflict = start_singleton_job(project_id, job_id, worker)
+    if not started and conflict:
+        db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
+        db.update_run(run_id, status=original_status)
+        raise HTTPException(status_code=409, detail=_job_conflict_detail(conflict))
+    db.add_event(run_id, "qa background job started")
+    return db.get_run(run_id)
+
+
+@router.post("/api/runs/{run_id}/qa/start")
+def qa_start(run_id: str) -> dict[str, Any]:
+    try:
+        return _start_background_qa(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run or artifact not found") from exc
+
+
+@router.post("/api/runs/{run_id}/qa/cancel")
+def qa_cancel(run_id: str) -> dict[str, Any]:
+    try:
+        run = db.get_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    cancel_singleton_job(run["project_id"], f"qa:{run_id}")
+    db.merge_run_metadata(run_id, {"cancel_requested_at": db.now_iso()})
+    db.add_event(run_id, "qa cancel requested; stops at the next pipeline stage boundary")
+    return db.get_run(run_id)
+
+
 @router.post("/api/projects/{project_id}/multilingual/qa/start")
 def start_multilingual_qa(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
     try:
@@ -65,6 +136,36 @@ def manual_fixes(run_id: str, payload: ManualFixRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
+
+
+@router.post("/api/runs/{run_id}/manual-fixes/start")
+def manual_fixes_start(run_id: str, payload: ManualFixRequest) -> dict[str, Any]:
+    """Apply manual fixes synchronously (fast) and rerun QA in the background.
+
+    The sync ``/manual-fixes`` endpoint reruns the whole QA pipeline inside
+    the request, which blocks the UI for minutes on large workbooks. This
+    variant returns the created QA run immediately; the frontend follows it
+    with the normal run-status polling.
+    """
+    try:
+        source_run = db.get_run(run_id)
+        no_rerun = payload.model_copy(update={"rerun_qa": False})
+        result = apply_manual_fixes(run_id, no_rerun)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
+    response: dict[str, Any] = {
+        "source_run": result["source_run"],
+        "fixed_artifact": result["fixed_artifact"],
+        "manual_fixes": result["manual_fixes"],
+        "qa_run": None,
+    }
+    if payload.rerun_qa:
+        source_artifact = {"id": (result["fixed_artifact"].get("metadata") or {}).get("source_artifact_id") or ""}
+        qa_run = create_manual_fix_qa_run(source_run, result["fixed_artifact"], source_artifact, result["manual_fixes"])
+        response["qa_run"] = _start_background_qa(qa_run["id"])
+    return response
 
 
 @router.post("/api/runs/{run_id}/model-fixes")

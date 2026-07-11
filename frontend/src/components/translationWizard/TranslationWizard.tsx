@@ -63,6 +63,7 @@ export function Wizard(props: {
   onCancelTranslate: (run?: Run | null) => void
   onDirectQA: (artifact?: Artifact | null) => void
   onDirectQAQueue?: () => void
+  onCancelQa?: (run?: Run | null) => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
   allowSkipQAArchive?: boolean
   onManualFixes: (fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) => void

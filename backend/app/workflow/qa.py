@@ -332,20 +332,34 @@ def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
         "qa_result": None,
     }
     if getattr(request, "rerun_qa", True):
-        qa_run = db.insert_run(
-            project_id,
-            kind="qa",
-            language=run.get("language", "en"),
-            metadata={
-                "input_artifact_id": fixed_artifact["id"],
-                "manual_fix_source_run_id": run_id,
-                "manual_fix_source_artifact_id": source_artifact["id"],
-                "manual_fix_count": len(applied),
-                "manual_fixes": applied,
-            },
-        )
+        qa_run = create_manual_fix_qa_run(run, fixed_artifact, source_artifact, applied)
         result["qa_result"] = run_qa_sync(qa_run["id"])
     return result
+
+
+def create_manual_fix_qa_run(
+    source_run: dict[str, Any],
+    fixed_artifact: dict[str, Any],
+    source_artifact: dict[str, Any],
+    applied: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create (but do not execute) the QA rerun for a manual-fix batch.
+
+    Shared by the sync ``/manual-fixes`` path and the background
+    ``/manual-fixes/start`` path so both produce identical run metadata.
+    """
+    return db.insert_run(
+        source_run["project_id"],
+        kind="qa",
+        language=source_run.get("language", "en"),
+        metadata={
+            "input_artifact_id": fixed_artifact["id"],
+            "manual_fix_source_run_id": source_run["id"],
+            "manual_fix_source_artifact_id": source_artifact["id"],
+            "manual_fix_count": len(applied),
+            "manual_fixes": applied,
+        },
+    )
 
 
 def create_semantic_qa_context(run_id: str) -> dict[str, Any]:
@@ -373,7 +387,21 @@ def create_semantic_qa_context(run_id: str) -> dict[str, Any]:
     return {"run": db.get_run(run_id), "artifact": artifact, "semantic_qa": report}
 
 
-def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+class QaCanceled(Exception):
+    """Raised inside the QA pipeline when a cancel was requested.
+
+    QA has no batch-level resume, so cancellation is checked at stage
+    boundaries (before machine review, quality harness, semantic QA and
+    final write-back); a stage that already started runs to completion.
+    """
+
+
+def _check_qa_cancel(cancel_event: Any | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise QaCanceled()
+
+
+def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
     """Run the full QA pipeline for a run.
 
     ``settings`` lets a caller that already holds a task-start snapshot
@@ -381,6 +409,10 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None) -> dict[str
     to the semantic QA provider call instead of letting this reload
     settings mid-task. Bare sync callers (the ``/api/runs/{id}/qa``
     endpoint) omit it and get a single fresh load for this request.
+
+    ``cancel_event`` (a ``threading.Event``) makes the pipeline raise
+    :class:`QaCanceled` at the next stage boundary once set; background
+    job entry points catch it and mark the run canceled.
     """
     settings = settings if settings is not None else load_settings()
     run = db.get_run(run_id)
@@ -390,6 +422,7 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None) -> dict[str
     workbook_path = Path(workbook_artifact["path"])
     if not workbook_path.exists():
         raise ValueError("译文表文件不存在，请重新上传或重新生成翻译结果后再运行 QA。")
+    _check_qa_cancel(cancel_event)
     db.update_run(run_id, status="running")
 
     output_dir = run_dir(run_id) / "qa"
@@ -400,6 +433,7 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None) -> dict[str
     glossary_snapshot = create_project_glossary_snapshot(project["id"], run_id, output_dir / "snapshots", language=language)
     snapshots = create_prompt_and_harness_snapshots(project["id"], run_id, output_dir / "snapshots", language=language)
     reference_snapshot = create_quick_reference_snapshot(project["id"], run_id, metadata.get("reference_artifact_ids"), output_dir / "snapshots")
+    _check_qa_cancel(cancel_event)
     qa_result = run_localization_qa(
         project=project,
         run_id=run_id,
@@ -412,7 +446,9 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None) -> dict[str
         manual_fixes=metadata.get("manual_fixes") or [],
         language=language,
         settings=settings,
+        cancel_event=cancel_event,
     )
+    _check_qa_cancel(cancel_event)
     input_artifacts = {
         "translation_workbook": workbook_artifact["id"],
         "glossary_snapshot": glossary_snapshot["id"],
@@ -462,6 +498,7 @@ def run_localization_qa(
     manual_fixes: list[dict[str, Any]] | None = None,
     language: str = "en",
     settings: dict[str, Any] | None = None,
+    cancel_event: Any | None = None,
 ) -> dict[str, Any]:
     language = require_supported_language(language)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -484,6 +521,7 @@ def run_localization_qa(
     qa_workbook = machine_dir / f"result_{language}.xlsx"
     qa_report = machine_dir / f"report_{language}.xlsx"
     _normalize_review_workbook_sheet_names(qa_workbook, workbook_path)
+    _check_qa_cancel(cancel_event)
     quality_args = [
         sys.executable,
         str(LOCALIZATION_ROOT / "scripts" / "run_quality_harness.py"),
@@ -499,6 +537,7 @@ def run_localization_qa(
         quality_args.insert(2, str(LOCALIZATION_ROOT / "fixtures" / "quality_regression.json"))
     quality = _run_quality_json(quality_args, run_id)
     project_harness_quality = run_project_harness_qa(qa_workbook, harness_snapshot["project_harness"], language=language)
+    _check_qa_cancel(cancel_event)
     semantic_qa = run_semantic_qa_report(run_id, project["id"], qa_workbook, quality, project_harness_quality, language=language, settings=settings)
     semantic_qa = _dedupe_semantic_qa_against_deterministic(semantic_qa, quality, project_harness_quality)
     hard_errors = _hard_error_count(quality) + int(project_harness_quality.get("hard_errors", 0)) + int(semantic_qa.get("hard_errors", 0))

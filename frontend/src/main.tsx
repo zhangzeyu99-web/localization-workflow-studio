@@ -185,7 +185,7 @@ function App() {
   const {
     refreshTranslationReadiness, selectSourceArtifact, selectQaArtifact, syncLanguageFromArtifact,
     classifySourceArtifact, inspectTranslationTargets, startQuickTask, runTranslate,
-    startMultilingualTranslationQueue, cancelTranslateRun, runDirectQA, startMultilingualQAQueue,
+    startMultilingualTranslationQueue, cancelTranslateRun, runDirectQA, cancelQaRun, startMultilingualQAQueue,
     applyManualFixes, applyModelFixes, uploadSourceWorkbook, uploadArchiveWorkbook, uploadTranslationWorkbook,
     importTranslationArchive, skipQAArchive, addTranslationEntry, updateTranslationEntry, deleteTranslationEntry,
     refreshDeliverables, loadDeliverables, createDeliveryPackage, finishWizardDelivery, createMergedDeliveryPackage
@@ -381,7 +381,8 @@ function App() {
     setBusyForProject,
     loadQualityIssues,
     refreshCurrent,
-    refreshDeliverables
+    refreshDeliverables,
+    () => refreshProjects(currentIdRef.current)
   )
 
   useAnnouncementTaskPolling(current, refreshProjectSnapshot, isCurrentProject, setBusyForProject, setStatusForProject)
@@ -508,6 +509,7 @@ function App() {
                 onTranslateQueue={() => startMultilingualTranslationQueue('T')}
                 onDirectQA={(artifact) => runDirectQA('QA', artifact)}
                 onDirectQAQueue={() => startMultilingualQAQueue('QA')}
+                onCancelQa={cancelQaRun}
                 onSkipQAArchive={skipQAArchive}
                 onManualFixes={applyManualFixes}
                 onModelFixes={applyModelFixes}
@@ -615,6 +617,7 @@ function App() {
                     onCancelTranslate={cancelTranslateRun}
                     onDirectQA={(artifact) => runDirectQA('QA', artifact)}
                     onDirectQAQueue={() => startMultilingualQAQueue('QA')}
+                    onCancelQa={cancelQaRun}
                     onSkipQAArchive={skipQAArchive}
                     allowSkipQAArchive
                     onManualFixes={applyManualFixes}

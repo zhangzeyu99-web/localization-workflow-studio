@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## Unreleased
+
+Background-task model for QA and removal of the global busy lock — the three items deferred from the 2026-07-11 UX audit.
+
+- QA now runs as a background job: new `POST /api/runs/{id}/qa/start` (shares the per-project job lease with translation/model-fix) and `POST /api/runs/{id}/qa/cancel` (cancels at the next pipeline stage boundary; no partial results are written). Direct QA, quick-task proofreading, and the manual-fix QA rerun (new `POST /api/runs/{id}/manual-fixes/start`) all use it; the QA step shows a live running state with a "取消 QA" button. Canceling a multilingual QA queue now also stops the in-flight language's QA at the next stage boundary.
+- Long-running background tasks (translation, QA, model fixes) no longer hold the global `busy` lock, so unrelated buttons (glossary edits, other tabs, delivery) stay usable while a task runs. `busy` only covers short in-flight requests; start buttons guard themselves with their own run state and true conflicts are rejected by the backend lease with a 409 plus the "查看活跃任务" affordance.
+- When a run reaches a terminal state, the project list refreshes immediately (sidebar badges no longer lag up to 10s behind the run detail).
+- Repo-layout guard tests in `test_risk_hardening.py` are now anchored to the repo root, so the backend suite passes from both `backend/` and the repo root.
+
 ## 1.3.0 - 2026-07-11
 
 Workbench UI redesign (light "Sites" theme) plus a full user-perspective UX audit with two fix batches. Audit evidence lives in `docs/superpowers/reports/ux-full-audit-2026-07-11.md` and `docs/superpowers/reports/product-design-audit-2026-07-11/`.

@@ -16,7 +16,7 @@ import {
 import { formalTranslationBlockReason } from '../components/translationWizard/translationGuards'
 import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, type LanguageCode } from '../languages'
 import type { ConfirmDialogOptions } from '../components/modals/ConfirmModal'
-import { issueCountPhrase, runStatusLabel } from '../uiText'
+import { issueCountPhrase } from '../uiText'
 import type {
   AppSettings,
   AppView,
@@ -269,14 +269,13 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
             task_code: 'QA'
           })
         })
-        const result = await api<{ run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }>(`/api/runs/${run.id}/qa`, { method: 'POST' })
-        if (!isCurrentProject(projectId)) return null
-        const hydrated = { ...result.run, artifacts: result.artifacts }
-        setLatestRun(hydrated)
-        await refreshCurrent()
-        if (tab === 'delivery') await refreshDeliverables()
-        setStatusForProject(projectId, result.run.status === 'passed' ? '快速校对已通过，可在交付页生成最终文件。' : `快速校对结束：${runStatusLabel(result.run.status)}`)
-        return hydrated
+        // QA runs as a background job (same lease as translation); the quick
+        // task panel and the 2s run poller follow the run to its terminal state.
+        const started = await api<Run>(`/api/runs/${run.id}/qa/start`, { method: 'POST' })
+        if (!isCurrentProject(projectId)) return started
+        setLatestRun(started)
+        setStatusForProject(projectId, `快速校对已进入后台：${languageSpec(language).short} · 正在检查变量、标签、术语、中文残留和格式问题。`)
+        return started
       }
 
       const readiness = await api<TranslationReadiness>(`/api/projects/${projectId}/artifacts/${inputArtifact.id}/translation-readiness?batch_size=${batchSize}&${languageQuery(language)}`)
@@ -608,23 +607,33 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         })
       })
       if (!isCurrentProject(projectId)) return
-      setLatestRun({ ...run, status: 'running', artifacts: [] })
       setQualityIssues([])
-      setStatusForProject(projectId, 'QA 正在运行：正在检查变量、标签、术语、中文残留和格式问题...')
-      const result = await api<{ run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }>(`/api/runs/${run.id}/qa`, {
-        method: 'POST'
-      })
+      // QA runs as a background job so the UI stays responsive and the task
+      // can be canceled; the 2s run poller reports the result when it lands.
+      const started = await api<Run>(`/api/runs/${run.id}/qa/start`, { method: 'POST' })
       if (!isCurrentProject(projectId)) return
-      setLatestRun({ ...result.run, artifacts: result.artifacts })
-      const issues = result.run.status === 'passed' ? [] : await loadQualityIssues(result.run.id, projectId)
-      await refreshCurrent()
-      if (tab === 'delivery') await refreshDeliverables()
-      const hardCount = Number(result.quality_summary?.hard_errors || 0) || issues.filter((issue) => issue.severity === 'hard').length
-      setStatusForProject(projectId, result.run.status === 'passed'
-        ? '已有译文 QA 通过，可进入交付。'
-        : `QA 未通过：发现${issueCountPhrase(hardCount)}问题。建议先修复并重跑；时间受限时可生成带问题摘要的交付。`)
+      setLatestRun(started)
+      setStatusForProject(projectId, 'QA 已进入后台：正在检查变量、标签、术语、中文残留和格式问题，完成后本页会自动更新。')
     } catch (error) {
       setStatusForProject(projectId, `已有译文 QA 失败：${errorText(error)}`)
+    } finally {
+      setBusyForProject(projectId, false)
+    }
+  }
+
+  async function cancelQaRun(target?: Run | null) {
+    const run = target && target.kind === 'qa' ? target : latestRun && latestRun.kind === 'qa' ? latestRun : null
+    if (!run) return
+    const projectId = run.project_id
+    setBusy(true)
+    setStatus('正在取消 QA 任务...')
+    try {
+      const updated = await api<Run>(`/api/runs/${run.id}/qa/cancel`, { method: 'POST' })
+      if (!isCurrentProject(projectId)) return
+      setLatestRun(updated)
+      setStatus('已请求取消 QA：会在当前检查阶段结束后停止，不会写入部分结果。')
+    } catch (error) {
+      setStatusForProject(projectId, `取消 QA 失败：${errorText(error)}`)
     } finally {
       setBusyForProject(projectId, false)
     }
@@ -672,22 +681,24 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     if (!current || !latestRun || !fixes.length) return
     const projectId = current.id
     setBusy(true)
-    setStatusForProject(projectId, '正在保存手工修复并重新 QA...')
+    setStatusForProject(projectId, '正在保存手工修复...')
     try {
+      // Fixes are applied synchronously (fast); the QA rerun happens as a
+      // background job so a large workbook doesn't lock the page for minutes.
       const result = await api<{
         fixed_artifact: Artifact
         manual_fixes: Record<string, unknown>[]
-        qa_result?: { run: Run; artifacts: Artifact[]; quality_summary?: Record<string, unknown> }
-      }>(`/api/runs/${latestRun.id}/manual-fixes`, {
+        qa_run?: Run | null
+      }>(`/api/runs/${latestRun.id}/manual-fixes/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fixes, rerun_qa: true })
       })
       if (!isCurrentProject(projectId)) return
-      if (result.qa_result) {
-        setLatestRun({ ...result.qa_result.run, artifacts: result.qa_result.artifacts })
+      if (result.qa_run) {
+        setLatestRun(result.qa_run)
         setQualityIssues([])
-        setStatusForProject(projectId, `手工修复已重新 QA：${runStatusLabel(result.qa_result.run.status)}`)
+        setStatusForProject(projectId, `手工修复已保存 ${result.manual_fixes.length} 处，重新 QA 已进入后台，完成后本页会自动更新。`)
       } else {
         setQaArtifact(result.fixed_artifact)
         setStatusForProject(projectId, '手工修复已保存，等待重新 QA')
@@ -705,7 +716,6 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     const projectId = current.id
     setBusy(true)
     setStatusForProject(projectId, '正在启动模型修复后台任务...')
-    let started = false
     try {
       const run = await api<Run>(`/api/runs/${latestRun.id}/model-fixes/start`, {
         method: 'POST',
@@ -713,7 +723,6 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         body: JSON.stringify({ max_issues: 80, rerun_qa: true })
       })
       if (!isCurrentProject(projectId)) return
-      started = true
       const resultRunId = String(run.metadata?.model_fix_result_run_id || '')
       if (resultRunId && run.metadata?.model_fix_status !== 'running') {
         const resultRun = await api<Run>(`/api/runs/${resultRunId}`)
@@ -734,7 +743,9 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     } catch (error) {
       setStatusForProject(projectId, `模型修复失败：${errorText(error)}`)
     } finally {
-      if (!started) setBusyForProject(projectId, false)
+      // Kickoff done — release the interactive lock. The background job's
+      // progress is tracked through the run poller, not the global busy flag.
+      setBusyForProject(projectId, false)
     }
   }
 
@@ -941,6 +952,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     startMultilingualTranslationQueue,
     cancelTranslateRun,
     runDirectQA,
+    cancelQaRun,
     startMultilingualQAQueue,
     applyManualFixes,
     applyModelFixes,

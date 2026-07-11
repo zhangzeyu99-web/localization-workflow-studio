@@ -31,8 +31,12 @@ export function useProjectSnapshotPolling(
     if (!activeRun || !isCurrentProject(activeRun.project_id)) return
     const progress = getTranslationProgress(activeRun)
     if (['queued', 'running'].includes(activeRun.status)) {
+      // Track the run (this hands over to the 2s run poller) but do NOT take
+      // the global busy lock: a background task locking every unrelated
+      // button (glossary edits, other tabs, delivery) was the top UX audit
+      // complaint. Start buttons guard themselves via the run state, and the
+      // backend per-project lease rejects true conflicts with a 409.
       setLatestRun({ ...activeRun, artifacts: runArtifacts(loaded!, activeRun.id) })
-      setBusy(true)
       setStatus(`后台任务处理中：${projectRunStatusText(activeRun)}`)
     } else if (progress && progress.completed_rows >= progress.total_rows && activeRun.status === 'failed') {
       setLatestRun({ ...activeRun, artifacts: runArtifacts(loaded!, activeRun.id) })

@@ -168,7 +168,15 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
                 continue
             try:
                 db.add_event(run["id"], f"multilingual queue running QA {visible_language_code(language)}")
-                run_qa_sync(run["id"], settings=job_settings)
+                run_qa_sync(run["id"], settings=job_settings, cancel_event=cancel_event)
+            except QaCanceled:
+                try:
+                    db.merge_run_metadata(run["id"], {"canceled_at": db.now_iso()})
+                    db.update_run(run["id"], status="canceled")
+                    db.add_event(run["id"], "multilingual queue QA canceled")
+                except Exception:
+                    pass
+                break
             except Exception as exc:
                 try:
                     db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})

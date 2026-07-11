@@ -24,6 +24,7 @@ _JOB_KIND_PREFIXES: tuple[tuple[str, str], ...] = (
     ("announcement:", "announcement"),
     ("multilingual:translate:", "multilingual_translate"),
     ("multilingual:qa:", "multilingual_qa"),
+    ("qa:", "qa"),
 )
 
 _JOB_KIND_LABELS: dict[str, str] = {
@@ -32,6 +33,7 @@ _JOB_KIND_LABELS: dict[str, str] = {
     "announcement": "公告翻译任务",
     "multilingual_translate": "多语言翻译队列",
     "multilingual_qa": "多语言 QA 队列",
+    "qa": "QA 校对任务",
     "unknown": "AI 任务",
 }
 
