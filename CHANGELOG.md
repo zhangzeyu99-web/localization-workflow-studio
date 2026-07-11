@@ -2,6 +2,30 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.3.0 - 2026-07-11
+
+Workbench UI redesign (light "Sites" theme) plus a full user-perspective UX audit with two fix batches. Audit evidence lives in `docs/superpowers/reports/ux-full-audit-2026-07-11.md` and `docs/superpowers/reports/product-design-audit-2026-07-11/`.
+
+UI redesign and QA delivery hardening:
+
+- Rebuilt the workbench visual language on a light theme: compact project sidebar, phase-grouped 9-step wizard navigation, denser overview/asset tables, sticky headers, and responsive layouts down to mobile widths; QA rule codes now map to Chinese labels and issue-delivery outcomes were simplified.
+- Announcement flow: zero extracted terms no longer blocks the lookup step; delivery packages now write back to the project translation archive (including issue deliveries, tagged with their origin).
+- English punctuation normalization no longer breaks times/ratios/URLs (`10:00` stays `10:00`).
+
+Hard blockers found by the audit, fixed:
+
+- Confirming glossary candidates 500'd when one source row produced multiple terms (duplicate `term_key` hit the unique index); duplicates now merge/degrade safely, with regression coverage.
+- Bare 500 responses are no longer misreported as "连接工作台后端失败"; only proxy failures/empty replies suggest restarting the workbench.
+- Wizard steps 2 (AI analysis) and 4 (language table) can no longer be skipped silently: advancing without prerequisites asks for confirmation, step 5/7 dead-ends gained "返回判定输入" jump buttons, and the step navigation itself now disables steps whose prerequisites are missing (same for the quick-task 3-step nav).
+
+UX smoothness batch:
+
+- Pause button binds to the translation run being viewed, not the globally-latest run (multilingual queues could cancel the wrong task).
+- Re-entry locks on formal translation / multilingual queue / quick-task start close the slow-network double-submit window.
+- Silent failures now surface in the status bar: language-table readiness checks, manual glossary add/edit/delete, project meta saves (which also keep the editor open so drafts survive), deliverables loading (with a retry button).
+- Status-bar messages are dismissable; run-progress polling that fails 5 times in a row unlocks the UI instead of freezing it; quick-task TXT results show a clear error instead of "正在读取结果..." forever.
+- Polish: scroll position resets on project/tab/step switches, inline validation in the new-project modal, grayscale styling for disabled buttons, "仅显示前 20 条" label on glossary previews, pagination for 50+ row announcement temp glossaries, local-timezone generated dates, quick-task paste field contrast fix.
+
 ## 1.2.0 - 2026-07-09
 
 Translation-archive lookup in the formal translation flow, and an opt-in in-product line-by-line AI proofreading pass. Planned in `docs/superpowers` plan "译文归档注入与逐行校对".

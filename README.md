@@ -430,7 +430,7 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 ## 版本
 
 
-当前版本：`1.2.0`
+当前版本：`1.3.0`
 
 - `VERSION`
 - `backend/app/main.py`
