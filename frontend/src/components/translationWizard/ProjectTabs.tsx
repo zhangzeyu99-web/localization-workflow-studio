@@ -77,18 +77,24 @@ export function TranslationTab({
 export function DeliveryTab({
   project,
   deliverables,
+  loading,
+  error,
   busy,
   status,
   onCreateDelivery,
+  onRefresh,
   onGoTranslate,
   onGoQA,
   onGoArchive
 }: {
   project: Project
   deliverables: DeliverableTask[]
+  loading: boolean
+  error: string
   busy: boolean
   status: string
   onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
+  onRefresh: () => void
   onGoTranslate: () => void
   onGoQA: () => void
   onGoArchive: () => void
@@ -99,7 +105,18 @@ export function DeliveryTab({
         <div className="left">最终交付</div>
         {deliverables.length ? <span className="muted-inline">共 {deliverables.length} 个可交付任务</span> : null}
       </div>
-      {!deliverables.length ? (
+      {loading && !deliverables.length ? (
+        <div className="delivery-empty" data-testid="delivery-loading">
+          <div><strong>正在加载交付任务</strong><span>正在读取当前项目的翻译、QA 和公告交付记录。</span></div>
+        </div>
+      ) : null}
+      {error ? (
+        <div className="delivery-empty" data-testid="delivery-load-error">
+          <div><strong>交付列表加载失败</strong><span>{error}</span></div>
+          <button className="btn btn-primary btn-sm" onClick={onRefresh}>重新加载</button>
+        </div>
+      ) : null}
+      {!loading && !error && !deliverables.length ? (
         <div className="delivery-empty" data-testid="delivery-empty">
           <div>
             <strong>还没有可下载的交付文件</strong>

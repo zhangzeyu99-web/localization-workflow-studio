@@ -95,6 +95,7 @@ export function useAnnouncementActions(params: UseAnnouncementActionsParams) {
       return
     }
     setAnnouncementFocusTaskId(task?.id || '')
+    setStatus('公告任务已就绪。')
     setView('announcement')
   }
 

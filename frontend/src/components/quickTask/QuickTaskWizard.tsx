@@ -17,8 +17,8 @@ export function quickTaskName(run: Run): string {
   return run.kind === 'qa' ? '快速校对' : '快速翻译'
 }
 
-export function quickTaskDisplayRun(startedRun: Run | null, latestRun: Run | null): Run | null {
-  return startedRun || (latestRun?.metadata?.task_origin === 'quick_task' ? latestRun : null)
+export function quickTaskDisplayRun(startedRun: Run | null, _latestRun: Run | null): Run | null {
+  return startedRun
 }
 
 export function QuickTaskRecent({ project }: { project: Project }) {
@@ -70,6 +70,7 @@ export function QuickTaskWizard({
   const [startedRun, setStartedRun] = useState<Run | null>(null)
   const [inputMode, setInputMode] = useState<'paste' | 'upload'>('paste')
   const [pastedText, setPastedText] = useState('')
+  const [maxQuickStep, setMaxQuickStep] = useState(1)
 
   useEffect(() => {
     if (!inputArtifact?.id) {
@@ -98,6 +99,7 @@ export function QuickTaskWizard({
     setTargets(inspected)
     const suggested = normalizeLanguageCode(inspected?.suggested_language) || inspected?.detected_languages?.[0] || 'en'
     setLanguage(suggested)
+    setMaxQuickStep((current) => Math.max(current, 2))
     setQuickStep(2)
   }
 
@@ -191,7 +193,12 @@ export function QuickTaskWizard({
       </div>
       <div className="quick-steps">
         {['投入内容', '投入参考', '目标并启动'].map((title, index) => (
-          <button key={title} className={`quick-step ${quickStep === index + 1 ? 'active' : quickStep > index + 1 ? 'done' : ''}`} onClick={() => setQuickStep(index + 1)}>
+          <button
+            key={title}
+            className={`quick-step ${quickStep === index + 1 ? 'active' : quickStep > index + 1 ? 'done' : ''}`}
+            disabled={index + 1 > maxQuickStep}
+            onClick={() => setQuickStep(index + 1)}
+          >
             <span>{index + 1}</span>{title}
           </button>
         ))}
@@ -240,7 +247,7 @@ export function QuickTaskWizard({
             </div>
             <div className="actions inline-actions">
               <button className="btn btn-ghost" onClick={() => setQuickStep(1)}>← 上一步</button>
-              <button className="btn btn-primary" data-testid="quick-reference-next" onClick={() => setQuickStep(3)}>下一步：选择目标</button>
+              <button className="btn btn-primary" data-testid="quick-reference-next" onClick={() => { setMaxQuickStep(3); setQuickStep(3) }}>下一步：选择目标</button>
             </div>
           </>
         ) : null}

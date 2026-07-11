@@ -480,6 +480,17 @@ select:focus {
   outline: 2px solid #ccfbf1;
 }
 
+textarea.quick-text-input {
+  background: #ffffff;
+  color: #172026;
+  border-color: #c7ced4;
+}
+
+textarea.quick-text-input:focus {
+  border-color: #0f766e;
+  outline: 2px solid #ccfbf1;
+}
+
 .card,
 .surface-card,
 .stat-card,

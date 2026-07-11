@@ -86,6 +86,8 @@ function App() {
   const [qualityIssues, setQualityIssues] = useState<QualityIssue[]>([])
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [deliverables, setDeliverables] = useState<DeliverableTask[]>([])
+  const [deliverablesLoading, setDeliverablesLoading] = useState(false)
+  const [deliverablesError, setDeliverablesError] = useState('')
   const [generatedDelivery, setGeneratedDelivery] = useState<{ projectId: string; runId: string; files: DeliveryFile[] } | null>(null)
   const [translationReadiness, setTranslationReadiness] = useState<TranslationReadiness | null>(null)
   const [sourceInputNotice, setSourceInputNotice] = useState<TranslationReadiness | null>(null)
@@ -154,6 +156,8 @@ function App() {
     setGlossaryCandidates([])
     setQualityIssues([])
     setDeliverables([])
+    setDeliverablesLoading(false)
+    setDeliverablesError('')
     setGeneratedDelivery(null)
     setTranslationReadiness(null)
     setAnnouncementText('')
@@ -191,7 +195,7 @@ function App() {
     selectedLanguages, lineProofread, currentLang, isCurrentProject,
     setSourceArtifact, setQaArtifact, setArchiveArtifact, setTranslationReadiness, setSourceInputNotice,
     setInvalidSourceArtifactIds, setStep, setBusy, setStatus, setStatusForProject, setBusyForProject,
-    setQualityIssues, setLatestRun, setDeliverables, setGeneratedDelivery, setTab, setView,
+    setQualityIssues, setLatestRun, setDeliverables, setDeliverablesLoading, setDeliverablesError, setGeneratedDelivery, setTab, setView,
     setPrimaryLanguage, setPrimaryLanguages, confirm, refreshCurrent, loadQualityIssues, upload
   })
   const glossaryActions = useGlossaryActions({
@@ -278,6 +282,8 @@ function App() {
       setGlossaryCandidates([])
       setQualityIssues([])
       setDeliverables([])
+      setDeliverablesLoading(false)
+      setDeliverablesError('')
       setSourceInputNotice(null)
       setInvalidSourceArtifactIds([])
       setAnnouncementText('')
@@ -295,6 +301,8 @@ function App() {
     setAssetArtifacts(uniqueArtifactsByContent(artifacts.filter((artifact) => artifact.kind === 'asset')))
     setLatestRun(hydratedRun)
     setDeliverables([])
+    setDeliverablesLoading(false)
+    setDeliverablesError('')
     setSourceInputNotice(null)
     setInvalidSourceArtifactIds([])
   }, [current?.id, current?.artifacts?.length, current?.runs?.length])
@@ -433,7 +441,11 @@ function App() {
             </div>
             <button className="new-project-btn" onClick={() => setNewProjectOpen(true)}><Plus size={15} aria-hidden="true" />新建项目</button>
             <div className="sidebar-title quick"><Zap size={15} aria-hidden="true" />快捷入口</div>
-            <button className="project-item quick-entry" onClick={() => current && setView('wizard')} disabled={!current}>
+            <button className="project-item quick-entry" onClick={() => {
+              if (!current) return
+              setStatusForProject(current.id, '翻译任务已就绪。')
+              setView('wizard')
+            }} disabled={!current}>
               <span className="pname"><WandSparkles size={16} aria-hidden="true" />新翻译任务</span>
               <span className="pmeta">基于当前项目启动工作流</span>
             </button>
@@ -468,6 +480,8 @@ function App() {
                 qualityIssues={qualityIssues}
                 glossaryPreview={glossaryPreview}
                 deliverables={deliverables}
+                deliverablesLoading={deliverablesLoading}
+                deliverablesError={deliverablesError}
                 assetArtifacts={assetArtifacts}
                 setSourceArtifact={selectSourceArtifact}
                 setTermArtifact={setTermArtifact}
@@ -499,8 +513,9 @@ function App() {
                 onModelFixes={applyModelFixes}
                 onUploadTranslation={uploadTranslationWorkbook}
                 onCreateDelivery={createDeliveryPackage}
+                onRefreshDelivery={refreshDeliverables}
                 onCreateMergedDelivery={createMergedDeliveryPackage}
-                onStartTask={() => setView('wizard')}
+                onStartTask={() => { setStatusForProject(current.id, '翻译任务已就绪。'); setView('wizard') }}
                 onStartAnnouncement={() => openAnnouncementTask()}
                 onStartAnnouncementTask={openAnnouncementTask}
                 onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
@@ -521,7 +536,7 @@ function App() {
                     status={status}
                     settings={settings}
                     latestRun={latestRun}
-                    onBack={() => setView('overview')}
+                    onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
                     onUploadFile={upload}
                     onInspectTargets={inspectTranslationTargets}
                     onStartQuickTask={startQuickTask}
@@ -544,7 +559,7 @@ function App() {
                     onCreateTask={createAnnouncementTask}
                     onTaskAction={runAnnouncementTaskAction}
                     onLookup={runAnnouncementLookup}
-                    onBack={() => setView('overview')}
+                    onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
                     onUploadResponse={uploadAnnouncementResponse}
                     onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
                     onCancelAnnouncementHold={cancelAnnouncementCancelHold}
@@ -586,7 +601,7 @@ function App() {
                     glossaryPreview={glossaryPreview}
                     settings={settings}
                     status={status}
-                    onBack={() => setView('overview')}
+                    onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
                     onUploadSource={uploadSourceWorkbook}
                     onUploadTerm={handleUploadTerm}
                     onUploadAsset={uploadProjectMaterial}

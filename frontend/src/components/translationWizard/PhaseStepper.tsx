@@ -12,11 +12,13 @@ export function PhaseStepper({
   step,
   steps,
   skippedSteps = [],
+  maxStep = steps.length,
   onStepChange
 }: {
   step: number
   steps: string[]
   skippedSteps?: number[]
+  maxStep?: number
   onStepChange: (step: number) => void
 }) {
   const stepMenuRef = useRef<HTMLDetailsElement>(null)
@@ -32,11 +34,13 @@ export function PhaseStepper({
         {phases.map((phase, index) => {
           const active = step >= phase.from && step <= phase.to
           const done = step > phase.to
+          const disabled = phase.from > maxStep
           return (
             <button
               key={phase.label}
               type="button"
               className={`phase-item ${active ? 'active' : ''} ${done ? 'done' : ''}`}
+              disabled={disabled}
               onClick={() => onStepChange(active ? step : phase.from)}
               aria-current={active ? 'step' : undefined}
               title={phase.detail}
@@ -58,12 +62,14 @@ export function PhaseStepper({
           {steps.map((title, index) => {
             const stepNumber = index + 1
             const skipped = skippedSteps.includes(stepNumber) && stepNumber !== step
+            const disabled = stepNumber > maxStep
             return (
               <button
                 key={title}
                 type="button"
                 data-testid={`step-${stepNumber}`}
                 className={`substep-item ${stepNumber === step ? 'active' : stepNumber < step ? 'done' : ''} ${skipped ? 'skipped' : ''}`}
+                disabled={disabled}
                 onClick={() => selectStep(stepNumber)}
                 aria-current={stepNumber === step ? 'step' : undefined}
                 aria-label={`${stepNumber} ${title}${skipped ? '，已跳过' : ''}`}

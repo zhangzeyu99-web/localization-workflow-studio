@@ -30,6 +30,8 @@ export interface ProjectOverviewProps {
   qualityIssues: QualityIssue[]
   glossaryPreview: GlossaryPreviewRow[]
   deliverables: DeliverableTask[]
+  deliverablesLoading: boolean
+  deliverablesError: string
   assetArtifacts: Artifact[]
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
@@ -61,6 +63,7 @@ export interface ProjectOverviewProps {
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
   onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
+  onRefreshDelivery: () => void
   onCreateMergedDelivery?: () => void
   onStartTask: () => void
   onStartAnnouncement: () => void
@@ -93,6 +96,8 @@ function ProjectOverviewImpl({
   qualityIssues,
   glossaryPreview,
   deliverables,
+  deliverablesLoading,
+  deliverablesError,
   assetArtifacts,
   setSourceArtifact,
   setTermArtifact,
@@ -124,6 +129,7 @@ function ProjectOverviewImpl({
   onModelFixes,
   onUploadTranslation,
   onCreateDelivery,
+  onRefreshDelivery,
   onCreateMergedDelivery,
   onStartTask,
   onStartAnnouncement,
@@ -325,9 +331,12 @@ function ProjectOverviewImpl({
         <DeliveryTab
           project={project}
           deliverables={deliverables}
+          loading={deliverablesLoading}
+          error={deliverablesError}
           busy={busy}
           status={status}
           onCreateDelivery={onCreateDelivery}
+          onRefresh={onRefreshDelivery}
           onGoTranslate={() => setTab('translation')}
           onGoQA={() => setTab('qa')}
           onGoArchive={() => setTab('archive')}

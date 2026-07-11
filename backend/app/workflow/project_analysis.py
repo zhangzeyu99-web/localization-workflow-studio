@@ -5,7 +5,6 @@ import re
 from datetime import datetime
 from typing import Any
 
-from .. import db
 from ..config import REAL_PROVIDERS, load_settings, normalize_provider_name
 from ..languages import language_spec, require_supported_language
 from ..translation_batches import cap_context_text as _cap_context_text

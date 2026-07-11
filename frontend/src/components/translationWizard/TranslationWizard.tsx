@@ -90,6 +90,7 @@ export function Wizard(props: {
   const currentTranslationDeliveryRun = stepTranslationRun ? findWizardDeliveryRun(project, stepTranslationRun) : null
   const stepCanEnterQa = translationInputMode(sourceReadiness) === 'ready_for_qa' || Boolean(stepTranslationRun && currentTranslationDeliveryRun?.id === stepTranslationRun.id)
   const stepCanGoDelivery = Boolean(wizardDeliveryRun)
+  const maxNavigableStep = stepCanGoDelivery ? 9 : props.sourceArtifact || stepCanEnterQa ? 8 : 6
   const stepDeliveryReady = step !== 9 || stepDeliveryFiles.length > 0
   const stepSourceMissing = step === 4 && !props.sourceArtifact
   const glossaryReview = glossaryReviewState(props.latestRun, props.glossaryBatches, props.glossaryCandidates)
@@ -129,7 +130,7 @@ export function Wizard(props: {
         </div>
         <button className="btn btn-ghost" onClick={props.onBack}><ArrowLeft size={16} aria-hidden="true" />项目概览</button>
       </div>
-      <PhaseStepper step={step} steps={steps} skippedSteps={skippedSteps} onStepChange={setStep} />
+      <PhaseStepper step={step} steps={steps} skippedSteps={skippedSteps} maxStep={maxNavigableStep} onStepChange={setStep} />
       {step !== 7 && (props.busy || props.status !== '准备就绪') ? <ActionStatus status={props.status} busy={props.busy} /> : null}
       <div className="step-panel active">
         {step === 1 ? <StepIntro {...props} /> : null}

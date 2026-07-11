@@ -410,7 +410,7 @@ test('announcement AI translation shows API reminder when provider is not config
   await expect(page.getByRole('button', { name: /^AI\s?\u7ffb\u8bd1$/ })).toBeDisabled()
 })
 
-test('translation workflow keeps all steps available without showing nine labels at once', async ({ page, request }) => {
+test('translation workflow keeps preparation steps available and gates processing steps', async ({ page, request }) => {
   const projectName = `E2E Compact Workflow ${Date.now()}`
   await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'workflow-ui', description: 'Compact workflow navigation smoke.' },
@@ -437,7 +437,7 @@ test('translation workflow keeps all steps available without showing nine labels
     ['QA 校对', '检查译文并处理问题。'],
     ['交付', '生成并下载交付文件。'],
   ]
-  for (let index = 1; index <= expectedSteps.length; index += 1) {
+  for (let index = 1; index <= 6; index += 1) {
     await page.getByTestId('step-menu-toggle').click()
     await expect(page.getByTestId(`step-${index}`)).toBeVisible()
     await page.getByTestId(`step-${index}`).click()
@@ -449,19 +449,12 @@ test('translation workflow keeps all steps available without showing nine labels
       await expect(page.locator('.analysis-details')).not.toHaveAttribute('open', '')
       await expect(page.locator('.analysis-details .status-grid')).toBeHidden()
     }
-    if (index === 7) {
-      await expect(page.getByText('下一步', { exact: true })).toHaveCount(0)
-      await expect(page.getByText('本步产物', { exact: true })).toHaveCount(0)
-      await expect(page.getByText('交付规则', { exact: true })).toHaveCount(0)
-      await expect(page.getByRole('button', { name: '去 QA 校对' })).toBeDisabled()
-    }
-    if (index === 8) {
-      await expect(page.locator('.workflow-step-status')).toHaveCount(0)
-      await expect(page.locator('.workflow-primary > .qa-outcome-panel')).toBeVisible()
-      await expect(page.getByText('建议处理', { exact: true })).toHaveCount(0)
-      await expect(page.locator('.qa-input-details')).toHaveAttribute('open', '')
-      await expect(page.getByRole('button', { name: '去交付' })).toBeDisabled()
-    }
+  }
+
+  await page.getByTestId('step-menu-toggle').click()
+  for (const index of [7, 8, 9]) {
+    await expect(page.getByTestId(`step-${index}`)).toBeVisible()
+    await expect(page.getByTestId(`step-${index}`)).toBeDisabled()
   }
 
   await expect(page.getByText('完整语言表不要放这里')).toHaveCount(0)
@@ -732,6 +725,100 @@ test('quick task does not expose an unrelated latest run as its result', async (
   })
 
   expect(displayRun).toBeNull()
+})
+
+test('quick task does not expose a previous quick run as the current result', async ({ page }) => {
+  await page.goto(baseURL)
+  const displayRun = await page.evaluate(async () => {
+    const { quickTaskDisplayRun } = await import('/src/components/quickTask/QuickTaskWizard.tsx')
+    return quickTaskDisplayRun(null, {
+      id: 'previous-quick-run',
+      kind: 'translation',
+      status: 'passed',
+      metadata: { task_origin: 'quick_task' },
+    } as any)
+  })
+
+  expect(displayRun).toBeNull()
+})
+
+test('quick task blocks later steps until input is accepted', async ({ page, request }) => {
+  const projectName = `E2E Quick Guard ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'quick-task', description: 'Quick step guard.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByTestId('quick-task-entry').click()
+
+  await expect(page.getByTestId('quick-text-input')).toBeVisible()
+  await expect(page.getByRole('button', { name: '2 投入参考', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '3 目标并启动', exact: true })).toBeDisabled()
+})
+
+test('quick task paste field stays readable in the light workbench theme', async ({ page, request }) => {
+  const projectName = `E2E Quick Contrast ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'quick-task', description: 'Quick text contrast.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByTestId('quick-task-entry').click()
+  const colors = await page.getByTestId('quick-text-input').evaluate((element) => {
+    const style = getComputedStyle(element)
+    return { background: style.backgroundColor, color: style.color }
+  })
+
+  expect(colors).toEqual({ background: 'rgb(255, 255, 255)', color: 'rgb(23, 32, 38)' })
+})
+
+test('switching from quick task to announcement clears the quick-task status', async ({ page, request }) => {
+  const projectName = `E2E Flow Status ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Workflow status scope.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await page.getByRole('button', { name: '返回项目概览', exact: true }).click()
+  await page.locator('main').getByRole('button', { name: '公告翻译', exact: true }).click()
+
+  await expect(page.getByRole('heading', { name: '公告翻译', exact: true })).toBeVisible()
+  await expect(page.getByText('快速任务已就绪。', { exact: true })).toHaveCount(0)
+})
+
+test('formal workflow blocks jumping from preparation straight to delivery', async ({ page, request }) => {
+  const projectName = `E2E Workflow Guard ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Formal step guard.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+
+  await expect(page.getByText('补充本次翻译依据。', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '4 交付', exact: true })).toBeDisabled()
+})
+
+test('delivery request failure is shown as an error instead of an empty project', async ({ page, request }) => {
+  const projectName = `E2E Delivery Error ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Delivery loading state.' },
+  })
+  await page.route('**/api/projects/*/deliverables', async (route) => {
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'delivery unavailable' }) })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '交付', exact: true }).click()
+
+  await expect(page.getByTestId('delivery-load-error')).toContainText('交付列表加载失败')
+  await expect(page.getByTestId('delivery-empty')).toHaveCount(0)
 })
 
 test('quick workflow can preview and import glossary terms', async ({ page, request }) => {
@@ -1471,8 +1558,17 @@ wb.close()
 
 test('workflow remains usable without page overflow at compact desktop and mobile widths', async ({ page, request }) => {
   const projectName = `E2E Responsive Workflow ${Date.now()}`
-  await request.post(`${baseURL}/api/projects`, {
+  const project = await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'responsive', description: 'Responsive workbench smoke.' },
+  }).then((response) => response.json())
+  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
   })
 
   for (const viewport of [{ width: 1125, height: 903 }, { width: 390, height: 844 }]) {

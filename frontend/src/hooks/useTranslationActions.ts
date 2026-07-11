@@ -66,6 +66,8 @@ export interface UseTranslationActionsParams {
   setQualityIssues: (issues: QualityIssue[]) => void
   setLatestRun: (run: Run | null) => void
   setDeliverables: Dispatch<SetStateAction<DeliverableTask[]>>
+  setDeliverablesLoading: (value: boolean) => void
+  setDeliverablesError: (message: string) => void
   setGeneratedDelivery: (value: { projectId: string; runId: string; files: DeliveryFile[] } | null) => void
   setTab: (tab: ProjectTab) => void
   setView: (view: AppView) => void
@@ -114,6 +116,8 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     setQualityIssues,
     setLatestRun,
     setDeliverables,
+    setDeliverablesLoading,
+    setDeliverablesError,
     setGeneratedDelivery,
     setTab,
     setView,
@@ -830,13 +834,21 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   async function refreshDeliverables(projectId = currentIdRef.current) {
     if (!projectId) {
       setDeliverables([])
+      setDeliverablesLoading(false)
+      setDeliverablesError('')
       return
+    }
+    if (isCurrentProject(projectId)) {
+      setDeliverablesLoading(true)
+      setDeliverablesError('')
     }
     try {
       const result = await api<{ deliverables: DeliverableTask[] }>(`/api/projects/${projectId}/deliverables`)
       if (isCurrentProject(projectId)) setDeliverables(result.deliverables || [])
-    } catch {
-      if (isCurrentProject(projectId)) setDeliverables([])
+    } catch (error) {
+      if (isCurrentProject(projectId)) setDeliverablesError(`交付列表加载失败：${errorText(error)}`)
+    } finally {
+      if (isCurrentProject(projectId)) setDeliverablesLoading(false)
     }
   }
 
