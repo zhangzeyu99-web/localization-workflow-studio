@@ -37,3 +37,4 @@ api_key*
 tmp/
 release_archives/
 frontend-v2/
+.playwright-cli/
