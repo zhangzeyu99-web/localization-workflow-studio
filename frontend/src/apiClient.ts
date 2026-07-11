@@ -109,7 +109,12 @@ export async function api<T>(path: string, init?: RequestInit, operation?: strin
     if (response.status >= 500) {
       const trimmed = text.trim()
       const contentType = response.headers.get('content-type') || ''
-      if (!trimmed || (!contentType.includes('application/json') && /^(Internal Server Error|Error occurred while trying to proxy)/i.test(trimmed))) {
+      // Only a proxy failure (or an empty reply) means the backend is actually
+      // unreachable. A bare "Internal Server Error" body means the backend is
+      // alive but crashed on this request — telling the user to restart the
+      // workbench would send them down the wrong path, so let that fall through
+      // to sanitizeUserFacingError's dedicated 500 message instead.
+      if (!trimmed || (!contentType.includes('application/json') && /^Error occurred while trying to proxy/i.test(trimmed))) {
         throw new Error('连接工作台后端失败。后端可能正在重启或未启动，请等几秒后重试；如果反复出现，请重启本地/局域网工作台。')
       }
     }

@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from '../apiClient'
 import { errorText } from '../appText'
@@ -125,6 +125,9 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     upload
   } = params
 
+  // Shared re-entry lock for the formal translation start actions.
+  const translateStartingRef = useRef(false)
+
   async function refreshTranslationReadiness(artifactId: string, projectId = currentIdRef.current, language: LanguageCode = selectedLanguage) {
     const batchSize = effectiveBatchSize(settings, translationBatchSize)
     try {
@@ -145,8 +148,13 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
       }
       if (isCurrentProject(projectId)) setTranslationReadiness(result)
       return result
-    } catch {
-      if (isCurrentProject(projectId)) setTranslationReadiness(null)
+    } catch (error) {
+      // Without feedback the step keeps showing "正在检查" forever; surface the
+      // failure so the user knows to re-select the file or retry.
+      if (isCurrentProject(projectId)) {
+        setTranslationReadiness(null)
+        setStatusForProject(projectId, `语言表检查失败：${errorText(error)}，请重新选择文件或稍后重试。`)
+      }
       return null
     }
   }
@@ -371,6 +379,19 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
 
   async function runTranslate(taskCode: 'A' | 'T' = 'T') {
     if (!current || !sourceArtifact) return
+    // Re-entry lock: the global busy flag is only set after async pre-checks
+    // (readiness refresh, term-gap confirm), leaving a double-click window.
+    if (translateStartingRef.current) return
+    translateStartingRef.current = true
+    try {
+      await runTranslateInner(taskCode)
+    } finally {
+      translateStartingRef.current = false
+    }
+  }
+
+  async function runTranslateInner(taskCode: 'A' | 'T') {
+    if (!current || !sourceArtifact) return
     const projectId = current.id
     const selectedBatchSize = effectiveBatchSize(settings, translationBatchSize)
     const readiness = translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === selectedBatchSize
@@ -468,6 +489,17 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
 
   async function startMultilingualTranslationQueue(taskCode: 'A' | 'T' = 'T') {
     if (!current || !sourceArtifact) return
+    if (translateStartingRef.current) return
+    translateStartingRef.current = true
+    try {
+      await startMultilingualTranslationQueueInner(taskCode)
+    } finally {
+      translateStartingRef.current = false
+    }
+  }
+
+  async function startMultilingualTranslationQueueInner(taskCode: 'A' | 'T') {
+    if (!current || !sourceArtifact) return
     const projectId = current.id
     const languages = selectedQueueLanguages()
     const selectedBatchSize = effectiveBatchSize(settings, translationBatchSize)
@@ -515,13 +547,17 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     }
   }
 
-  async function cancelTranslateRun() {
-    if (!latestRun || latestRun.kind !== 'translation') return
-    const projectId = latestRun.project_id
+  async function cancelTranslateRun(target?: Run | null) {
+    // The pause button in StepTranslate is rendered for the run the user is
+    // looking at (currentTranslationRun), which in multilingual queues can be
+    // a different run from latestRun — cancel the one the user sees.
+    const run = target && target.kind === 'translation' ? target : latestRun && latestRun.kind === 'translation' ? latestRun : null
+    if (!run) return
+    const projectId = run.project_id
     setBusy(true)
     setStatus('正在取消后台翻译任务...')
     try {
-      const canceled = await api<Run>(`/api/runs/${latestRun.id}/translate/cancel`, { method: 'POST' })
+      const canceled = await api<Run>(`/api/runs/${run.id}/translate/cancel`, { method: 'POST' })
       if (!isCurrentProject(projectId)) return
       setLatestRun(canceled)
       setStatus('已请求取消：当前已完成批次会保留，后续可继续。')

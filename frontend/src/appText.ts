@@ -90,6 +90,7 @@ export function humanBackendEvent(message: unknown): string {
   if (match) return `已整理 ${match[1]} 个术语候选，待确认 ${match[2]} 个。`
   match = text.match(/^ai glossary supplement added (\d+) candidates,\s*skipped (\d+)/i)
   if (match) return `AI 已补充 ${match[1]} 个候选，跳过 ${match[2]} 个。`
+  if (/^quick TXT translation preflight:/i.test(text)) return '正在检查快速任务输入。'
   const sanitized = sanitizeUserFacingError(text, '')
   if (sanitized && sanitized !== text) return sanitized
   match = text.match(/^translating batch (\d+)\/(\d+): rows=(\d+), attempt=(\d+)\/(\d+)/i)

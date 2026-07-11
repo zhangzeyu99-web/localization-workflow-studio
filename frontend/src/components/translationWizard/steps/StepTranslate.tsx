@@ -57,7 +57,7 @@ export function StepTranslate({
   status: string
   onTranslate: () => void
   onTranslateQueue?: () => void
-  onCancelTranslate: () => void
+  onCancelTranslate: (run?: Run | null) => void
   busy: boolean
   latestRun: Run | null
   qualityIssues: QualityIssue[]
@@ -234,10 +234,19 @@ export function StepTranslate({
           ) : (
             <>
               <button className="btn btn-primary" disabled={busy || activeTranslation || Boolean(blockReason)} onClick={onTranslate}>{resumable ? '继续 AI 翻译' : '开始 AI 翻译'}</button>
-              {activeTranslation ? <button className="btn btn-ghost" disabled={busy} onClick={onCancelTranslate}>暂停</button> : null}
+              {activeTranslation ? <button className="btn btn-ghost" disabled={busy} onClick={() => onCancelTranslate(currentTranslationRun)}>暂停</button> : null}
             </>
           )}
-          {blockReason && !alreadyTranslated ? <div className="warn-line inline-warning">{blockReason}</div> : null}
+          {blockReason && !alreadyTranslated ? (
+            <div className="warn-line inline-warning">
+              {blockReason}
+              {(!sourceArtifact || translationReadinessBlockReason(readiness)) ? (
+                <div className="row-actions wrap">
+                  <button className="btn btn-ghost btn-sm" type="button" data-testid="translate-block-goto-source" onClick={() => setStep(4)}>返回判定输入</button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {showTranslateStatus ? <ActionStatus status={scopedTranslateStatus} busy={busy} /> : null}
         {progress ? <TranslationProgressBar progress={progress} languageLabel={lang.short} /> : null}

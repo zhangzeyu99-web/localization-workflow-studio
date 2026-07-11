@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Zap } from 'lucide-react'
 import { api } from '../../apiClient'
 import { artifactDownloadHref, artifactPickerLabel, newestArtifact, uniqueArtifactsByContent } from '../../domain/artifacts'
@@ -15,6 +15,10 @@ export function quickTaskRuns(project: Project): Run[] {
 
 export function quickTaskName(run: Run): string {
   return run.kind === 'qa' ? '快速校对' : '快速翻译'
+}
+
+export function quickTaskDisplayRun(startedRun: Run | null, latestRun: Run | null): Run | null {
+  return startedRun || (latestRun?.metadata?.task_origin === 'quick_task' ? latestRun : null)
 }
 
 export function QuickTaskRecent({ project }: { project: Project }) {
@@ -110,10 +114,18 @@ export function QuickTaskWizard({
     setReferenceArtifacts((items) => uniqueArtifactsByContent([artifact, ...items]))
   }
 
+  const startingRef = useRef(false)
   async function start() {
-    if (!inputArtifact) return
-    const run = await onStartQuickTask({ inputArtifact, referenceArtifacts, objective, language })
-    if (run) setStartedRun(run)
+    // Local re-entry lock: the global busy flag is set asynchronously inside
+    // onStartQuickTask, leaving a window where a double-click would submit twice.
+    if (!inputArtifact || startingRef.current) return
+    startingRef.current = true
+    try {
+      const run = await onStartQuickTask({ inputArtifact, referenceArtifacts, objective, language })
+      if (run) setStartedRun(run)
+    } finally {
+      startingRef.current = false
+    }
   }
 
   useEffect(() => {
@@ -164,7 +176,7 @@ export function QuickTaskWizard({
     if (run.kind === 'translation' && run.status === 'failed' && quality?.passed === false) return '\u9700\u6821\u5bf9'
     return quickStatusLabel(run.status)
   }
-  const displayRun = startedRun || (latestRun?.metadata?.task_origin === 'quick_task' ? latestRun : null)
+  const displayRun = quickTaskDisplayRun(startedRun, latestRun)
   return (
     <>
       <div className="proj-head">
@@ -262,7 +274,7 @@ export function QuickTaskWizard({
             <div className="row-actions">
               <button className="btn btn-ghost" onClick={() => setQuickStep(2)}>← 上一步</button>
               <button className="btn btn-primary" data-testid="quick-task-start" disabled={!canStart} onClick={start}>{launchLabel}</button>
-              <button className="btn btn-ghost" disabled={!startedRun && !latestRun} onClick={() => onViewResult(startedRun || latestRun)}>查看结果</button>
+              <button className="btn btn-ghost" disabled={!displayRun} onClick={() => onViewResult(displayRun)}>查看结果</button>
             </div>
             {startedRun ? <div className="scan-explain"><strong>{quickTaskName(startedRun)} 已创建</strong><span>{languageSpec(normalizeLanguageCode(startedRun.language) || language).short} · {quickRunStatusLabel(startedRun)} · {startedRun.id}</span></div> : null}
             {displayRun ? <QuickTextResultPanel projectId={project.id} run={displayRun} onOpenDetail={() => onViewResult(displayRun)} /> : null}
@@ -323,20 +335,26 @@ function QuickTextInput({
 function QuickTextResultPanel({ projectId, run, onOpenDetail }: { projectId: string; run: Run; onOpenDetail: () => void }) {
   const finalTextArtifact = newestArtifact(run.artifacts || [], ['final_text'])
   const [text, setText] = useState('')
+  const [readFailed, setReadFailed] = useState(false)
   const [copyStatus, setCopyStatus] = useState('')
   const href = finalTextArtifact ? artifactDownloadHref(finalTextArtifact, projectId) : ''
 
   useEffect(() => {
     let canceled = false
     setText('')
+    setReadFailed(false)
     if (!href) return
     fetch(href)
-      .then((response) => response.ok ? response.text() : '')
+      .then((response) => {
+        if (!response.ok) throw new Error(String(response.status))
+        return response.text()
+      })
       .then((body) => {
         if (!canceled) setText(body)
       })
       .catch(() => {
-        if (!canceled) setText('')
+        // Without this flag the panel shows "正在读取结果..." forever.
+        if (!canceled) setReadFailed(true)
       })
     return () => { canceled = true }
   }, [href])
@@ -361,7 +379,7 @@ function QuickTextResultPanel({ projectId, run, onOpenDetail }: { projectId: str
         <div className="left">快速翻译结果</div>
         <span>{runStatusLabel(run.status)}</span>
       </div>
-      <pre>{text || '正在读取结果...'}</pre>
+      <pre>{text || (readFailed ? '读取结果失败，请点击“下载 TXT”获取文件，或刷新页面重试。' : '正在读取结果...')}</pre>
       <div className="row-actions">
         <button className="btn btn-primary" data-testid="quick-result-copy" disabled={!text} onClick={copyText}>复制正文</button>
         <a className="btn btn-ghost" data-testid="quick-result-download" href={href}>下载 TXT</a>

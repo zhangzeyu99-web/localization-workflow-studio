@@ -47,6 +47,31 @@ test('glossary scan events do not expose backend diagnostics', async ({ page }) 
   ])
 })
 
+test('quick task preflight events do not expose backend diagnostics', async ({ page }) => {
+  await page.goto(baseURL)
+  const message = await page.evaluate(async () => {
+    const { humanBackendEvent } = await import('/src/appText.ts')
+    return humanBackendEvent('quick TXT translation preflight: source_lines=3, batch_size=90, estimated_batches=1')
+  })
+
+  expect(message).toBe('正在检查快速任务输入。')
+})
+
+test('quick translation completion status stays scoped to the quick task', async ({ page }) => {
+  await page.goto(baseURL)
+  const message = await page.evaluate(async () => {
+    const { projectTranslationPassedStatusText } = await import('/src/domain/projectActivity.ts')
+    return projectTranslationPassedStatusText({
+      kind: 'translation',
+      language: 'en',
+      status: 'passed',
+      metadata: { task_origin: 'quick_task' },
+    } as any, 'en')
+  })
+
+  expect(message).toBe('EN 快速翻译已完成并通过 QA，可下载结果。')
+})
+
 test('glossary candidate notes hide model metadata', async ({ page }) => {
   await page.goto(baseURL)
   const note = await page.evaluate(async () => {
@@ -54,6 +79,36 @@ test('glossary candidate notes hide model metadata', async ({ page }) => {
     return normalizeGlossaryNote('AI 漏词补充候选，需人工确认；置信度 high；特训玩法的具体类型，不与 existing_candidates 中“特训”重复。')
   })
   expect(note).toBe('特训玩法的具体类型，不与已有候选中的“特训”重复。')
+})
+
+test('glossary review stays visible after another run becomes latest', async ({ page }) => {
+  await page.goto(baseURL)
+  const state = await page.evaluate(async () => {
+    const { glossaryReviewState } = await import('/src/components/translationWizard/steps/StepFreqV2.tsx')
+    return glossaryReviewState(
+      { id: 'translation-run', kind: 'translation', status: 'needs_input' } as any,
+      [{ id: 'batch-1', status: 'pending', counts: { total: 1, pending: 1, accepted: 0, rejected: 0 } }] as any,
+      [{ id: 'candidate-1', batch_id: 'batch-1', status: 'pending', target: 'Start Game' }] as any,
+    )
+  })
+
+  expect(state.showCandidateReview).toBe(true)
+  expect(state.blockAdvance).toBe(true)
+})
+
+test('active glossary extraction blocks advancing before candidates arrive', async ({ page }) => {
+  await page.goto(baseURL)
+  const state = await page.evaluate(async () => {
+    const { glossaryReviewState } = await import('/src/components/translationWizard/steps/StepFreqV2.tsx')
+    return glossaryReviewState(
+      { id: 'glossary-run', kind: 'glossary', status: 'running' } as any,
+      [],
+      [],
+    )
+  })
+
+  expect(state.extractionActive).toBe(true)
+  expect(state.blockAdvance).toBe(true)
 })
 
 test('inline status does not repeat running prefixes', async ({ page }) => {
@@ -662,6 +717,21 @@ test('quick task translates pasted text and shows copyable result in step three'
   await expect(page.getByTestId('quick-text-result')).toContainText('{0}')
   await expect(page.getByTestId('quick-result-copy')).toBeVisible()
   await expect(page.getByTestId('quick-result-download')).toBeVisible()
+})
+
+test('quick task does not expose an unrelated latest run as its result', async ({ page }) => {
+  await page.goto(baseURL)
+  const displayRun = await page.evaluate(async () => {
+    const { quickTaskDisplayRun } = await import('/src/components/quickTask/QuickTaskWizard.tsx')
+    return quickTaskDisplayRun(null, {
+      id: 'formal-run',
+      kind: 'translation',
+      status: 'needs_input',
+      metadata: { task_origin: 'formal_translation' },
+    } as any)
+  })
+
+  expect(displayRun).toBeNull()
 })
 
 test('quick workflow can preview and import glossary terms', async ({ page, request }) => {

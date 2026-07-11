@@ -1165,6 +1165,38 @@ def _apply_glossary_candidate(conn: sqlite3.Connection, candidate: dict[str, Any
             "confirmed": True,
         }
         return update_glossary_term(existing_term_id, updates, conn=conn)
+
+    source_key = _glossary_source_key(payload["source"])
+    source_matches = _glossary_rows_by_source_key(conn, candidate["project_id"], source_key, payload["language"]) if source_key else []
+    if source_matches:
+        existing = _choose_glossary_canonical(source_matches)
+        return update_glossary_term(
+            existing["id"],
+            {
+                "term_key": payload["term_key"] or existing.get("term_key", ""),
+                "source": payload["source"] or existing.get("source", ""),
+                "target": payload["target"],
+                "target_alt": payload["target_alt"],
+                "language": payload["language"],
+                "category": payload["category"] or existing.get("category", ""),
+                "note": payload["note"],
+                "confirmed": True,
+            },
+            conn=conn,
+        )
+
+    term_key = str(payload.get("term_key") or "").strip()
+    if term_key:
+        key_owner = conn.execute(
+            """
+            SELECT id FROM glossary_terms
+            WHERE project_id = ? AND language = ? AND TRIM(term_key) = ? AND confirmed = 1
+            LIMIT 1
+            """,
+            (candidate["project_id"], payload["language"], term_key),
+        ).fetchone()
+        if key_owner:
+            payload["term_key"] = ""
     payload["source_type"] = "generated"
     return insert_glossary_term(candidate["project_id"], payload, conn=conn)
 

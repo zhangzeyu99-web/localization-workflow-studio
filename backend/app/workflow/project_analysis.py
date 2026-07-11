@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from .. import db
@@ -68,7 +69,9 @@ def _build_project_profile(project: dict[str, Any], intro: str, asset_notes: lis
         "target_language_label": spec.label,
         "target_language_name": spec.prompt_name,
         "tone": tone,
-        "generated_date": db.now_iso()[:10],
+        # Local date, not UTC: this is a user-facing date on a locally-run
+        # workbench, and the UTC date is off by one for evening users (UTC+8).
+        "generated_date": datetime.now().strftime("%Y-%m-%d"),
         "analysis_source": "template",
         "analysis_warning": "未配置 API key，只生成本地规则草稿，未进行 AI 资料分析。",
         "display_game_type": seed.get("display_game_type") or game_type,

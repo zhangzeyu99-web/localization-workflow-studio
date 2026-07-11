@@ -509,6 +509,10 @@ export function AnnouncementTermsStep({
   aiSupplementResponseArtifactId: string
 }) {
   const [draftTerms, setDraftTerms] = useState<AnnouncementTermRow[]>([])
+  // Editable rows are expensive to render (one input per language column);
+  // paginate large temp glossaries instead of mounting hundreds of rows.
+  const TERMS_PAGE_SIZE = 50
+  const [termsPage, setTermsPage] = useState(0)
   const languages = announcementTermLanguages(activeTask, effectiveLanguages)
   const meta = activeTask?.metadata || {}
   const exportArtifact = activeTask?.artifacts?.find((artifact) => artifact.id === meta.terms_artifact_id)
@@ -538,6 +542,7 @@ export function AnnouncementTermsStep({
 
   useEffect(() => {
     setDraftTerms(announcementTermsFromTask(activeTask))
+    setTermsPage(0)
   }, [activeTask?.id, activeTask?.updated_at])
 
   function updateTerm(index: number, patch: Partial<AnnouncementTermRow>) {
@@ -552,11 +557,15 @@ export function AnnouncementTermsStep({
   }
 
   function addTerm() {
+    setTermsPage(Math.floor(draftTerms.length / TERMS_PAGE_SIZE))
     setDraftTerms((prev) => [...prev, { id: '', source: '', translations: {} }])
   }
 
   function removeTerm(index: number) {
-    setDraftTerms((prev) => prev.filter((_, termIndex) => termIndex !== index))
+    const next = draftTerms.filter((_, termIndex) => termIndex !== index)
+    const maxPage = Math.max(0, Math.ceil(next.length / TERMS_PAGE_SIZE) - 1)
+    setTermsPage((page) => Math.min(page, maxPage))
+    setDraftTerms(next)
   }
 
   if (!activeTask) {
@@ -648,19 +657,29 @@ export function AnnouncementTermsStep({
               </tr>
             </thead>
             <tbody>
-              {draftTerms.map((term, index) => (
-                <tr key={`${index}-${term.id || ''}`}>
-                  <td><input value={term.id || ''} onChange={(event) => updateTerm(index, { id: event.target.value })} /></td>
-                  <td><input value={term.source || ''} onChange={(event) => updateTerm(index, { source: event.target.value })} /></td>
-                  {languages.map((language) => (
-                    <td key={language}><input value={(term.translations || {})[language] || ''} onChange={(event) => updateTranslation(index, language, event.target.value)} /></td>
-                  ))}
-                  <td>{term.hit_count ?? '-'}</td>
-                  <td><button className="btn btn-ghost btn-sm" onClick={() => removeTerm(index)}>删除</button></td>
-                </tr>
-              ))}
+              {draftTerms.slice(termsPage * TERMS_PAGE_SIZE, (termsPage + 1) * TERMS_PAGE_SIZE).map((term, pageIndex) => {
+                const index = termsPage * TERMS_PAGE_SIZE + pageIndex
+                return (
+                  <tr key={`${index}-${term.id || ''}`}>
+                    <td><input value={term.id || ''} onChange={(event) => updateTerm(index, { id: event.target.value })} /></td>
+                    <td><input value={term.source || ''} onChange={(event) => updateTerm(index, { source: event.target.value })} /></td>
+                    {languages.map((language) => (
+                      <td key={language}><input value={(term.translations || {})[language] || ''} onChange={(event) => updateTranslation(index, language, event.target.value)} /></td>
+                    ))}
+                    <td>{term.hit_count ?? '-'}</td>
+                    <td><button className="btn btn-ghost btn-sm" onClick={() => removeTerm(index)}>删除</button></td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
+          {draftTerms.length > TERMS_PAGE_SIZE ? (
+            <div className="row-actions align-right gap-top">
+              <span className="asset-meta">第 {termsPage * TERMS_PAGE_SIZE + 1}-{Math.min((termsPage + 1) * TERMS_PAGE_SIZE, draftTerms.length)} 条 / 共 {draftTerms.length} 条</span>
+              <button className="btn btn-ghost btn-sm" disabled={termsPage === 0} onClick={() => setTermsPage((page) => Math.max(0, page - 1))}>上一页</button>
+              <button className="btn btn-ghost btn-sm" disabled={(termsPage + 1) * TERMS_PAGE_SIZE >= draftTerms.length} onClick={() => setTermsPage((page) => page + 1)}>下一页</button>
+            </div>
+          ) : null}
         </div>
       )}
     </>

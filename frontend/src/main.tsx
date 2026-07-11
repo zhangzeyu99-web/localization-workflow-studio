@@ -301,7 +301,16 @@ function App() {
 
   useEffect(() => {
     if (current?.id) refreshGlossaryBatches(current.id)
-  }, [current?.id, latestRun?.id, selectedLanguage])
+  }, [current?.id, latestRun?.id, latestRun?.status, selectedLanguage])
+
+  useEffect(() => {
+    // Reset the content scroll position when the user switches project, view,
+    // tab, or wizard step; otherwise a long previous page leaves the new one
+    // scrolled halfway down.
+    const main = document.querySelector('.main')
+    if (main) main.scrollTop = 0
+    window.scrollTo(0, 0)
+  }, [currentId, view, tab, step])
 
   useEffect(() => {
     if (current?.id && (tab === 'delivery' || (view === 'wizard' && step === 9))) {
@@ -428,7 +437,11 @@ function App() {
               <span className="pname"><WandSparkles size={16} aria-hidden="true" />新翻译任务</span>
               <span className="pmeta">基于当前项目启动工作流</span>
             </button>
-            <button className="project-item quick-entry" data-testid="quick-task-entry" onClick={() => current && setView('quick')} disabled={!current}>
+            <button className="project-item quick-entry" data-testid="quick-task-entry" onClick={() => {
+              if (!current) return
+              setStatusForProject(current.id, '\u5feb\u901f\u4efb\u52a1\u5df2\u5c31\u7eea\u3002')
+              setView('quick')
+            }} disabled={!current}>
               <span className="pname"><Zap size={16} aria-hidden="true" />快速任务</span>
               <span className="pmeta">三步完成翻译或校对</span>
             </button>

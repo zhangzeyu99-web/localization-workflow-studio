@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { errorText, humanBackendEvent, humanTaskStatus } from '../appText'
 import { newestArtifact } from '../domain/artifacts'
@@ -30,6 +31,11 @@ export function useRunStatusPolling(
   refreshDeliverables: (projectId?: string) => Promise<void>
 ) {
   const enabled = Boolean(latestRun && ['queued', 'running'].includes(latestRun.status))
+  const consecutiveFailuresRef = useRef(0)
+
+  useEffect(() => {
+    consecutiveFailuresRef.current = 0
+  }, [latestRun?.id])
 
   usePolling(async (isStale, signal) => {
     if (!latestRun) return
@@ -37,6 +43,7 @@ export function useRunStatusPolling(
     try {
       const updated = await api<Run>(`/api/runs/${latestRun.id}`, { signal })
       if (isStale()) return
+      consecutiveFailuresRef.current = 0
       if (!isCurrentProject(runProjectId)) return
       setLatestRun(updated)
       const latestEvent = updated.events?.[updated.events.length - 1]
@@ -86,7 +93,17 @@ export function useRunStatusPolling(
         if (tab === 'delivery') await refreshDeliverables()
       }
     } catch (error) {
-      if (!isStale()) setStatusForProject(runProjectId, `后台任务进度刷新失败：${errorText(error)}`)
+      if (isStale()) return
+      consecutiveFailuresRef.current += 1
+      if (consecutiveFailuresRef.current >= 5) {
+        // Escape hatch: if progress polling keeps failing (backend restart,
+        // network drop), release the global busy lock instead of freezing the
+        // whole UI forever. The backend task itself keeps running.
+        setBusyForProject(runProjectId, false)
+        setStatusForProject(runProjectId, `后台任务进度刷新连续失败（${errorText(error)}）。任务可能仍在后台运行，界面已解锁；请稍后在「活跃任务」里查看，或刷新页面。`)
+      } else {
+        setStatusForProject(runProjectId, `后台任务进度刷新失败：${errorText(error)}`)
+      }
     }
   }, { intervalMs: 2000, enabled, skipWhenHidden: true }, [latestRun?.id, latestRun?.status, tab])
 }

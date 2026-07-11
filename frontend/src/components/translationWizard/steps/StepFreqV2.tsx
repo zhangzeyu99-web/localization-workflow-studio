@@ -4,6 +4,24 @@ import { translationInputMode } from '../../../domain/translationFlow'
 import { languageSpec, type LanguageCode } from '../../../languages'
 import type { Artifact, GlossaryBatch, GlossaryCandidate, Project, Run, TranslationReadiness } from '../../../types'
 
+export function glossaryReviewState(
+  latestRun: Run | null,
+  glossaryBatches: GlossaryBatch[],
+  glossaryCandidates: GlossaryCandidate[]
+) {
+  const activeBatch = glossaryBatches[0] || null
+  const pendingCount = glossaryCandidates.filter((candidate) => candidate.status === 'pending').length
+  const acceptedCount = activeBatch?.counts?.accepted ?? glossaryCandidates.filter((candidate) => candidate.status === 'accepted').length
+  const rejectedCount = activeBatch?.counts?.rejected ?? glossaryCandidates.filter((candidate) => candidate.status === 'rejected').length
+  const extractionActive = latestRun?.kind === 'glossary' && ['queued', 'running'].includes(latestRun.status)
+  const hasBackfill = latestRun?.kind === 'glossary' && Boolean(latestRun.metadata?.glossary_backfill)
+  return {
+    extractionActive,
+    showCandidateReview: Boolean(hasBackfill || (activeBatch && (pendingCount || acceptedCount || rejectedCount))),
+    blockAdvance: extractionActive || pendingCount > 0
+  }
+}
+
 export function StepFreqV2({
   onGlossaryExtract,
   onFreq,
@@ -46,6 +64,7 @@ export function StepFreqV2({
   const reviewPreview = expanded ? pendingCandidates : pendingCandidates.slice(0, 12)
   const accepted = activeBatch?.counts?.accepted ?? glossaryCandidates.filter((candidate) => candidate.status === 'accepted').length
   const rejected = activeBatch?.counts?.rejected ?? glossaryCandidates.filter((candidate) => candidate.status === 'rejected').length
+  const reviewState = glossaryReviewState(latestRun, glossaryBatches, glossaryCandidates)
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id ? translationReadiness : null
   const inputMode = translationInputMode(readiness)
   const blocked = !sourceArtifact || inputMode === 'ready_for_qa' || inputMode === 'invalid'
@@ -67,12 +86,14 @@ export function StepFreqV2({
             <strong>缺少待翻译语言表</strong>
             <span>{inputMode === 'invalid' ? '文件结构需要修正' : '请先上传语言表'}</span>
           </div>
+          <button className="btn btn-primary btn-sm" data-testid="term-goto-source" onClick={() => setStep(4)}>返回判定输入</button>
         </div>
       ) : null}
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
-        <button className="btn btn-primary" disabled={blocked || busy} onClick={() => onGlossaryExtract(sourceArtifact)}>扫描候选</button>
+        <button className="btn btn-primary" disabled={blocked || busy || reviewState.extractionActive} onClick={() => onGlossaryExtract(sourceArtifact)}>扫描候选</button>
       </div>
+      {reviewState.extractionActive ? <div className="info-line compact">正在整理术语候选，请完成后再继续。</div> : null}
       <details className="manual-maintenance compact-maintenance">
         <summary>更多设置</summary>
         <div className="language-inline-select">
@@ -81,7 +102,7 @@ export function StepFreqV2({
           <button className="btn btn-ghost" onClick={onFreq}>查看扫描规则</button>
         </div>
       </details>
-      {backfill ? (
+      {reviewState.showCandidateReview ? (
         <>
           <div className="scan-explain">
             <strong>本次扫描结果</strong>

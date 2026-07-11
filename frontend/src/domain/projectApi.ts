@@ -47,7 +47,10 @@ export async function uploadProjectFile(
       const text = await response.text()
       const trimmed = text.trim()
       const contentType = response.headers.get('content-type') || ''
-      if (response.status >= 500 && (!trimmed || (!contentType.includes('application/json') && /^(Internal Server Error|Error occurred while trying to proxy)/i.test(trimmed)))) {
+      // Same rule as apiClient.ts: only proxy failures/empty replies count as
+      // "backend unreachable"; a bare 500 body means the backend crashed on
+      // this request and gets the dedicated 500 message instead.
+      if (response.status >= 500 && (!trimmed || (!contentType.includes('application/json') && /^Error occurred while trying to proxy/i.test(trimmed)))) {
         throw new Error('连接工作台后端失败。后端可能正在重启或未启动，请等几秒后重试；如果反复出现，请重启本地/局域网工作台。')
       }
       throw new Error(apiErrorText(text, response.statusText, '上传'))

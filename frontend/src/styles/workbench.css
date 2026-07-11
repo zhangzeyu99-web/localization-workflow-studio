@@ -1798,11 +1798,20 @@ details > summary {
     display: flex;
     gap: 5px;
     overflow-x: auto;
-    scrollbar-width: none;
+    scrollbar-width: thin;
+    scrollbar-color: #c3cbd2 transparent;
+    /* Fading right edge hints there are more cards to scroll to. */
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent 100%);
+    mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent 100%);
   }
 
   .project-list::-webkit-scrollbar {
-    display: none;
+    height: 5px;
+  }
+
+  .project-list::-webkit-scrollbar-thumb {
+    border-radius: 6px;
+    background: #c3cbd2;
   }
 
   .project-list .project-item {

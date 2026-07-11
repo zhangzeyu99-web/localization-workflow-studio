@@ -455,6 +455,36 @@ def test_announcement_terms_filter_generic_language_table_hits_before_workpack(t
         assert not {"Notice", "Game", "Use", "Issue", "Enter", "Enter Game", "Get"} & set(targets)
 
 
+def test_announcement_lookup_allows_completed_empty_term_extraction() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Empty announcement terms", "type": "QA"}).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"title": "notice.txt", "text": "活动将于 7 月 15 日 10:00 开启。", "languages": ["en"]},
+        ).json()
+
+        before_extract = client.post(
+            f"/api/announcement-tasks/{task['id']}/lookup-translations",
+            json={"languages": ["en"], "include_project_archive": False},
+        )
+        assert before_extract.status_code == 400
+
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={"languages": ["en"], "include_project_archive": False, "ai_supplement": False},
+        )
+        assert extracted.status_code == 200, extracted.text
+        assert extracted.json()["summary"]["terms"] == 0
+        assert extracted.json()["task"]["metadata"]["terms_artifact_id"]
+
+        lookup = client.post(
+            f"/api/announcement-tasks/{task['id']}/lookup-translations",
+            json={"languages": ["en"], "include_project_archive": False},
+        )
+        assert lookup.status_code == 200, lookup.text
+        assert lookup.json()["summary"] == {"languages": ["en"], "terms": 0, "missing_terms": 0}
+
+
 def test_announcement_ai_supplement_does_not_readd_low_value_terms() -> None:
     from app.workflow.announcement_ai import _announcement_ai_rows_to_terms
 
@@ -597,6 +627,10 @@ def test_announcement_force_delivery_with_hard_blockers_generates_package(tmp_pa
         package = next(artifact for artifact in normal_delivery.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         assert package["metadata"]["forced"] is True
         assert package["metadata"]["source_type"] == "delivered_with_issues"
+        archived = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
+        archived_notice = next(entry for entry in archived if entry["source"] == rows[0]["source"])
+        assert archived_notice["target"] == "{0}"
+        assert archived_notice["source_type"] == "delivered_with_issues"
         deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
         forced_deliverable = next(item for item in deliverables if item["task_code"] == "ANN")
         assert forced_deliverable["delivered_with_issues"] is True
@@ -1316,6 +1350,10 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         assert applied.status_code == 200, applied.text
         delivered = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526"})
         assert delivered.status_code == 200, delivered.text
+        archived = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
+        archived_notice = next(entry for entry in archived if entry["source"] == rows[0]["source"])
+        assert archived_notice["target"] == "히어로 각성 2026/5/20"
+        assert archived_notice["source_type"] == "qa_passed"
         package = next(artifact for artifact in delivered.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         package_path = Path(package["path"])
         assert package_path.exists()
@@ -2898,6 +2936,35 @@ def test_glossary_backfill_preserves_existing_terms_and_logs_strategy(tmp_path: 
         events = client.get(f"/api/runs/{run['id']}/events").json()
         assert any("Glossary backfill strategy" in event["message"] for event in events)
         assert any("inserted=2" in event["message"] and "updated=0" in event["message"] for event in events)
+
+
+def test_glossary_accept_handles_multiple_terms_from_the_same_source_row(tmp_path: Path) -> None:
+    generated = tmp_path / "generated_glossary_same_row.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "EN", "EN2"])
+    ws.append(["2", "DAILY_LOGIN_REWARD", "Daily Login Reward", ""])
+    ws.append(["2", "COIN", "Coin", ""])
+    wb.save(generated)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary same-row terms", "type": "QA"}).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "en"}).json()
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"])
+        candidates = client.get(f"/api/projects/{project['id']}/glossary/batches").json()["candidates"]
+
+        response = client.post(
+            f"/api/projects/{project['id']}/glossary/batches/{result['batch_id']}/accept",
+            json={"candidate_ids": [candidate["id"] for candidate in candidates]},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["resolved_count"] == 2
+        terms = {term["source"]: term for term in client.get(f"/api/projects/{project['id']}/glossary").json()}
+        assert set(terms) == {"DAILY_LOGIN_REWARD", "COIN"}
+        assert sorted(term["term_key"] for term in terms.values()) == ["", "2"]
 
 
 def test_glossary_backfill_maps_legacy_generated_headers_to_kr_candidates(tmp_path: Path) -> None:

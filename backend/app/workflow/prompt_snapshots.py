@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -117,7 +118,7 @@ def _profile_for_prompt_repair(project: dict[str, Any], language: str) -> dict[s
             "target_language_label": spec.label,
             "target_language_name": spec.prompt_name,
             "language_assets": repaired.get("language_assets") or _language_assets_summary(project["id"]),
-            "generated_date": repaired.get("generated_date") or db.now_iso()[:10],
+            "generated_date": repaired.get("generated_date") or datetime.now().strftime("%Y-%m-%d"),
         }
     )
     return repaired

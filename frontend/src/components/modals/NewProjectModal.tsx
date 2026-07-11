@@ -10,10 +10,21 @@ export function NewProjectModal({ onClose, onCreate }: { onClose: () => void; on
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    // Inline validation instead of the native browser bubble, so the hint
+    // matches the workbench design system and stays visible.
+    if (!String(form.get('name') || '').trim()) {
+      setError('请填写项目名称。')
+      return
+    }
+    if (typeMode === '其他' && !customType.trim()) {
+      setError('请填写自定义项目类型。')
+      return
+    }
     setBusy(true)
     setError('')
     try {
-      await onCreate(new FormData(event.currentTarget))
+      await onCreate(form)
     } catch (err) {
       setError(`创建失败：${errorText(err)}`)
     } finally {
@@ -23,11 +34,11 @@ export function NewProjectModal({ onClose, onCreate }: { onClose: () => void; on
 
   return (
     <div className="modal-mask show">
-      <form className="modal" onSubmit={submit}>
+      <form className="modal" noValidate onSubmit={submit}>
         <h3 className="icon-title"><FolderPlus size={18} aria-hidden="true" />新建本地化项目</h3>
         <p>填写基本信息即可创建，后续可在项目里完善提示词和术语表。</p>
         <label className="field-label">项目名称</label>
-        <input name="name" placeholder="例如：星际边境 / 机甲纪元" required disabled={busy} />
+        <input name="name" placeholder="例如：星际边境 / 机甲纪元" disabled={busy} onChange={() => setError('')} />
         <label className="field-label">项目类型</label>
         <select value={typeMode} disabled={busy} onChange={(event) => setTypeMode(event.target.value)}>
           <option>科幻 SLG</option>
@@ -37,7 +48,7 @@ export function NewProjectModal({ onClose, onCreate }: { onClose: () => void; on
           <option>其他</option>
         </select>
         {typeMode === '其他' ? (
-          <input key="custom-type" name="type" value={customType} onChange={(event) => setCustomType(event.target.value)} placeholder="手动填写项目类型 / 标签" required autoFocus disabled={busy} />
+          <input key="custom-type" name="type" value={customType} onChange={(event) => { setCustomType(event.target.value); setError('') }} placeholder="手动填写项目类型 / 标签" autoFocus disabled={busy} />
         ) : (
           <input key="preset-type" name="type" type="hidden" value={typeMode} />
         )}

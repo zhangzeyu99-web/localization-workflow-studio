@@ -61,5 +61,6 @@ export function projectRunStatusText(run: Run): string {
 
 export function projectTranslationPassedStatusText(run: Run, fallbackLanguage: string): string {
   const lang = languageSpec(normalizeLanguageCode(run.language) || normalizeLanguageCode(fallbackLanguage) || 'en').short
+  if (run.metadata?.task_origin === 'quick_task') return `${lang} \u5feb\u901f\u7ffb\u8bd1\u5df2\u5b8c\u6210\u5e76\u901a\u8fc7 QA\uff0c\u53ef\u4e0b\u8f7d\u7ed3\u679c\u3002`
   return `${lang} \u7ffb\u8bd1\u548c QA \u5df2\u901a\u8fc7\uff0c\u6700\u7ec8\u4ea7\u7269\u5df2\u5f52\u6863\u3002`
 }

@@ -209,7 +209,8 @@ def build_source_token_map(text: str) -> list[str]:
 def normalize_english_punctuation(text: str) -> str:
     """Convert fullwidth punctuation to ASCII for English-like outputs."""
     normalized = str(text).translate(_FULLWIDTH_TRANSLATION_MAP).replace('、', ',')
-    normalized = re.sub(r'([,;:])(?=\S)', r'\1 ', normalized)
+    normalized = re.sub(r'([,;])(?=\S)', r'\1 ', normalized)
+    normalized = re.sub(r'(?<!\d):(?=\S)(?![/\\])', ': ', normalized)
     normalized = re.sub(r'([(\[])\s+', r'\1', normalized)
     normalized = re.sub(r'\s+([\])])', r'\1', normalized)
     normalized = re.sub(r' {2,}', ' ', normalized)

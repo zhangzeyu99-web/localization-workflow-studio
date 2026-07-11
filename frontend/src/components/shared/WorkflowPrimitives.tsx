@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { AlertTriangle, Check, Download, FileUp } from 'lucide-react'
 import { artifactDownloadHref, artifactFileName, artifactPickerLabel, artifactsByRoles, pickerArtifacts } from '../../domain/artifacts'
 import { altColumnVisible } from '../../domain/projectAssets'
@@ -32,7 +33,12 @@ export function actionStatusText(status: string, busy: boolean): string {
 }
 
 export function ActionStatus({ status, busy }: { status: string; busy: boolean }) {
+  // Status messages (including stale errors) used to stick around until the
+  // next successful action replaced them; let the user dismiss the current
+  // message. A new/different status re-appears automatically.
+  const [dismissedStatus, setDismissedStatus] = useState('')
   if (!status || (!busy && status === '准备就绪')) return null
+  if (!busy && dismissedStatus === status) return null
   // A 409 project_busy/capacity rejection (see apiClient's sanitizeUserFacingError)
   // lands here as plain status text from ~60 different call sites; detecting the
   // pattern once at the render point avoids wiring an "open active jobs panel"
@@ -50,6 +56,17 @@ export function ActionStatus({ status, busy }: { status: string; busy: boolean }
           onClick={() => requestOpenActiveJobsPanel()}
         >
           查看活跃任务
+        </button>
+      ) : null}
+      {!busy ? (
+        <button
+          type="button"
+          className="inline-status-dismiss"
+          aria-label="关闭提示"
+          title="关闭提示"
+          onClick={() => setDismissedStatus(status)}
+        >
+          ×
         </button>
       ) : null}
     </div>
@@ -100,7 +117,7 @@ export function GlossaryPreview({ rows, selectedLanguage = 'en' }: { rows: Gloss
   const showAlt = altColumnVisible(selectedLanguage)
   return (
     <div className="card tight">
-      <div className="card-title"><div className="left">术语预览（{rows.length} 条）</div></div>
+      <div className="card-title"><div className="left">术语预览（{rows.length} 条）</div>{rows.length > 20 ? <div className="right muted">仅显示前 20 条</div> : null}</div>
       <table>
         <thead><tr><th>ID</th><th>CN</th>{showLanguage ? <th>语言</th> : null}<th>{lang.targetHeader}</th>{showAlt ? <th>{lang.altHeader}</th> : null}<th>分类</th><th>备注</th></tr></thead>
         <tbody>

@@ -1,5 +1,6 @@
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Languages } from 'lucide-react'
 import { matchesTranslationRun, translationInputMode, translationNextStep } from '../../domain/translationFlow'
+import { projectPromptForLanguage } from '../../domain/projectAssets'
 import { type LanguageCode } from '../../languages'
 import { ActionStatus } from '../shared/WorkflowPrimitives'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
@@ -8,7 +9,7 @@ import { StepIntro } from './steps/StepIntro'
 import { StepAnalyze } from './steps/StepAnalyze'
 import { StepTerm } from './steps/StepTerm'
 import { StepSource } from './steps/StepSource'
-import { StepFreqV2 } from './steps/StepFreqV2'
+import { glossaryReviewState, StepFreqV2 } from './steps/StepFreqV2'
 import { StepLang } from './steps/StepLang'
 import { StepTranslate } from './steps/StepTranslate'
 import { StepQA } from './steps/StepQA'
@@ -59,7 +60,7 @@ export function Wizard(props: {
   onGlossaryImport: () => void
   onTranslate: () => void
   onTranslateQueue?: () => void
-  onCancelTranslate: () => void
+  onCancelTranslate: (run?: Run | null) => void
   onDirectQA: (artifact?: Artifact | null) => void
   onDirectQAQueue?: () => void
   onSkipQAArchive: (artifact?: Artifact | null) => void
@@ -90,10 +91,18 @@ export function Wizard(props: {
   const stepCanEnterQa = translationInputMode(sourceReadiness) === 'ready_for_qa' || Boolean(stepTranslationRun && currentTranslationDeliveryRun?.id === stepTranslationRun.id)
   const stepCanGoDelivery = Boolean(wizardDeliveryRun)
   const stepDeliveryReady = step !== 9 || stepDeliveryFiles.length > 0
+  const stepSourceMissing = step === 4 && !props.sourceArtifact
+  const glossaryReview = glossaryReviewState(props.latestRun, props.glossaryBatches, props.glossaryCandidates)
   const skippedSteps = translationInputMode(sourceReadiness) === 'ready_for_qa' ? [5, 6, 7] : []
   const nextButtonLabels = ['去 AI 分析', '确认分析', '继续', '确认输入', '继续', '确认语言', '去 QA 校对', '去交付']
-  const goNext = () => {
+  const goNext = async () => {
     if (stepTranslationActive) return
+    // H2 guard: these two steps used to be silently skippable, leaving later
+    // steps in dead-end states. Ask before advancing without prerequisites.
+    if (step === 2 && !projectPromptForLanguage(project, props.selectedLanguage)) {
+      const proceed = await props.confirm('还没有运行 AI 分析，翻译提示词尚未生成，会影响翻译质量。确定跳过分析继续吗？', { title: '尚未完成 AI 分析', confirmLabel: '仍要继续', cancelLabel: '留在本步' })
+      if (!proceed) return
+    }
     if (step === 4 && translationInputMode(props.sourceInputNotice) === 'invalid') {
       setStep(4)
       return
@@ -137,9 +146,9 @@ export function Wizard(props: {
         <button className="btn btn-ghost btn-icon" aria-label="上一步" title="上一步" disabled={step === 1} onClick={() => setStep(step - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>
         <button
           className="btn btn-primary"
-          disabled={props.busy || stepTranslationActive || (step === 7 && !stepCanEnterQa) || (step === 8 && !stepCanGoDelivery) || (step === 9 && !stepDeliveryReady)}
+          disabled={props.busy || stepTranslationActive || stepSourceMissing || (step === 5 && glossaryReview.blockAdvance) || (step === 7 && !stepCanEnterQa) || (step === 8 && !stepCanGoDelivery) || (step === 9 && !stepDeliveryReady)}
           onClick={step === 9 ? props.onFinishDelivery : goNext}
-          title={step === 9 && !stepDeliveryReady ? '请先生成交付文件，下载入口出现后再完成。' : undefined}
+          title={stepSourceMissing ? '请先上传或选择待翻译语言表。' : step === 9 && !stepDeliveryReady ? '请先生成交付文件，下载入口出现后再完成。' : undefined}
         >
           {step === 9 ? <><Check size={16} aria-hidden="true" />返回项目</> : stepTranslationActive ? '翻译中' : <>{nextButtonLabels[step - 1]}<ChevronRight size={16} aria-hidden="true" /></>}
         </button>

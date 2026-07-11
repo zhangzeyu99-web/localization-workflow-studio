@@ -85,8 +85,12 @@ export function MetaTab({
   }, [project.id, project.name, project.type, project.description, project.prompt_text, project.profile, selectedLanguage])
 
   async function saveMaterialInput() {
-    await onSaveMeta({ name: name.trim() || project.name, type, description: materialNotes })
-    setIntro(materialNotes)
+    try {
+      await onSaveMeta({ name: name.trim() || project.name, type, description: materialNotes })
+      setIntro(materialNotes)
+    } catch {
+      // 状态栏已提示保存失败；保留编辑内容让用户重试。
+    }
   }
 
   async function saveMetaDraft() {
@@ -101,8 +105,12 @@ export function MetaTab({
     profile.translation_style = metaDraft.translation_style
     profile.language_assets = metaDraft.language_assets
     profile.source_materials = metaDraft.source_materials
-    await onSaveMeta({ type, profile })
-    setEditingMeta(false)
+    try {
+      await onSaveMeta({ type, profile })
+      setEditingMeta(false)
+    } catch {
+      // 状态栏已提示保存失败；保持编辑态避免丢失草稿。
+    }
   }
 
   async function savePrompt() {
@@ -113,8 +121,12 @@ export function MetaTab({
     displayPrompts[selectedLanguage] = promptDraft
     profile.prompts_by_language = prompts
     profile.display_prompts_by_language = displayPrompts
-    await onSaveMeta(selectedLanguage === 'en' ? { prompt_text: promptDraft, profile } : { profile })
-    setEditingPrompt(false)
+    try {
+      await onSaveMeta(selectedLanguage === 'en' ? { prompt_text: promptDraft, profile } : { profile })
+      setEditingPrompt(false)
+    } catch {
+      // 状态栏已提示保存失败；保持编辑态避免丢失草稿。
+    }
   }
 
   async function copyPrompt() {

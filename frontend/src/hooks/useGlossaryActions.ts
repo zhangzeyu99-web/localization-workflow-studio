@@ -207,46 +207,58 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
   const addGlossaryTerm = useCallback(async (form: FormData) => {
     if (!current) return
     const projectId = current.id
-    await api(`/api/projects/${projectId}/glossary`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        term_key: form.get('term_key') || '',
-        source: form.get('source'),
-        target: form.get('target'),
-        target_alt: form.get('target_alt') || '',
-        language: form.get('language') || selectedLanguage,
-        category: form.get('category') || 'manual',
-        note: form.get('note') || '',
-        source_type: 'manual',
-        confirmed: true
+    try {
+      await api(`/api/projects/${projectId}/glossary`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          term_key: form.get('term_key') || '',
+          source: form.get('source'),
+          target: form.get('target'),
+          target_alt: form.get('target_alt') || '',
+          language: form.get('language') || selectedLanguage,
+          category: form.get('category') || 'manual',
+          note: form.get('note') || '',
+          source_type: 'manual',
+          confirmed: true
+        })
       })
-    })
-    await refreshProjectSnapshot(projectId)
-    setStatusForProject(projectId, '词条已新增')
+      await refreshProjectSnapshot(projectId)
+      setStatusForProject(projectId, '词条已新增')
+    } catch (error) {
+      setStatusForProject(projectId, `词条新增失败：${errorText(error)}`)
+    }
   }, [current, selectedLanguage, refreshProjectSnapshot, setStatusForProject])
 
   const updateGlossaryTerm = useCallback(async (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => {
     if (!current) return
     const projectId = current.id
-    await api(`/api/projects/${projectId}/glossary/${term.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates)
-    })
-    await refreshProjectSnapshot(projectId)
-    setStatusForProject(projectId, '词条已保存')
+    try {
+      await api(`/api/projects/${projectId}/glossary/${term.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      })
+      await refreshProjectSnapshot(projectId)
+      setStatusForProject(projectId, '词条已保存')
+    } catch (error) {
+      setStatusForProject(projectId, `词条保存失败：${errorText(error)}`)
+    }
   }, [current, refreshProjectSnapshot, setStatusForProject])
 
   const updateGlossaryCandidate = useCallback(async (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => {
     if (!current) return
-    await api(`/api/projects/${current.id}/glossary/candidates/${candidate.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates)
-    })
-    await refreshGlossaryBatches(current.id)
-    setStatus('候选词条已保存')
+    try {
+      await api(`/api/projects/${current.id}/glossary/candidates/${candidate.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      })
+      await refreshGlossaryBatches(current.id)
+      setStatus('候选词条已保存')
+    } catch (error) {
+      setStatus(`候选词条保存失败：${errorText(error)}`)
+    }
   }, [current, refreshGlossaryBatches, setStatus])
 
   const translateMissingGlossaryCandidates = useCallback(async (batchId: string) => {
@@ -290,9 +302,13 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
   const deleteGlossaryTerm = useCallback(async (term: GlossaryTerm) => {
     if (!current) return
     const projectId = current.id
-    await api(`/api/projects/${projectId}/glossary/${term.id}`, { method: 'DELETE' })
-    await refreshProjectSnapshot(projectId)
-    setStatusForProject(projectId, '词条已删除')
+    try {
+      await api(`/api/projects/${projectId}/glossary/${term.id}`, { method: 'DELETE' })
+      await refreshProjectSnapshot(projectId)
+      setStatusForProject(projectId, '词条已删除')
+    } catch (error) {
+      setStatusForProject(projectId, `词条删除失败：${errorText(error)}`)
+    }
   }, [current, refreshProjectSnapshot, setStatusForProject])
 
   return {
