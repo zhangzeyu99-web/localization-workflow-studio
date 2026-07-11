@@ -1692,3 +1692,39 @@ test('delivery cards reflow without horizontal overflow at 1024px', async ({ pag
   expect(metrics.cardColumns).toBe(2)
   expect(metrics.tagHeight).toBeLessThanOrEqual(30)
 })
+
+test('mobile project tabs and history table stay readable', async ({ page, request }) => {
+  const projectName = `E2E Mobile Tables ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'responsive', description: 'Mobile tab and table coverage.' },
+  }).then((response) => response.json())
+  await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en' },
+  })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '翻译', exact: true }).click()
+  await expect(page.locator('.history-table-scroll')).toBeVisible()
+
+  const metrics = await page.evaluate(() => {
+    const tabs = document.querySelector('.view-tabs')!
+    const wrapper = document.querySelector('.history-table-scroll')!
+    const table = document.querySelector('.history-table')!
+    const tag = document.querySelector('.history-table .tag')!
+    return {
+      tabColumns: getComputedStyle(tabs).gridTemplateColumns.split(' ').length,
+      tabOverflow: tabs.scrollWidth - tabs.clientWidth,
+      wrapperOverflow: wrapper.scrollWidth - wrapper.clientWidth,
+      tableWidth: table.getBoundingClientRect().width,
+      tagHeight: tag.getBoundingClientRect().height,
+    }
+  })
+
+  expect(metrics.tabColumns).toBe(3)
+  expect(metrics.tabOverflow).toBeLessThanOrEqual(1)
+  expect(metrics.wrapperOverflow).toBeGreaterThan(0)
+  expect(metrics.tableWidth).toBeGreaterThanOrEqual(679)
+  expect(metrics.tagHeight).toBeLessThanOrEqual(30)
+})

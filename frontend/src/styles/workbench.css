@@ -686,6 +686,11 @@ a {
   scrollbar-color: #b9c1c8 transparent;
 }
 
+.history-table-scroll {
+  border-radius: 7px;
+  scrollbar-color: #b9c1c8 transparent;
+}
+
 .phase-stepper {
   position: relative;
   display: grid;
@@ -1909,6 +1914,25 @@ details > summary {
 
   .view-tabs {
     top: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    overflow: visible;
+  }
+
+  .view-tab {
+    min-height: 42px;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  .history-table,
+  .glossary-wide-table {
+    min-width: 680px;
+  }
+
+  .translation-wide-table {
+    min-width: 880px;
   }
 
   .proj-head {
