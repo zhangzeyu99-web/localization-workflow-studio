@@ -1636,3 +1636,59 @@ test('compact desktop keeps sidebar entries and command labels intact', async ({
   expect(backMetrics.scrollHeight).toBeLessThanOrEqual(backMetrics.clientHeight + 1)
   expect(backMetrics.whiteSpace).toBe('nowrap')
 })
+
+test('delivery cards reflow without horizontal overflow at 1024px', async ({ page, request }) => {
+  const projectName = `E2E Delivery Reflow ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'responsive', description: 'Delivery reflow coverage.' },
+  })
+  await page.route('**/api/projects/*/deliverables', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        deliverables: [{
+          run_id: 'run-responsive-delivery',
+          task_code: 'T',
+          task_id: 'task-responsive-delivery',
+          task_label: 'T-responsive',
+          task_type: '翻译任务',
+          language: 'EN',
+          created_at: '2026-07-11T08:54:54Z',
+          updated_at: '2026-07-11T08:54:54Z',
+          status: 'passed',
+          processed_rows: 5,
+          source_rows: 5,
+          input_label: '已译语言表｜EN｜responsive-delivery｜2026-07-11',
+          qa_status: 'passed',
+          qa_hard_errors: 0,
+          qa_soft_warnings: 0,
+          files: { outputs: [] },
+        }],
+      }),
+    })
+  })
+
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '交付', exact: true }).click()
+  await expect(page.locator('.delivery-line')).toBeVisible()
+
+  const metrics = await page.evaluate(() => {
+    const main = document.querySelector('.main')!
+    const content = document.querySelector('.main-content')!
+    const card = document.querySelector('.delivery-line')!
+    const tag = document.querySelector('.delivery-line .tag')!
+    return {
+      mainOverflow: main.scrollWidth - main.clientWidth,
+      contentOverflow: content.scrollWidth - content.clientWidth,
+      cardColumns: getComputedStyle(card).gridTemplateColumns.split(' ').length,
+      tagHeight: tag.getBoundingClientRect().height,
+    }
+  })
+  expect(metrics.mainOverflow).toBeLessThanOrEqual(1)
+  expect(metrics.contentOverflow).toBeLessThanOrEqual(1)
+  expect(metrics.cardColumns).toBe(2)
+  expect(metrics.tagHeight).toBeLessThanOrEqual(30)
+})

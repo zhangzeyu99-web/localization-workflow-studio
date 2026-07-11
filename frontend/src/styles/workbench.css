@@ -1577,6 +1577,25 @@ a {
   padding: 0 12px 12px;
 }
 
+.delivery-list {
+  container-type: inline-size;
+}
+
+@container (max-width: 820px) {
+  .delivery-line {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 1fr);
+  }
+
+  .delivery-line-info,
+  .delivery-actions {
+    grid-column: 1 / -1;
+  }
+
+  .delivery-actions {
+    justify-content: flex-start;
+  }
+}
+
 .delivery-primary-card strong,
 .delivery-head strong,
 .delivery-line-info strong {
