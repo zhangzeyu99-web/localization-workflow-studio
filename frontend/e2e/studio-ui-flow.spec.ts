@@ -1582,8 +1582,10 @@ test('workflow remains usable without page overflow at compact desktop and mobil
     const dimensions = await page.evaluate(() => ({
       pageWidth: document.documentElement.scrollWidth,
       viewportWidth: document.documentElement.clientWidth,
+      contentOverflow: document.querySelector('.main-content')!.scrollWidth - document.querySelector('.main-content')!.clientWidth,
     }))
     expect(dimensions.pageWidth).toBeLessThanOrEqual(dimensions.viewportWidth + 1)
+    expect(dimensions.contentOverflow).toBeLessThanOrEqual(1)
   }
 })
 
@@ -1691,6 +1693,10 @@ test('delivery cards reflow without horizontal overflow at 1024px', async ({ pag
   expect(metrics.contentOverflow).toBeLessThanOrEqual(1)
   expect(metrics.cardColumns).toBe(2)
   expect(metrics.tagHeight).toBeLessThanOrEqual(30)
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const mobileColumns = await page.locator('.delivery-line').evaluate((card) => getComputedStyle(card).gridTemplateColumns.split(' ').length)
+  expect(mobileColumns).toBe(1)
 })
 
 test('mobile project tabs and history table stay readable', async ({ page, request }) => {

@@ -1691,6 +1691,13 @@ a {
   backdrop-filter: blur(6px);
 }
 
+@media (max-width: 1280px) {
+  .actions {
+    margin-inline: 0;
+    padding-inline: 0;
+  }
+}
+
 .modal-overlay,
 .confirm-backdrop {
   background: rgba(23, 32, 38, 0.42);
@@ -1814,6 +1821,11 @@ details > summary {
 }
 
 @media (max-width: 980px) {
+  .delivery-line,
+  .delivery-line-info {
+    grid-template-columns: 1fr;
+  }
+
   .header {
     flex-direction: row;
     align-items: center;
