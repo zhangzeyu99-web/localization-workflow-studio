@@ -1586,3 +1586,21 @@ test('workflow remains usable without page overflow at compact desktop and mobil
     expect(dimensions.pageWidth).toBeLessThanOrEqual(dimensions.viewportWidth + 1)
   }
 })
+
+test('mobile project overview exposes all three workflow entries', async ({ page, request }) => {
+  const projectName = `E2E Mobile Entries ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'responsive', description: 'Mobile workflow entry coverage.' },
+  })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+
+  const main = page.locator('main')
+  await expect(main.getByRole('button', { name: '新翻译任务', exact: true })).toBeVisible()
+  await expect(main.getByRole('button', { name: '公告翻译', exact: true })).toBeVisible()
+  await expect(main.getByTestId('overview-quick-task')).toBeVisible()
+  await main.getByTestId('overview-quick-task').click()
+  await expect(page.getByRole('heading', { name: '快速任务', exact: true })).toBeVisible()
+})

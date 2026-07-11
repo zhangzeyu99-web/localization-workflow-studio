@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Archive, BookOpenText, FileText, FolderKanban, Languages, Megaphone, PackageCheck, WandSparkles, Wrench } from 'lucide-react'
+import { Archive, BookOpenText, FileText, FolderKanban, Languages, Megaphone, PackageCheck, WandSparkles, Wrench, Zap } from 'lucide-react'
 import type { LanguageCode } from '../../languages'
 import { HISTORY_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import { glossaryWideRows, translationWideRows } from '../../domain/projectAssets'
@@ -67,6 +67,7 @@ export interface ProjectOverviewProps {
   onCreateMergedDelivery?: () => void
   onStartTask: () => void
   onStartAnnouncement: () => void
+  onStartQuickTask: () => void
   onStartAnnouncementTask: (task: AnnouncementTask) => void
   onBeginAnnouncementCancelHold: (task: AnnouncementTask) => void
   onCancelAnnouncementHold: () => void
@@ -133,6 +134,7 @@ function ProjectOverviewImpl({
   onCreateMergedDelivery,
   onStartTask,
   onStartAnnouncement,
+  onStartQuickTask,
   onStartAnnouncementTask,
   onBeginAnnouncementCancelHold,
   onCancelAnnouncementHold,
@@ -174,6 +176,7 @@ function ProjectOverviewImpl({
         <div className="row-actions">
           <button className="btn btn-primary" onClick={onStartTask}><WandSparkles size={16} aria-hidden="true" />新翻译任务</button>
           <button className="btn btn-ghost" onClick={onStartAnnouncement}><Megaphone size={16} aria-hidden="true" />公告翻译</button>
+          <button className="btn btn-ghost" data-testid="overview-quick-task" onClick={onStartQuickTask}><Zap size={16} aria-hidden="true" />快速任务</button>
         </div>
       </div>
       <div className="stat-grid">

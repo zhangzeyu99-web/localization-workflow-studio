@@ -517,6 +517,7 @@ function App() {
                 onCreateMergedDelivery={createMergedDeliveryPackage}
                 onStartTask={() => { setStatusForProject(current.id, '翻译任务已就绪。'); setView('wizard') }}
                 onStartAnnouncement={() => openAnnouncementTask()}
+                onStartQuickTask={() => { setStatusForProject(current.id, '快速任务已就绪。'); setView('quick') }}
                 onStartAnnouncementTask={openAnnouncementTask}
                 onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
                 onCancelAnnouncementHold={cancelAnnouncementCancelHold}
