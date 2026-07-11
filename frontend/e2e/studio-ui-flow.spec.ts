@@ -1604,3 +1604,35 @@ test('mobile project overview exposes all three workflow entries', async ({ page
   await main.getByTestId('overview-quick-task').click()
   await expect(page.getByRole('heading', { name: '快速任务', exact: true })).toBeVisible()
 })
+
+test('compact desktop keeps sidebar entries and command labels intact', async ({ page, request }) => {
+  const projectName = `E2E Compact Labels ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'responsive', description: 'Compact label coverage.' },
+  })
+
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+
+  const entryMetrics = await page.locator('.quick-entry').evaluateAll((entries) => entries.map((entry) => ({
+    clientHeight: entry.clientHeight,
+    scrollHeight: entry.scrollHeight,
+  })))
+  expect(entryMetrics).toHaveLength(2)
+  expect(entryMetrics.every((entry) => entry.clientHeight >= 56)).toBeTruthy()
+  expect(entryMetrics.every((entry) => entry.scrollHeight <= entry.clientHeight + 1)).toBeTruthy()
+
+  const secondaryColor = await page.locator('.quick-entry .pmeta').first().evaluate((element) => getComputedStyle(element).color)
+  expect(secondaryColor).toBe('rgb(104, 116, 127)')
+
+  await page.getByTestId('quick-task-entry').click()
+  const back = page.getByRole('button', { name: '返回项目概览', exact: true })
+  const backMetrics = await back.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    whiteSpace: getComputedStyle(element).whiteSpace,
+  }))
+  expect(backMetrics.scrollHeight).toBeLessThanOrEqual(backMetrics.clientHeight + 1)
+  expect(backMetrics.whiteSpace).toBe('nowrap')
+})
