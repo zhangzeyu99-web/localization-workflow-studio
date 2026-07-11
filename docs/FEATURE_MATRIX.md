@@ -19,6 +19,7 @@
 | 多人并发（项目级锁 `long_text:{project_id}`、全局并发上限 `max_concurrent_ai_jobs`、`GET /api/system/active-jobs`、共享限流器、settings 快照、删除防护） | `backend/tests/test_concurrency_lease.py`、`backend/tests/test_shared_rate_limiter.py`、`backend/tests/test_shared_resource_protection.py`、`scripts/concurrency_smoke.py` | `frontend/e2e/studio-ui-flow.spec.ts`（`active jobs badge and panel show the running project name and task type`、`starting a second task on a busy project shows a queue hint that opens the active jobs panel`） |
 | 译文归档注入正式翻译（workpack 行附 `reference_hits`，run metadata 记 `reference_audit`，命中随批次 prompt 的 Archive rule 进模型；首跑结果冻结为 run 级快照，续跑不受归档增长影响） | `backend/tests/test_reference_archive_injection.py` | -（后端行为，随既有翻译 e2e 覆盖） |
 | 产品内深度逐行校对（Step 7 显式勾选，默认关闭；机器 QA 后模型逐行审校，确定性审计回退破坏占位符/术语漂移/数字丢失的建议，采纳修改写回后重跑机器 QA；metadata 记 `line_proofread` 摘要与建议 JSONL artifact） | `backend/tests/test_line_proofread.py` | `frontend/e2e/studio-ui-flow.spec.ts`（`interrupted translation run resumes instead of creating a new run` 断言 `line-proofread-toggle`） |
+| QA 后台任务模型（`/api/runs/{id}/qa/start` 走项目 lease、`/qa/cancel` 阶段边界取消不写部分结果、`/manual-fixes/start` 修复同步+QA 后台；长任务不持有全局 busy，任务终态即时刷新项目列表） | `backend/tests/test_qa_background.py` | `user can upload an existing translated workbook and run QA directly`、`user can repair failed QA rows and rerun QA from the web UI`（均经由后台 QA 轮询到终态） |
 
 ## 重构默认门禁
 
