@@ -36,6 +36,10 @@ DEFAULT_EXCLUDE_DIRS = {
     "outputs",
     "release_archives",
     "frontend-v2",
+    # Internal process docs (plans, audit reports with screenshots); they are
+    # repo evidence, not deployment content, and inflate the zip by >10 MB.
+    "superpowers",
+    ".playwright-cli",
 }
 DEFAULT_EXCLUDE_SUFFIXES = {
     ".pyc",
