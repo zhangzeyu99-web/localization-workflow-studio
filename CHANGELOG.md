@@ -2,7 +2,7 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
-## Unreleased
+## 1.3.1 - 2026-07-12
 
 Background-task model for QA and removal of the global busy lock — the three items deferred from the 2026-07-11 UX audit.
 
