@@ -539,7 +539,11 @@ def _detect_columns(ws, lang: str = 'en') -> tuple[int | None, int | None, int |
 
     id_col = pick({'id', 'key'}, 0)
     src_col = pick(set(SOURCE_HEADERS), 1)
-    tgt_col = pick(target_header_candidates(lang, include_generic=True))
+    target_candidates = target_header_candidates(lang, include_generic=True)
+    tgt_col = pick(target_candidates)
+    if tgt_col == id_col:
+        target_candidates.discard(headers[id_col])
+        tgt_col = pick(target_candidates)
     if tgt_col is None and _has_explicit_language_header(headers, all_language_target_headers()):
         return id_col, src_col, None
     if tgt_col is None:

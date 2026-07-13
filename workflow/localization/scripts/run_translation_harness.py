@@ -27,7 +27,7 @@ def main() -> int:
         help=f"Target language; supported: {', '.join(SUPPORTED_TRANSLATION_LANGUAGES)}",
     )
     parser.add_argument("--output-dir", default=None, help="Output directory for harness artifacts")
-    parser.add_argument("--lang-index", type=int, default=0, help="Target language column index")
+    parser.add_argument("--lang-index", type=int, default=None, help="Target language column index; defaults to matching --lang by header")
     parser.add_argument("--response", default=None, help="translation_response.jsonl to validate and apply")
     parser.add_argument("--manifest", default=None, help="translation_manifest.json; defaults to output-dir manifest")
     parser.add_argument("--run-qa", action="store_true", help="Run existing machine QA after applying response")

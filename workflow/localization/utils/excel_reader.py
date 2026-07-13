@@ -9,6 +9,8 @@ from typing import Optional
 
 import pandas as pd
 
+from utils.language_config import all_language_target_headers, target_header_candidates
+
 
 # Common column name patterns (Chinese / English)
 _ID_PATTERNS = re.compile(r'^[Ii][Dd]$|^序号$|^编号$|ID$')
@@ -24,6 +26,7 @@ _TRANS_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _NOTE_PATTERNS = re.compile(r'^(备注|note|notes|comment)$', re.IGNORECASE)
+_EXPLICIT_TARGET_HEADERS = all_language_target_headers()
 
 
 def _detect_column_role(col_name: str) -> Optional[str]:
@@ -33,7 +36,7 @@ def _detect_column_role(col_name: str) -> Optional[str]:
         return 'id'
     if _ORIG_PATTERNS.search(name):
         return 'original'
-    if _TRANS_PATTERNS.search(name):
+    if name.lower() in _EXPLICIT_TARGET_HEADERS or _TRANS_PATTERNS.search(name):
         return 'translation'
     if _NOTE_PATTERNS.search(name):
         return 'note'
@@ -188,3 +191,34 @@ def get_text_pairs(
         result['note'] = ''
 
     return result
+
+
+def resolve_language_index(
+    column_map: dict,
+    lang: str,
+    lang_index: int | None = None,
+) -> int:
+    """Resolve the requested language to its detected target column.
+
+    An explicit ``lang_index`` remains an override for legacy callers. When it
+    is omitted, multi-language workbooks must match the requested language by
+    header instead of silently falling back to the first target column.
+    """
+    languages = column_map.get('languages') or []
+    if lang_index is not None:
+        if lang_index < 0 or lang_index >= len(languages):
+            raise IndexError(
+                f"Language index {lang_index} out of range "
+                f"(only {len(languages)} languages found)"
+            )
+        return lang_index
+
+    candidates = target_header_candidates(lang)
+    for index, language in enumerate(languages):
+        header = str(language.get('translation_col') or '').strip().lower()
+        if header in candidates:
+            return index
+    if len(languages) == 1:
+        return 0
+    detected = ', '.join(str(item.get('translation_col') or '') for item in languages)
+    raise ValueError(f"Target column not found for language {lang}; detected target columns: {detected}")

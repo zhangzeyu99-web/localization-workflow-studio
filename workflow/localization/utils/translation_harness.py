@@ -18,7 +18,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from process_language import _load_term_base
-from utils.excel_reader import get_text_pairs, read_language_file
+from utils.excel_reader import get_text_pairs, read_language_file, resolve_language_index
 from utils.language_config import SUPPORTED_TRANSLATION_LANGUAGES, normalize_language_code
 from utils.text_normalize import extract_vars, strip_tags_and_vars
 from utils.ui_detector import is_ui_text
@@ -108,7 +108,7 @@ def prepare_translation_harness(
     term_base_path: str | Path | None = None,
     lang: str = "en",
     output_dir: str | Path | None = None,
-    lang_index: int = 0,
+    lang_index: int | None = None,
     style_hint: str = "",
 ) -> PreparedTranslationHarness:
     """Prepare a translation workpack and strict manifest."""
@@ -120,7 +120,8 @@ def prepare_translation_harness(
     style_hint = _normalize_style_hint(style_hint)
 
     df, col_map = read_language_file(str(input_path))
-    pairs = get_text_pairs(df, col_map, lang_index=lang_index)
+    resolved_lang_index = resolve_language_index(col_map, lang, lang_index)
+    pairs = get_text_pairs(df, col_map, lang_index=resolved_lang_index)
     term_lookup = _load_term_base(str(term_base_path) if term_base_path else None, lang=lang)
     cache = _load_translation_cache(input_path.parent, lang, style_hint=style_hint)
 
@@ -157,7 +158,7 @@ def prepare_translation_harness(
         "language": lang,
         "input_path": str(input_path),
         "input_sha256": _sha256_file(input_path),
-        "lang_index": lang_index,
+        "lang_index": resolved_lang_index,
         "row_ids": [row["id"] for row in rows],
         "target_status": target_status.__dict__,
         "style_profile": _build_style_profile(rows, style_hint=style_hint),

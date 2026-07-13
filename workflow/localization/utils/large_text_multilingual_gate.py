@@ -92,6 +92,7 @@ NUMBER_WORDS = {
 CJK_ALLOWED_LANGS = {"CN", "ZH", "ZH-CN", "JA", "JP"}
 PROCESS_SUFFIXES = {".jsonl", ".log", ".tmp", ".bak", ".manifest"}
 SOURCE_HEADERS = {"CN", "ZH", "SOURCE", "TEXT", "原文"}
+SUPPORT_WORKBOOK_NAMES = {"qa摘要.xlsx", "qa_summary.xlsx"}
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -456,7 +457,17 @@ def apply_dry_run(template_xlsx: Path, output_xlsx: Path) -> dict[str, Any]:
         workbook.save(output_xlsx)
     finally:
         workbook.close()
-    return {"ok": True, "template": str(template_xlsx), "output": str(output_xlsx), "style_copy": "safe_copy"}
+    from utils.xlsx_translation_writeback import validate_xlsx
+
+    validation = validate_xlsx(output_xlsx)
+    return {
+        "ok": validation["ok"],
+        "template": str(template_xlsx),
+        "output": str(output_xlsx),
+        "style_copy": "safe_copy",
+        "normal_open": validation["normal_open"],
+        "invalid_style_refs": validation["invalid_style_refs"],
+    }
 
 
 def is_process_file(path: Path) -> bool:
@@ -489,6 +500,8 @@ def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, A
         if is_process_file(path):
             add_issue(issues, "process_file_in_delivery", path.name, "", "delivery directory contains process/log/work files")
         if path.suffix.lower() != ".xlsx":
+            continue
+        if path.name.lower() in SUPPORT_WORKBOOK_NAMES:
             continue
 
         workbook = load_workbook(path, read_only=True, data_only=True)

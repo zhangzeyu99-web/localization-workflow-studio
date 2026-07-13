@@ -1,14 +1,33 @@
 import unittest
+import tempfile
+from pathlib import Path
+
+from openpyxl import Workbook
 
 from process_language import (
     RowState,
     _run_readability_checks,
     _run_ui_length_checks,
     prepare_ai_review,
+    run_machine_review,
 )
 
 
 class ProcessLanguageUILengthTests(unittest.TestCase):
+    def test_machine_review_uses_requested_target_header_when_index_is_omitted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "multilingual.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN", "IT"])
+            ws.append([1, "领取奖励", "Claim reward", "Riscatta ricompensa"])
+            wb.save(path)
+            wb.close()
+
+            _, _, states, _ = run_machine_review(str(path), lang="it", lang_index=None)
+
+            self.assertEqual(states[1].translation, "Riscatta ricompensa")
+
     def test_run_ui_length_checks_marks_hard_overflow_rows_for_review(self):
         state = RowState(1, "消息推送", "Push notifications enabled immediately")
         state.is_ui = True

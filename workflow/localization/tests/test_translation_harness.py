@@ -532,6 +532,39 @@ class TranslationHarnessTests(unittest.TestCase):
                         wb.close()
                     self.assertEqual(applied.cache_path.name, f"{lang}.jsonl")
 
+    def test_multilingual_workbook_writes_requested_language_column_by_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "multilingual.xlsx"
+            out_dir = tmp_path / "out"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Sheet1"
+            ws.append(["ID", "CN", "EN", "IT"])
+            ws.append([1, SRC_CLAIM, "Existing English", ""])
+            wb.save(lang_path)
+            wb.close()
+
+            prepared = prepare_translation_harness(lang_path, lang="it", output_dir=out_dir)
+            self.assertEqual(prepared.manifest["lang_index"], 1)
+
+            response_path = tmp_path / "translation_response_it.jsonl"
+            _write_jsonl(response_path, [{"id": 1, "translation": "Riscatta ricompensa"}])
+            applied = apply_translation_response(
+                input_path=lang_path,
+                manifest_path=prepared.manifest_path,
+                response_path=response_path,
+                output_dir=out_dir,
+                lang="it",
+            )
+
+            result = load_workbook(applied.final_workbook_path, read_only=True, data_only=False)
+            try:
+                self.assertEqual(result.active.cell(2, 3).value, "Existing English")
+                self.assertEqual(result.active.cell(2, 4).value, "Riscatta ricompensa")
+            finally:
+                result.close()
+
     def test_prepare_rejects_unsupported_language_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

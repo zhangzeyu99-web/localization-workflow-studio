@@ -377,6 +377,21 @@ class QualityHarnessTests(unittest.TestCase):
             self.assertEqual(result.rows_scanned, 1)
             self.assertEqual(result.issue_counts["chinese_residue"], 0)
 
+    def test_scan_workbook_uses_idn_column_instead_of_id_primary_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "idn_language.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "IDN"])
+            ws.append([1, "领取", "Klaim"])
+            wb.save(path)
+
+            result = scan_workbook(path, lang="idn", auto_discover_terms=False)
+
+            self.assertTrue(result.passed, result.issues)
+            self.assertEqual(result.rows_scanned, 1)
+            self.assertEqual(result.issue_counts["workbook_scan_empty"], 0)
+
     def test_scan_workbook_uses_korean_term_column(self):
         with tempfile.TemporaryDirectory() as tmp:
             workbook_path = Path(tmp) / "ko_language.xlsx"

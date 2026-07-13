@@ -343,9 +343,11 @@ def check_readability(row_id: int, original: str, translation: str, lang: str = 
             confidence=0.95,
         ))
 
-    clipped = _CLIPPED_WORD_PATTERN.search(_visible_text(text))
-    source_sensitive_clipped = _find_source_sensitive_clipped_word(original, text)
-    clipped_token = clipped.group(0) if clipped else source_sensitive_clipped
+    clipped_token = ''
+    if lang == 'en':
+        clipped = _CLIPPED_WORD_PATTERN.search(_visible_text(text))
+        source_sensitive_clipped = _find_source_sensitive_clipped_word(original, text)
+        clipped_token = clipped.group(0) if clipped else source_sensitive_clipped
     if clipped_token:
         results.append(CheckResult(
             row_id=row_id,

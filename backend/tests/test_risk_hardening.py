@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
+os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
 
 import httpx
 import pytest
@@ -62,6 +62,25 @@ def test_subprocess_failure_writes_structured_backend_error_without_raw_user_tex
     assert (log_dir / "subprocess_events.jsonl").exists()
 
 
+
+
+def test_user_facing_error_maps_target_column_not_found_to_friendly_language_hint() -> None:
+    from app.workflow.subprocess_runner import user_facing_error
+
+    # The localization harness raises this when a multilingual workbook has no
+    # header matching the requested language (header-based lang resolution).
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "run_translation_harness.py", line 40, in main\n'
+        "ValueError: Target column not found for language it; detected target columns: EN, IDN"
+    )
+    message = user_facing_error(stderr)
+    assert "IT" in message
+    assert "译文列" in message
+    assert "Traceback" not in message
+
+    out_of_range = user_facing_error("IndexError: Language index 5 out of range (only 2 languages found)")
+    assert "语言列索引" in out_of_range
 
 
 def test_subprocess_event_output_summarizes_qa_dict() -> None:

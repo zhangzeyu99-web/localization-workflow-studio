@@ -281,6 +281,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Unified runner manifest for large text multilingual localization packs.")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    pack = sub.add_parser("prepare-pack", help="Extract source workbooks into a deduplicated translation pack.")
+    pack.add_argument("--input", action="append", required=True, type=Path)
+    pack.add_argument("--term-base", type=Path)
+    pack.add_argument("--history-dir", action="append", default=[], type=Path)
+    pack.add_argument("--target-langs", required=True)
+    pack.add_argument("--work-dir", required=True, type=Path)
+    pack.add_argument("--out", type=Path)
+
     prepare = sub.add_parser("prepare", help="Create workflow manifest and lightweight preflight artifacts.")
     prepare.add_argument("--work-dir", required=True, type=Path)
     prepare.add_argument("--items-jsonl", required=True, type=Path)
@@ -305,7 +313,35 @@ def main(argv: list[str] | None = None) -> int:
     status.add_argument("--manifest", required=True, type=Path)
     status.add_argument("--out", type=Path)
 
+    run = sub.add_parser("run", help="Run extract, translate, QA, optional deep proofread, writeback, and readback.")
+    run.add_argument("--input", action="append", required=True, type=Path)
+    run.add_argument("--term-base", type=Path)
+    run.add_argument("--history-dir", action="append", default=[], type=Path)
+    run.add_argument("--target-langs", required=True)
+    run.add_argument("--task-dir", required=True, type=Path)
+    run.add_argument("--relay-config", required=True, type=Path)
+    run.add_argument("--proofread-mode", choices=["basic", "sampled", "full"], default="basic")
+    run.add_argument("--delivery-dir", type=Path)
+    run.add_argument("--batch-size", type=int, default=60)
+    run.add_argument("--workers", type=int, default=4)
+    run.add_argument("--out", type=Path)
+
     args = parser.parse_args(argv)
+    if args.command == "prepare-pack":
+        from dataclasses import asdict
+
+        from utils.large_text_multilingual_pack import prepare_pack
+
+        result = prepare_pack(
+            inputs=args.input,
+            term_base=args.term_base,
+            history_dirs=args.history_dir,
+            target_langs=parse_langs(args.target_langs),
+            work_dir=args.work_dir,
+        )
+        payload = asdict(result)
+        write_or_print({key: str(value) if isinstance(value, Path) else value for key, value in payload.items()}, args.out)
+        return 0
     if args.command == "prepare":
         manifest = build_manifest(
             work_dir=args.work_dir,
@@ -334,6 +370,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if manifest["status"] == "api_smoke_passed" else 1
     if args.command == "status":
         write_or_print(workflow_status(load_manifest(args.manifest)), args.out)
+        return 0
+    if args.command == "run":
+        from dataclasses import asdict
+
+        from utils.large_text_multilingual_pipeline import run_pipeline
+
+        result = run_pipeline(
+            inputs=args.input,
+            term_base=args.term_base,
+            history_dirs=args.history_dir,
+            target_langs=parse_langs(args.target_langs),
+            task_dir=args.task_dir,
+            relay_config=args.relay_config,
+            proofread_mode=args.proofread_mode,
+            delivery_dir=args.delivery_dir,
+            batch_size=args.batch_size,
+            workers=args.workers,
+        )
+        payload = asdict(result)
+        write_or_print({key: str(value) if isinstance(value, Path) else value for key, value in payload.items()}, args.out)
         return 0
     return 2
 

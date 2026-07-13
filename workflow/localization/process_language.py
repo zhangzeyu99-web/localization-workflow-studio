@@ -25,7 +25,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from utils.excel_reader import read_language_file, get_text_pairs
+from utils.excel_reader import get_text_pairs, read_language_file, resolve_language_index
 from utils.language_detection import inspect_language_file
 from utils.quality_harness import scan_workbook
 from utils.process_language_terms import (  # noqa: F401  (re-exported)
@@ -92,7 +92,7 @@ def run_machine_review(
     input_path: str,
     term_base_path: str | None = None,
     auto_fix: bool = True,
-    lang_index: int = 0,
+    lang_index: int | None = None,
     lang: str = 'en',
 ) -> tuple:
     """Phase 1: Run all rule-based checks.
@@ -101,9 +101,10 @@ def run_machine_review(
     """
     print(f"[1/9] 读取输入: {input_path}")
     df, col_map = read_language_file(input_path)
-    pairs = get_text_pairs(df, col_map, lang_index=lang_index)
+    resolved_lang_index = resolve_language_index(col_map, lang, lang_index)
+    pairs = get_text_pairs(df, col_map, lang_index=resolved_lang_index)
     print(f"       {len(pairs)} 行已加载")
-    profile = inspect_language_file(input_path, lang_index=lang_index)
+    profile = inspect_language_file(input_path, lang_index=resolved_lang_index)
     print(f"       检测语言: source={profile['source_lang']} target={profile['target_lang']}")
     if profile['target_lang'] not in ('unknown', lang):
         print(f"       [预警] 目标语言检测为 {profile['target_lang']}，与请求的 {lang} 不一致")
@@ -197,7 +198,7 @@ def process(
     lang: str = 'en',
     output_dir: str = './output',
     auto_fix: bool = True,
-    lang_index: int = 0,
+    lang_index: int | None = None,
 ) -> dict:
     """Run the full pipeline (machine review only, no AI).
 
@@ -207,8 +208,9 @@ def process(
     df, col_map, states, groups = run_machine_review(
         input_path, term_base_path, auto_fix, lang_index, lang,
     )
+    resolved_lang_index = resolve_language_index(col_map, lang, lang_index)
     return write_outputs(
-        df, col_map, states, groups, input_path, lang, output_dir, lang_index,
+        df, col_map, states, groups, input_path, lang, output_dir, resolved_lang_index,
     )
 
 
@@ -219,7 +221,7 @@ def main():
     parser.add_argument('--lang', default='en', help='目标语言代码（默认 en）')
     parser.add_argument('--output-dir', default='./output', help='输出目录')
     parser.add_argument('--auto-fix', action='store_true', help='自动修复可修复项')
-    parser.add_argument('--lang-index', type=int, default=0, help='多语言文件列索引')
+    parser.add_argument('--lang-index', type=int, default=None, help='多语言文件列索引（默认按 --lang 自动匹配表头）')
 
     args = parser.parse_args()
 

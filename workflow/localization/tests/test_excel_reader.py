@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from utils.excel_reader import detect_columns, get_text_pairs
+from utils.excel_reader import detect_columns, get_text_pairs, resolve_language_index
 
 
 class ExcelReaderColumnDetectionTests(unittest.TestCase):
@@ -82,6 +82,16 @@ class ExcelReaderColumnDetectionTests(unittest.TestCase):
         self.assertEqual([lang["translation_col"] for lang in col_map["languages"]], ["JP", "KR"])
         self.assertEqual(get_text_pairs(df, col_map, lang_index=0).loc[0, "translation"], "報酬を受け取る")
         self.assertEqual(get_text_pairs(df, col_map, lang_index=1).loc[0, "translation"], "보상 받기")
+
+    def test_detects_all_explicit_target_headers_and_resolves_requested_language(self):
+        headers = ["EN", "IDN", "DE", "FR", "ES", "PT", "RU", "IT", "TR", "TH"]
+        df = pd.DataFrame([[1, "领取奖励", *("" for _ in headers)]], columns=["ID", "CN", *headers])
+
+        col_map = detect_columns(df)
+
+        self.assertEqual([lang["translation_col"] for lang in col_map["languages"]], headers)
+        self.assertEqual(resolve_language_index(col_map, "it"), headers.index("IT"))
+        self.assertEqual(resolve_language_index(col_map, "ru"), headers.index("RU"))
 
 
 if __name__ == "__main__":

@@ -183,6 +183,16 @@ class ReadabilityCheckerTests(unittest.TestCase):
 
         self.assertEqual(issues, [])
 
+    def test_does_not_apply_english_clipped_word_dictionary_to_spanish(self):
+        issues = check_readability(
+            row_id=9,
+            original="我是玩家名字",
+            translation="Soy el nombre del jugador de capa alta",
+            lang="es",
+        )
+
+        self.assertNotIn("clipped_word", {issue.check_type for issue in issues})
+
 
 if __name__ == "__main__":
     unittest.main()
