@@ -49,6 +49,17 @@ class UtilityTests(unittest.TestCase):
             MODULE.normalize_english_for_compare("dual   guns"),
         )
 
+    def test_is_valid_term_rejects_composed_effect_and_batch_item_names(self):
+        self.assertFalse(MODULE.is_valid_term("\u51b0\u5c01\u6269\u6563\u4f24\u5bb3\u63d0\u9ad8"))
+        self.assertFalse(MODULE.is_valid_term("\u6d3b\u52a8\u6295\u653e40\u7ea7\u6b66\u5668"))
+        self.assertFalse(MODULE.is_valid_term("\u6d3b\u52a8\u6295\u653e1\u7ea7\u6b66\u5668"))
+        self.assertFalse(MODULE.is_valid_term("10\u7ea7\u7ea2\u8272\u6124\u6012\u6b66\u5668"))
+        self.assertFalse(MODULE.is_valid_term("70\u7ea7\u7cbe\u9009\u7279\u7ea7\u6b66\u5668"))
+        self.assertFalse(MODULE.is_valid_term("\u968f\u673a\u7ea2\u8272\u88c5\u5907"))
+        self.assertTrue(MODULE.is_valid_term("\u83b7\u5f97"))
+        self.assertTrue(MODULE.is_valid_term("\u9644\u9b54"))
+        self.assertTrue(MODULE.is_valid_term("\u51b0\u5c01\u6269\u6563"))
+
     def test_collect_translation_diff_marks_manual_adaptation(self):
         counter = MODULE.Counter(
             {

@@ -26,6 +26,22 @@ EN_WORD_RE = re.compile(r"[a-z0-9+]+")
 NUMBERED_TITLE_RE = re.compile(r"^\s*(?:[0-9]+|[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*[\u3001.．\s-]+")
 HEADER_SCAN_LIMIT = 50
 
+# Reject composed value/configuration labels that are useful in UI strings but
+# are not reusable glossary terms, e.g. "冰封扩散伤害提高" or "活动投放40级武器".
+EFFECT_COMBO_TERM_RE = re.compile(
+    r"^[\u4e00-\u9fff]{2,}"
+    r"(?:\u4f24\u5bb3|\u6cbb\u7597|\u9632\u5fa1|\u653b\u51fb|\u5c5e\u6027|"
+    r"\u57fa\u7840\u5c5e\u6027|\u6301\u7eed\u65f6\u95f4|\u80fd\u91cf\u4e0a\u9650|"
+    r"\u6d88\u8017|\u51b7\u5374|\u5a01\u80fd\u5c5e\u6027)"
+    r"(?:\u63d0\u9ad8|\u63d0\u5347|\u589e\u52a0|\u964d\u4f4e|\u51cf\u5c11|"
+    r"\u51cf\u514d|\u52a0\u6210)$"
+)
+LEVEL_BATCH_ITEM_TERM_RE = re.compile(
+    r"^(?:(?:\u6d3b\u52a8\u6295\u653e)?\d+\u7ea7|"
+    r"\u968f\u673a[\u7ea2\u6a59\u7d2b\u84dd\u7eff\u767d]\u8272)"
+    r"[\u4e00-\u9fff]{0,8}(?:\u6b66\u5668|\u88c5\u5907)$"
+)
+
 AUTO_ID_HEADERS = ["ID", "id", "\u7d22\u5f15ID", "\u552f\u4e00\u6807\u8bc6ID"]
 AUTO_SOURCE_HEADERS = ["CN", "cn", "zh", "source", "Chinese", "\u4e2d\u6587", "\u7b80\u4f53\u4e2d\u6587", "ori_string"]
 AUTO_TARGET_HEADERS = ["EN", "en", "target", "translation", "English", "\u82f1\u6587", "\u82f1\u8bed", "\u5185\u5bb9", "text"]

@@ -385,3 +385,16 @@ python scripts/run_glossary_harness.py \
 - 对 `EN2` 非空的术语做人工复核
 - 每月做一次术语回归，检查新活动、新系统、新养成线是否引入新词
 - 不把客户原始语言表直接提交到仓库，示例文件只保留脱敏样例
+
+## Term Value And Delivery Standard
+
+Delivery glossaries should keep reusable terms that constrain future translation consistency. Do not deliver composed effect/configuration labels as terms:
+
+- Drop `skill/system name + numeric effect` phrases, for example `冰封扩散伤害提高`, `基础属性提高`, `持续时间增加`.
+- Drop level/color/batch item labels, for example `10级红色愤怒武器`, `活动投放40级武器`, `随机红色装备`.
+- Drop reward/status/prompt fragments, for example `排行奖励`, `获得奖励`, `后解锁`, `已领取`.
+- Drop phrases containing variables, plus signs, placeholders, or obvious config semantics, for example `成员上限+1`, `{0}`, `#{...}`.
+
+Keep reusable controlled terms: classes, systems, gameplay names, dungeons, skill names, base equipment/item names, stat names, rarity ladder, monsters, and character names. High-frequency action verbs may be kept as `动作` to fix UI wording, for example `获得`, `获取`, `领取`, `使用`, `激活`, `解锁`, `购买`, `兑换`, `前往`, `重置`.
+
+Default delivery columns: `ID / CN / target main translation / 分类`. The target language column keeps one main translation only; no alternate translation columns are delivered by default.
