@@ -114,37 +114,42 @@ def _merged_deliverable_summaries(project: dict[str, Any]) -> list[dict[str, Any
                 summary_artifact = None
         languages = metadata.get("merged_languages") if isinstance(metadata.get("merged_languages"), list) else []
         skipped = metadata.get("skipped_languages") if isinstance(metadata.get("skipped_languages"), list) else []
-        summaries.append(
-            _build_deliverable_summary(
-                run_id=artifact["id"],
-                task_code="ALL",
-                task_id=_short_run_id(artifact["id"]),
-                task_type="多语言合并交付",
-                language=" / ".join(languages) or "ALL",
-                created_at=artifact.get("created_at", ""),
-                updated_at=artifact.get("created_at", ""),
-                status="delivered",
-                processed_rows=int(metadata.get("processed_rows") or 0),
-                source_rows=int(metadata.get("source_rows") or 0),
-                translated_rows=int(metadata.get("translated_rows") or 0),
-                provider="-",
-                model="-",
-                input_label=str(metadata.get("input_label") or "多语言合并交付"),
-                qa_status="mixed" if skipped else "passed",
-                qa_hard_errors=int(metadata.get("qa_hard_errors") or 0),
-                qa_soft_warnings=0,
-                delivered_with_issues=int(metadata.get("qa_hard_errors") or 0) > 0,
-                files={
-                    "final": _artifact_delivery_file("merged_final", artifact),
-                    "qa_summary": _artifact_delivery_file("qa_summary", summary_artifact) if summary_artifact else None,
-                    "outputs": [],
-                },
-                source_artifacts={
-                    "merged_delivery_workbook": artifact["id"],
-                    "merged_delivery_summary": summary_id,
-                },
-            )
+        summary = _build_deliverable_summary(
+            run_id=artifact["id"],
+            task_code="ALL",
+            task_id=_short_run_id(artifact["id"]),
+            task_type="多语言合并交付",
+            language=" / ".join(languages) or "ALL",
+            created_at=artifact.get("created_at", ""),
+            updated_at=artifact.get("created_at", ""),
+            status="delivered",
+            processed_rows=int(metadata.get("processed_rows") or 0),
+            source_rows=int(metadata.get("source_rows") or 0),
+            translated_rows=int(metadata.get("translated_rows") or 0),
+            provider="-",
+            model="-",
+            input_label=str(metadata.get("input_label") or "多语言合并交付"),
+            qa_status="mixed" if skipped else "passed",
+            qa_hard_errors=int(metadata.get("qa_hard_errors") or 0),
+            qa_soft_warnings=0,
+            delivered_with_issues=bool(skipped) or int(metadata.get("qa_hard_errors") or 0) > 0,
+            files={
+                "final": _artifact_delivery_file("merged_final", artifact),
+                "qa_summary": _artifact_delivery_file("qa_summary", summary_artifact) if summary_artifact else None,
+                "outputs": [],
+            },
+            source_artifacts={
+                "merged_delivery_workbook": artifact["id"],
+                "merged_delivery_summary": summary_id,
+            },
         )
+        summary["merged_languages"] = languages
+        summary["skipped_languages"] = skipped
+        summary["language_results"] = (
+            metadata.get("language_results") if isinstance(metadata.get("language_results"), list) else []
+        )
+        summary["input_artifact_id"] = str(metadata.get("input_artifact_id") or "")
+        summaries.append(summary)
     return summaries
 
 
@@ -321,8 +326,19 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
         if not final_artifact or not Path(final_artifact["path"]).exists():
             skipped.append({"language": _visible_language_code(language), "run_id": run["id"], "reason": "缺少最终译文文件"})
             continue
+        final_path = Path(final_artifact["path"])
+        candidate_readback = readback_gate_files([final_path], target_languages=[_visible_language_code(language)])
+        if not candidate_readback["readback_verified"]:
+            skipped.append(
+                {
+                    "language": _visible_language_code(language),
+                    "run_id": run["id"],
+                    "reason": f"译文结构门禁未通过：{candidate_readback['hard_blockers']} 个硬错误，请重跑该语言",
+                }
+            )
+            continue
         try:
-            copied = _merge_language_column(output_path, Path(final_artifact["path"]), language)
+            copied = _merge_language_column(output_path, final_path, language)
             if copied <= 0:
                 skipped.append({"language": _visible_language_code(language), "run_id": run["id"], "reason": "没有可合并的译文列"})
                 continue
@@ -339,13 +355,38 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
         except Exception as exc:
             skipped.append({"language": _visible_language_code(language), "run_id": run["id"], "reason": user_facing_error(exc)})
     if not merged:
-        raise ValueError("没有可合并的已完成语言，请先完成翻译或 QA")
+        output_path.unlink(missing_ok=True)
+        details = "；".join(f"{item['language']}：{item['reason']}" for item in skipped[:4])
+        suffix = f"（{details}）" if details else ""
+        raise ValueError(f"没有可合并的已完成语言，请先完成翻译或 QA{suffix}")
+
+    language_results = [
+        {
+            "language": item["language"],
+            "status": "merged",
+            "run_id": item.get("run_id"),
+            "rows": item.get("rows", 0),
+            "hard_errors": item.get("hard_errors", 0),
+            "reason": "",
+        }
+        for item in merged
+    ] + [
+        {
+            "language": item["language"],
+            "status": "skipped",
+            "run_id": item.get("run_id"),
+            "rows": 0,
+            "hard_errors": 0,
+            "reason": item.get("reason", ""),
+        }
+        for item in skipped
+    ]
 
     readback_artifact = _run_delivery_readback_gate(
         project_id,
         f"{project['name']} ALL",
         output_path,
-        target_languages=[_visible_language_code(language) for language in selected_languages],
+        target_languages=[item["language"] for item in merged],
     )
 
     summary_path = _write_merged_delivery_summary(output_dir, merged, skipped, output_path)
@@ -355,7 +396,11 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
         summary_path,
         "merged_delivery_summary",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        metadata={"merged_languages": [item["language"] for item in merged], "skipped_languages": [item["language"] for item in skipped]},
+        metadata={
+            "merged_languages": [item["language"] for item in merged],
+            "skipped_languages": [item["language"] for item in skipped],
+            "language_results": language_results,
+        },
     )
     final_artifact = db.add_artifact(
         project_id,
@@ -369,6 +414,7 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
             "summary_artifact_id": summary_artifact["id"],
             "merged_languages": [item["language"] for item in merged],
             "skipped_languages": [item["language"] for item in skipped],
+            "language_results": language_results,
             "source_rows": _workbook_processed_rows(output_path)["source_rows"],
             "translated_rows": sum(int(item.get("rows") or 0) for item in merged),
             "processed_rows": sum(int(item.get("rows") or 0) for item in merged),
@@ -386,6 +432,7 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
         "project_name": project["name"],
         "merged_languages": [item["language"] for item in merged],
         "skipped_languages": [item["language"] for item in skipped],
+        "language_results": language_results,
         "files": files,
         "deliverable": _merged_deliverable_summaries(project)[0] if _merged_deliverable_summaries(project) else {},
     }
@@ -436,7 +483,7 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
         delivered_with_issues=not qa_passed,
         files=files,
         source_artifacts={
-            "qa_final_workbook": final_artifact["id"] if final_artifact["kind"] == "qa_final_workbook" else "",
+            "qa_final_workbook": final_artifact["id"] if final_artifact["kind"] in {"qa_final_workbook", "qa_result"} else "",
             "final_text": final_artifact["id"] if final_artifact["kind"] == "final_text" else "",
             "qa_changes": changes_artifact["id"] if changes_artifact else "",
             "qa_report": qa_report_artifact["id"] if qa_report_artifact else "",
@@ -445,7 +492,12 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
 
 
 def _deliverable_final_artifact(run: dict[str, Any]) -> dict[str, Any] | None:
-    return _run_artifact(run["id"], "qa_final_workbook") or _run_artifact(run["id"], "final_text")
+    final_artifact = _run_artifact(run["id"], "qa_final_workbook") or _run_artifact(run["id"], "final_text")
+    if final_artifact or run.get("kind") != "qa":
+        return final_artifact
+    # QA runs created before qa_final_workbook was introduced stored the same
+    # reviewed workbook as qa_result. Keep those historical runs deliverable.
+    return _run_artifact(run["id"], "qa_result")
 
 
 def _archive_delivery_translation(project_id: str, run: dict[str, Any], final_artifact: dict[str, Any]) -> dict[str, Any]:

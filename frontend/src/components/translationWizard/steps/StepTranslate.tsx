@@ -1,6 +1,6 @@
 import { artifactDownloadHref, artifactKindLabel, artifactPickerLabel, newestArtifact, pickerArtifacts, runArtifacts } from '../../../domain/artifacts'
 import { projectPromptForLanguage } from '../../../domain/projectAssets'
-import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, matchesTranslationRun } from '../../../domain/translationFlow'
+import { canSkipModelTranslation, effectiveBatchSize, estimateBatches, findVisibleTranslationRun, getTranslationProgress, isTranslationRunResumable, matchesTranslationRun, multilingualWorkflowItems } from '../../../domain/translationFlow'
 import { languageSpec, type LanguageCode } from '../../../languages'
 import { ActionStatus, AssetSelect, TranslationProgressBar } from '../../shared/WorkflowPrimitives'
 import { LineProofreadTimeline, ReferenceAuditPanel } from '../../shared/StatusPrimitives'
@@ -11,6 +11,7 @@ import { LINE_PROOFREAD_HINT, LINE_PROOFREAD_LABEL, lineProofreadSummaryText } f
 import type { LineProofreadState } from '../../../types'
 import { TaskRunSummary } from '../TaskRunSummary'
 import { WorkflowFactList, WorkflowSideCard, WorkflowStepShell } from '../WorkflowStepShell'
+import { MultilingualWorkflowBoard } from '../MultilingualWorkflowBoard'
 
 function LargeTextPanel({ run, readiness, selectedLanguageCount }: { run?: Run | null; readiness?: TranslationReadiness | null; selectedLanguageCount: number }) {
   const state = run?.metadata?.large_text as LargeTextRunState | undefined
@@ -48,6 +49,7 @@ export function StepTranslate({
   setQaArtifact,
   setStep,
   selectedLanguage,
+  setSelectedLanguage,
   selectedLanguages,
   lineProofread,
   setLineProofread
@@ -69,12 +71,12 @@ export function StepTranslate({
   setQaArtifact: (artifact: Artifact | null) => void
   setStep: (step: number) => void
   selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
   selectedLanguages: LanguageCode[]
   lineProofread: boolean
   setLineProofread: (value: boolean) => void
 }) {
   const lang = languageSpec(selectedLanguage)
-  const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
   const multiLanguageMode = selectedLanguages.length > 1
   const glossaryCount = project.glossary?.length ?? project.stats.glossary ?? 0
   const batchSize = effectiveBatchSize(settings)
@@ -94,30 +96,14 @@ export function StepTranslate({
     : termAudit?.warning === 'no_term_hits'
       ? '本次 workpack 没有命中术语；如果你已提供术语表，请检查术语是否已加入项目术语库或作为本次术语表输入。'
       : ''
-  const languageProgressItems = selectedLanguages.map((code) => {
-    const run = findVisibleTranslationRun(project, code, sourceArtifact?.id, 'translation_run')
-    const itemProgress = getTranslationProgress(run)
-    const percent = itemProgress ? Math.max(0, Math.min(100, Number(itemProgress.percent || 0))) : null
-    const blocked = Boolean(itemProgress?.failed_batch || run?.status === 'failed')
-    const active = Boolean(run && ['queued', 'running'].includes(run.status))
-    const done = Boolean(run?.status === 'passed')
-    const finishing = Boolean(active && itemProgress && itemProgress.total_rows > 0 && itemProgress.completed_rows >= itemProgress.total_rows)
-    const label = blocked
-      ? '需继续/修复'
-      : active
-        ? finishing ? '校验归档中' : '翻译中'
-        : done
-          ? '已完成'
-          : run
-            ? '可继续'
-            : code === selectedLanguage
-              ? '当前待启动'
-              : '待处理'
-    return { code, run, progress: itemProgress, percent, blocked, done, active, label }
-  })
+  const languageProgressItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id)
+  const multilingualActive = multiLanguageMode && languageProgressItems.some((item) => item.state === 'running')
+  const multilingualHasResults = multiLanguageMode && languageProgressItems.every((item) => item.state === 'ready' || item.state === 'issues')
+  const multilingualStarted = multiLanguageMode && languageProgressItems.some((item) => item.run)
+  const multilingualRetryCount = languageProgressItems.filter((item) => item.state === 'pending' || item.state === 'blocked').length
   const lineProofreadState = currentTranslationRun?.metadata?.line_proofread as LineProofreadState | undefined
   const referenceAuditState = currentTranslationRun?.metadata?.reference_audit as ReferenceAuditState | undefined
-  const activeTranslation = Boolean(currentTranslationRun && ['queued', 'running'].includes(currentTranslationRun.status))
+  const activeTranslation = multiLanguageMode ? multilingualActive : Boolean(currentTranslationRun && ['queued', 'running'].includes(currentTranslationRun.status))
   const finishingTranslation = Boolean(activeTranslation && progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows)
   const resumable = Boolean(currentTranslationRun && isTranslationRunResumable(currentTranslationRun))
   const invalidIdText = readiness?.invalid_id_rows ? ` / 空 ID ${readiness.invalid_id_rows}` : ''
@@ -145,7 +131,9 @@ export function StepTranslate({
   const translationArtifacts = pickerArtifacts(currentTranslationRun?.artifacts?.length ? currentTranslationRun.artifacts : runArtifacts(project, currentTranslationRun?.id))
     .filter((artifact) => ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'].includes(artifact.kind))
   const qaInputArtifact = newestArtifact(translationArtifacts, ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
-  const canEnterQa = Boolean(alreadyTranslated || qaInputArtifact || (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows))
+  const canEnterQa = multiLanguageMode
+    ? multilingualHasResults
+    : Boolean(alreadyTranslated || qaInputArtifact || (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows))
   const enterQa = () => {
     setQaArtifact(qaInputArtifact || sourceArtifact)
     setStep(8)
@@ -178,23 +166,13 @@ export function StepTranslate({
       }
     >
       {selectedLanguages.length > 1 ? (
-        <div className="translation-language-progress">
-          <div className="section-head">
-            <div>
-              <strong>多语言处理进度</strong>
-              <span>{selectedLanguageText}</span>
-            </div>
-          </div>
-          <div className="translation-language-grid">
-            {languageProgressItems.map((item) => (
-              <div key={item.code} className={`translation-language-card ${item.code === selectedLanguage ? 'current' : ''} ${item.blocked ? 'blocked' : ''} ${item.done ? 'done' : ''}`}>
-                <strong>{languageSpec(item.code).short}</strong>
-                <span>{item.label}</span>
-                <em>{item.progress ? `${item.progress.completed_rows}/${item.progress.total_rows} 行 · ${item.percent?.toFixed(0)}%` : '尚未生成进度'}</em>
-              </div>
-            ))}
-          </div>
-        </div>
+        <MultilingualWorkflowBoard
+          project={project}
+          languages={selectedLanguages}
+          inputArtifactId={sourceArtifact?.id}
+          selectedLanguage={selectedLanguage}
+          onSelectLanguage={setSelectedLanguage}
+        />
       ) : null}
       <div className="action-card workflow-block">
         <AssetSelect label="输入文件" project={project} role="language_source" value={sourceArtifact} onChange={setSourceArtifact} />
@@ -233,7 +211,18 @@ export function StepTranslate({
             </>
           ) : (
             <>
-              <button className="btn btn-primary" disabled={busy || activeTranslation || Boolean(blockReason)} onClick={onTranslate}>{resumable ? '继续 AI 翻译' : '开始 AI 翻译'}</button>
+              <button
+                className="btn btn-primary"
+                data-testid={multiLanguageMode ? 'multilingual-translate' : 'single-language-translate'}
+                disabled={busy || activeTranslation || Boolean(blockReason)}
+                onClick={multiLanguageMode ? (onTranslateQueue || onTranslate) : onTranslate}
+              >
+                {multiLanguageMode
+                  ? multilingualStarted
+                    ? `继续处理 ${multilingualRetryCount || selectedLanguages.length} 种未完成语言`
+                    : `开始翻译全部 ${selectedLanguages.length} 种语言`
+                  : resumable ? '继续 AI 翻译' : '开始 AI 翻译'}
+              </button>
               {activeTranslation ? <button className="btn btn-ghost" disabled={busy} onClick={() => onCancelTranslate(currentTranslationRun)}>暂停</button> : null}
             </>
           )}

@@ -44,3 +44,13 @@ export function preferredTranslationResultArtifact(project: Project | null | und
   }
   return null
 }
+
+export function artifactForProject(project: Project | null | undefined, artifact: Artifact | null): Artifact | null {
+  if (!project || !artifact) return null
+  if (artifact.project_id) return artifact.project_id === project.id ? artifact : null
+  return (project.artifacts || []).some((candidate) => candidate.id === artifact.id) ? artifact : null
+}
+
+export function runForProject(project: Project | null | undefined, run: Run | null): Run | null {
+  return project && run?.project_id === project.id ? run : null
+}

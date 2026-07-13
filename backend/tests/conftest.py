@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("LWS_DATA_ROOT", str(Path(os.environ.get("TEMP", ".")) / "lws-test-data"))
+os.environ.setdefault("LWS_DATA_ROOT", str(Path(os.environ.get("TEMP", ".")) / f"lws-test-data-{os.getpid()}"))
 os.environ.setdefault("LWS_ENABLE_TEST_PROVIDER", "1")
 
 

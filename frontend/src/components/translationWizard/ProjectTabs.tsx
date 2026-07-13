@@ -146,7 +146,10 @@ export function DeliveryTab({
           const missingQaSummary = hasQaIssues && hasDelivery && !hasQaSummary
           const canRebuildMissingSummary = missingQaSummary && ['T', 'QA'].includes(String(task.task_code || '').toUpperCase())
           const outcome = deliverableOutcomePresentation(task)
-          const outcomeSummary = missingQaSummary
+          const partialMerged = String(task.task_code || '').toUpperCase() === 'ALL' && Boolean(task.skipped_languages?.length)
+          const outcomeSummary = partialMerged
+            ? `已合并 ${(task.merged_languages || []).join(' / ') || task.language}；未合并 ${(task.skipped_languages || []).join(' / ')}。问题原因已写入 QA 摘要。`
+            : missingQaSummary
             ? canRebuildMissingSummary
               ? '这份历史交付缺少 QA 摘要，当前文件不完整。请重新生成交付，补齐问题清单后再下载。'
               : '这份历史交付缺少 QA 摘要，当前文件不完整。请回到对应任务重新生成交付。'
@@ -171,7 +174,7 @@ export function DeliveryTab({
                 className={`delivery-outcome-strip ${outcome.tone}`}
                 data-testid={missingQaSummary ? 'delivery-missing-qa-summary' : hasQaIssues ? 'delivery-problem-warning' : undefined}
               >
-                <strong>{outcome.label}</strong><span>{outcomeSummary}</span>
+                <strong>{partialMerged ? '部分交付' : outcome.label}</strong><span>{outcomeSummary}</span>
               </div>
               <div className="delivery-line-info">
                 <div><span>任务进度</span><strong>{deliveryProgressLabel(task)}</strong></div>
@@ -216,8 +219,9 @@ export function compactDeliveryInputLabel(value?: string): string {
 }
 
 export function deliveryStatusLabel(task: DeliverableTask): string {
-  if (task.delivered_with_issues) return '带问题已交付'
-  if (task.status === 'delivered') return '已交付'
+  if (String(task.task_code || '').toUpperCase() === 'ALL' && task.skipped_languages?.length) return '部分交付'
+  if (task.status === 'delivered') return task.delivered_with_issues ? '带问题已交付' : '已交付'
+  if (task.delivered_with_issues) return '带问题可交付'
   if (task.status === 'passed' && Number(task.qa_hard_errors || 0) === 0) return '可交付'
   if (task.status === 'failed') return '带问题可交付'
   return task.status || '处理中'

@@ -4,12 +4,12 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
+os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
 os.environ["LWS_ENABLE_TEST_PROVIDER"] = "1"
 
 import pytest
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 import app.db as db
 import app.workflow.multilingual as multilingual
@@ -94,6 +94,30 @@ def test_start_multilingual_translation_creates_missing_child_runs(tmp_path: Pat
     assert {item["language"] for item in response.json()["languages"]} == {"en", "ko"}
     assert all(item["translation_run_id"] for item in status["languages"])
     assert all(item["status"] == "passed" for item in status["languages"])
+
+
+def test_italian_translation_writes_it_column_in_multilingual_workbook(tmp_path: Path) -> None:
+    project = db.insert_project("Italian target column", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN", "IT"])
+    save_settings({**DEFAULT_SETTINGS, "provider": "test-fake", "model": "test-fake-localization", "batch_size": 10})
+
+    with TestClient(app) as client:
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "it", "input_artifact_id": artifact["id"]},
+        ).json()
+        response = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 10})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["run"]["status"] == "passed"
+    final_artifact = next(item for item in db.list_artifacts(run_id=run["id"]) if item["kind"] == "qa_final_workbook")
+    workbook = load_workbook(final_artifact["path"], read_only=True, data_only=False)
+    try:
+        sheet = workbook.active
+        assert sheet.cell(2, 3).value in {None, ""}
+        assert str(sheet.cell(2, 4).value).startswith("TestFake")
+    finally:
+        workbook.close()
 
 
 def test_multilingual_status_rejects_cross_project_artifact(tmp_path: Path) -> None:

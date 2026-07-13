@@ -1,3 +1,5 @@
+import { runArtifacts } from './artifacts'
+import type { LanguageCode } from '../languages'
 import type { AppSettings, Project, Run, TranslationProgress, TranslationReadiness } from '../types'
 
 export function clampBatchSize(value: number): number {
@@ -129,6 +131,119 @@ export function findVisibleTranslationRun(
   // latest attempt; an older stale running run must not hide a newer passed or
   // failed result.
   return runs[0] || null
+}
+
+export function findVisibleQaRun(
+  project: Project,
+  language: string,
+  inputArtifactId: string | null | undefined,
+): Run | null {
+  const runs = (project.runs || []).filter((run) => {
+    if (run.kind !== 'qa' || run.language !== language) return false
+    if (!inputArtifactId) return true
+    const metadata = run.metadata || {}
+    const directIds = [metadata.input_artifact_id, metadata.parent_input_artifact_id, metadata.multilingual_source_artifact_id]
+      .map((value) => String(value || ''))
+    if (directIds.includes(inputArtifactId)) return true
+    const sourceRunIds = [metadata.source_run_id, metadata.manual_fix_source_run_id, metadata.model_fix_source_run_id]
+      .map((value) => String(value || ''))
+    return sourceRunIds.some((runId) => {
+      const sourceRun = (project.runs || []).find((candidate) => candidate.id === runId)
+      return Boolean(sourceRun && matchesTranslationRun(sourceRun, language, inputArtifactId, 'translation_run'))
+    })
+  })
+  return runs[0] || null
+}
+
+export function findVisibleQualityRun(
+  project: Project,
+  language: string,
+  inputArtifactId: string | null | undefined,
+): Run | null {
+  const translationRun = findVisibleTranslationRun(project, language, inputArtifactId, 'translation_run')
+  const qaRun = findVisibleQaRun(project, language, inputArtifactId)
+  if (!translationRun) return qaRun
+  if (!qaRun) return translationRun
+  return qaRun.created_at >= translationRun.created_at ? qaRun : translationRun
+}
+
+export type MultilingualWorkflowState = 'pending' | 'running' | 'ready' | 'issues' | 'blocked'
+
+export type MultilingualWorkflowItem = {
+  code: LanguageCode
+  run: Run | null
+  state: MultilingualWorkflowState
+  recovery: 'translation' | 'qa' | 'none'
+  hasFinalArtifact: boolean
+  hardErrors: number
+  label: string
+  detail: string
+}
+
+export function shouldAutoAdvanceTranslationRun(run: Run): boolean {
+  return run.kind === 'translation' && !run.metadata?.multilingual_queue
+}
+
+export function multilingualWorkflowItems(
+  project: Project,
+  languages: LanguageCode[],
+  inputArtifactId: string | null | undefined,
+): MultilingualWorkflowItem[] {
+  return languages.map((code) => {
+    const run = findVisibleQualityRun(project, code, inputArtifactId)
+    const artifacts = run?.artifacts?.length ? run.artifacts : runArtifacts(project, run?.id)
+    const hasFinalArtifact = artifacts.some((artifact) => ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook', 'final_text'].includes(artifact.kind))
+    const hardErrors = Number((run?.metadata?.quality_summary as { hard_errors?: number } | undefined)?.hard_errors || 0)
+    const progress = getTranslationProgress(run)
+    const structuralFailure = hasStructuralQualityFailure(run)
+    let state: MultilingualWorkflowState = 'pending'
+    let recovery: MultilingualWorkflowItem['recovery'] = 'translation'
+
+    if (run && ['queued', 'running'].includes(run.status)) {
+      state = 'running'
+      recovery = 'none'
+    } else if (run?.status === 'passed' && hasFinalArtifact) {
+      state = 'ready'
+      recovery = 'none'
+    } else if (run?.status === 'failed' && hasFinalArtifact && !structuralFailure) {
+      state = 'issues'
+      recovery = 'none'
+    } else if (run) {
+      state = 'blocked'
+      recovery = run.kind === 'qa' ? 'qa' : 'translation'
+    }
+
+    const label = state === 'running'
+      ? run?.kind === 'qa' ? 'QA 中' : '翻译中'
+      : state === 'ready'
+        ? 'QA 通过'
+        : state === 'issues'
+          ? '有问题，可交付'
+          : state === 'blocked'
+            ? '需重跑'
+            : '待翻译'
+    const detail = progress?.total_rows
+      ? `${progress.completed_rows || 0}/${progress.total_rows} 行`
+      : hardErrors > 0
+        ? `${hardErrors} 个硬错误`
+        : structuralFailure
+          ? '结果结构不可用'
+          : hasFinalArtifact
+            ? '已有译文结果'
+            : '尚无可用结果'
+
+    return { code, run, state, recovery, hasFinalArtifact, hardErrors, label, detail }
+  })
+}
+
+function hasStructuralQualityFailure(run: Run | null): boolean {
+  if (!run || run.status !== 'failed') return false
+  const quality = run.metadata?.quality as { rows_scanned?: number; issue_counts?: Record<string, number> } | undefined
+  const summary = run.metadata?.quality_summary as {
+    global_harness_quality?: { rows_scanned?: number; issue_counts?: Record<string, number> }
+  } | undefined
+  const checks = [quality, summary?.global_harness_quality].filter(Boolean) as { rows_scanned?: number; issue_counts?: Record<string, number> }[]
+  return checks.some((check) => check.rows_scanned === 0 || Number(check.issue_counts?.workbook_scan_empty || 0) > 0)
 }
 
 export function formatDuration(seconds: number | null | undefined): string {

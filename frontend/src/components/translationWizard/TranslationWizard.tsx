@@ -1,10 +1,10 @@
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Languages } from 'lucide-react'
-import { matchesTranslationRun, translationInputMode, translationNextStep } from '../../domain/translationFlow'
+import { findVisibleTranslationRun, matchesTranslationRun, translationInputMode, translationNextStep } from '../../domain/translationFlow'
 import { projectPromptForLanguage } from '../../domain/projectAssets'
 import { type LanguageCode } from '../../languages'
 import { ActionStatus } from '../shared/WorkflowPrimitives'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
-import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, Project, ProjectHarness, QualityIssue, Run, TranslationReadiness } from '../../types'
+import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, DeliveryLanguageResult, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, Project, ProjectHarness, QualityIssue, Run, TranslationReadiness } from '../../types'
 import { StepIntro } from './steps/StepIntro'
 import { StepAnalyze } from './steps/StepAnalyze'
 import { StepTerm } from './steps/StepTerm'
@@ -38,6 +38,9 @@ export function Wizard(props: {
   deliverables: DeliverableTask[]
   generatedDeliveryRunId?: string
   generatedDeliveryFiles?: DeliveryFile[]
+  generatedDeliveryMergedLanguages?: string[]
+  generatedDeliverySkippedLanguages?: string[]
+  generatedDeliveryLanguageResults?: DeliveryLanguageResult[]
   settings: AppSettings | null
   status: string
   selectedLanguage: LanguageCode
@@ -70,7 +73,7 @@ export function Wizard(props: {
   onModelFixes: () => void
   onUploadTranslation: (file: File) => void
   onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
-  onCreateMergedDelivery?: () => void
+  onCreateMergedDelivery?: () => Promise<DeliveryFile[] | null> | void
   onFinishDelivery: () => void
   onFreq: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
@@ -82,14 +85,24 @@ export function Wizard(props: {
 }) {
   const { project, step, setStep } = props
   const sourceReadiness = props.sourceArtifact && props.translationReadiness?.artifact_id === props.sourceArtifact.id ? props.translationReadiness : null
-  const stepTranslationRun = props.latestRun && matchesTranslationRun(props.latestRun, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run') ? props.latestRun : null
-  const stepTranslationActive = step === 7 && Boolean(stepTranslationRun && ['queued', 'running'].includes(stepTranslationRun.status))
+  const stepTranslationRun = props.latestRun && matchesTranslationRun(props.latestRun, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run')
+    ? props.latestRun
+    : findVisibleTranslationRun(project, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run')
+  const selectedTranslationRuns = props.selectedLanguages.map((language) => findVisibleTranslationRun(project, language, props.sourceArtifact?.id, 'translation_run'))
+  const multilingualMode = props.selectedLanguages.length > 1
+  const stepTranslationActive = step === 7 && (multilingualMode
+    ? selectedTranslationRuns.some((run) => run && ['queued', 'running'].includes(run.status))
+    : Boolean(stepTranslationRun && ['queued', 'running'].includes(stepTranslationRun.status)))
   const stepDeliveryFiles = step === 9
-    ? wizardDeliveryFiles(project, props.latestRun, props.deliverables, props.generatedDeliveryRunId, props.generatedDeliveryFiles)
+    ? wizardDeliveryFiles(project, props.latestRun, props.deliverables, props.generatedDeliveryRunId, props.generatedDeliveryFiles, multilingualMode, props.sourceArtifact?.id)
     : []
   const wizardDeliveryRun = findWizardDeliveryRun(project, props.latestRun)
   const currentTranslationDeliveryRun = stepTranslationRun ? findWizardDeliveryRun(project, stepTranslationRun) : null
-  const stepCanEnterQa = translationInputMode(sourceReadiness) === 'ready_for_qa' || Boolean(stepTranslationRun && currentTranslationDeliveryRun?.id === stepTranslationRun.id)
+  const multilingualCanEnterQa = multilingualMode && selectedTranslationRuns.every((run) => Boolean(
+    run && ['passed', 'failed'].includes(run.status) && findWizardDeliveryRun(project, run)?.id === run.id
+  ))
+  const stepCanEnterQa = translationInputMode(sourceReadiness) === 'ready_for_qa'
+    || (multilingualMode ? multilingualCanEnterQa : Boolean(stepTranslationRun && currentTranslationDeliveryRun?.id === stepTranslationRun.id))
   const stepCanGoDelivery = Boolean(wizardDeliveryRun)
   const maxNavigableStep = stepCanGoDelivery ? 9 : props.sourceArtifact || stepCanEnterQa ? 8 : 6
   const stepDeliveryReady = step !== 9 || stepDeliveryFiles.length > 0
@@ -141,8 +154,12 @@ export function Wizard(props: {
         {step === 5 ? <StepFreqV2 {...props} /> : null}
         {step === 6 ? <StepLang {...props} /> : null}
         {step === 7 ? <StepTranslate {...props} /> : null}
-        {step === 8 ? <StepQA {...props} showHistory={false} onGoDelivery={() => props.setStep(9)} /> : null}
-        {step === 9 ? <StepDone {...props} /> : null}
+        {step === 8 ? <StepQA {...props} showHistory={false} onRetryTranslations={props.onTranslateQueue || props.onTranslate} onRerunTranslation={() => props.setStep(7)} onGoDelivery={(run) => {
+          props.setStep(9)
+          if (multilingualMode && props.onCreateMergedDelivery) void props.onCreateMergedDelivery()
+          else void props.onCreateDelivery(run.id)
+        }} /> : null}
+        {step === 9 ? <StepDone {...props} onRetryTranslations={props.onTranslateQueue || props.onTranslate} /> : null}
       </div>
       <div className="actions">
         <button className="btn btn-ghost btn-icon" aria-label="上一步" title="上一步" disabled={step === 1} onClick={() => setStep(step - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>

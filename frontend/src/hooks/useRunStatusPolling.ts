@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import { errorText, humanBackendEvent, humanTaskStatus } from '../appText'
 import { newestArtifact } from '../domain/artifacts'
 import { projectRunStatusText, projectTranslationPassedStatusText } from '../domain/projectActivity'
-import { getTranslationProgress } from '../domain/translationFlow'
+import { getTranslationProgress, shouldAutoAdvanceTranslationRun } from '../domain/translationFlow'
 import type { LanguageCode } from '../languages'
 import type { Artifact, Project, ProjectTab, QualityIssue, Run } from '../types'
 import { issueCountPhrase } from '../uiText'
@@ -71,17 +71,25 @@ export function useRunStatusPolling(
           setStatus(`模型修复失败：${String(updated.metadata?.model_fix_error || updated.metadata?.error || '请检查 API 配置和 QA 输入。')}`)
         }
       } else if (updated.kind === 'translation' && updated.status === 'passed') {
-        setStatus(projectTranslationPassedStatusText(updated, selectedLanguage))
-        const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
-        if (resultArtifact) setQaArtifact(resultArtifact)
-        setStep((prev) => (prev < 8 ? 8 : prev))
-      } else if (updated.kind === 'translation' && updated.status === 'failed') {
-        const progress = getTranslationProgress(updated)
-        if (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows) {
-          setStatus(`翻译已完成，但 QA 未通过：${projectRunStatusText(updated)}。请进入「QA 校对」步骤查看问题并修复；时间受限时可生成带问题摘要的交付。`)
+        if (shouldAutoAdvanceTranslationRun(updated)) {
+          setStatus(projectTranslationPassedStatusText(updated, selectedLanguage))
           const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
           if (resultArtifact) setQaArtifact(resultArtifact)
           setStep((prev) => (prev < 8 ? 8 : prev))
+        } else {
+          setStatus(`${updated.language.toUpperCase()} 翻译和 QA 已完成；多语言队列会继续处理剩余语言。`)
+        }
+      } else if (updated.kind === 'translation' && updated.status === 'failed') {
+        const progress = getTranslationProgress(updated)
+        if (progress && progress.total_rows > 0 && progress.completed_rows >= progress.total_rows) {
+          if (shouldAutoAdvanceTranslationRun(updated)) {
+            setStatus(`翻译已完成，但 QA 未通过：${projectRunStatusText(updated)}。请进入「QA 校对」步骤查看问题并修复；时间受限时可生成带问题摘要的交付。`)
+            const resultArtifact = newestArtifact(updated.artifacts || [], ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
+            if (resultArtifact) setQaArtifact(resultArtifact)
+            setStep((prev) => (prev < 8 ? 8 : prev))
+          } else {
+            setStatus(`${updated.language.toUpperCase()} 已完成翻译但 QA 未通过；多语言队列会继续处理剩余语言，完成后可在总览统一修复。`)
+          }
         } else {
           setStatus(`翻译中断：${projectRunStatusText(updated)}。可在「AI 翻译」步骤点击继续 AI 翻译。`)
         }

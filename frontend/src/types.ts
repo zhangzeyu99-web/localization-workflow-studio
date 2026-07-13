@@ -301,6 +301,25 @@ export type DeliveryFile = {
   artifact_id?: string
 }
 
+export type DeliveryLanguageResult = {
+  language: string
+  status: 'merged' | 'skipped' | string
+  run_id?: string | null
+  rows?: number
+  hard_errors?: number
+  reason?: string
+}
+
+export type GeneratedDeliveryState = {
+  projectId: string
+  runId: string
+  sourceArtifactId?: string
+  files: DeliveryFile[]
+  mergedLanguages?: string[]
+  skippedLanguages?: string[]
+  languageResults?: DeliveryLanguageResult[]
+}
+
 export type LargeTextPreflight = {
   workflow?: string
   unique_items?: number
@@ -506,6 +525,10 @@ export type DeliverableTask = {
   qa_hard_errors?: number
   qa_soft_warnings?: number
   delivered_with_issues?: boolean
+  input_artifact_id?: string
+  merged_languages?: string[]
+  skipped_languages?: string[]
+  language_results?: DeliveryLanguageResult[]
   files: {
     final?: DeliveryFile
     changes?: DeliveryFile

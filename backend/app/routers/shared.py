@@ -246,7 +246,7 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
             if run["kind"] in {"translation", "qa"}
             and any(
                 artifact["run_id"] == run["id"]
-                and artifact["kind"] == "qa_final_workbook"
+                and artifact["kind"] in {"qa_final_workbook", "qa_result"}
                 for artifact in artifacts
             )
         ])
@@ -323,7 +323,7 @@ def _project_delivery_count_fast(project_id: str) -> int:
             FROM artifacts
             JOIN runs ON runs.id = artifacts.run_id
             WHERE artifacts.project_id = ?
-              AND artifacts.kind = 'qa_final_workbook'
+              AND artifacts.kind IN ('qa_final_workbook', 'qa_result')
               AND runs.kind IN ('translation', 'qa')
             """,
             (project_id,),

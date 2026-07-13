@@ -4,7 +4,7 @@ import { FolderKanban, Languages, Plus, Settings, WandSparkles, Zap } from 'luci
 import './styles.css'
 import './styles/workbench.css'
 import { API } from './apiClient'
-import { refreshLanguageOptions, languageSpec, type LanguageCode } from './languages'
+import { refreshLanguageOptions, languageSpec, normalizeLanguageCode, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { useConfirmDialog } from './components/modals/ConfirmModal'
 import { DeleteProjectModal } from './components/modals/DeleteProjectModal'
@@ -27,9 +27,9 @@ import { ActiveJobsBadge } from './components/system/ActiveJobsBadge'
 import { ActiveJobsPanel } from './components/system/ActiveJobsPanel'
 import { onOpenActiveJobsPanelRequest } from './components/system/activeJobsPanelBus'
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
-import { preferredTranslationResultArtifact } from './domain/projectState'
+import { artifactForProject, preferredTranslationResultArtifact, runForProject } from './domain/projectState'
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
-import { canSkipModelTranslation } from './domain/translationFlow'
+import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
 
 const QuickTaskWizard = lazy(() => import('./components/quickTask/QuickTaskWizard').then((m) => ({ default: m.QuickTaskWizard })))
@@ -42,7 +42,7 @@ declare global {
   }
 }
 
-import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, AppSettings, Artifact, DeliverableTask, DeliveryFile, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, Project, ProjectTab, QualityIssue, Run, TranslationReadiness, AppView } from './types'
+import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, AppSettings, Artifact, DeliverableTask, GeneratedDeliveryState, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, Project, ProjectTab, QualityIssue, Run, TranslationReadiness, AppView } from './types'
 
 
 function App() {
@@ -70,6 +70,8 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('准备就绪')
   const currentIdRef = useRef('')
+  const [hydratedProjectId, setHydratedProjectId] = useState('')
+  const projectNavigationRef = useRef(new Map<string, { view: AppView; tab: ProjectTab; step: number }>())
   const [intro, setIntro] = useState('')
   const [sourceArtifact, setSourceArtifact] = useState<Artifact | null>(null)
   const [termArtifact, setTermArtifact] = useState<Artifact | null>(null)
@@ -88,7 +90,7 @@ function App() {
   const [deliverables, setDeliverables] = useState<DeliverableTask[]>([])
   const [deliverablesLoading, setDeliverablesLoading] = useState(false)
   const [deliverablesError, setDeliverablesError] = useState('')
-  const [generatedDelivery, setGeneratedDelivery] = useState<{ projectId: string; runId: string; files: DeliveryFile[] } | null>(null)
+  const [generatedDelivery, setGeneratedDelivery] = useState<GeneratedDeliveryState | null>(null)
   const [translationReadiness, setTranslationReadiness] = useState<TranslationReadiness | null>(null)
   const [sourceInputNotice, setSourceInputNotice] = useState<TranslationReadiness | null>(null)
   const [invalidSourceArtifactIds, setInvalidSourceArtifactIds] = useState<string[]>([])
@@ -99,8 +101,26 @@ function App() {
   const runGlossaryExtractRef = useRef<(inputArtifact?: Artifact | null) => Promise<void>>(async () => undefined)
 
   const current = useMemo(() => projects.find((p) => p.id === currentId), [projects, currentId])
+  const scopedSourceArtifact = artifactForProject(current, sourceArtifact)
+  const scopedTermArtifact = artifactForProject(current, termArtifact)
+  const scopedQaArtifact = artifactForProject(current, qaArtifact)
+  const scopedArchiveArtifact = artifactForProject(current, archiveArtifact)
+  const scopedLatestRun = runForProject(current, latestRun)
+  const scopedGeneratedDelivery = generatedDelivery && generatedDelivery.projectId === current?.id
+    && (!generatedDelivery.sourceArtifactId || generatedDelivery.sourceArtifactId === scopedSourceArtifact?.id)
+    ? generatedDelivery
+    : null
+  const scopedAssetArtifacts = useMemo(
+    () => assetArtifacts.filter((artifact) => artifactForProject(current, artifact)),
+    [current?.id, assetArtifacts]
+  )
+  const projectContextLoading = Boolean(currentId) && hydratedProjectId !== currentId
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
   const currentLang = languageSpec(selectedLanguage)
+  const selectedQualityRun = useMemo(
+    () => current ? findVisibleQualityRun(current, selectedLanguage, scopedSourceArtifact?.id) : null,
+    [current, selectedLanguage, scopedSourceArtifact?.id]
+  )
 
   const setPrimaryLanguage = useCallback((language: LanguageCode) => {
     setSelectedLanguage(language)
@@ -169,7 +189,7 @@ function App() {
     refreshCurrent, refreshProjectSnapshot, refreshRuntimeVersion, refreshSettings, saveProjectMeta,
     loadQualityIssues, createProject, upload, runAnalysis, saveHarness, uploadAsset, uploadProjectMaterial
   } = useProjectActions({
-    current, currentId, currentIdRef, intro, assetArtifacts, selectedLanguage, currentLang, busy,
+    current, currentId, currentIdRef, intro, assetArtifacts: scopedAssetArtifacts, selectedLanguage, currentLang, busy,
     deleteHoldTimer, longPressTriggeredProjectId, isCurrentProject,
     setProjects, setCurrentId, setView, setTab, setBusy, setStatus, setStatusForProject, setQualityIssues,
     setRuntimeVersion, setSettings, setNewProjectOpen, setDeleteHoldProjectId, setDeleteProjectTarget,
@@ -190,7 +210,7 @@ function App() {
     importTranslationArchive, skipQAArchive, addTranslationEntry, updateTranslationEntry, deleteTranslationEntry,
     refreshDeliverables, loadDeliverables, createDeliveryPackage, finishWizardDelivery, createMergedDeliveryPackage
   } = useTranslationActions({
-    current, currentIdRef, sourceArtifact, termArtifact, qaArtifact, archiveArtifact, latestRun,
+    current, currentIdRef, sourceArtifact: scopedSourceArtifact, termArtifact: scopedTermArtifact, qaArtifact: scopedQaArtifact, archiveArtifact: scopedArchiveArtifact, latestRun: scopedLatestRun,
     translationReadiness, glossaryCandidates, settings, translationBatchSize, tab, selectedLanguage,
     selectedLanguages, lineProofread, currentLang, isCurrentProject,
     setSourceArtifact, setQaArtifact, setArchiveArtifact, setTranslationReadiness, setSourceInputNotice,
@@ -199,7 +219,7 @@ function App() {
     setPrimaryLanguage, setPrimaryLanguages, confirm, refreshCurrent, loadQualityIssues, upload
   })
   const glossaryActions = useGlossaryActions({
-    current, currentId, sourceArtifact, termArtifact, assetArtifacts, intro, selectedLanguage, isCurrentProject,
+    current, currentId, sourceArtifact: scopedSourceArtifact, termArtifact: scopedTermArtifact, assetArtifacts: scopedAssetArtifacts, intro, selectedLanguage, isCurrentProject,
     setSourceArtifact, setTermArtifact, setLatestRun, setStep, setBusy, setStatus, setStatusForProject,
     setBusyForProject, setGlossaryPreview, setGlossaryBatches, setGlossaryCandidates, setQaArtifact,
     refreshCurrent, refreshProjectSnapshot, syncLanguageFromArtifact, refreshTranslationReadiness
@@ -246,10 +266,22 @@ function App() {
   }, [currentId])
 
   useEffect(() => {
-    if (currentId) refreshCurrent()
+    let canceled = false
+    setHydratedProjectId('')
+    if (!currentId) return () => { canceled = true }
+    refreshCurrent(currentId)
+      .catch(() => null)
+      .finally(() => {
+        if (!canceled && currentIdRef.current === currentId) setHydratedProjectId(currentId)
+      })
+    return () => { canceled = true }
   }, [currentId])
 
-  const activeRunPolling = Boolean(latestRun && ['queued', 'running'].includes(latestRun.status))
+  useEffect(() => {
+    if (currentId) projectNavigationRef.current.set(currentId, { view, tab, step })
+  }, [currentId, view, tab, step])
+
+  const activeRunPolling = Boolean(scopedLatestRun && ['queued', 'running'].includes(scopedLatestRun.status))
   const activeAnnouncementPolling = Boolean(current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status)))
   useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus, activeRunPolling || activeAnnouncementPolling)
 
@@ -309,7 +341,7 @@ function App() {
 
   useEffect(() => {
     if (current?.id) refreshGlossaryBatches(current.id)
-  }, [current?.id, latestRun?.id, latestRun?.status, selectedLanguage])
+  }, [current?.id, scopedLatestRun?.id, scopedLatestRun?.status, selectedLanguage])
 
   useEffect(() => {
     // Reset the content scroll position when the user switches project, view,
@@ -330,45 +362,54 @@ function App() {
   }, [current?.id, current?.runs?.length, current?.artifacts?.length, tab, selectedLanguage, view, step])
 
   useEffect(() => {
-    if (!sourceArtifact?.id) {
+    if (current?.id && scopedSourceArtifact) void syncLanguageFromArtifact(scopedSourceArtifact)
+  }, [current?.id, scopedSourceArtifact?.id])
+
+  useEffect(() => {
+    if (!scopedSourceArtifact?.id) {
       setTranslationReadiness(null)
       return
     }
-    refreshTranslationReadiness(sourceArtifact.id)
-  }, [sourceArtifact?.id, settings?.batch_size, selectedLanguage])
+    refreshTranslationReadiness(scopedSourceArtifact.id)
+  }, [scopedSourceArtifact?.id, settings?.batch_size, selectedLanguage])
 
   useEffect(() => {
-    if (!qaArtifact && sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id && canSkipModelTranslation(translationReadiness)) {
-      setQaArtifact(sourceArtifact)
+    if (view !== 'wizard' || step < 8 || !current || !selectedQualityRun) return
+    setLatestRun({ ...selectedQualityRun, artifacts: runArtifacts(current, selectedQualityRun.id) })
+  }, [view, step, current?.id, selectedQualityRun?.id, selectedQualityRun?.status, selectedQualityRun?.updated_at])
+
+  useEffect(() => {
+    if (!scopedQaArtifact && scopedSourceArtifact && translationReadiness?.artifact_id === scopedSourceArtifact.id && canSkipModelTranslation(translationReadiness)) {
+      setQaArtifact(scopedSourceArtifact)
     }
-  }, [qaArtifact?.id, sourceArtifact?.id, translationReadiness?.artifact_id, translationReadiness?.ready_for_qa, translationReadiness?.translated_rows, translationReadiness?.empty_target_rows, translationReadiness?.cjk_target_rows])
+  }, [scopedQaArtifact?.id, scopedSourceArtifact?.id, translationReadiness?.artifact_id, translationReadiness?.ready_for_qa, translationReadiness?.translated_rows, translationReadiness?.empty_target_rows, translationReadiness?.cjk_target_rows])
 
   useEffect(() => {
-    if (!current || qaArtifact) return
-    const artifact = preferredTranslationResultArtifact(current, latestRun)
+    if (!current || scopedQaArtifact) return
+    const artifact = preferredTranslationResultArtifact(current, scopedLatestRun)
     if (artifact) setQaArtifact(artifact)
-  }, [current?.id, current?.artifacts?.length, current?.runs?.length, latestRun?.id, latestRun?.status, qaArtifact?.id])
+  }, [current?.id, current?.artifacts?.length, current?.runs?.length, scopedLatestRun?.id, scopedLatestRun?.status, scopedQaArtifact?.id])
 
   useEffect(() => {
-    if (!current || !latestRun || latestRun.kind !== 'translation' || latestRun.status !== 'passed') return
-    if (!isCurrentProject(latestRun.project_id) || !busy) return
-    const resultArtifact = preferredTranslationResultArtifact(current, latestRun)
+    if (!current || !scopedLatestRun || scopedLatestRun.kind !== 'translation' || scopedLatestRun.status !== 'passed') return
+    if (!isCurrentProject(scopedLatestRun.project_id) || !busy) return
+    const resultArtifact = preferredTranslationResultArtifact(current, scopedLatestRun)
     if (resultArtifact) setQaArtifact(resultArtifact)
     setStep((prev) => (prev < 8 ? 8 : prev))
-    setBusyForProject(latestRun.project_id, false)
-    setStatusForProject(latestRun.project_id, projectTranslationPassedStatusText(latestRun, selectedLanguage))
-  }, [busy, current?.id, current?.artifacts?.length, latestRun?.id, latestRun?.kind, latestRun?.status])
+    setBusyForProject(scopedLatestRun.project_id, false)
+    setStatusForProject(scopedLatestRun.project_id, projectTranslationPassedStatusText(scopedLatestRun, selectedLanguage))
+  }, [busy, current?.id, current?.artifacts?.length, scopedLatestRun?.id, scopedLatestRun?.kind, scopedLatestRun?.status])
 
   useEffect(() => {
-    if (!latestRun || !['failed', 'needs_input'].includes(latestRun.status)) {
+    if (!scopedLatestRun || !['failed', 'needs_input'].includes(scopedLatestRun.status)) {
       setQualityIssues([])
       return
     }
-    loadQualityIssues(latestRun.id)
-  }, [latestRun?.id, latestRun?.status])
+    loadQualityIssues(scopedLatestRun.id)
+  }, [scopedLatestRun?.id, scopedLatestRun?.status])
 
   useRunStatusPolling(
-    latestRun,
+    scopedLatestRun,
     tab,
     selectedLanguage,
     isCurrentProject,
@@ -436,7 +477,14 @@ function App() {
                   onPointerUp={cancelProjectDeleteHold}
                   onPointerLeave={cancelProjectDeleteHold}
                   onPointerCancel={cancelProjectDeleteHold}
-                  onSelect={selectProject}
+                  onSelect={(project, event) => {
+                    const saved = projectNavigationRef.current.get(project.id)
+                    selectProject(project, event)
+                    if (event.defaultPrevented || project.id === currentId) return
+                    setView(saved?.view || 'overview')
+                    setTab(saved?.tab || 'meta')
+                    setStep(saved?.step || 1)
+                  }}
                 />
               ))}
             </div>
@@ -446,7 +494,7 @@ function App() {
               if (!current) return
               setStatusForProject(current.id, '翻译任务已就绪。')
               setView('wizard')
-            }} disabled={!current}>
+            }} disabled={!current || projectContextLoading}>
               <span className="pname"><WandSparkles size={16} aria-hidden="true" />新翻译任务</span>
               <span className="pmeta">基于当前项目启动工作流</span>
             </button>
@@ -454,7 +502,7 @@ function App() {
               if (!current) return
               setStatusForProject(current.id, '\u5feb\u901f\u4efb\u52a1\u5df2\u5c31\u7eea\u3002')
               setView('quick')
-            }} disabled={!current}>
+            }} disabled={!current || projectContextLoading}>
               <span className="pname"><Zap size={16} aria-hidden="true" />快速任务</span>
               <span className="pmeta">三步完成翻译或校对</span>
             </button>
@@ -462,7 +510,7 @@ function App() {
 
           <main className="main">
             <div className="main-content">
-              {!current ? <EmptyState onCreate={() => setNewProjectOpen(true)} loading={!projectsReady} /> : view === 'overview' ? (
+              {!current ? <EmptyState onCreate={() => setNewProjectOpen(true)} loading={!projectsReady} /> : projectContextLoading ? <span className="loading">正在加载项目...</span> : view === 'overview' ? (
               <ProjectOverview
                 project={current}
                 tab={tab}
@@ -472,18 +520,18 @@ function App() {
                 status={status}
                 intro={intro}
                 setIntro={setIntro}
-                sourceArtifact={sourceArtifact}
-                termArtifact={termArtifact}
-                qaArtifact={qaArtifact}
-                archiveArtifact={archiveArtifact}
-                latestRun={latestRun}
+                sourceArtifact={scopedSourceArtifact}
+                termArtifact={scopedTermArtifact}
+                qaArtifact={scopedQaArtifact}
+                archiveArtifact={scopedArchiveArtifact}
+                latestRun={scopedLatestRun}
                 translationReadiness={translationReadiness}
                 qualityIssues={qualityIssues}
                 glossaryPreview={glossaryPreview}
                 deliverables={deliverables}
                 deliverablesLoading={deliverablesLoading}
                 deliverablesError={deliverablesError}
-                assetArtifacts={assetArtifacts}
+                assetArtifacts={scopedAssetArtifacts}
                 setSourceArtifact={selectSourceArtifact}
                 setTermArtifact={setTermArtifact}
                 setQaArtifact={selectQaArtifact}
@@ -517,6 +565,20 @@ function App() {
                 onCreateDelivery={createDeliveryPackage}
                 onRefreshDelivery={refreshDeliverables}
                 onCreateMergedDelivery={createMergedDeliveryPackage}
+                onOpenActivityRun={(run) => {
+                  const artifacts = runArtifacts(current, run.id)
+                  setLatestRun({ ...run, artifacts })
+                  const language = normalizeLanguageCode(run.language)
+                  if (language) setPrimaryLanguage(language)
+                  if (run.kind === 'qa') {
+                    const inputArtifactId = String(run.metadata?.input_artifact_id || '')
+                    const inputArtifact = (current.artifacts || []).find((artifact) => artifact.id === inputArtifactId) || null
+                    setQaArtifact(newestArtifact(artifacts, ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook']) || inputArtifact)
+                    setTab('qa')
+                  } else {
+                    setTab('translation')
+                  }
+                }}
                 onStartTask={() => { setStatusForProject(current.id, '翻译任务已就绪。'); setView('wizard') }}
                 onStartAnnouncement={() => openAnnouncementTask()}
                 onStartQuickTask={() => { setStatusForProject(current.id, '快速任务已就绪。'); setView('quick') }}
@@ -538,7 +600,7 @@ function App() {
                     busy={busy}
                     status={status}
                     settings={settings}
-                    latestRun={latestRun}
+                    latestRun={scopedLatestRun}
                     onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
                     onUploadFile={upload}
                     onInspectTargets={inspectTranslationTargets}
@@ -552,7 +614,7 @@ function App() {
                     status={status}
                     selectedLanguage={selectedLanguage}
                     setSelectedLanguage={setSelectedLanguage}
-                    assetArtifacts={assetArtifacts}
+                    assetArtifacts={scopedAssetArtifacts}
                     announcementText={announcementText}
                     setAnnouncementText={setAnnouncementText}
                     lookupResult={announcementLookupResult}
@@ -578,11 +640,11 @@ function App() {
                     setStep={setStep}
                     intro={intro}
                     setIntro={setIntro}
-                    sourceArtifact={sourceArtifact}
-                    termArtifact={termArtifact}
-                    qaArtifact={qaArtifact}
-                    assetArtifacts={assetArtifacts}
-                    latestRun={latestRun}
+                    sourceArtifact={scopedSourceArtifact}
+                    termArtifact={scopedTermArtifact}
+                    qaArtifact={scopedQaArtifact}
+                    assetArtifacts={scopedAssetArtifacts}
+                    latestRun={scopedLatestRun}
                     translationReadiness={translationReadiness}
                     sourceInputNotice={sourceInputNotice}
                     invalidSourceArtifactIds={invalidSourceArtifactIds}
@@ -590,8 +652,11 @@ function App() {
                     glossaryCandidates={glossaryCandidates}
                     qualityIssues={qualityIssues}
                     deliverables={deliverables}
-                    generatedDeliveryRunId={generatedDelivery?.projectId === current.id ? generatedDelivery.runId : undefined}
-                    generatedDeliveryFiles={generatedDelivery?.projectId === current.id ? generatedDelivery.files : []}
+                    generatedDeliveryRunId={scopedGeneratedDelivery?.runId}
+                    generatedDeliveryFiles={scopedGeneratedDelivery?.files || []}
+                    generatedDeliveryMergedLanguages={scopedGeneratedDelivery?.mergedLanguages || []}
+                    generatedDeliverySkippedLanguages={scopedGeneratedDelivery?.skippedLanguages || []}
+                    generatedDeliveryLanguageResults={scopedGeneratedDelivery?.languageResults || []}
                     selectedLanguage={selectedLanguage}
                     setSelectedLanguage={setPrimaryLanguage}
                     selectedLanguages={selectedLanguages}

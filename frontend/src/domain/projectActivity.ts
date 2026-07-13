@@ -9,7 +9,9 @@ export function visibleAnnouncementTaskCount(project: Project): number {
 }
 
 function isProjectActivityRun(run: Run): boolean {
-  return ['translation', 'qa'].includes(run.kind) && ['queued', 'running', 'needs_input', 'failed'].includes(run.status)
+  return !run.metadata?.activity_dismissed_at
+    && ['translation', 'qa'].includes(run.kind)
+    && ['queued', 'running', 'needs_input', 'failed'].includes(run.status)
 }
 
 export function projectActivityRuns(project: Project | null | undefined): Run[] {

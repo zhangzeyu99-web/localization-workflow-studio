@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle2, PackageCheck, ShieldAlert, Wrench } from 'lucide-react'
 import { artifactDownloadHref, artifactKindLabel, artifactLanguageLabel, artifactRole, newestArtifact, pickerArtifacts, runArtifacts } from '../../../domain/artifacts'
-import { canSkipModelTranslation, latestRunOfKind } from '../../../domain/translationFlow'
+import { canSkipModelTranslation, findVisibleQaRun, findVisibleTranslationRun, multilingualWorkflowItems } from '../../../domain/translationFlow'
 import { qaOutcomePresentation } from '../../../domain/workflowPresentation'
-import { languageSpec, supportedLanguages, type LanguageCode } from '../../../languages'
+import { languageSpec, normalizeLanguageCode, type LanguageCode } from '../../../languages'
 import { ActionStatus, AssetSelect, FileBox } from '../../shared/WorkflowPrimitives'
 import type { ConfirmDialogOptions } from '../../modals/ConfirmModal'
 import type { Artifact, Project, QualityIssue, Run, TranslationReadiness } from '../../../types'
@@ -19,6 +19,18 @@ import {
 } from '../QaIssuePanel'
 import { TaskHistoryTable } from '../TaskHistoryTable'
 import { WorkflowStepShell } from '../WorkflowStepShell'
+import { MultilingualWorkflowBoard } from '../MultilingualWorkflowBoard'
+
+export function qaRepairMode(
+  run: Pick<Run, 'kind' | 'status'> | null,
+  issues: Pick<QualityIssue, 'sheet' | 'row' | 'severity'>[],
+  hasSourceArtifact: boolean,
+): 'row_fix' | 'rerun_translation' | 'rerun_qa' | 'none' {
+  if (!run || run.status !== 'failed') return 'none'
+  if (issues.some((issue) => issue.sheet && issue.row > 1 && ['hard', 'soft'].includes(issue.severity))) return 'row_fix'
+  if (run.kind === 'translation' && hasSourceArtifact) return 'rerun_translation'
+  return 'rerun_qa'
+}
 
 export function StepQA({
   project,
@@ -39,8 +51,10 @@ export function StepQA({
   busy,
   status,
   selectedLanguage,
+  setSelectedLanguage,
   selectedLanguages,
-  toggleSelectedLanguage,
+  onRetryTranslations,
+  onRerunTranslation,
   onGoDelivery,
   showHistory = true,
   confirm
@@ -66,24 +80,26 @@ export function StepQA({
   setSelectedLanguage: (language: LanguageCode) => void
   selectedLanguages: LanguageCode[]
   toggleSelectedLanguage: (language: LanguageCode) => void
-  onGoDelivery?: () => void
+  onRetryTranslations?: () => void
+  onRerunTranslation?: () => void
+  onGoDelivery?: (run: Run) => void
   showHistory?: boolean
   confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
-  const latestQaRun = latestRun?.kind === 'qa' ? latestRun : latestRunOfKind(project, 'qa')
-  const projectQuality = latestQaRun?.metadata?.project_harness_quality as { hard_errors?: number; soft_warnings?: number } | undefined
-  const projectHardErrors = projectQuality?.hard_errors ?? 0
-  const qaIssues = latestRun?.id === latestQaRun?.id ? qualityIssues.filter((issue) => issue.severity === 'hard' || issue.severity === 'soft') : []
-  const previousTranslationRun = latestRunOfKind(project, 'translation')
+  const latestQaRun = findVisibleQaRun(project, selectedLanguage, sourceArtifact?.id)
+  const previousTranslationRun = findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run')
   const previousTranslationArtifact = previousTranslationRun
     ? newestArtifact(runArtifacts(project, previousTranslationRun.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
     : null
-  const effectiveQaArtifact = qaArtifact || previousTranslationArtifact || null
+  const qaArtifactLanguage = normalizeLanguageCode(qaArtifact?.metadata?.language)
+  const selectedQaArtifact = qaArtifact && (!qaArtifactLanguage || qaArtifactLanguage === selectedLanguage) ? qaArtifact : null
+  const effectiveQaArtifact = selectedQaArtifact || previousTranslationArtifact || null
   const qaArtifactLabel = effectiveQaArtifact
     ? `${artifactKindLabel(effectiveQaArtifact)}${artifactLanguageLabel(effectiveQaArtifact) ? `（${artifactLanguageLabel(effectiveQaArtifact)}）` : ''}`
     : '未选择'
   const translationQaRun = previousTranslationRun && previousTranslationArtifact ? previousTranslationRun : null
   const qaStatusRun = latestQaRun && (!translationQaRun || latestQaRun.created_at >= translationQaRun.created_at) ? latestQaRun : translationQaRun
+  const qaIssues = latestRun?.id === qaStatusRun?.id ? qualityIssues.filter((issue) => issue.severity === 'hard' || issue.severity === 'soft') : []
   const qaStatusArtifacts = qaStatusRun ? pickerArtifacts(qaStatusRun.artifacts?.length ? qaStatusRun.artifacts : runArtifacts(project, qaStatusRun.id)) : []
   const qaFinalDownload = newestArtifact(qaStatusArtifacts, ['qa_final_workbook'])
   const qaChangesDownload = newestArtifact(qaStatusArtifacts, ['qa_changes'])
@@ -94,7 +110,7 @@ export function StepQA({
     ? '上一翻译结果'
     : qaRole === 'language_source'
       ? '已译语言表'
-      : qaArtifact
+      : selectedQaArtifact
         ? '上传译文'
         : '未选择'
   const skipArchiveHint = !effectiveQaArtifact
@@ -117,15 +133,28 @@ export function StepQA({
   }
   const pendingIssueCount = qaPendingIssueCount(qaStatusRun, qaIssues)
   const qaOutcome = qaOutcomePresentation(qaStatusRun, pendingIssueCount, Boolean(qaFinalDownload))
-  const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
+  const multiLanguageMode = selectedLanguages.length > 1
+  const workflowItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id)
+  const translationRetryCount = workflowItems.filter((item) => (item.state === 'pending' || item.state === 'blocked') && item.recovery === 'translation').length
+  const qaRetryCount = workflowItems.filter((item) => item.state === 'blocked' && item.recovery === 'qa').length
+  const activeLanguageCount = workflowItems.filter((item) => item.state === 'running').length
+  const deliverableItems = workflowItems.filter((item) => item.state === 'ready' || item.state === 'issues')
+  const bulkDeliveryRun = deliverableItems.find((item) => item.run)?.run || null
   const currentLanguageText = languageSpec(selectedLanguage).short
   // QA runs as a background job now: "running" comes from the run itself, not
   // from the short-lived interactive busy flag.
   const qaActive = Boolean(qaStatusRun && qaStatusRun.kind === 'qa' && ['queued', 'running'].includes(qaStatusRun.status))
   const qaCancelRequested = Boolean(qaActive && qaStatusRun?.metadata?.cancel_requested_at)
   const qaTone = busy || qaActive ? 'running' : qaOutcome.tone
+  const repairMode = qaRepairMode(qaStatusRun, qaIssues, Boolean(sourceArtifact))
   const scrollToManualFixes = () => {
     document.querySelector('[data-testid="failed-row-editor"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  const selectLanguageResult = (language: LanguageCode) => {
+    setSelectedLanguage(language)
+    const run = findVisibleTranslationRun(project, language, sourceArtifact?.id, 'translation_run')
+    const artifact = run ? newestArtifact(runArtifacts(project, run.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook']) : null
+    if (artifact) setQaArtifact(artifact)
   }
   return (
     <WorkflowStepShell
@@ -137,6 +166,40 @@ export function StepQA({
       nextAction={qaOutcome.nextAction}
       showStatus={false}
     >
+      {multiLanguageMode ? (
+        <>
+          <MultilingualWorkflowBoard
+            project={project}
+            languages={selectedLanguages}
+            inputArtifactId={sourceArtifact?.id}
+            selectedLanguage={selectedLanguage}
+            onSelectLanguage={selectLanguageResult}
+          />
+          <div className="multilingual-bulk-actions" data-testid="multilingual-qa-actions">
+            <div>
+              <strong>批量处理</strong>
+              <span>当前可合并 {deliverableItems.length} 种，待处理 {translationRetryCount + qaRetryCount} 种。</span>
+            </div>
+            <div className="row-actions wrap">
+              {translationRetryCount > 0 && onRetryTranslations ? (
+                <button className="btn btn-primary btn-sm" data-testid="multilingual-retry-translation" disabled={busy || activeLanguageCount > 0} onClick={onRetryTranslations}>
+                  <Wrench size={14} aria-hidden="true" />继续处理 {translationRetryCount} 种未完成语言
+                </button>
+              ) : null}
+              {qaRetryCount > 0 && onDirectQAQueue ? (
+                <button className="btn btn-ghost btn-sm" data-testid="multilingual-retry-qa" disabled={busy || activeLanguageCount > 0} onClick={onDirectQAQueue}>
+                  重跑 {qaRetryCount} 种 QA
+                </button>
+              ) : null}
+              {bulkDeliveryRun && onGoDelivery ? (
+                <button className="btn btn-primary btn-sm" data-testid="multilingual-go-delivery" disabled={busy} onClick={() => onGoDelivery(bulkDeliveryRun)}>
+                  <PackageCheck size={14} aria-hidden="true" />合并当前可用 {deliverableItems.length} 种语言
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </>
+      ) : null}
       <div className={`qa-outcome-panel ${qaOutcome.tone}`} data-testid="qa-outcome-panel">
         <div className="qa-current-head">
           <span className="qa-outcome-icon">
@@ -153,13 +216,15 @@ export function StepQA({
           <div><span>问题</span><strong>{qaStatusRun ? `${pendingIssueCount} 个待处理` : '尚未检查'}</strong></div>
         </div>
         <div className="qa-result-actions">
-          {qaStatusRun?.status === 'failed' ? <button className="btn btn-primary btn-sm" disabled={busy || !qaIssues.length} onClick={onModelFixes}><Wrench size={14} aria-hidden="true" />修复并重跑</button> : null}
-          {qaStatusRun?.status === 'failed' ? <button className="btn btn-ghost btn-sm" disabled={!qaIssues.length} onClick={scrollToManualFixes}>手动修复</button> : null}
+          {repairMode === 'row_fix' ? <button className="btn btn-primary btn-sm" disabled={busy} onClick={onModelFixes}><Wrench size={14} aria-hidden="true" />修复并重跑</button> : null}
+          {repairMode === 'row_fix' ? <button className="btn btn-ghost btn-sm" disabled={busy} onClick={scrollToManualFixes}>手动修复</button> : null}
+          {repairMode === 'rerun_translation' && (multiLanguageMode ? onRetryTranslations : onRerunTranslation) ? <button className="btn btn-primary btn-sm" data-testid="qa-rerun-translation" disabled={busy || activeLanguageCount > 0} onClick={multiLanguageMode ? onRetryTranslations : onRerunTranslation}><Wrench size={14} aria-hidden="true" />{multiLanguageMode ? '继续处理未完成语言' : `返回重跑 ${currentLanguageText}`}</button> : null}
+          {repairMode === 'rerun_qa' && effectiveQaArtifact ? <button className="btn btn-primary btn-sm" data-testid="qa-rerun" disabled={busy} onClick={() => onDirectQA(effectiveQaArtifact)}><Wrench size={14} aria-hidden="true" />重新运行 {currentLanguageText} QA</button> : null}
           {qaFinalDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-final" href={artifactDownloadHref(qaFinalDownload, project.id)}>下载译文</a> : null}
           {qaChangesDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-changes" href={artifactDownloadHref(qaChangesDownload, project.id)}>修改记录</a> : null}
-          {onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
-            <button className={`btn btn-sm ${qaStatusRun.status === 'failed' ? 'qa-risk-action' : 'btn-primary'}`} data-testid="qa-go-delivery" onClick={onGoDelivery}>
-              <PackageCheck size={14} aria-hidden="true" />{qaStatusRun.status === 'failed' ? '带问题交付' : '标准交付'}
+          {!multiLanguageMode && onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
+            <button className={`btn btn-sm ${qaStatusRun.status === 'failed' ? 'qa-risk-action' : 'btn-primary'}`} data-testid="qa-go-delivery" onClick={() => onGoDelivery(qaStatusRun)}>
+              <PackageCheck size={14} aria-hidden="true" />{qaStatusRun.status === 'failed' ? '生成带问题交付' : '生成标准交付'}
             </button>
           ) : null}
         </div>
@@ -167,7 +232,7 @@ export function StepQA({
       <details className="qa-input-details" open={!qaStatusRun}>
         <summary>校对输入</summary>
         <div className="qa-workspace workflow-block">
-        <section className="qa-step-card">
+        {!multiLanguageMode ? <section className="qa-step-card">
           <div className="section-head">
             <div>
               <strong>语言</strong>
@@ -175,26 +240,25 @@ export function StepQA({
             <span className="tag">已选 {selectedLanguages.length || 1} 个</span>
           </div>
           <div className="lang-grid compact-lang-grid qa-language-grid">
-            {supportedLanguages.map((lang) => {
-              const isSelected = selectedLanguages.includes(lang.code)
+            {selectedLanguages.map((code) => {
+              const lang = languageSpec(code)
               const isCurrent = selectedLanguage === lang.code
               return (
                 <button
                   key={lang.code}
                   type="button"
-                  className={`lang-chip ${isSelected ? 'selected' : ''} ${isCurrent ? 'current' : ''}`}
-                  onClick={() => toggleSelectedLanguage(lang.code)}
-                  title={isCurrent ? '当前语言' : '选择语言'}
+                  className={`lang-chip selected ${isCurrent ? 'current' : ''}`}
+                  onClick={() => selectLanguageResult(lang.code)}
+                  title={isCurrent ? '当前语言' : '查看该语言'}
                 >
-                  <span className="lang-check">{isSelected ? '✓' : ''}</span>
+                  <span className="lang-check">✓</span>
                   {lang.label}
                   {isCurrent ? <small>当前</small> : null}
                 </button>
               )
             })}
           </div>
-          {selectedLanguages.length > 1 ? <div className="info-line compact">依次校对：{selectedLanguageText}</div> : null}
-        </section>
+        </section> : null}
 
         <section className="qa-step-card">
           <div className="section-head">
@@ -215,9 +279,10 @@ export function StepQA({
                 <span>{effectiveQaArtifact ? currentLanguageText : '需先选择译文'}</span>
               </div>
               <button className="btn btn-primary" data-testid="run-qa" disabled={!effectiveQaArtifact || busy || qaActive} onClick={() => {
-                if (!qaArtifact && previousTranslationArtifact) setQaArtifact(previousTranslationArtifact)
-                onDirectQA(effectiveQaArtifact)
-              }}>运行 {currentLanguageText} QA</button>
+                if (!selectedQaArtifact && previousTranslationArtifact) setQaArtifact(previousTranslationArtifact)
+                if (selectedLanguages.length > 1 && onDirectQAQueue) onDirectQAQueue()
+                else onDirectQA(effectiveQaArtifact)
+              }}>{selectedLanguages.length > 1 ? `运行全部 ${selectedLanguages.length} 种语言 QA` : `运行 ${currentLanguageText} QA`}</button>
               {qaActive && onCancelQa ? (
                 <button className="btn btn-ghost" data-testid="cancel-qa" disabled={busy || qaCancelRequested} onClick={() => onCancelQa(qaStatusRun)}>
                   {qaCancelRequested ? '正在取消…' : '取消 QA'}

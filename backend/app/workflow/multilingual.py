@@ -7,7 +7,7 @@ from ..config import load_settings
 from ..jobs import active_job_id_for_project, start_singleton_job
 from ..languages import require_supported_language, visible_language_code
 from ..schemas import MultilingualQueueRequest, TranslateRequest
-from .qa import run_qa_sync
+from .qa import QaCanceled, run_qa_sync
 from .subprocess_runner import user_facing_error
 from .translation import run_translate_sync
 from .translation_readiness import inspect_translation_readiness

@@ -66,6 +66,7 @@ export interface ProjectOverviewProps {
   onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
   onRefreshDelivery: () => void
   onCreateMergedDelivery?: () => void
+  onOpenActivityRun: (run: Run) => void
   onStartTask: () => void
   onStartAnnouncement: () => void
   onStartQuickTask: () => void
@@ -134,6 +135,7 @@ function ProjectOverviewImpl({
   onCreateDelivery,
   onRefreshDelivery,
   onCreateMergedDelivery,
+  onOpenActivityRun,
   onStartTask,
   onStartAnnouncement,
   onStartQuickTask,
@@ -195,7 +197,7 @@ function ProjectOverviewImpl({
           <div className="num">{archiveRows.length}</div><div className="lbl">已归档文本</div><div className="stat-hint">查看归档</div>
         </button>
       </div>
-      {activityRuns.length ? (
+      {tab === 'meta' && activityRuns.length ? (
         <div className="project-activity-panel">
           <div className="section-head">
             <div>
@@ -210,9 +212,7 @@ function ProjectOverviewImpl({
                   <strong>{projectRunTitle(run)}</strong>
                   <span>{projectRunStatusText(run)}</span>
                 </div>
-                <button className="btn btn-ghost btn-sm" onClick={() => {
-                  setTab(run.kind === 'qa' ? 'qa' : 'translation')
-                }}>{run.status === 'failed' ? '去处理' : '查看'}</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => onOpenActivityRun(run)}>{run.status === 'failed' ? '去处理' : '查看'}</button>
               </div>
             ))}
           </div>
@@ -312,7 +312,13 @@ function ProjectOverviewImpl({
           setSelectedLanguage={setSelectedLanguage}
           selectedLanguages={selectedLanguages}
           toggleSelectedLanguage={toggleSelectedLanguage}
-          onGoDelivery={() => setTab('delivery')}
+          onRetryTranslations={onTranslateQueue || onTranslate}
+          onRerunTranslation={() => setTab('translation')}
+          onGoDelivery={(run) => {
+            setTab('delivery')
+            if (selectedLanguages.length > 1 && onCreateMergedDelivery) void onCreateMergedDelivery()
+            else void onCreateDelivery(run.id)
+          }}
           confirm={confirm}
         />
       ) : null}

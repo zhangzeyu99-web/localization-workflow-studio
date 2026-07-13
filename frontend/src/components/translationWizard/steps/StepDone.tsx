@@ -2,11 +2,13 @@ import { Download, PackageCheck, RefreshCw, Wrench } from 'lucide-react'
 import { artifactDownloadHref, artifactKindLabel, artifactPickerLabel, pickerArtifacts, runArtifacts } from '../../../domain/artifacts'
 import { issueCountPhrase } from '../../../uiText'
 import { type LanguageCode, languageSpec } from '../../../languages'
-import type { Artifact, DeliverableTask, DeliveryFile, Project, QualityIssue, Run } from '../../../types'
+import { multilingualWorkflowItems } from '../../../domain/translationFlow'
+import type { Artifact, DeliverableTask, DeliveryFile, DeliveryLanguageResult, Project, QualityIssue, Run } from '../../../types'
 import { qaPendingIssueCount } from '../QaIssuePanel'
 import { TaskRunSummary } from '../TaskRunSummary'
 import { WorkflowSideCard, WorkflowStepShell } from '../WorkflowStepShell'
 import { ArchiveProvenanceBadge } from '../../shared/StatusPrimitives'
+import { MultilingualWorkflowBoard } from '../MultilingualWorkflowBoard'
 
 export function StepDone({
   project,
@@ -14,26 +16,38 @@ export function StepDone({
   qualityIssues,
   setStep,
   sourceArtifact,
+  selectedLanguage,
+  setSelectedLanguage,
   selectedLanguages,
   busy,
   onCreateDelivery,
   onCreateMergedDelivery,
+  onRetryTranslations,
   deliverables,
   generatedDeliveryRunId,
-  generatedDeliveryFiles
+  generatedDeliveryFiles,
+  generatedDeliveryMergedLanguages,
+  generatedDeliverySkippedLanguages,
+  generatedDeliveryLanguageResults,
 }: {
   project: Project
   latestRun: Run | null
   qualityIssues: QualityIssue[]
   setStep: (step: number) => void
   sourceArtifact: Artifact | null
+  selectedLanguage: LanguageCode
+  setSelectedLanguage: (language: LanguageCode) => void
   selectedLanguages: LanguageCode[]
   busy: boolean
   onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
-  onCreateMergedDelivery?: () => void
+  onCreateMergedDelivery?: () => Promise<DeliveryFile[] | null> | void
+  onRetryTranslations?: () => void
   deliverables: DeliverableTask[]
   generatedDeliveryRunId?: string
   generatedDeliveryFiles?: DeliveryFile[]
+  generatedDeliveryMergedLanguages?: string[]
+  generatedDeliverySkippedLanguages?: string[]
+  generatedDeliveryLanguageResults?: DeliveryLanguageResult[]
 }) {
   const deliveryRun = findWizardDeliveryRun(project, latestRun)
   const artifacts = pickerArtifacts(deliveryRun?.artifacts?.length ? deliveryRun.artifacts : runArtifacts(project, deliveryRun?.id))
@@ -43,53 +57,92 @@ export function StepDone({
   const deliveryBlocked = deliveryRun?.kind === 'qa' && deliveryRun.status !== 'passed' && !hasFinalWorkbook
   const deliveryWarning = deliveryRun?.kind === 'qa' && deliveryRun.status === 'failed' && hasFinalWorkbook
   const multiDelivery = selectedLanguages.length > 1
-  const selectedLanguageText = selectedLanguages.map((code) => languageSpec(code).short).join(' / ')
-  const deliveryFiles = deliveryFilesForRun(deliverables, deliveryRun?.id, generatedDeliveryRunId, generatedDeliveryFiles)
+  const workflowItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id)
+  const deliverableItems = workflowItems.filter((item) => item.state === 'ready' || item.state === 'issues')
+  const retryItems = workflowItems.filter((item) => item.state === 'pending' || item.state === 'blocked')
+  const activeLanguageCount = workflowItems.filter((item) => item.state === 'running').length
+  const mergedTask = findMergedDeliverable(deliverables, sourceArtifact?.id)
+  const deliveryFiles = wizardDeliveryFiles(project, latestRun, deliverables, generatedDeliveryRunId, generatedDeliveryFiles, multiDelivery, sourceArtifact?.id)
+  const hasGeneratedSnapshot = Boolean(generatedDeliveryFiles?.length)
+  const mergedLanguages = hasGeneratedSnapshot ? generatedDeliveryMergedLanguages || [] : mergedTask?.merged_languages || []
+  const skippedLanguages = hasGeneratedSnapshot ? generatedDeliverySkippedLanguages || [] : mergedTask?.skipped_languages || []
+  const languageResults = hasGeneratedSnapshot ? generatedDeliveryLanguageResults || [] : mergedTask?.language_results || []
   const canGenerateDelivery = Boolean(deliveryRun && hasFinalWorkbook && !deliveryBlocked)
+  const canGenerateMergedDelivery = Boolean(multiDelivery && sourceArtifact && onCreateMergedDelivery && deliverableItems.length > 0 && activeLanguageCount === 0)
   const generated = deliveryFiles.length > 0
   const hasQaSummary = deliveryFiles.some((file) => file.kind === 'qa_summary')
-  const deliveryStatus = !deliveryRun
-    ? '暂无可交付任务'
-    : generated
-      ? `已生成 ${deliveryFiles.length} 个文件`
-      : deliveryBlocked
-        ? '需要返回 QA'
-        : deliveryWarning
-          ? '可带问题摘要交付'
-          : '可生成最终交付'
+  const deliveryStatus = multiDelivery
+    ? generated
+      ? `已合并 ${mergedLanguages.length || deliverableItems.length} 种语言`
+      : canGenerateMergedDelivery
+        ? `可合并 ${deliverableItems.length} 种语言`
+        : activeLanguageCount > 0
+          ? '多语言任务仍在处理'
+          : '暂无可合并语言'
+    : !deliveryRun
+      ? '暂无可交付任务'
+      : generated
+        ? `已生成 ${deliveryFiles.length} 个文件`
+        : deliveryBlocked
+          ? '需要返回 QA'
+          : deliveryWarning
+            ? '可带问题摘要交付'
+            : '可生成最终交付'
   return (
     <WorkflowStepShell
       stepLabel="步骤 9/9"
       title="交付"
       description="生成并下载交付文件。"
       status={deliveryStatus}
-      statusTone={generated ? 'ready' : deliveryBlocked ? 'blocked' : deliveryWarning ? 'warn' : 'neutral'}
-      nextAction={generated ? '下载文件或点击完成' : canGenerateDelivery ? '生成交付文件' : '返回 QA 处理'}
+      statusTone={generated ? 'ready' : !multiDelivery && deliveryBlocked ? 'blocked' : !multiDelivery && deliveryWarning ? 'warn' : 'neutral'}
+      nextAction={generated
+        ? '下载文件或点击完成'
+        : multiDelivery
+          ? canGenerateMergedDelivery ? '合并当前可用语言' : retryItems.length ? '处理未完成语言' : '等待多语言任务完成'
+          : canGenerateDelivery ? '生成交付文件' : '返回 QA 处理'}
       showStatus={false}
       side={
         <>
           <WorkflowSideCard title="下载文件" tone={generated ? 'ready' : 'neutral'}>
             <DeliveryFileLinks files={deliveryFiles} projectId={project.id} />
           </WorkflowSideCard>
-          {deliveryBlocked ? (
+          {!multiDelivery && deliveryBlocked ? (
             <WorkflowSideCard title="需要处理" tone="blocked">
               <p>缺少可交付译文。</p>
               <button className="btn btn-primary btn-sm" onClick={() => setStep(8)}>回到 QA</button>
             </WorkflowSideCard>
           ) : null}
-          {deliveryRun && generated ? (
+          {!multiDelivery && deliveryRun && generated ? (
             <WorkflowSideCard title={deliveryWarning ? '待复核归档' : '归档完成'} tone={deliveryWarning ? 'warn' : 'ready'}>
               <ArchiveProvenanceBadge sourceType={deliveryWarning ? 'delivered_with_issues' : 'qa_passed'} />
               <p>{deliveryWarning ? `仍有 ${issueCountPhrase(pendingIssueCount)}问题，归档标记为待复核。` : '交付时已同步归档。'}</p>
               {deliveryWarning ? <button className="btn btn-ghost btn-sm" onClick={() => setStep(8)}><Wrench size={14} aria-hidden="true" />回到 QA</button> : null}
             </WorkflowSideCard>
           ) : null}
+          {multiDelivery && skippedLanguages.length ? (
+            <WorkflowSideCard title="仍需处理" tone="warn">
+              <p>{skippedLanguages.join(' / ')} 未进入本次合并。</p>
+              {onRetryTranslations ? <button className="btn btn-ghost btn-sm" disabled={busy || activeLanguageCount > 0} onClick={onRetryTranslations}><Wrench size={14} aria-hidden="true" />继续处理未完成语言</button> : null}
+            </WorkflowSideCard>
+          ) : null}
         </>
       }
     >
       <div className="workflow-block delivery-workbench">
-        {!deliveryRun ? <div className="muted-left">暂无可交付任务。</div> : null}
-        {canGenerateDelivery ? (
+        {multiDelivery ? (
+          <MultilingualWorkflowBoard
+            project={project}
+            languages={selectedLanguages}
+            inputArtifactId={sourceArtifact?.id}
+            selectedLanguage={selectedLanguage}
+            onSelectLanguage={(language) => {
+              setSelectedLanguage(language)
+              setStep(8)
+            }}
+          />
+        ) : null}
+        {!deliveryRun && !multiDelivery ? <div className="muted-left">暂无可交付任务。</div> : null}
+        {!multiDelivery && canGenerateDelivery ? (
           <div className={`delivery-primary-card ${generated ? 'ready' : ''}`}>
             <div>
               <strong>{generated ? `已生成 ${deliveryFiles.length} 个文件` : deliveryWarning ? '生成带问题交付' : '生成交付文件'}</strong>
@@ -100,18 +153,39 @@ export function StepDone({
             </button>
           </div>
         ) : null}
-        {deliveryWarning && generated && !hasQaSummary ? (
+        {!multiDelivery && deliveryWarning && generated && !hasQaSummary ? (
           <div className="warn-line" data-testid="delivery-missing-qa-summary">
             这份历史交付未检测到 QA 摘要。请点击“重新生成交付文件”，确保问题清单随交付一起输出。
           </div>
         ) : null}
         {multiDelivery ? (
-          <div className="delivery-primary-card">
+          <div className={`delivery-primary-card ${generated ? 'ready' : ''}`}>
             <div>
-              <strong>多语言合并交付</strong>
-              <span>已选 {selectedLanguageText}。已完成或允许交付的语言列会合并回同一语言表；未完成语言写入 QA 摘要。</span>
+              <strong>{generated ? `已生成 ${deliveryFiles.length} 个多语言交付文件` : `合并当前可用 ${deliverableItems.length} 种语言`}</strong>
+              <span>{generated ? `已合并 ${mergedLanguages.length || deliverableItems.length} 种，跳过 ${skippedLanguages.length} 种；可在右侧下载。` : '通过结构门禁的语言写回同一语言表；未完成或结构异常语言写入 QA 摘要。'}</span>
             </div>
-            <button className="btn btn-ghost" disabled={busy || !sourceArtifact || !onCreateMergedDelivery} onClick={onCreateMergedDelivery}>生成多语言合并交付</button>
+            <button className="btn btn-primary" data-testid="wizard-generate-merged-delivery" disabled={busy || !canGenerateMergedDelivery} onClick={() => void onCreateMergedDelivery?.()}>
+              {busy ? '生成中...' : generated ? <><RefreshCw size={15} aria-hidden="true" />重新生成多语言交付</> : <><PackageCheck size={15} aria-hidden="true" />生成多语言合并交付</>}
+            </button>
+          </div>
+        ) : null}
+        {multiDelivery && retryItems.length > 0 ? (
+          <div className="multilingual-bulk-actions" data-testid="multilingual-delivery-recovery">
+            <div>
+              <strong>剩余语言不阻塞当前交付</strong>
+              <span>{retryItems.map((item) => languageSpec(item.code).short).join(' / ')} 可原地处理，完成后重新生成合并文件。</span>
+            </div>
+            {onRetryTranslations ? <button className="btn btn-primary btn-sm" data-testid="multilingual-delivery-retry" disabled={busy || activeLanguageCount > 0} onClick={onRetryTranslations}><Wrench size={14} aria-hidden="true" />继续处理 {retryItems.length} 种语言</button> : null}
+          </div>
+        ) : null}
+        {multiDelivery && languageResults.length ? (
+          <div className="multilingual-delivery-results" data-testid="multilingual-delivery-results">
+            {languageResults.map((item) => (
+              <div key={`${item.language}-${item.run_id || item.status}`} className={item.status === 'merged' ? 'ready' : 'warn'}>
+                <strong>{item.language}</strong>
+                <span>{item.status === 'merged' ? `已合并 ${item.rows || 0} 行` : item.reason || '本次未合并'}</span>
+              </div>
+            ))}
           </div>
         ) : null}
         {deliveryRun ? (
@@ -152,10 +226,38 @@ export function wizardDeliveryFiles(
   latestRun: Run | null,
   deliverables: DeliverableTask[],
   generatedRunId?: string,
-  generatedFiles?: DeliveryFile[]
+  generatedFiles?: DeliveryFile[],
+  multiDelivery = false,
+  inputArtifactId?: string,
 ): DeliveryFile[] {
+  if (multiDelivery) {
+    const generated = (generatedFiles || []).filter(isDownloadableDeliveryFile)
+    if (generated.length) return uniqueDeliveryFiles(generated)
+    const task = findMergedDeliverable(deliverables, inputArtifactId)
+    return deliveryFilesForTask(task)
+  }
   const run = findWizardDeliveryRun(project, latestRun)
   return deliveryFilesForRun(deliverables, run?.id, generatedRunId, generatedFiles)
+}
+
+function findMergedDeliverable(deliverables: DeliverableTask[], inputArtifactId?: string): DeliverableTask | null {
+  const merged = deliverables.filter((task) => String(task.task_code || '').toUpperCase() === 'ALL')
+  if (!inputArtifactId) return merged[0] || null
+  return merged.find((task) => task.input_artifact_id === inputArtifactId)
+    || merged.find((task) => !task.input_artifact_id)
+    || null
+}
+
+function deliveryFilesForTask(task: DeliverableTask | null): DeliveryFile[] {
+  if (!task) return []
+  const files = task.files || {}
+  return uniqueDeliveryFiles([
+    files.final,
+    files.changes,
+    files.package,
+    files.qa_summary || undefined,
+    ...(files.outputs || []),
+  ].filter(isDownloadableDeliveryFile))
 }
 
 function deliveryFilesForRun(
@@ -167,15 +269,7 @@ function deliveryFilesForRun(
   const generated = runId && generatedRunId === runId ? generatedFiles.filter(isDownloadableDeliveryFile) : []
   if (generated.length) return uniqueDeliveryFiles(generated)
   const task = runId ? deliverables.find((item) => item.run_id === runId) : null
-  if (!task) return []
-  const files = task.files || {}
-  return uniqueDeliveryFiles([
-    files.final,
-    files.changes,
-    files.package,
-    files.qa_summary || undefined,
-    ...(files.outputs || []),
-  ].filter(isDownloadableDeliveryFile))
+  return deliveryFilesForTask(task || null)
 }
 
 function isDownloadableDeliveryFile(file: DeliveryFile | null | undefined): file is DeliveryFile {
@@ -201,6 +295,7 @@ function deliveryFileHref(file: DeliveryFile, projectId: string): string {
 
 function deliveryFileLabel(file: DeliveryFile): string {
   if (file.kind === 'final') return '最终译文'
+  if (file.kind === 'merged_final') return '多语言合并译文'
   if (file.kind === 'changes') return '修改记录'
   if (file.kind === 'package') return '交付包'
   if (file.kind === 'qa_summary') return 'QA 摘要'

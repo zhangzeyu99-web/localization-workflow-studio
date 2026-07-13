@@ -23,6 +23,7 @@ import type {
   Artifact,
   DeliverableTask,
   DeliveryFile,
+  GeneratedDeliveryState,
   GlossaryCandidate,
   MultilingualQueueStatus,
   Project,
@@ -68,7 +69,7 @@ export interface UseTranslationActionsParams {
   setDeliverables: Dispatch<SetStateAction<DeliverableTask[]>>
   setDeliverablesLoading: (value: boolean) => void
   setDeliverablesError: (message: string) => void
-  setGeneratedDelivery: (value: { projectId: string; runId: string; files: DeliveryFile[] } | null) => void
+  setGeneratedDelivery: (value: GeneratedDeliveryState | null) => void
   setTab: (tab: ProjectTab) => void
   setView: (view: AppView) => void
   setPrimaryLanguage: (language: LanguageCode) => void
@@ -913,14 +914,15 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     setStatus('交付已完成，可在项目概览的“交付”页下载最新文件。')
   }
 
-  async function createMergedDeliveryPackage() {
-    if (!current || !sourceArtifact) return
+  async function createMergedDeliveryPackage(): Promise<DeliveryFile[] | null> {
+    if (!current || !sourceArtifact) return null
     const projectId = current.id
     const languages = selectedQueueLanguages()
+    const deliveryRunId = latestRun?.id || (current.runs || []).find((run) => ['translation', 'qa'].includes(run.kind))?.id || ''
     setBusyForProject(projectId, true)
     setStatusForProject(projectId, `正在生成多语言合并交付：${languages.map((language) => languageSpec(language).short).join(' / ')}`)
     try {
-      const result = await api<{ files: DeliveryFile[]; merged_languages?: string[]; skipped_languages?: string[] }>(`/api/projects/${current.id}/delivery-package/merged`, {
+      const result = await api<{ files: DeliveryFile[]; merged_languages?: string[]; skipped_languages?: string[]; language_results?: GeneratedDeliveryState['languageResults']; deliverable?: DeliverableTask }>(`/api/projects/${current.id}/delivery-package/merged`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -928,13 +930,24 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
           languages
         })
       })
-      if (!isCurrentProject(projectId)) return
+      if (!isCurrentProject(projectId)) return null
+      setGeneratedDelivery({
+        projectId,
+        runId: result.deliverable?.run_id || deliveryRunId || `merged:${sourceArtifact.id}`,
+        sourceArtifactId: sourceArtifact.id,
+        files: result.files || [],
+        mergedLanguages: result.merged_languages || [],
+        skippedLanguages: result.skipped_languages || [],
+        languageResults: result.language_results || [],
+      })
       await refreshDeliverables()
       await refreshCurrent()
-      const skipped = result.skipped_languages?.length ? `，跳过 ${result.skipped_languages.length} 种未完成语言` : ''
+      const skipped = result.skipped_languages?.length ? `，未合并：${result.skipped_languages.join(' / ')}` : ''
       setStatusForProject(projectId, `多语言合并交付已生成：${result.files.length} 个文件${skipped}`)
+      return result.files || []
     } catch (error) {
       setStatusForProject(projectId, `多语言合并交付失败：${errorText(error)}`)
+      return null
     } finally {
       setBusyForProject(projectId, false)
     }

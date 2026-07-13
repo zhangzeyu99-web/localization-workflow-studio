@@ -72,6 +72,34 @@ test('quick translation completion status stays scoped to the quick task', async
   expect(message).toBe('EN 快速翻译已完成并通过 QA，可下载结果。')
 })
 
+test('delivery issue label distinguishes available from already delivered', async ({ page }) => {
+  await page.goto(baseURL)
+  const labels = await page.evaluate(async () => {
+    const { deliveryStatusLabel } = await import('/src/components/translationWizard/ProjectTabs.tsx')
+    return [
+      deliveryStatusLabel({ status: 'failed', delivered_with_issues: true } as any),
+      deliveryStatusLabel({ status: 'delivered', delivered_with_issues: true } as any),
+      deliveryStatusLabel({ status: 'delivered', task_code: 'ALL', skipped_languages: ['IT'] } as any),
+    ]
+  })
+
+  expect(labels).toEqual(['带问题可交付', '带问题已交付', '部分交付'])
+})
+
+test('failed translation QA exposes the correct repair path for row and structural issues', async ({ page }) => {
+  await page.goto(baseURL)
+  const modes = await page.evaluate(async () => {
+    const { qaRepairMode } = await import('/src/components/translationWizard/steps/StepQA.tsx')
+    const failedTranslation = { kind: 'translation', status: 'failed' } as any
+    return [
+      qaRepairMode(failedTranslation, [{ sheet: 'Sheet1', row: 2, severity: 'hard' }] as any, true),
+      qaRepairMode(failedTranslation, [{ sheet: '', row: 0, severity: 'hard' }] as any, true),
+    ]
+  })
+
+  expect(modes).toEqual(['row_fix', 'rerun_translation'])
+})
+
 test('glossary candidate notes hide model metadata', async ({ page }) => {
   await page.goto(baseURL)
   const note = await page.evaluate(async () => {
@@ -213,6 +241,83 @@ test('project list refreshes after an external project is created', async ({ pag
 
   await expect(page.getByRole('button', { name: externalProjectName })).toBeVisible({ timeout: 20000 })
   await expect(page.getByRole('heading', { name: firstProjectName })).toBeVisible()
+})
+
+test('project switches keep each workflow location and scope new translation after handling activity', async ({ page, request }) => {
+  const firstName = `E2E Scope First ${Date.now()}`
+  const secondName = `E2E Scope Second ${Date.now()}`
+  const first = await request.post(`${baseURL}/api/projects`, {
+    data: { name: firstName, type: 'scope', description: 'First project scope.' },
+  }).then((response) => response.json())
+  const second = await request.post(`${baseURL}/api/projects`, {
+    data: { name: secondName, type: 'scope', description: 'Second project scope.' },
+  }).then((response) => response.json())
+  const uploadedArtifactIds = new Map<string, string>()
+  for (const [projectId, name] of [[first.id, 'first-scope.xlsx'], [second.id, 'second-scope.xlsx']]) {
+    const artifact = await request.post(`${baseURL}/api/projects/${projectId}/files?kind=language_table`, {
+      multipart: {
+        file: {
+          name,
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          buffer: fs.readFileSync(sourceWorkbook),
+        },
+      },
+    }).then((response) => response.json())
+    uploadedArtifactIds.set(projectId, artifact.id)
+  }
+  const failedWorkbookRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-project-scope-'))
+  const failedWorkbook = path.join(failedWorkbookRoot, 'first-failed-qa.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "cn", "en"])
+ws.append([1, "领取奖励", "Forbidden Brand Reward"])
+wb.save(sys.argv[1])
+wb.close()
+`, failedWorkbook])
+  await request.patch(`${baseURL}/api/projects/${first.id}/harness`, {
+    data: { forbidden_translations: ['Forbidden Brand'] },
+  })
+  const failedArtifact = await request.post(`${baseURL}/api/projects/${first.id}/files?kind=final_workbook`, {
+    multipart: {
+      file: {
+        name: fileName(failedWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(failedWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const failedRun = await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: first.id, kind: 'qa', language: 'en', input_artifact_id: failedArtifact.id },
+  }).then((response) => response.json())
+  const qaResponse = await request.post(`${baseURL}/api/runs/${failedRun.id}/qa`)
+  expect(qaResponse.ok()).toBeTruthy()
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: firstName }).click()
+  await expect(page.locator('.project-activity-panel')).toBeVisible()
+  await page.locator('.project-activity-panel').getByRole('button', { name: '去处理' }).click()
+  await expect(page.locator('.view-tab.active')).toContainText('校对')
+
+  await page.getByRole('button', { name: secondName }).click()
+  await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+  await selectWizardStep(page, 4)
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('判定输入')
+  const sourceSelect = page.locator('.step-panel.active label.asset-select select')
+  await expect(sourceSelect).toHaveValue(uploadedArtifactIds.get(second.id)!)
+  await expect(sourceSelect.locator('option:checked')).toContainText('second-scope')
+  await expect(sourceSelect.locator('option:checked')).not.toContainText('first-scope')
+
+  await page.getByRole('button', { name: firstName }).click()
+  await expect(page.locator('.view-tab.active')).toContainText('校对')
+
+  await page.getByRole('button', { name: secondName }).click()
+  await expect(page.getByRole('heading', { name: '新翻译任务', exact: true })).toBeVisible()
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('判定输入')
+  await expect(sourceSelect).toHaveValue(uploadedArtifactIds.get(second.id)!)
 })
 
 test('deleting the active project refreshes the list and lands on a surviving project', async ({ page, request }) => {
@@ -500,6 +605,172 @@ test('new translation task exposes the full supported language set', async ({ pa
   await expect(jpButton).toHaveClass(/current/)
 })
 
+test('language table headers auto-select targets and start one multilingual queue', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: {
+      provider: 'test-fake',
+      protocol: 'chat-completions',
+      api_key: '',
+      model: 'test-fake-localization',
+      batch_size: 24,
+    },
+  })
+  const projectName = `E2E Header Languages ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Header language auto-selection.' },
+  }).then((response) => response.json())
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-header-languages-'))
+  const workbook = path.join(root, 'header-languages.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Sheet1"
+ws.append(["ID", "CN", "EN", "IDN", "DE", "FR", "ES", "PT", "RU", "IT", "TR", "TH"])
+ws.append([1, "领取奖励", "", "", "", "", "", "", "", "", "", ""])
+wb.save(sys.argv[1])
+wb.close()
+`, workbook])
+  const artifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(workbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(workbook),
+      },
+    },
+  }).then((response) => response.json())
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+  await selectWizardStep(page, 6)
+  await expect(page.locator('.step-panel.active .lang-chip.selected')).toHaveCount(10)
+
+  const expectedLanguages = ['en', 'fr', 'de', 'ru', 'it', 'es', 'pt', 'tr', 'idn', 'th']
+  let queuePayload: Record<string, unknown> | null = null
+  await page.route(`**/api/projects/${project.id}/multilingual/translate/start`, async (route) => {
+    queuePayload = route.request().postDataJSON()
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        project_id: project.id,
+        input_artifact_id: artifact.id,
+        overall_status: 'pending',
+        active_job_id: null,
+        languages: expectedLanguages.map((language) => ({ language, visible_language: language.toUpperCase(), run_id: null, translation_run_id: null, qa_run_id: null, status: 'pending', step: 'pending', can_continue: false, error: '', progress: {}, quality_summary: {}, large_text: {} })),
+        created_run_ids: [],
+        queue_started: true,
+      }),
+    })
+  })
+  await selectWizardStep(page, 7)
+  await page.getByTestId('multilingual-translate').click()
+
+  expect(queuePayload).toMatchObject({ input_artifact_id: artifact.id, languages: expectedLanguages })
+})
+
+
+test('multilingual workflow separates structural reruns from deliverable QA issues', async ({ page }) => {
+  await page.goto(baseURL)
+  const result = await page.evaluate(async () => {
+    const { multilingualWorkflowItems, shouldAutoAdvanceTranslationRun } = await import('/src/domain/translationFlow.ts')
+    const sourceId = 'art_source'
+    const makeRun = (id: string, language: string, status: string, metadata: Record<string, unknown>) => ({
+      id,
+      project_id: 'proj_multi',
+      kind: 'translation',
+      language,
+      status,
+      created_at: `2026-07-13T00:00:0${id.length}+00:00`,
+      updated_at: `2026-07-13T00:00:0${id.length}+00:00`,
+      metadata: { input_artifact_id: sourceId, task_origin: 'translation_run', ...metadata },
+    })
+    const runs = [
+      makeRun('run_en', 'en', 'passed', { quality_summary: { passed: true, hard_errors: 0 } }),
+      makeRun('run_it', 'it', 'failed', { quality: { rows_scanned: 0, issue_counts: { workbook_scan_empty: 1 } }, quality_summary: { passed: false, hard_errors: 2 } }),
+      makeRun('run_fr', 'fr', 'failed', { quality: { rows_scanned: 2, issue_counts: { placeholder_mismatch: 1 } }, quality_summary: { passed: false, hard_errors: 1 } }),
+    ] as any[]
+    const project = {
+      id: 'proj_multi',
+      runs,
+      artifacts: runs.map((run) => ({ id: `art_${run.language}`, project_id: 'proj_multi', run_id: run.id, kind: 'qa_final_workbook', exists: true })),
+    } as any
+    return {
+      states: multilingualWorkflowItems(project, ['en', 'it', 'fr'], sourceId).map((item: any) => [item.code, item.state, item.recovery]),
+      singleAutoAdvance: shouldAutoAdvanceTranslationRun(runs[0]),
+      multiAutoAdvance: shouldAutoAdvanceTranslationRun({ ...runs[0], metadata: { ...runs[0].metadata, multilingual_queue: true } }),
+    }
+  })
+
+  expect(result.states).toEqual([
+    ['en', 'ready', 'none'],
+    ['it', 'blocked', 'translation'],
+    ['fr', 'issues', 'none'],
+  ])
+  expect(result.singleAutoAdvance).toBe(true)
+  expect(result.multiAutoAdvance).toBe(false)
+})
+
+
+test('multilingual task stays in one flow through translation, QA overview, and merged delivery', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: {
+      provider: 'test-fake',
+      protocol: 'chat-completions',
+      api_key: '',
+      model: 'test-fake-localization',
+      batch_size: 24,
+    },
+  })
+  const projectName = `E2E Multilingual Closed Loop ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Multilingual closed-loop regression.' },
+  }).then((response) => response.json())
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-multilingual-loop-'))
+  const workbook = path.join(root, 'multilingual-loop.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Sheet1"
+ws.append(["ID", "CN", "EN", "FR", "IT"])
+ws.append([1, "领取奖励", "", "", ""])
+ws.append([2, "开始游戏", "", "", ""])
+wb.save(sys.argv[1])
+wb.close()
+`, workbook])
+  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(workbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(workbook),
+      },
+    },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+  await selectWizardStep(page, 7)
+  await expect(page.locator('[data-testid^="multilingual-language-"]')).toHaveCount(3)
+  await page.getByTestId('multilingual-translate').click()
+
+  await expect(page.locator('[data-testid^="multilingual-language-"][data-state="ready"]')).toHaveCount(3, { timeout: 120000 })
+  await expect(page.getByRole('heading', { name: 'AI 翻译', exact: true })).toBeVisible()
+  await page.locator('.translation-actions').getByRole('button', { name: '进入 QA', exact: true }).click()
+
+  await expect(page.getByTestId('multilingual-qa-actions')).toContainText('当前可合并 3 种')
+  await page.getByTestId('multilingual-go-delivery').click()
+  await expect(page.getByTestId('multilingual-delivery-results').locator(':scope > div')).toHaveCount(3, { timeout: 30000 })
+  await expect(page.locator('.workflow-file-link')).toHaveCount(2)
+  await expect(page.getByTestId('wizard-generate-delivery')).toHaveCount(0)
+})
+
 
 
 test('delivery empty state routes to next actions', async ({ page, request }) => {
@@ -547,12 +818,19 @@ test('wizard does not claim delivery generated before files are downloadable', a
       ...placeholder,
       files: { final: { kind: 'final', filename: 'final.xlsx', download_url: '/api/final.xlsx' } }
     } as any
+    const merged = {
+      run_id: 'art_merged',
+      task_code: 'ALL',
+      input_artifact_id: 'art_source',
+      files: { final: { kind: 'merged_final', filename: 'all.xlsx', download_url: '/api/all.xlsx' } },
+    } as any
     return [
       wizardDeliveryFiles(project, run, [placeholder]).length,
-      wizardDeliveryFiles(project, run, [ready]).length
+      wizardDeliveryFiles(project, run, [ready]).length,
+      wizardDeliveryFiles(project, run, [merged], undefined, [], true, 'art_source').length,
     ]
   })
-  expect(counts).toEqual([0, 1])
+  expect(counts).toEqual([0, 1, 1])
 })
 
 test('new project modal shows API failure instead of silently staying stuck', async ({ page }) => {
@@ -1413,6 +1691,75 @@ test('active jobs badge stays hidden when no task is running', async ({ page }) 
   await page.goto(baseURL)
   await expect(page.getByRole('heading', { name: '本地化工作台' })).toBeVisible()
   await expect(page.getByTestId('active-jobs-badge')).toHaveCount(0)
+})
+
+test('failed project task opens its processing tab instead of leaving the activity panel in place', async ({ page, request }) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-failed-activity-'))
+  const workbook = path.join(root, 'failed-activity.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "cn", "en"])
+ws.append([1, "领取奖励", "Forbidden Brand Reward"])
+wb.save(sys.argv[1])
+wb.close()
+`, workbook])
+  const projectName = `E2E Failed Activity ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'QA', description: 'Failed activity routing.' },
+  }).then((response) => response.json())
+  await request.patch(`${baseURL}/api/projects/${project.id}/harness`, {
+    data: { forbidden_translations: ['Forbidden Brand'] },
+  })
+  const artifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=final_workbook`, {
+    multipart: {
+      file: {
+        name: fileName(workbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(workbook),
+      },
+    },
+  }).then((response) => response.json())
+  const run = await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'qa', language: 'en', input_artifact_id: artifact.id },
+  }).then((response) => response.json())
+  const qa = await request.post(`${baseURL}/api/runs/${run.id}/qa`)
+  expect(qa.ok()).toBeTruthy()
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await expect(page.locator('.project-activity-panel')).toBeVisible()
+  await page.locator('.project-activity-panel').getByRole('button', { name: '去处理' }).click()
+
+  await expect(page.locator('.project-activity-panel')).toHaveCount(0)
+  await expect(page.locator('.view-tab.active')).toContainText('校对')
+  await expect(page.getByTestId('qa-outcome-panel')).toContainText('QA 未通过')
+  await expect(page.getByRole('button', { name: /修复并重跑/ })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '手动修复' })).toBeEnabled()
+
+  const deliveryResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().includes(`/api/projects/${project.id}/delivery-package?run_id=`))
+  await page.getByTestId('qa-go-delivery').click()
+  expect((await deliveryResponse).ok()).toBeTruthy()
+  await expect(page.locator('.delivery-card a')).toHaveCount(3)
+})
+
+test('cleared terminal tasks do not remain in the project activity list', async ({ page }) => {
+  await page.goto(baseURL)
+  const visibleRunIds = await page.evaluate(async () => {
+    const { projectActivityRuns } = await import('/src/domain/projectActivity.ts')
+    return projectActivityRuns({
+      id: 'project-cleared',
+      runs: [
+        { id: 'failed-visible', kind: 'qa', status: 'failed', metadata: {} },
+        { id: 'failed-cleared', kind: 'qa', status: 'failed', metadata: { activity_dismissed_at: '2026-07-13T00:00:00Z' } },
+      ],
+    } as any).map((run: any) => run.id)
+  })
+
+  expect(visibleRunIds).toEqual(['failed-visible'])
 })
 
 test('active jobs badge and panel show the running project name and task type', async ({ page, request }) => {

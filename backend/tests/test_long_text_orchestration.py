@@ -7,7 +7,7 @@ import tempfile
 import time
 from pathlib import Path
 
-os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
+os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
 
 import pytest
 from fastapi.testclient import TestClient

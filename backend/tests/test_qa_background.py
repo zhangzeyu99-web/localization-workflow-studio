@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
+os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
 
 import pytest
 from fastapi.testclient import TestClient
@@ -97,6 +97,38 @@ def test_qa_background_start_finishes_with_failed_status(tmp_path: Path) -> None
         run_artifacts = [a for a in client.get(f"/api/projects/{project['id']}").json()["artifacts"] if a.get("run_id") == run["id"]]
         kinds = kinds | {item["kind"] for item in run_artifacts}
         assert "qa_final_workbook" in kinds
+
+
+def test_legacy_failed_qa_result_remains_deliverable(tmp_path: Path) -> None:
+    workbook = tmp_path / "legacy-failed.xlsx"
+    _failing_workbook(workbook)
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Legacy QA Result", "type": "QA"}).json()
+        source = _upload_final_workbook(client, project["id"], workbook)
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": source["id"]},
+        ).json()
+        db.add_artifact(
+            project["id"],
+            "Legacy QA reviewed workbook",
+            workbook,
+            "qa_result",
+            run_id=run["id"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        db.update_run(
+            run["id"],
+            status="failed",
+            metadata={"input_artifact_id": source["id"], "quality_summary": {"passed": False, "hard_errors": 1}},
+        )
+
+        deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
+
+        assert len(deliverables) == 1
+        assert deliverables[0]["run_id"] == run["id"]
+        assert deliverables[0]["delivered_with_issues"] is True
+        assert client.get(f"/api/projects/{project['id']}").json()["stats"]["deliverables"] == 1
 
 
 def test_qa_background_start_passes_clean_workbook(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
+os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
 
 import app.db as db
 from app.config import DEFAULT_SETTINGS, save_settings

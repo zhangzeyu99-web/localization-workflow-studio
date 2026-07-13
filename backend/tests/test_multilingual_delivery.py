@@ -5,7 +5,7 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ["LWS_DATA_ROOT"] = str(Path(tempfile.gettempdir()) / "lws-test-data")
+os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
 
 import pytest
 from fastapi.testclient import TestClient
@@ -171,6 +171,76 @@ def test_merged_delivery_writes_readback_gate_artifact(tmp_path: Path) -> None:
     with open(gate_artifact["path"], encoding="utf-8") as handle:
         gate_result = json.load(handle)
     assert gate_result["readback_verified"] is True
+
+
+def test_merged_delivery_generates_completed_languages_and_reports_skipped_ones(tmp_path: Path) -> None:
+    project = db.insert_project("partial merged delivery", "QA", "")
+    source_path = tmp_path / "source.xlsx"
+    _write_source(source_path)
+    source = db.add_artifact(project["id"], "source", source_path, "language_table")
+    _add_passed_final(project["id"], source["id"], "en", tmp_path / "en.xlsx", "EN", ["Start Game", "Claim Rewards"])
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project['id']}/delivery-package/merged",
+            json={"input_artifact_id": source["id"], "languages": ["en", "ko"]},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["merged_languages"] == ["EN"]
+    assert payload["skipped_languages"] == ["KR"]
+    assert {item["kind"] for item in payload["files"]} == {"merged_final", "qa_summary"}
+
+
+def test_merged_delivery_skips_structurally_invalid_language_without_blocking_valid_ones(tmp_path: Path) -> None:
+    project = db.insert_project("partial invalid merged delivery", "QA", "")
+    source_path = tmp_path / "source.xlsx"
+    _write_source(source_path)
+    source = db.add_artifact(project["id"], "source", source_path, "language_table")
+    _add_passed_final(project["id"], source["id"], "en", tmp_path / "en.xlsx", "EN", ["Start Game", "Claim Rewards"])
+    _add_passed_final(project["id"], source["id"], "ko", tmp_path / "kr.xlsx", "KR", ["게임 시작", ""])
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project['id']}/delivery-package/merged",
+            json={"input_artifact_id": source["id"], "languages": ["en", "ko"]},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["merged_languages"] == ["EN"]
+    assert payload["skipped_languages"] == ["KR"]
+    assert payload["language_results"][0]["status"] == "merged"
+    assert payload["language_results"][1]["status"] == "skipped"
+    assert "结构门禁未通过" in payload["language_results"][1]["reason"]
+    with TestClient(app) as client:
+        deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
+    merged_task = next(item for item in deliverables if item["task_code"] == "ALL")
+    assert merged_task["input_artifact_id"] == source["id"]
+    assert merged_task["merged_languages"] == ["EN"]
+    assert merged_task["skipped_languages"] == ["KR"]
+    assert merged_task["language_results"][1]["status"] == "skipped"
+    assert merged_task["delivered_with_issues"] is True
+
+
+def test_merged_delivery_reports_language_when_every_result_is_structurally_invalid(tmp_path: Path) -> None:
+    project = db.insert_project("invalid merged delivery", "QA", "")
+    source_path = tmp_path / "source.xlsx"
+    _write_source(source_path)
+    source = db.add_artifact(project["id"], "source", source_path, "language_table")
+    _add_passed_final(project["id"], source["id"], "ko", tmp_path / "kr.xlsx", "KR", ["게임 시작", ""])
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project['id']}/delivery-package/merged",
+            json={"input_artifact_id": source["id"], "languages": ["ko"]},
+        )
+
+    assert response.status_code == 409
+    assert "KR" in response.json()["detail"]
+    assert "结构门禁未通过" in response.json()["detail"]
+    assert not [item for item in db.list_artifacts(project_id=project["id"]) if item["kind"] == "merged_delivery_workbook"]
 
 
 def test_merged_delivery_rejects_cross_project_source(tmp_path: Path) -> None:
