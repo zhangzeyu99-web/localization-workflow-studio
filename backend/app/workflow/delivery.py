@@ -20,6 +20,7 @@ from .common import project_dir
 from .large_text import readback_gate_files, render_large_text_retro
 from .qa import _first_col, _row_cell, write_qa_changes_report
 from .subprocess_runner import user_facing_error
+from .translation_tasks import mark_translation_task_state
 
 DELIVERED_WITH_ISSUES_SOURCE_TYPE = "delivered_with_issues"
 
@@ -149,6 +150,7 @@ def _merged_deliverable_summaries(project: dict[str, Any]) -> list[dict[str, Any
             metadata.get("language_results") if isinstance(metadata.get("language_results"), list) else []
         )
         summary["input_artifact_id"] = str(metadata.get("input_artifact_id") or "")
+        summary["translation_task_id"] = str(metadata.get("translation_task_id") or "")
         summaries.append(summary)
     return summaries
 
@@ -295,10 +297,18 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     if not qa_passed:
         summary["files"]["qa_summary"] = _delivery_file("qa_summary", qa_summary_path)
     archive_result = _archive_delivery_translation(project_id, run, final_source)
+    translation_task_id = str((run.get("metadata") or {}).get("translation_task_id") or "")
+    if translation_task_id:
+        mark_translation_task_state(project_id, translation_task_id, "delivered")
     return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values()), "archive": archive_result}
 
 
-def build_merged_delivery_package(project_id: str, input_artifact_id: str, languages: list[str]) -> dict[str, Any]:
+def build_merged_delivery_package(
+    project_id: str,
+    input_artifact_id: str,
+    languages: list[str],
+    translation_task_id: str | None = None,
+) -> dict[str, Any]:
     project = db.get_project(project_id)
     source_artifact = db.get_artifact(input_artifact_id)
     if source_artifact.get("project_id") != project_id:
@@ -312,13 +322,16 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
     output_dir = project_dir(project_id) / "delivery"
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d%H%M")
-    output_path = output_dir / f"{_safe_delivery_name(project['name'])}_ALL_{timestamp}_final.xlsx"
+    delivery_nonce = _safe_delivery_name(db.new_id("delivery")[-12:])
+    task_suffix = _safe_delivery_name(translation_task_id[-12:]) if translation_task_id else ""
+    delivery_suffix = f"{task_suffix}_{delivery_nonce}" if task_suffix else delivery_nonce
+    output_path = output_dir / f"{_safe_delivery_name(project['name'])}_ALL_{timestamp}_{delivery_suffix}_final.xlsx"
     shutil.copy2(source_path, output_path)
 
     merged: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for language in selected_languages:
-        run = _find_merge_source_run(project_id, input_artifact_id, language)
+        run = _find_merge_source_run(project_id, input_artifact_id, language, translation_task_id)
         if not run:
             skipped.append({"language": _visible_language_code(language), "reason": "未找到可交付的翻译/QA 结果"})
             continue
@@ -342,6 +355,7 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
             if copied <= 0:
                 skipped.append({"language": _visible_language_code(language), "run_id": run["id"], "reason": "没有可合并的译文列"})
                 continue
+            _normalize_delivery_workbook_headers(output_path, language)
             quality = run.get("metadata", {}).get("quality_summary") or {}
             merged.append(
                 {
@@ -359,7 +373,6 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
         details = "；".join(f"{item['language']}：{item['reason']}" for item in skipped[:4])
         suffix = f"（{details}）" if details else ""
         raise ValueError(f"没有可合并的已完成语言，请先完成翻译或 QA{suffix}")
-
     language_results = [
         {
             "language": item["language"],
@@ -400,6 +413,7 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
             "merged_languages": [item["language"] for item in merged],
             "skipped_languages": [item["language"] for item in skipped],
             "language_results": language_results,
+            "translation_task_id": translation_task_id,
         },
     )
     final_artifact = db.add_artifact(
@@ -421,12 +435,19 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
             "qa_hard_errors": sum(int(item.get("hard_errors") or 0) for item in merged),
             "readback_gate_artifact_id": readback_artifact["id"],
             "readback_gate": {"status": "passed", "hard_blockers": 0},
+            "translation_task_id": translation_task_id,
         },
     )
+    if translation_task_id:
+        mark_translation_task_state(project_id, translation_task_id, "delivered")
     files = [
         _artifact_delivery_file("merged_final", final_artifact),
         _artifact_delivery_file("qa_summary", summary_artifact),
     ]
+    deliverable = next(
+        (item for item in _merged_deliverable_summaries(project) if item.get("run_id") == final_artifact["id"]),
+        {},
+    )
     return {
         "project_id": project_id,
         "project_name": project["name"],
@@ -434,7 +455,7 @@ def build_merged_delivery_package(project_id: str, input_artifact_id: str, langu
         "skipped_languages": [item["language"] for item in skipped],
         "language_results": language_results,
         "files": files,
-        "deliverable": _merged_deliverable_summaries(project)[0] if _merged_deliverable_summaries(project) else {},
+        "deliverable": deliverable,
     }
 
 
@@ -623,17 +644,23 @@ def _normalize_delivery_workbook_headers(path: Path, language: Any) -> None:
     code = require_supported_language(language or "en")
     target = _visible_language_code(code)
     aliases = {alias.strip().lower() for alias in target_aliases(code)}
-    if not aliases:
-        return
+    legacy_en_alt_aliases = {"en2", "en 2", "english2", "英语2", "英文2"}
     wb = load_workbook(path)
     changed = False
     try:
         for ws in wb.worksheets:
+            delete_columns: list[int] = []
             for cell in ws[1]:
                 value = str(cell.value or "").strip()
-                if value and value.lower() in aliases and value != target:
+                normalized = value.lower()
+                if normalized in legacy_en_alt_aliases:
+                    delete_columns.append(int(cell.column))
+                elif value and normalized in aliases and value != target:
                     cell.value = target
                     changed = True
+            for column in sorted(delete_columns, reverse=True):
+                ws.delete_cols(column)
+                changed = True
         if changed:
             wb.save(path)
     finally:
@@ -889,7 +916,12 @@ def _normalize_delivery_languages(languages: list[str]) -> list[str]:
     return normalized
 
 
-def _find_merge_source_run(project_id: str, input_artifact_id: str, language: str) -> dict[str, Any] | None:
+def _find_merge_source_run(
+    project_id: str,
+    input_artifact_id: str,
+    language: str,
+    translation_task_id: str | None = None,
+) -> dict[str, Any] | None:
     accepted_status = {"passed", "failed", "needs_input"}
     for run in db.list_runs(project_id):
         if run.get("kind") not in {"qa", "translation"}:
@@ -899,6 +931,8 @@ def _find_merge_source_run(project_id: str, input_artifact_id: str, language: st
         if run.get("status") not in accepted_status:
             continue
         metadata = run.get("metadata") or {}
+        if translation_task_id and str(metadata.get("translation_task_id") or "") != translation_task_id:
+            continue
         candidates = {
             str(metadata.get("input_artifact_id") or ""),
             str(metadata.get("parent_input_artifact_id") or ""),

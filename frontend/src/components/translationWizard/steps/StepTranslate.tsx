@@ -33,6 +33,7 @@ function LargeTextPanel({ run, readiness, selectedLanguageCount }: { run?: Run |
 
 export function StepTranslate({
   project,
+  translationTaskId,
   settings,
   status,
   onTranslate,
@@ -55,6 +56,7 @@ export function StepTranslate({
   setLineProofread
 }: {
   project: Project
+  translationTaskId: string
   settings: AppSettings | null
   status: string
   onTranslate: () => void
@@ -85,8 +87,8 @@ export function StepTranslate({
   const currentLanguageAlreadyTranslated = canSkipModelTranslation(readiness)
   const alreadyTranslated = currentLanguageAlreadyTranslated && !multiLanguageMode
   const estimatedBatches = estimateBatches(readiness?.source_rows, batchSize)
-  const latestMatchingRun = latestRun && matchesTranslationRun(latestRun, selectedLanguage, sourceArtifact?.id, 'translation_run') ? latestRun : null
-  const currentTranslationRun = latestMatchingRun || findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run')
+  const latestMatchingRun = latestRun && matchesTranslationRun(latestRun, selectedLanguage, sourceArtifact?.id, 'translation_run', translationTaskId) ? latestRun : null
+  const currentTranslationRun = latestMatchingRun || findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run', translationTaskId)
   const progress = getTranslationProgress(currentTranslationRun)
   const termAudit = (progress?.term_audit || currentTranslationRun?.metadata?.term_audit) as TranslationProgress['term_audit'] | undefined
   const termAuditWarning = currentTranslationRun?.metadata?.reason === 'glossary_candidates_not_confirmed'
@@ -96,7 +98,7 @@ export function StepTranslate({
     : termAudit?.warning === 'no_term_hits'
       ? '本次 workpack 没有命中术语；如果你已提供术语表，请检查术语是否已加入项目术语库或作为本次术语表输入。'
       : ''
-  const languageProgressItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id)
+  const languageProgressItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id, translationTaskId)
   const multilingualActive = multiLanguageMode && languageProgressItems.some((item) => item.state === 'running')
   const multilingualHasResults = multiLanguageMode && languageProgressItems.every((item) => item.state === 'ready' || item.state === 'issues')
   const multilingualStarted = multiLanguageMode && languageProgressItems.some((item) => item.run)
@@ -166,10 +168,11 @@ export function StepTranslate({
       }
     >
       {selectedLanguages.length > 1 ? (
-        <MultilingualWorkflowBoard
-          project={project}
-          languages={selectedLanguages}
-          inputArtifactId={sourceArtifact?.id}
+          <MultilingualWorkflowBoard
+            project={project}
+            languages={selectedLanguages}
+            inputArtifactId={sourceArtifact?.id}
+            translationTaskId={translationTaskId}
           selectedLanguage={selectedLanguage}
           onSelectLanguage={setSelectedLanguage}
         />

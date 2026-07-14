@@ -34,6 +34,7 @@ export function qaRepairMode(
 
 export function StepQA({
   project,
+  translationTaskId = '',
   latestRun,
   sourceArtifact,
   translationReadiness,
@@ -60,6 +61,7 @@ export function StepQA({
   confirm
 }: {
   project: Project
+  translationTaskId?: string
   latestRun: Run | null
   sourceArtifact: Artifact | null
   translationReadiness: TranslationReadiness | null
@@ -86,8 +88,8 @@ export function StepQA({
   showHistory?: boolean
   confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
-  const latestQaRun = findVisibleQaRun(project, selectedLanguage, sourceArtifact?.id)
-  const previousTranslationRun = findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run')
+  const latestQaRun = findVisibleQaRun(project, selectedLanguage, sourceArtifact?.id, translationTaskId)
+  const previousTranslationRun = findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run', translationTaskId)
   const previousTranslationArtifact = previousTranslationRun
     ? newestArtifact(runArtifacts(project, previousTranslationRun.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
     : null
@@ -134,7 +136,7 @@ export function StepQA({
   const pendingIssueCount = qaPendingIssueCount(qaStatusRun, qaIssues)
   const qaOutcome = qaOutcomePresentation(qaStatusRun, pendingIssueCount, Boolean(qaFinalDownload))
   const multiLanguageMode = selectedLanguages.length > 1
-  const workflowItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id)
+  const workflowItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id, translationTaskId)
   const translationRetryCount = workflowItems.filter((item) => (item.state === 'pending' || item.state === 'blocked') && item.recovery === 'translation').length
   const qaRetryCount = workflowItems.filter((item) => item.state === 'blocked' && item.recovery === 'qa').length
   const activeLanguageCount = workflowItems.filter((item) => item.state === 'running').length
@@ -152,7 +154,7 @@ export function StepQA({
   }
   const selectLanguageResult = (language: LanguageCode) => {
     setSelectedLanguage(language)
-    const run = findVisibleTranslationRun(project, language, sourceArtifact?.id, 'translation_run')
+    const run = findVisibleTranslationRun(project, language, sourceArtifact?.id, 'translation_run', translationTaskId)
     const artifact = run ? newestArtifact(runArtifacts(project, run.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook']) : null
     if (artifact) setQaArtifact(artifact)
   }
@@ -172,6 +174,7 @@ export function StepQA({
             project={project}
             languages={selectedLanguages}
             inputArtifactId={sourceArtifact?.id}
+            translationTaskId={translationTaskId}
             selectedLanguage={selectedLanguage}
             onSelectLanguage={selectLanguageResult}
           />

@@ -25,7 +25,7 @@ _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD = 1000
 _LANGUAGE_TABLE_SOURCE_ALIASES = [alias for alias in SOURCE_HEADER_ALIASES if alias not in {"term", "术语"}]
 COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE = "这个文件看起来是完整语言表，不是项目术语表。请到「生成术语」或翻译流程 STEP5 做高频词扫描并生成术语候选，候选确认后才会进入项目术语库。"
 COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE = "这个文件看起来是完整语言表，请上传到 STEP4「语言表」。它不会作为项目资料参与术语提取。"
-INVALID_GLOSSARY_TEMPLATE_MESSAGE = "术语表格式有误，请重新上传。请先下载导入模板，按模板列填写：ID、CN、EN/EN2 或 KR/JP、分类、备注。"
+INVALID_GLOSSARY_TEMPLATE_MESSAGE = "术语表格式有误，请重新上传。请先下载导入模板，按模板列填写：ID、CN、EN 或 KR/JP、分类、备注。"
 
 def is_complete_language_table_for_glossary_import(path: Path, sheet: str | None = None, row_threshold: int = _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD) -> bool:
     if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
@@ -160,8 +160,8 @@ def export_glossary(project_id: str, fmt: str, language: str | None = None) -> d
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = _export_language_suffix(language)
     if language:
-        columns = ["ID", "CN", _visible_language_code(language), *(["EN2"] if language == "en" else []), "分类", "备注"]
-        rows = [_glossary_export_row(term, include_alt=language == "en") for term in terms]
+        columns = ["ID", "CN", _visible_language_code(language), "分类", "备注"]
+        rows = [_glossary_export_row(term, include_alt=False) for term in terms]
     else:
         wide = list_glossary_wide(project_id)
         languages = list(wide.get("languages") or [])
@@ -207,12 +207,7 @@ def _glossary_export_row(term: dict[str, Any], *, include_alt: bool = True) -> l
 
 
 def _wide_language_columns(languages: list[str]) -> list[str]:
-    columns: list[str] = []
-    for code in languages:
-        columns.append(_visible_language_code(code))
-        if code == "en":
-            columns.append("EN2")
-    return columns
+    return [_visible_language_code(code) for code in languages]
 
 
 def _glossary_wide_export_rows(wide: dict[str, Any], languages: list[str]) -> list[list[Any]]:
@@ -223,8 +218,6 @@ def _glossary_wide_export_rows(wide: dict[str, Any], languages: list[str]) -> li
         for code in languages:
             entry = translations.get(code) or {}
             values.append(entry.get("target", ""))
-            if code == "en":
-                values.append(entry.get("target_alt", ""))
         values.extend([row.get("category", ""), row.get("note", "")])
         rows.append(values)
     return rows
@@ -302,8 +295,8 @@ def export_translation_archive(project_id: str, fmt: str, language: str | None =
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = _export_language_suffix(language)
     if language:
-        columns = ["ID", "CN", _visible_language_code(language), *(["EN2"] if language == "en" else []), "备注"]
-        rows = [_translation_export_row(entry, include_alt=language == "en") for entry in entries]
+        columns = ["ID", "CN", _visible_language_code(language), "备注"]
+        rows = [_translation_export_row(entry, include_alt=False) for entry in entries]
     else:
         wide = list_translation_archive_wide(project_id)
         languages = list(wide.get("languages") or [])
@@ -653,8 +646,6 @@ def _translation_wide_export_rows(wide: dict[str, Any], languages: list[str]) ->
         for code in languages:
             entry = translations.get(code) or {}
             values.append(entry.get("target", ""))
-            if code == "en":
-                values.append(entry.get("target_alt", ""))
         values.append(row.get("note", ""))
         rows.append(values)
     return rows

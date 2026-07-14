@@ -1,5 +1,5 @@
 import { runArtifacts } from '../domain/artifacts'
-import { latestProjectActivityRun, projectRunStatusText } from '../domain/projectActivity'
+import { projectActivityRuns, projectRunStatusText } from '../domain/projectActivity'
 import { getTranslationProgress } from '../domain/translationFlow'
 import type { Project, Run } from '../types'
 import { usePolling } from './usePolling'
@@ -22,13 +22,14 @@ export function useProjectSnapshotPolling(
   setLatestRun: (run: Run | null) => void,
   setBusy: (value: boolean) => void,
   setStatus: (message: string) => void,
-  pause: boolean
+  pause: boolean,
+  acceptRun: (run: Run) => boolean = () => true,
 ) {
   usePolling(async (isStale, signal) => {
     const loaded = await refreshProjectSnapshot(currentIdRef.current, signal)
     if (isStale()) return
-    const activeRun = latestProjectActivityRun(loaded || undefined)
-    if (!activeRun || !isCurrentProject(activeRun.project_id)) return
+    const activeRun = projectActivityRuns(loaded || undefined).find(acceptRun) || null
+    if (!activeRun || !isCurrentProject(activeRun.project_id) || !acceptRun(activeRun)) return
     const progress = getTranslationProgress(activeRun)
     if (['queued', 'running'].includes(activeRun.status)) {
       // Track the run (this hands over to the 2s run poller) but do NOT take
@@ -43,5 +44,5 @@ export function useProjectSnapshotPolling(
       setBusy(false)
       setStatus(`后台任务已结束但未通过 QA：${projectRunStatusText(activeRun)}`)
     }
-  }, { intervalMs: 6000, enabled: Boolean(currentId) && !pause, skipWhenHidden: true }, [currentId, pause])
+  }, { intervalMs: 6000, enabled: Boolean(currentId) && !pause, skipWhenHidden: true }, [currentId, pause, acceptRun])
 }

@@ -20,6 +20,7 @@ export const steps = ['项目资料', 'AI 分析', '术语表', '判定输入', 
 
 export function Wizard(props: {
   project: Project
+  translationTaskId: string
   step: number
   setStep: (step: number) => void
   intro: string
@@ -75,6 +76,7 @@ export function Wizard(props: {
   onCreateDelivery: (runId: string) => Promise<DeliveryFile[] | null>
   onCreateMergedDelivery?: () => Promise<DeliveryFile[] | null> | void
   onFinishDelivery: () => void
+  onStartNextTask: () => void
   onFreq: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
@@ -85,21 +87,22 @@ export function Wizard(props: {
 }) {
   const { project, step, setStep } = props
   const sourceReadiness = props.sourceArtifact && props.translationReadiness?.artifact_id === props.sourceArtifact.id ? props.translationReadiness : null
-  const stepTranslationRun = props.latestRun && matchesTranslationRun(props.latestRun, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run')
+  const taskScope = { translationTaskId: props.translationTaskId, inputArtifactId: props.sourceArtifact?.id }
+  const stepTranslationRun = props.latestRun && matchesTranslationRun(props.latestRun, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run', props.translationTaskId)
     ? props.latestRun
-    : findVisibleTranslationRun(project, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run')
-  const selectedTranslationRuns = props.selectedLanguages.map((language) => findVisibleTranslationRun(project, language, props.sourceArtifact?.id, 'translation_run'))
+    : findVisibleTranslationRun(project, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run', props.translationTaskId)
+  const selectedTranslationRuns = props.selectedLanguages.map((language) => findVisibleTranslationRun(project, language, props.sourceArtifact?.id, 'translation_run', props.translationTaskId))
   const multilingualMode = props.selectedLanguages.length > 1
   const stepTranslationActive = step === 7 && (multilingualMode
     ? selectedTranslationRuns.some((run) => run && ['queued', 'running'].includes(run.status))
     : Boolean(stepTranslationRun && ['queued', 'running'].includes(stepTranslationRun.status)))
   const stepDeliveryFiles = step === 9
-    ? wizardDeliveryFiles(project, props.latestRun, props.deliverables, props.generatedDeliveryRunId, props.generatedDeliveryFiles, multilingualMode, props.sourceArtifact?.id)
+    ? wizardDeliveryFiles(project, props.latestRun, props.deliverables, props.generatedDeliveryRunId, props.generatedDeliveryFiles, multilingualMode, props.sourceArtifact?.id, props.translationTaskId)
     : []
-  const wizardDeliveryRun = findWizardDeliveryRun(project, props.latestRun)
-  const currentTranslationDeliveryRun = stepTranslationRun ? findWizardDeliveryRun(project, stepTranslationRun) : null
+  const wizardDeliveryRun = findWizardDeliveryRun(project, props.latestRun, { ...taskScope, language: props.selectedLanguage })
+  const currentTranslationDeliveryRun = stepTranslationRun ? findWizardDeliveryRun(project, stepTranslationRun, { ...taskScope, language: stepTranslationRun.language }) : null
   const multilingualCanEnterQa = multilingualMode && selectedTranslationRuns.every((run) => Boolean(
-    run && ['passed', 'failed'].includes(run.status) && findWizardDeliveryRun(project, run)?.id === run.id
+    run && ['passed', 'failed'].includes(run.status) && findWizardDeliveryRun(project, run, { ...taskScope, language: run.language })?.id === run.id
   ))
   const stepCanEnterQa = translationInputMode(sourceReadiness) === 'ready_for_qa'
     || (multilingualMode ? multilingualCanEnterQa : Boolean(stepTranslationRun && currentTranslationDeliveryRun?.id === stepTranslationRun.id))
@@ -163,14 +166,21 @@ export function Wizard(props: {
       </div>
       <div className="actions">
         <button className="btn btn-ghost btn-icon" aria-label="上一步" title="上一步" disabled={step === 1} onClick={() => setStep(step - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>
-        <button
-          className="btn btn-primary"
-          disabled={props.busy || stepTranslationActive || stepSourceMissing || (step === 5 && glossaryReview.blockAdvance) || (step === 7 && !stepCanEnterQa) || (step === 8 && !stepCanGoDelivery) || (step === 9 && !stepDeliveryReady)}
-          onClick={step === 9 ? props.onFinishDelivery : goNext}
-          title={stepSourceMissing ? '请先上传或选择待翻译语言表。' : step === 9 && !stepDeliveryReady ? '请先生成交付文件，下载入口出现后再完成。' : undefined}
-        >
-          {step === 9 ? <><Check size={16} aria-hidden="true" />返回项目</> : stepTranslationActive ? '翻译中' : <>{nextButtonLabels[step - 1]}<ChevronRight size={16} aria-hidden="true" /></>}
-        </button>
+        {step === 9 ? (
+          <>
+            <button className="btn btn-ghost" disabled={props.busy || !stepDeliveryReady} onClick={props.onFinishDelivery}><ArrowLeft size={16} aria-hidden="true" />返回项目</button>
+            <button className="btn btn-primary" data-testid="start-next-translation-task" disabled={props.busy || !stepDeliveryReady} onClick={props.onStartNextTask} title={!stepDeliveryReady ? '请先生成交付文件，下载入口出现后再开始下一项。' : undefined}><Check size={16} aria-hidden="true" />开始下一翻译任务</button>
+          </>
+        ) : (
+          <button
+            className="btn btn-primary"
+            disabled={props.busy || stepTranslationActive || stepSourceMissing || (step === 5 && glossaryReview.blockAdvance) || (step === 7 && !stepCanEnterQa) || (step === 8 && !stepCanGoDelivery)}
+            onClick={goNext}
+            title={stepSourceMissing ? '请先上传或选择待翻译语言表。' : undefined}
+          >
+            {stepTranslationActive ? '翻译中' : <>{nextButtonLabels[step - 1]}<ChevronRight size={16} aria-hidden="true" /></>}
+          </button>
+        )}
       </div>
     </>
   )

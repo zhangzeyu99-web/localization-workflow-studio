@@ -91,11 +91,13 @@ export function matchesTranslationRun(
   run: Run,
   language: string,
   inputArtifactId: string | null | undefined,
-  taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run'
+  taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run',
+  translationTaskId?: string | null,
 ): boolean {
   if (run.kind !== 'translation') return false
   if (run.language !== language) return false
   if (inputArtifactId && run.metadata?.input_artifact_id !== inputArtifactId) return false
+  if (translationTaskId && String(run.metadata?.translation_task_id || '') !== translationTaskId) return false
   if (taskOrigin === null) return true
   const origin = runTaskOrigin(run)
   if (taskOrigin === 'translation_run') return origin === 'translation_run' || origin === ''
@@ -106,27 +108,30 @@ export function matchingTranslationRuns(
   project: Project,
   language: string,
   inputArtifactId: string | null | undefined,
-  taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run'
+  taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run',
+  translationTaskId?: string | null,
 ): Run[] {
-  return (project.runs || []).filter((run) => matchesTranslationRun(run, language, inputArtifactId, taskOrigin))
+  return (project.runs || []).filter((run) => matchesTranslationRun(run, language, inputArtifactId, taskOrigin, translationTaskId))
 }
 
 export function findResumableTranslationRun(
   project: Project,
   language: string,
   inputArtifactId: string | null | undefined,
-  taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run'
+  taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run',
+  translationTaskId?: string | null,
 ): Run | null {
-  return matchingTranslationRuns(project, language, inputArtifactId, taskOrigin).find(isTranslationRunResumable) || null
+  return matchingTranslationRuns(project, language, inputArtifactId, taskOrigin, translationTaskId).find(isTranslationRunResumable) || null
 }
 
 export function findVisibleTranslationRun(
   project: Project,
   language: string,
   inputArtifactId: string | null | undefined,
-  taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run'
+  taskOrigin: 'translation_run' | 'quick_task' | null = 'translation_run',
+  translationTaskId?: string | null,
 ): Run | null {
-  const runs = matchingTranslationRuns(project, language, inputArtifactId, taskOrigin)
+  const runs = matchingTranslationRuns(project, language, inputArtifactId, taskOrigin, translationTaskId)
   // Runs are returned newest first. The visible task must follow the user's
   // latest attempt; an older stale running run must not hide a newer passed or
   // failed result.
@@ -137,9 +142,11 @@ export function findVisibleQaRun(
   project: Project,
   language: string,
   inputArtifactId: string | null | undefined,
+  translationTaskId?: string | null,
 ): Run | null {
   const runs = (project.runs || []).filter((run) => {
     if (run.kind !== 'qa' || run.language !== language) return false
+    if (translationTaskId && String(run.metadata?.translation_task_id || '') !== translationTaskId) return false
     if (!inputArtifactId) return true
     const metadata = run.metadata || {}
     const directIds = [metadata.input_artifact_id, metadata.parent_input_artifact_id, metadata.multilingual_source_artifact_id]
@@ -149,7 +156,7 @@ export function findVisibleQaRun(
       .map((value) => String(value || ''))
     return sourceRunIds.some((runId) => {
       const sourceRun = (project.runs || []).find((candidate) => candidate.id === runId)
-      return Boolean(sourceRun && matchesTranslationRun(sourceRun, language, inputArtifactId, 'translation_run'))
+      return Boolean(sourceRun && matchesTranslationRun(sourceRun, language, inputArtifactId, 'translation_run', translationTaskId))
     })
   })
   return runs[0] || null
@@ -159,9 +166,10 @@ export function findVisibleQualityRun(
   project: Project,
   language: string,
   inputArtifactId: string | null | undefined,
+  translationTaskId?: string | null,
 ): Run | null {
-  const translationRun = findVisibleTranslationRun(project, language, inputArtifactId, 'translation_run')
-  const qaRun = findVisibleQaRun(project, language, inputArtifactId)
+  const translationRun = findVisibleTranslationRun(project, language, inputArtifactId, 'translation_run', translationTaskId)
+  const qaRun = findVisibleQaRun(project, language, inputArtifactId, translationTaskId)
   if (!translationRun) return qaRun
   if (!qaRun) return translationRun
   return qaRun.created_at >= translationRun.created_at ? qaRun : translationRun
@@ -188,9 +196,10 @@ export function multilingualWorkflowItems(
   project: Project,
   languages: LanguageCode[],
   inputArtifactId: string | null | undefined,
+  translationTaskId?: string | null,
 ): MultilingualWorkflowItem[] {
   return languages.map((code) => {
-    const run = findVisibleQualityRun(project, code, inputArtifactId)
+    const run = findVisibleQualityRun(project, code, inputArtifactId, translationTaskId)
     const artifacts = run?.artifacts?.length ? run.artifacts : runArtifacts(project, run?.id)
     const hasFinalArtifact = artifacts.some((artifact) => ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook', 'final_text'].includes(artifact.kind))
     const hardErrors = Number((run?.metadata?.quality_summary as { hard_errors?: number } | undefined)?.hard_errors || 0)

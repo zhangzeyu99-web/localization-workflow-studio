@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { api } from '../apiClient'
 import { errorText } from '../appText'
 import { translationInputMode, translationReadinessUserMessage } from '../domain/translationFlow'
@@ -22,6 +22,8 @@ export interface UseGlossaryActionsParams {
   assetArtifacts: Artifact[]
   intro: string
   selectedLanguage: LanguageCode
+  translationTaskId: string
+  translationTaskIdRef: { current: string }
   isCurrentProject: (projectId?: string | null) => boolean
   setSourceArtifact: (artifact: Artifact | null) => void
   setTermArtifact: (artifact: Artifact | null) => void
@@ -38,7 +40,7 @@ export interface UseGlossaryActionsParams {
   refreshCurrent: (projectId?: string) => Promise<Project | null>
   refreshProjectSnapshot: (projectId: string) => Promise<Project | null>
   syncLanguageFromArtifact: (artifact: Artifact) => Promise<LanguageCode>
-  refreshTranslationReadiness: (artifactId: string, projectId?: string, language?: LanguageCode) => Promise<TranslationReadiness | null>
+  refreshTranslationReadiness: (artifactId: string, projectId?: string, language?: LanguageCode, autoCorrectLanguage?: boolean, taskId?: string) => Promise<TranslationReadiness | null>
 }
 
 // Glossary/term handlers moved verbatim out of main.tsx's App component.
@@ -61,6 +63,8 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     assetArtifacts,
     intro,
     selectedLanguage,
+    translationTaskId,
+    translationTaskIdRef,
     isCurrentProject,
     setSourceArtifact,
     setTermArtifact,
@@ -80,26 +84,50 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     refreshTranslationReadiness
   } = params
 
-  const refreshGlossaryBatches = useCallback(async (projectId = currentId) => {
-    if (!projectId) return
-    const loaded = await api<{ batches: GlossaryBatch[]; active_batch: GlossaryBatch | null; candidates: GlossaryCandidate[] }>(`/api/projects/${projectId}/glossary/batches?${languageQuery(selectedLanguage)}`)
-    setGlossaryBatches(loaded.batches || [])
-    setGlossaryCandidates(loaded.candidates || [])
-  }, [currentId, selectedLanguage, setGlossaryBatches, setGlossaryCandidates])
+  const sourceArtifactIdRef = useRef(sourceArtifact?.id || '')
+  sourceArtifactIdRef.current = sourceArtifact?.id || ''
+
+  const glossaryScopeStillCurrent = useCallback((projectId: string, taskId: string, sourceArtifactId?: string | null) => (
+    isCurrentProject(projectId)
+    && translationTaskIdRef.current === taskId
+    && (sourceArtifactId === undefined || sourceArtifactIdRef.current === (sourceArtifactId || ''))
+  ), [isCurrentProject, translationTaskIdRef])
+
+  const refreshGlossaryBatches = useCallback(async (
+    projectId = currentId,
+    sourceArtifactId?: string | null,
+    language: LanguageCode = selectedLanguage,
+    taskId = translationTaskId,
+  ) => {
+    if (!projectId || !glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
+    const loaded = await api<{ batches: GlossaryBatch[]; active_batch: GlossaryBatch | null; candidates: GlossaryCandidate[] }>(`/api/projects/${projectId}/glossary/batches?${languageQuery(language)}`)
+    if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
+    const batches = sourceArtifactId
+      ? (loaded.batches || []).filter((batch) => batch.source_artifact_id === sourceArtifactId)
+      : loaded.batches || []
+    const batchIds = new Set(batches.map((batch) => batch.id))
+    setGlossaryBatches(batches)
+    setGlossaryCandidates(sourceArtifactId ? (loaded.candidates || []).filter((candidate) => batchIds.has(candidate.batch_id)) : loaded.candidates || [])
+  }, [currentId, selectedLanguage, translationTaskId, glossaryScopeStillCurrent, setGlossaryBatches, setGlossaryCandidates])
 
   const runGlossaryExtract = useCallback(async (inputArtifact?: Artifact | null) => {
     const artifact = inputArtifact || sourceArtifact
     if (!current) return
+    const projectId = current.id
+    const taskId = translationTaskId
+    if (!glossaryScopeStillCurrent(projectId, taskId)) return
     if (!artifact) {
       setStatus('请先在「判定输入」步骤选择或上传语言表，再扫描术语候选。')
       return
     }
     if (!sourceArtifact || sourceArtifact.id !== artifact.id) {
+      sourceArtifactIdRef.current = artifact.id
       setSourceArtifact(artifact)
     }
     const detectedLanguage = await syncLanguageFromArtifact(artifact)
-    const readiness = await refreshTranslationReadiness(artifact.id, current.id, detectedLanguage)
-    if (!isCurrentProject(current.id)) return
+    if (!glossaryScopeStillCurrent(projectId, taskId, artifact.id)) return
+    const readiness = await refreshTranslationReadiness(artifact.id, projectId, detectedLanguage, true, taskId)
+    if (!glossaryScopeStillCurrent(projectId, taskId, artifact.id)) return
     const inputMode = translationInputMode(readiness)
     if (inputMode === 'invalid') {
       setStatus(`语言表格式需要修正：${translationReadinessUserMessage(readiness)}`)
@@ -130,7 +158,7 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
           conflicts?: number
           pending_confirmation?: number
         }
-      }>(`/api/projects/${current.id}/glossary/extract`, {
+      }>(`/api/projects/${projectId}/glossary/extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -147,45 +175,54 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
           ai_candidate_supplement: true
         })
       })
+      if (!glossaryScopeStillCurrent(projectId, taskId, artifact.id)) return
       setTermArtifact(result.artifacts.find((a) => a.kind === 'glossary_final') || null)
       setLatestRun(result.run)
-      await refreshCurrent()
-      await refreshGlossaryBatches(current.id)
+      await refreshCurrent(projectId)
+      if (!glossaryScopeStillCurrent(projectId, taskId, artifact.id)) return
+      await refreshGlossaryBatches(projectId, artifact.id, extractionLanguage, taskId)
+      if (!glossaryScopeStillCurrent(projectId, taskId, artifact.id)) return
       const backfill = result.glossary_backfill || {}
       const pendingConfirmation = backfill.pending_confirmation ?? backfill.inserted ?? 0
       setStatus(`术语候选已生成：候选 ${backfill.candidates ?? 0}，按中文去重后 ${backfill.unique_candidates ?? 0}，已在库中跳过 ${backfill.skipped_existing ?? 0}，待人工确认 ${pendingConfirmation}，重复跳过 ${backfill.skipped_duplicate ?? 0}`)
     } catch (error) {
-      setStatus(`术语提取失败：${errorText(error)}`)
+      if (glossaryScopeStillCurrent(projectId, taskId, artifact.id)) setStatus(`术语提取失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      if (glossaryScopeStillCurrent(projectId, taskId, artifact.id)) setBusy(false)
     }
-  }, [sourceArtifact, current, setStatus, setSourceArtifact, syncLanguageFromArtifact, refreshTranslationReadiness, isCurrentProject, setStep, setQaArtifact, selectedLanguage, setBusy, assetArtifacts, intro, setTermArtifact, setLatestRun, refreshCurrent, refreshGlossaryBatches])
+  }, [sourceArtifact, current, translationTaskId, glossaryScopeStillCurrent, setStatus, setSourceArtifact, syncLanguageFromArtifact, refreshTranslationReadiness, setStep, setQaArtifact, selectedLanguage, setBusy, assetArtifacts, intro, setTermArtifact, setLatestRun, refreshCurrent, refreshGlossaryBatches])
 
   const previewGlossaryImport = useCallback(async () => {
     if (!current || !termArtifact) return
+    const projectId = current.id
+    const taskId = translationTaskId
+    if (!glossaryScopeStillCurrent(projectId, taskId)) return
     setBusy(true)
     setStatus('正在预览术语表...')
     try {
-      const result = await api<{ rows: GlossaryPreviewRow[]; languages?: LanguageCode[] }>(`/api/projects/${current.id}/glossary/import-preview`, {
+      const result = await api<{ rows: GlossaryPreviewRow[]; languages?: LanguageCode[] }>(`/api/projects/${projectId}/glossary/import-preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ artifact_id: termArtifact.id, language: selectedLanguage })
       })
+      if (!glossaryScopeStillCurrent(projectId, taskId)) return
       setGlossaryPreview(result.rows)
       const languageText = result.languages?.length ? `（${result.languages.map((item) => item.toUpperCase()).join('/')}）` : ''
       setStatus(`术语表预览完成：${result.rows.length} 条${languageText}`)
     } catch (error) {
-      setStatus(`术语表预览失败：${errorText(error)}`)
+      if (glossaryScopeStillCurrent(projectId, taskId)) setStatus(`术语表预览失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      if (glossaryScopeStillCurrent(projectId, taskId)) setBusy(false)
     }
-  }, [current, termArtifact, setBusy, setStatus, selectedLanguage, setGlossaryPreview])
+  }, [current, termArtifact, translationTaskId, glossaryScopeStillCurrent, setBusy, setStatus, selectedLanguage, setGlossaryPreview])
 
   const importGlossaryArtifact = useCallback(async () => {
     if (!current || !termArtifact) return
     const projectId = current.id
     const artifactId = termArtifact.id
     const language = selectedLanguage
+    const taskId = translationTaskId
+    if (!glossaryScopeStillCurrent(projectId, taskId)) return
     setBusyForProject(projectId, true)
     setStatusForProject(projectId, '正在导入术语表...')
     try {
@@ -195,14 +232,15 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
         body: JSON.stringify({ artifact_id: artifactId, language })
       })
       await refreshProjectSnapshot(projectId)
+      if (!glossaryScopeStillCurrent(projectId, taskId)) return
       const languageText = result.languages?.length ? `（${result.languages.map((item) => languageSpec(item).short).join('/')}）` : ''
       setStatusForProject(projectId, `术语表已导入：${result.imported_count} 条${languageText}`)
     } catch (error) {
-      setStatusForProject(projectId, `术语表导入失败：${errorText(error)}`)
+      if (glossaryScopeStillCurrent(projectId, taskId)) setStatusForProject(projectId, `术语表导入失败：${errorText(error)}`)
     } finally {
-      setBusyForProject(projectId, false)
+      if (glossaryScopeStillCurrent(projectId, taskId)) setBusyForProject(projectId, false)
     }
-  }, [current, termArtifact, selectedLanguage, setBusyForProject, setStatusForProject, refreshProjectSnapshot])
+  }, [current, termArtifact, selectedLanguage, translationTaskId, glossaryScopeStillCurrent, setBusyForProject, setStatusForProject, refreshProjectSnapshot])
 
   const addGlossaryTerm = useCallback(async (form: FormData) => {
     if (!current) return
@@ -248,39 +286,54 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
 
   const updateGlossaryCandidate = useCallback(async (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => {
     if (!current) return
+    const projectId = current.id
+    const taskId = translationTaskId
+    const sourceArtifactId = sourceArtifact?.id
+    if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
     try {
-      await api(`/api/projects/${current.id}/glossary/candidates/${candidate.id}`, {
+      await api(`/api/projects/${projectId}/glossary/candidates/${candidate.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       })
-      await refreshGlossaryBatches(current.id)
+      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
+      await refreshGlossaryBatches(projectId, sourceArtifactId, selectedLanguage, taskId)
+      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
       setStatus('候选词条已保存')
     } catch (error) {
-      setStatus(`候选词条保存失败：${errorText(error)}`)
+      if (glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) setStatus(`候选词条保存失败：${errorText(error)}`)
     }
-  }, [current, refreshGlossaryBatches, setStatus])
+  }, [current, translationTaskId, sourceArtifact?.id, selectedLanguage, glossaryScopeStillCurrent, refreshGlossaryBatches, setStatus])
 
   const translateMissingGlossaryCandidates = useCallback(async (batchId: string) => {
     if (!current || !batchId) return
+    const projectId = current.id
+    const taskId = translationTaskId
+    const sourceArtifactId = sourceArtifact?.id
+    if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
     setBusy(true)
     setStatus(`正在补齐缺失 ${languageSpec(selectedLanguage).short} 译文...`)
     try {
-      const result = await api<{ translated_count: number; skipped_count: number }>(`/api/projects/${current.id}/glossary/batches/${batchId}/translate-missing`, {
+      const result = await api<{ translated_count: number; skipped_count: number }>(`/api/projects/${projectId}/glossary/batches/${batchId}/translate-missing`, {
         method: 'POST'
       })
-      await refreshGlossaryBatches(current.id)
+      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
+      await refreshGlossaryBatches(projectId, sourceArtifactId, selectedLanguage, taskId)
+      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
       setStatus(`候选译文已补齐 ${result.translated_count} 条，跳过已有译文 ${result.skipped_count} 条；请人工审核后加入术语库。`)
     } catch (error) {
-      setStatus(`候选译文补齐失败：${errorText(error)}`)
+      if (glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) setStatus(`候选译文补齐失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      if (glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) setBusy(false)
     }
-  }, [current, setBusy, setStatus, selectedLanguage, refreshGlossaryBatches])
+  }, [current, translationTaskId, sourceArtifact?.id, glossaryScopeStillCurrent, setBusy, setStatus, selectedLanguage, refreshGlossaryBatches])
 
   const resolveGlossaryCandidates = useCallback(async (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => {
     if (!current || !batchId || !candidates.length) return
     const projectId = current.id
+    const taskId = translationTaskId
+    const sourceArtifactId = sourceArtifact?.id
+    if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
     setBusy(true)
     setStatusForProject(projectId, action === 'accept' ? `正在确认加入 ${candidates.length} 条术语...` : `正在跳过 ${candidates.length} 条候选...`)
     try {
@@ -290,14 +343,16 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
         body: JSON.stringify({ candidate_ids: candidates.map((candidate) => candidate.id) })
       })
       await refreshProjectSnapshot(projectId)
-      await refreshGlossaryBatches(projectId)
+      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
+      await refreshGlossaryBatches(projectId, sourceArtifactId, selectedLanguage, taskId)
+      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
       setStatusForProject(projectId, action === 'accept' ? `已加入 ${candidates.length} 条术语，后续翻译和 QA 会使用项目术语库。` : `已跳过 ${candidates.length} 条候选，不会进入项目术语库。`)
     } catch (error) {
-      setStatusForProject(projectId, `术语批次处理失败：${errorText(error)}`)
+      if (glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) setStatusForProject(projectId, `术语批次处理失败：${errorText(error)}`)
     } finally {
-      setBusyForProject(projectId, false)
+      if (glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) setBusyForProject(projectId, false)
     }
-  }, [current, setBusy, setStatusForProject, refreshProjectSnapshot, refreshGlossaryBatches, setBusyForProject])
+  }, [current, translationTaskId, sourceArtifact?.id, selectedLanguage, glossaryScopeStillCurrent, setBusy, setStatusForProject, refreshProjectSnapshot, refreshGlossaryBatches, setBusyForProject])
 
   const deleteGlossaryTerm = useCallback(async (term: GlossaryTerm) => {
     if (!current) return

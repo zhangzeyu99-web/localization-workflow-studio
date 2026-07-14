@@ -50,7 +50,12 @@ def create_project_delivery(project_id: str, run_id: str | None = None) -> dict[
 @router.post("/api/projects/{project_id}/delivery-package/merged")
 def create_project_merged_delivery(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
     try:
-        package = build_merged_delivery_package(project_id, payload.input_artifact_id, payload.languages)
+        package = build_merged_delivery_package(
+            project_id,
+            payload.input_artifact_id,
+            payload.languages,
+            payload.translation_task_id,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:

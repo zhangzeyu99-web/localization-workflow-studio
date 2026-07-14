@@ -17,7 +17,7 @@ type ApiLanguage = {
 }
 
 const defaultLanguages: LanguageOption[] = [
-  { code: 'en', label: 'EN 英语', short: 'EN', targetHeader: 'EN', altHeader: 'EN2' },
+  { code: 'en', label: 'EN 英语', short: 'EN', targetHeader: 'EN', altHeader: '' },
   { code: 'ko', label: 'KR 韩语', short: 'KR', targetHeader: 'KR', altHeader: '' },
   { code: 'ja', label: 'JP 日语', short: 'JP', targetHeader: 'JP', altHeader: '' },
   { code: 'fr', label: 'FR 法语', short: 'FR', targetHeader: 'FR', altHeader: '' },

@@ -32,10 +32,15 @@ def normalize_language_list(languages: list[str] | str) -> list[str]:
     return normalized
 
 
-def multilingual_status(project_id: str, input_artifact_id: str, languages: list[str] | str) -> dict[str, Any]:
+def multilingual_status(
+    project_id: str,
+    input_artifact_id: str,
+    languages: list[str] | str,
+    translation_task_id: str | None = None,
+) -> dict[str, Any]:
     _require_project_artifact(project_id, input_artifact_id)
     selected = normalize_language_list(languages)
-    rows = [_language_status(project_id, input_artifact_id, language) for language in selected]
+    rows = [_language_status(project_id, input_artifact_id, language, translation_task_id) for language in selected]
     if all(item["status"] in {"passed", "qa_skipped"} for item in rows):
         overall = "passed"
     elif any(item["status"] in ACTIVE_STATUSES for item in rows):
@@ -49,6 +54,7 @@ def multilingual_status(project_id: str, input_artifact_id: str, languages: list
     return {
         "project_id": project_id,
         "input_artifact_id": input_artifact_id,
+        "translation_task_id": translation_task_id,
         "overall_status": overall,
         "active_job_id": active_job_id_for_project(project_id),
         "languages": rows,
@@ -61,7 +67,7 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
     _validate_reference_artifacts(project_id, payload)
     created = []
     for language in selected:
-        run = _find_translation_run(project_id, payload.input_artifact_id, language)
+        run = _find_translation_run(project_id, payload.input_artifact_id, language, payload.translation_task_id)
         if run:
             continue
         metadata = {
@@ -76,17 +82,18 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
             "multilingual_source_artifact_id": source["id"],
             "large_text_mode": payload.large_text_mode or "auto",
             "enable_line_proofread": bool(payload.enable_line_proofread),
+            "translation_task_id": payload.translation_task_id,
         }
         run = db.insert_run(project_id, "translation", language, metadata)
         created.append(run["id"])
 
-    job_id = _queue_job_id("translate", project_id, payload.input_artifact_id)
+    job_id = _queue_job_id("translate", project_id, payload.input_artifact_id, payload.translation_task_id)
 
     def worker(cancel_event: Any) -> None:
         for language in selected:
             if cancel_event.is_set():
                 break
-            run = _find_translation_run(project_id, payload.input_artifact_id, language)
+            run = _find_translation_run(project_id, payload.input_artifact_id, language, payload.translation_task_id)
             if not run:
                 continue
             if run.get("status") == "passed":
@@ -115,7 +122,7 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
                     pass
 
     started, conflict = start_singleton_job(project_id, job_id, worker)
-    status = multilingual_status(project_id, payload.input_artifact_id, selected)
+    status = multilingual_status(project_id, payload.input_artifact_id, selected, payload.translation_task_id)
     status["created_run_ids"] = created
     status["queue_started"] = started
     if conflict:
@@ -129,14 +136,25 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
     _validate_reference_artifacts(project_id, payload)
     created = []
     for language in selected:
-        if _find_passed_or_deliverable_run(project_id, payload.input_artifact_id, language):
+        if _find_passed_or_deliverable_run(project_id, payload.input_artifact_id, language, payload.translation_task_id):
             continue
-        if _find_qa_run(project_id, payload.input_artifact_id, language):
+        if _find_qa_run(project_id, payload.input_artifact_id, language, payload.translation_task_id):
             continue
-        qa_input = _qa_input_artifact(project_id, payload.input_artifact_id, language, payload.batch_size)
+        qa_input = _qa_input_artifact(
+            project_id,
+            payload.input_artifact_id,
+            language,
+            payload.batch_size,
+            payload.translation_task_id,
+        )
         if not qa_input:
             continue
-        source_translation = _find_translation_run(project_id, payload.input_artifact_id, language)
+        source_translation = _find_translation_run(
+            project_id,
+            payload.input_artifact_id,
+            language,
+            payload.translation_task_id,
+        )
         metadata = {
             "input_artifact_id": qa_input["id"],
             "parent_input_artifact_id": payload.input_artifact_id,
@@ -147,11 +165,12 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
             "task_code": payload.task_code or "QA",
             "multilingual_queue": True,
             "multilingual_source_artifact_id": payload.input_artifact_id,
+            "translation_task_id": payload.translation_task_id,
         }
         run = db.insert_run(project_id, "qa", language, metadata)
         created.append(run["id"])
 
-    job_id = _queue_job_id("qa", project_id, payload.input_artifact_id)
+    job_id = _queue_job_id("qa", project_id, payload.input_artifact_id, payload.translation_task_id)
 
     def worker(cancel_event: Any) -> None:
         # Snapshot settings once for this job and reuse it for every
@@ -161,7 +180,7 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
         for language in selected:
             if cancel_event.is_set():
                 break
-            run = _find_qa_run(project_id, payload.input_artifact_id, language)
+            run = _find_qa_run(project_id, payload.input_artifact_id, language, payload.translation_task_id)
             if not run or run.get("status") == "passed":
                 continue
             if run.get("status") in ACTIVE_STATUSES and active_job_id_for_project(project_id) != job_id:
@@ -185,7 +204,7 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
                     pass
 
     started, conflict = start_singleton_job(project_id, job_id, worker)
-    status = multilingual_status(project_id, payload.input_artifact_id, selected)
+    status = multilingual_status(project_id, payload.input_artifact_id, selected, payload.translation_task_id)
     status["created_run_ids"] = created
     status["queue_started"] = started
     if conflict:
@@ -193,10 +212,15 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
     return status
 
 
-def _language_status(project_id: str, input_artifact_id: str, language: str) -> dict[str, Any]:
-    translation_run = _find_translation_run(project_id, input_artifact_id, language)
-    qa_run = _find_qa_run(project_id, input_artifact_id, language)
-    deliverable_run = _find_passed_or_deliverable_run(project_id, input_artifact_id, language)
+def _language_status(
+    project_id: str,
+    input_artifact_id: str,
+    language: str,
+    translation_task_id: str | None = None,
+) -> dict[str, Any]:
+    translation_run = _find_translation_run(project_id, input_artifact_id, language, translation_task_id)
+    qa_run = _find_qa_run(project_id, input_artifact_id, language, translation_task_id)
+    deliverable_run = _find_passed_or_deliverable_run(project_id, input_artifact_id, language, translation_task_id)
     active_run = qa_run or translation_run
     run_for_status = deliverable_run or active_run
     progress = ((translation_run or {}).get("metadata") or {}).get("translation_progress") or {}
@@ -221,17 +245,41 @@ def _language_status(project_id: str, input_artifact_id: str, language: str) -> 
     }
 
 
-def _find_translation_run(project_id: str, input_artifact_id: str, language: str) -> dict[str, Any] | None:
-    return _find_child_run(project_id, input_artifact_id, language, "translation")
+def _find_translation_run(
+    project_id: str,
+    input_artifact_id: str,
+    language: str,
+    translation_task_id: str | None = None,
+) -> dict[str, Any] | None:
+    return _find_child_run(project_id, input_artifact_id, language, "translation", translation_task_id)
 
 
-def _find_qa_run(project_id: str, input_artifact_id: str, language: str) -> dict[str, Any] | None:
-    return _find_child_run(project_id, input_artifact_id, language, "qa")
+def _find_qa_run(
+    project_id: str,
+    input_artifact_id: str,
+    language: str,
+    translation_task_id: str | None = None,
+) -> dict[str, Any] | None:
+    return _find_child_run(project_id, input_artifact_id, language, "qa", translation_task_id)
 
 
-def _find_child_run(project_id: str, input_artifact_id: str, language: str, kind: str) -> dict[str, Any] | None:
+def _matches_translation_task(run: dict[str, Any], translation_task_id: str | None) -> bool:
+    if not translation_task_id:
+        return True
+    return str((run.get("metadata") or {}).get("translation_task_id") or "") == translation_task_id
+
+
+def _find_child_run(
+    project_id: str,
+    input_artifact_id: str,
+    language: str,
+    kind: str,
+    translation_task_id: str | None = None,
+) -> dict[str, Any] | None:
     for run in db.list_runs(project_id):
         if run.get("kind") != kind or require_supported_language(run.get("language") or "en") != language:
+            continue
+        if not _matches_translation_task(run, translation_task_id):
             continue
         metadata = run.get("metadata") or {}
         candidates = {
@@ -244,9 +292,14 @@ def _find_child_run(project_id: str, input_artifact_id: str, language: str, kind
     return None
 
 
-def _find_passed_or_deliverable_run(project_id: str, input_artifact_id: str, language: str) -> dict[str, Any] | None:
+def _find_passed_or_deliverable_run(
+    project_id: str,
+    input_artifact_id: str,
+    language: str,
+    translation_task_id: str | None = None,
+) -> dict[str, Any] | None:
     for kind in ("qa", "translation"):
-        run = _find_child_run(project_id, input_artifact_id, language, kind)
+        run = _find_child_run(project_id, input_artifact_id, language, kind, translation_task_id)
         if not run:
             continue
         if run.get("status") == "passed" or _run_final_artifact(run):
@@ -254,8 +307,14 @@ def _find_passed_or_deliverable_run(project_id: str, input_artifact_id: str, lan
     return None
 
 
-def _qa_input_artifact(project_id: str, input_artifact_id: str, language: str, batch_size: int | None = None) -> dict[str, Any] | None:
-    translation_run = _find_translation_run(project_id, input_artifact_id, language)
+def _qa_input_artifact(
+    project_id: str,
+    input_artifact_id: str,
+    language: str,
+    batch_size: int | None = None,
+    translation_task_id: str | None = None,
+) -> dict[str, Any] | None:
+    translation_run = _find_translation_run(project_id, input_artifact_id, language, translation_task_id)
     if translation_run:
         final_artifact = _run_final_artifact(translation_run)
         if final_artifact:
@@ -295,8 +354,14 @@ def _validate_reference_artifacts(project_id: str, payload: MultilingualQueueReq
         _require_project_artifact(project_id, artifact_id)
 
 
-def _queue_job_id(kind: str, project_id: str, input_artifact_id: str) -> str:
-    return f"multilingual:{kind}:{project_id}:{input_artifact_id}"
+def _queue_job_id(
+    kind: str,
+    project_id: str,
+    input_artifact_id: str,
+    translation_task_id: str | None = None,
+) -> str:
+    scope = translation_task_id or "legacy"
+    return f"multilingual:{kind}:{project_id}:{input_artifact_id}:{scope}"
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]

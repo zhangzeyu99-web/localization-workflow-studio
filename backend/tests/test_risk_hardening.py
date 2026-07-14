@@ -145,9 +145,9 @@ def test_manifest_invalidates_when_source_language_prompt_or_settings_change() -
 
 def test_import_templates_download_readable_workbooks() -> None:
     expected_headers = {
-        "language-table": ["ID", "CN", "EN", "EN2", "KR", "JP", "备注"],
-        "glossary": ["ID", "CN", "EN", "EN2", "KR", "JP", "分类", "备注"],
-        "announcement-language-table": ["ID", "CN", "EN", "EN2", "KR", "JP", "备注"],
+        "language-table": ["ID", "CN", "EN", "KR", "JP", "备注"],
+        "glossary": ["ID", "CN", "EN", "KR", "JP", "分类", "备注"],
+        "announcement-language-table": ["ID", "CN", "EN", "KR", "JP", "备注"],
         "announcement-terms": ["ID", "CN", "EN", "KR", "JP", "命中次数", "来源", "备注"],
     }
     with TestClient(app) as client:
@@ -709,7 +709,8 @@ def test_language_api_uses_visible_kr_jp_and_aliases() -> None:
         assert languages["ja"]["visible_code"] == "JP"
         assert "kr" in languages["ko"]["aliases"]
         assert "jp" in languages["ja"]["aliases"]
-        assert languages["en"]["alt_header"] == "EN2"
+        assert languages["en"]["alt_header"] == ""
+        assert "en2" in languages["en"]["alt_aliases"]
         assert languages["ko"]["alt_header"] == ""
 
 

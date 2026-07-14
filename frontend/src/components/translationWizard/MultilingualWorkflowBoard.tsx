@@ -6,16 +6,18 @@ export function MultilingualWorkflowBoard({
   project,
   languages,
   inputArtifactId,
+  translationTaskId,
   selectedLanguage,
   onSelectLanguage,
 }: {
   project: Project
   languages: LanguageCode[]
   inputArtifactId?: string | null
+  translationTaskId?: string | null
   selectedLanguage: LanguageCode
   onSelectLanguage: (language: LanguageCode) => void
 }) {
-  const items = multilingualWorkflowItems(project, languages, inputArtifactId)
+  const items = multilingualWorkflowItems(project, languages, inputArtifactId, translationTaskId)
   const ready = items.filter((item) => item.state === 'ready').length
   const issues = items.filter((item) => item.state === 'issues').length
   const active = items.filter((item) => item.state === 'running').length

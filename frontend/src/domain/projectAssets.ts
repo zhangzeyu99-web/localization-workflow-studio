@@ -158,8 +158,8 @@ export function coverageSummary(coverage: Record<LanguageCode, number>): string 
   return entries.length > 2 ? `${visible} / +${entries.length - 2}` : visible
 }
 
-export function altColumnVisible(lang: LanguageCode): boolean {
-  return lang === 'en'
+export function altColumnVisible(_lang: LanguageCode): boolean {
+  return false
 }
 
 export function scopeProjectToLanguage(project: Project, code: LanguageCode): Project {

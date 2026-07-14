@@ -12,6 +12,7 @@ import { MultilingualWorkflowBoard } from '../MultilingualWorkflowBoard'
 
 export function StepDone({
   project,
+  translationTaskId,
   latestRun,
   qualityIssues,
   setStep,
@@ -31,6 +32,7 @@ export function StepDone({
   generatedDeliveryLanguageResults,
 }: {
   project: Project
+  translationTaskId: string
   latestRun: Run | null
   qualityIssues: QualityIssue[]
   setStep: (step: number) => void
@@ -49,7 +51,8 @@ export function StepDone({
   generatedDeliverySkippedLanguages?: string[]
   generatedDeliveryLanguageResults?: DeliveryLanguageResult[]
 }) {
-  const deliveryRun = findWizardDeliveryRun(project, latestRun)
+  const taskScope = { translationTaskId, inputArtifactId: sourceArtifact?.id, language: selectedLanguage }
+  const deliveryRun = findWizardDeliveryRun(project, latestRun, taskScope)
   const artifacts = pickerArtifacts(deliveryRun?.artifacts?.length ? deliveryRun.artifacts : runArtifacts(project, deliveryRun?.id))
     .filter((artifact) => artifact.kind === 'qa_final_workbook' || artifact.kind === 'qa_changes')
   const pendingIssueCount = deliveryRun?.kind === 'qa' ? qaPendingIssueCount(deliveryRun, qualityIssues) : 0
@@ -57,12 +60,12 @@ export function StepDone({
   const deliveryBlocked = deliveryRun?.kind === 'qa' && deliveryRun.status !== 'passed' && !hasFinalWorkbook
   const deliveryWarning = deliveryRun?.kind === 'qa' && deliveryRun.status === 'failed' && hasFinalWorkbook
   const multiDelivery = selectedLanguages.length > 1
-  const workflowItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id)
+  const workflowItems = multilingualWorkflowItems(project, selectedLanguages, sourceArtifact?.id, translationTaskId)
   const deliverableItems = workflowItems.filter((item) => item.state === 'ready' || item.state === 'issues')
   const retryItems = workflowItems.filter((item) => item.state === 'pending' || item.state === 'blocked')
   const activeLanguageCount = workflowItems.filter((item) => item.state === 'running').length
-  const mergedTask = findMergedDeliverable(deliverables, sourceArtifact?.id)
-  const deliveryFiles = wizardDeliveryFiles(project, latestRun, deliverables, generatedDeliveryRunId, generatedDeliveryFiles, multiDelivery, sourceArtifact?.id)
+  const mergedTask = findMergedDeliverable(deliverables, sourceArtifact?.id, translationTaskId)
+  const deliveryFiles = wizardDeliveryFiles(project, latestRun, deliverables, generatedDeliveryRunId, generatedDeliveryFiles, multiDelivery, sourceArtifact?.id, translationTaskId)
   const hasGeneratedSnapshot = Boolean(generatedDeliveryFiles?.length)
   const mergedLanguages = hasGeneratedSnapshot ? generatedDeliveryMergedLanguages || [] : mergedTask?.merged_languages || []
   const skippedLanguages = hasGeneratedSnapshot ? generatedDeliverySkippedLanguages || [] : mergedTask?.skipped_languages || []
@@ -134,6 +137,7 @@ export function StepDone({
             project={project}
             languages={selectedLanguages}
             inputArtifactId={sourceArtifact?.id}
+            translationTaskId={translationTaskId}
             selectedLanguage={selectedLanguage}
             onSelectLanguage={(language) => {
               setSelectedLanguage(language)
@@ -204,7 +208,13 @@ export function StepDone({
   )
 }
 
-export function findWizardDeliveryRun(project: Project, latestRun: Run | null): Run | null {
+export type WizardTaskScope = {
+  translationTaskId?: string | null
+  inputArtifactId?: string | null
+  language?: string | null
+}
+
+export function findWizardDeliveryRun(project: Project, latestRun: Run | null, scope: WizardTaskScope = {}): Run | null {
   const seen = new Set<string>()
   const candidates = [
     latestRun,
@@ -212,7 +222,16 @@ export function findWizardDeliveryRun(project: Project, latestRun: Run | null): 
   ].filter((run): run is Run => {
     if (!run || seen.has(run.id)) return false
     seen.add(run.id)
-    return ['translation', 'qa'].includes(run.kind)
+    if (!['translation', 'qa'].includes(run.kind)) return false
+    const metadata = run.metadata || {}
+    if (scope.translationTaskId && String(metadata.translation_task_id || '') !== scope.translationTaskId) return false
+    if (scope.language && run.language !== scope.language) return false
+    if (scope.inputArtifactId) {
+      const artifactIds = [metadata.input_artifact_id, metadata.parent_input_artifact_id, metadata.multilingual_source_artifact_id]
+        .map((value) => String(value || ''))
+      if (!artifactIds.includes(scope.inputArtifactId)) return false
+    }
+    return true
   })
   for (const run of candidates) {
     const artifacts = run.artifacts?.length ? run.artifacts : runArtifacts(project, run.id)
@@ -229,19 +248,23 @@ export function wizardDeliveryFiles(
   generatedFiles?: DeliveryFile[],
   multiDelivery = false,
   inputArtifactId?: string,
+  translationTaskId?: string,
 ): DeliveryFile[] {
   if (multiDelivery) {
     const generated = (generatedFiles || []).filter(isDownloadableDeliveryFile)
     if (generated.length) return uniqueDeliveryFiles(generated)
-    const task = findMergedDeliverable(deliverables, inputArtifactId)
+    const task = findMergedDeliverable(deliverables, inputArtifactId, translationTaskId)
     return deliveryFilesForTask(task)
   }
-  const run = findWizardDeliveryRun(project, latestRun)
+  const run = findWizardDeliveryRun(project, latestRun, { inputArtifactId, translationTaskId })
   return deliveryFilesForRun(deliverables, run?.id, generatedRunId, generatedFiles)
 }
 
-function findMergedDeliverable(deliverables: DeliverableTask[], inputArtifactId?: string): DeliverableTask | null {
-  const merged = deliverables.filter((task) => String(task.task_code || '').toUpperCase() === 'ALL')
+function findMergedDeliverable(deliverables: DeliverableTask[], inputArtifactId?: string, translationTaskId?: string): DeliverableTask | null {
+  const merged = deliverables.filter((task) => (
+    String(task.task_code || '').toUpperCase() === 'ALL'
+    && (!translationTaskId || task.translation_task_id === translationTaskId)
+  ))
   if (!inputArtifactId) return merged[0] || null
   return merged.find((task) => task.input_artifact_id === inputArtifactId)
     || merged.find((task) => !task.input_artifact_id)

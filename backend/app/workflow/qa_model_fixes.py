@@ -19,6 +19,7 @@ from .qa import (
     run_qa_sync,
 )
 from .semantic_qa import _call_semantic_provider, _parse_semantic_qa_payload
+from .translation_tasks import translation_task_continuation_metadata
 
 
 def model_fix_provider_settings() -> tuple[dict[str, Any], str]:
@@ -121,6 +122,7 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
                 "manual_fixes": applied,
                 "task_origin": "model_fix_continuation",
                 "task_code": (run.get("metadata") or {}).get("task_code"),
+                **translation_task_continuation_metadata(run),
             },
         )
         result["qa_result"] = run_qa_sync(qa_run["id"], settings=settings)

@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { FolderKanban, Languages, Plus, Settings, WandSparkles, Zap } from 'lucide-react'
 import './styles.css'
 import './styles/workbench.css'
-import { API } from './apiClient'
+import { API, api } from './apiClient'
 import { refreshLanguageOptions, languageSpec, normalizeLanguageCode, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { useConfirmDialog } from './components/modals/ConfirmModal'
@@ -31,6 +31,16 @@ import { artifactForProject, preferredTranslationResultArtifact, runForProject }
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
 import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
+import {
+  createTranslationTaskId,
+  findActiveFormalTask,
+  findUnfinishedFormalTask,
+  formalTranslationTasks,
+  runMatchesTranslationTask,
+  translationTaskResumeStep,
+  type FormalTranslationTask,
+  type TranslationTaskSession,
+} from './domain/translationTaskLifecycle'
 
 const QuickTaskWizard = lazy(() => import('./components/quickTask/QuickTaskWizard').then((m) => ({ default: m.QuickTaskWizard })))
 const AnnouncementWizard = lazy(() => import('./components/announcement/AnnouncementWorkflow').then((m) => ({ default: m.AnnouncementWizard })))
@@ -70,6 +80,9 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('准备就绪')
   const currentIdRef = useRef('')
+  const [translationTaskId, setTranslationTaskId] = useState('')
+  const translationTaskIdRef = useRef('')
+  const translationTaskSessionsRef = useRef(new Map<string, TranslationTaskSession>())
   const [hydratedProjectId, setHydratedProjectId] = useState('')
   const projectNavigationRef = useRef(new Map<string, { view: AppView; tab: ProjectTab; step: number }>())
   const [intro, setIntro] = useState('')
@@ -106,8 +119,19 @@ function App() {
   const scopedQaArtifact = artifactForProject(current, qaArtifact)
   const scopedArchiveArtifact = artifactForProject(current, archiveArtifact)
   const scopedLatestRun = runForProject(current, latestRun)
+  const currentTaskSession = current?.id ? translationTaskSessionsRef.current.get(current.id) : undefined
+  const currentFormalTask = translationTaskId
+    ? formalTranslationTasks(current).find((task) => task.translationTaskId === translationTaskId) || null
+    : null
+  const currentFormalLatestRun = current && currentFormalTask
+    ? { ...currentFormalTask.latestRun, artifacts: runArtifacts(current, currentFormalTask.latestRun.id) }
+    : null
+  const wizardLatestRun = view === 'wizard' && currentTaskSession
+    ? currentFormalLatestRun || (scopedLatestRun && (!translationTaskId || runMatchesTranslationTask(scopedLatestRun, translationTaskId)) ? scopedLatestRun : null)
+    : scopedLatestRun
   const scopedGeneratedDelivery = generatedDelivery && generatedDelivery.projectId === current?.id
     && (!generatedDelivery.sourceArtifactId || generatedDelivery.sourceArtifactId === scopedSourceArtifact?.id)
+    && (view !== 'wizard' || !translationTaskId || generatedDelivery.translationTaskId === translationTaskId)
     ? generatedDelivery
     : null
   const scopedAssetArtifacts = useMemo(
@@ -118,8 +142,8 @@ function App() {
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
   const currentLang = languageSpec(selectedLanguage)
   const selectedQualityRun = useMemo(
-    () => current ? findVisibleQualityRun(current, selectedLanguage, scopedSourceArtifact?.id) : null,
-    [current, selectedLanguage, scopedSourceArtifact?.id]
+    () => current ? findVisibleQualityRun(current, selectedLanguage, scopedSourceArtifact?.id, view === 'wizard' ? translationTaskId : undefined) : null,
+    [current, selectedLanguage, scopedSourceArtifact?.id, view, translationTaskId]
   )
 
   const setPrimaryLanguage = useCallback((language: LanguageCode) => {
@@ -128,11 +152,11 @@ function App() {
   }, [])
 
   const setPrimaryLanguages = useCallback((languages: LanguageCode[], primary?: LanguageCode | null) => {
-    const normalized = languages.length ? languages : [primary || selectedLanguage]
+    const normalized = languages.length ? languages : [primary || 'en']
     const nextPrimary = primary && normalized.includes(primary) ? primary : normalized[0]
     setSelectedLanguages(normalized)
     setSelectedLanguage(nextPrimary)
-  }, [selectedLanguage])
+  }, [])
 
   const toggleTargetLanguage = useCallback((language: LanguageCode) => {
     setSelectedLanguages((prev) => {
@@ -150,6 +174,24 @@ function App() {
   const isCurrentProject = useCallback((projectId?: string | null): boolean => {
     return Boolean(projectId) && currentIdRef.current === projectId
   }, [])
+
+  const activateTranslationTaskId = useCallback((taskId: string) => {
+    translationTaskIdRef.current = taskId
+    setTranslationTaskId(taskId)
+  }, [])
+
+  const isCurrentTranslationTask = useCallback((projectId: string, taskId: string): boolean => {
+    const activeSessionId = translationTaskSessionsRef.current.get(projectId)?.id || ''
+    return isCurrentProject(projectId)
+      && activeSessionId === (currentTaskSession?.id || '')
+      && (!taskId || translationTaskIdRef.current === taskId)
+  }, [currentTaskSession?.id, isCurrentProject])
+
+  const isCurrentRunScope = useCallback((run: Run): boolean => {
+    if (!isCurrentProject(run.project_id)) return false
+    if (view !== 'wizard' || !translationTaskIdRef.current) return true
+    return runMatchesTranslationTask(run, translationTaskIdRef.current)
+  }, [isCurrentProject, view])
 
   const setStatusForProject = useCallback((projectId: string, message: string) => {
     if (isCurrentProject(projectId)) setStatus(message)
@@ -184,13 +226,47 @@ function App() {
     setAnnouncementLookupResult(null)
   }, [])
 
+  const beginFreshTranslationTask = useCallback((project: Project) => {
+    const taskId = createTranslationTaskId()
+    const session: TranslationTaskSession = {
+      id: taskId,
+      projectId: project.id,
+      step: 1,
+      sourceArtifactId: '',
+      selectedLanguages: ['en'],
+      status: 'draft',
+    }
+    translationTaskSessionsRef.current.set(project.id, session)
+    activateTranslationTaskId(taskId)
+    setBusy(false)
+    setStatus('新的翻译任务已就绪。')
+    setIntro(project.description || '')
+    setSourceArtifact(null)
+    setQaArtifact(null)
+    setLatestRun(null)
+    setSelectedLanguage('en')
+    setSelectedLanguages(['en'])
+    setLineProofread(false)
+    setGlossaryPreview([])
+    setGlossaryBatches([])
+    setGlossaryCandidates([])
+    setQualityIssues([])
+    setGeneratedDelivery(null)
+    setTranslationReadiness(null)
+    setSourceInputNotice(null)
+    setInvalidSourceArtifactIds([])
+    setTab('meta')
+    setStep(1)
+    setView('wizard')
+  }, [activateTranslationTaskId])
+
   const {
     cancelProjectDeleteHold, beginProjectDeleteHold, selectProject, deleteProject, refreshProjects,
     refreshCurrent, refreshProjectSnapshot, refreshRuntimeVersion, refreshSettings, saveProjectMeta,
     loadQualityIssues, createProject, upload, runAnalysis, saveHarness, uploadAsset, uploadProjectMaterial
   } = useProjectActions({
-    current, currentId, currentIdRef, intro, assetArtifacts: scopedAssetArtifacts, selectedLanguage, currentLang, busy,
-    deleteHoldTimer, longPressTriggeredProjectId, isCurrentProject,
+    current, currentId, currentIdRef, intro, assetArtifacts: scopedAssetArtifacts, selectedLanguage, translationTaskId, currentLang, busy,
+    deleteHoldTimer, longPressTriggeredProjectId, isCurrentProject, isCurrentTranslationTask,
     setProjects, setCurrentId, setView, setTab, setBusy, setStatus, setStatusForProject, setQualityIssues,
     setRuntimeVersion, setSettings, setNewProjectOpen, setDeleteHoldProjectId, setDeleteProjectTarget,
     setSourceArtifact, setAssetArtifacts, resetProjectTransientState, confirm,
@@ -202,6 +278,8 @@ function App() {
   const handleProjectPointerDown = useCallback((project: Project, event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button === 0) beginProjectDeleteHold(project)
   }, [beginProjectDeleteHold])
+  const actionLatestRun = view === 'wizard' ? wizardLatestRun : scopedLatestRun
+  const actionTranslationTaskId = view === 'wizard' ? translationTaskId : ''
   const {
     refreshTranslationReadiness, selectSourceArtifact, selectQaArtifact, syncLanguageFromArtifact,
     classifySourceArtifact, inspectTranslationTargets, startQuickTask, runTranslate,
@@ -210,16 +288,25 @@ function App() {
     importTranslationArchive, skipQAArchive, addTranslationEntry, updateTranslationEntry, deleteTranslationEntry,
     refreshDeliverables, loadDeliverables, createDeliveryPackage, finishWizardDelivery, createMergedDeliveryPackage
   } = useTranslationActions({
-    current, currentIdRef, sourceArtifact: scopedSourceArtifact, termArtifact: scopedTermArtifact, qaArtifact: scopedQaArtifact, archiveArtifact: scopedArchiveArtifact, latestRun: scopedLatestRun,
+    current, currentIdRef, translationTaskId: actionTranslationTaskId, translationTaskIdRef,
+    sourceArtifact: scopedSourceArtifact, termArtifact: scopedTermArtifact, qaArtifact: scopedQaArtifact, archiveArtifact: scopedArchiveArtifact, latestRun: actionLatestRun,
     translationReadiness, glossaryCandidates, settings, translationBatchSize, tab, selectedLanguage,
-    selectedLanguages, lineProofread, currentLang, isCurrentProject,
+    selectedLanguages, lineProofread, currentLang, isCurrentProject, isCurrentTranslationTask,
     setSourceArtifact, setQaArtifact, setArchiveArtifact, setTranslationReadiness, setSourceInputNotice,
     setInvalidSourceArtifactIds, setStep, setBusy, setStatus, setStatusForProject, setBusyForProject,
     setQualityIssues, setLatestRun, setDeliverables, setDeliverablesLoading, setDeliverablesError, setGeneratedDelivery, setTab, setView,
     setPrimaryLanguage, setPrimaryLanguages, confirm, refreshCurrent, loadQualityIssues, upload
   })
+  const selectWizardSourceArtifact = useCallback((artifact: Artifact | null) => {
+    if (current?.id) {
+      const session = translationTaskSessionsRef.current.get(current.id)
+      if (session) translationTaskSessionsRef.current.set(current.id, { ...session, sourceArtifactId: artifact?.id || '' })
+    }
+    selectSourceArtifact(artifact)
+  }, [current?.id, selectSourceArtifact])
   const glossaryActions = useGlossaryActions({
-    current, currentId, sourceArtifact: scopedSourceArtifact, termArtifact: scopedTermArtifact, assetArtifacts: scopedAssetArtifacts, intro, selectedLanguage, isCurrentProject,
+    current, currentId, sourceArtifact: scopedSourceArtifact, termArtifact: scopedTermArtifact, assetArtifacts: scopedAssetArtifacts, intro, selectedLanguage,
+    translationTaskId, translationTaskIdRef, isCurrentProject,
     setSourceArtifact, setTermArtifact, setLatestRun, setStep, setBusy, setStatus, setStatusForProject,
     setBusyForProject, setGlossaryPreview, setGlossaryBatches, setGlossaryCandidates, setQaArtifact,
     refreshCurrent, refreshProjectSnapshot, syncLanguageFromArtifact, refreshTranslationReadiness
@@ -242,6 +329,130 @@ function App() {
     setLatestRun, setAssetArtifacts, refreshCurrent, upload, alertDialog
   })
 
+  const openFormalTaskInWizard = useCallback((project: Project, task: FormalTranslationTask, message: string) => {
+    const replacingTask = translationTaskSessionsRef.current.get(project.id)?.id !== task.id
+    const source = (project.artifacts || []).find((artifact) => artifact.id === task.sourceArtifactId) || null
+    const latest = { ...task.latestRun, artifacts: runArtifacts(project, task.latestRun.id) }
+    const session: TranslationTaskSession = {
+      id: task.id,
+      projectId: project.id,
+      step: translationTaskResumeStep(task),
+      sourceArtifactId: task.sourceArtifactId,
+      selectedLanguages: task.languages,
+      status: 'draft',
+    }
+    translationTaskSessionsRef.current.set(project.id, session)
+    activateTranslationTaskId(task.translationTaskId)
+    if (replacingTask) setBusy(false)
+    setIntro(project.description || '')
+    setSourceArtifact(source)
+    setPrimaryLanguages(task.languages, normalizeLanguageCode(latest.language) || task.languages[0])
+    setLatestRun(latest)
+    setQaArtifact(preferredTranslationResultArtifact(project, latest))
+    setGeneratedDelivery(null)
+    setTranslationReadiness(null)
+    setSourceInputNotice(null)
+    setQualityIssues([])
+    setStep(session.step)
+    setView('wizard')
+    setStatusForProject(project.id, message)
+  }, [activateTranslationTaskId, setPrimaryLanguages, setStatusForProject])
+
+  const restoreDraftSessionInWizard = useCallback((project: Project, session: TranslationTaskSession) => {
+    const task = formalTranslationTasks(project).find((item) => item.id === session.id)
+    if (task) {
+      openFormalTaskInWizard(project, task, '已继续当前未完成翻译任务。')
+      return
+    }
+    const replacingTask = translationTaskSessionsRef.current.get(project.id)?.id !== session.id
+    const source = (project.artifacts || []).find((artifact) => artifact.id === session.sourceArtifactId) || null
+    activateTranslationTaskId(session.id.startsWith('legacy:') ? '' : session.id)
+    if (replacingTask) setBusy(false)
+    setIntro(project.description || '')
+    setSourceArtifact(source)
+    setQaArtifact(null)
+    setLatestRun(null)
+    setPrimaryLanguages(session.selectedLanguages)
+    setGeneratedDelivery(null)
+    setTranslationReadiness(null)
+    setSourceInputNotice(null)
+    setQualityIssues([])
+    setStep(session.step)
+    setView('wizard')
+    setStatusForProject(project.id, '已继续当前未完成翻译任务。')
+  }, [activateTranslationTaskId, openFormalTaskInWizard, setPrimaryLanguages, setStatusForProject])
+
+  const abandonFormalTask = useCallback(async (project: Project, task: FormalTranslationTask) => {
+    const path = task.legacy
+      ? `/api/runs/${task.latestRun.id}/abandon-translation-task`
+      : `/api/projects/${project.id}/translation-tasks/${task.translationTaskId}/abandon`
+    await api(path, { method: 'POST' })
+  }, [])
+
+  const openNewTranslationTask = useCallback(async () => {
+    if (!current) return
+    const projectId = current.id
+    const loaded = await refreshCurrent(projectId).catch(() => null)
+    if (!isCurrentProject(projectId)) return
+    const project = loaded || current
+    const activeTask = findActiveFormalTask(project)
+    if (activeTask) {
+      openFormalTaskInWizard(project, activeTask, '已有任务正在处理，已带你回到当前任务。')
+      return
+    }
+
+    const session = translationTaskSessionsRef.current.get(projectId)
+    const sessionTask = session ? formalTranslationTasks(project).find((task) => task.id === session.id) || null : null
+    if (session?.status === 'delivered' || (sessionTask && ['delivered', 'abandoned', 'closed'].includes(sessionTask.state))) {
+      beginFreshTranslationTask(project)
+      return
+    }
+
+    const unfinishedTask = sessionTask || (!session ? findUnfinishedFormalTask(project) : null)
+    if (session || unfinishedTask) {
+      const abandon = await confirm('当前项目还有一项未完成的翻译任务。你可以继续原任务，或放弃它并从空白任务开始。', {
+        title: '已有未完成翻译任务',
+        confirmLabel: '放弃草稿并新建',
+        cancelLabel: '继续当前任务',
+        tone: 'warn',
+      })
+      if (!isCurrentProject(projectId)) return
+      if (!abandon) {
+        if (unfinishedTask) openFormalTaskInWizard(project, unfinishedTask, '已继续当前未完成翻译任务。')
+        else if (session) restoreDraftSessionInWizard(project, session)
+        return
+      }
+      if (unfinishedTask) {
+        try {
+          await abandonFormalTask(project, unfinishedTask)
+          if (!isCurrentProject(projectId)) return
+          await refreshCurrent(projectId)
+        } catch (error) {
+          setStatusForProject(projectId, `无法放弃当前任务：${String(error)}`)
+          return
+        }
+      }
+    }
+    beginFreshTranslationTask(project)
+  }, [current, refreshCurrent, isCurrentProject, openFormalTaskInWizard, beginFreshTranslationTask, confirm, restoreDraftSessionInWizard, abandonFormalTask, setStatusForProject])
+
+  const finishCurrentTranslationTask = useCallback(async (): Promise<boolean> => {
+    if (!current) return false
+    const projectId = current.id
+    const session = translationTaskSessionsRef.current.get(projectId)
+    const finished = await finishWizardDelivery()
+    if (!finished || !isCurrentProject(projectId)) return false
+    if (session) translationTaskSessionsRef.current.set(projectId, { ...session, status: 'delivered' })
+    projectNavigationRef.current.set(projectId, { view: 'overview', tab: 'delivery', step: 1 })
+    return true
+  }, [current, finishWizardDelivery, isCurrentProject])
+
+  const startNextTranslationTask = useCallback(async () => {
+    if (!current) return
+    const project = current
+    if (await finishCurrentTranslationTask()) beginFreshTranslationTask(project)
+  }, [current, finishCurrentTranslationTask, beginFreshTranslationTask])
+
   useEffect(() => {
     refreshProjects().catch(() => undefined).finally(() => setProjectsReady(true))
     refreshSettings()
@@ -258,12 +469,14 @@ function App() {
 
   useEffect(() => {
     currentIdRef.current = currentId
+    const session = translationTaskSessionsRef.current.get(currentId)
+    activateTranslationTaskId(session && !session.id.startsWith('legacy:') ? session.id : '')
     resetProjectTransientState('准备就绪')
     return () => {
       if (deleteHoldTimer.current !== null) window.clearTimeout(deleteHoldTimer.current)
       if (announcementCancelHoldTimer.current !== null) window.clearTimeout(announcementCancelHoldTimer.current)
     }
-  }, [currentId])
+  }, [currentId, activateTranslationTaskId, resetProjectTransientState])
 
   useEffect(() => {
     let canceled = false
@@ -281,9 +494,21 @@ function App() {
     if (currentId) projectNavigationRef.current.set(currentId, { view, tab, step })
   }, [currentId, view, tab, step])
 
-  const activeRunPolling = Boolean(scopedLatestRun && ['queued', 'running'].includes(scopedLatestRun.status))
+  useEffect(() => {
+    if (!currentId || view !== 'wizard' || hydratedProjectId !== currentId) return
+    const session = translationTaskSessionsRef.current.get(currentId)
+    if (!session) return
+    translationTaskSessionsRef.current.set(currentId, {
+      ...session,
+      step,
+      sourceArtifactId: scopedSourceArtifact?.id || '',
+      selectedLanguages,
+    })
+  }, [currentId, hydratedProjectId, view, step, scopedSourceArtifact?.id, selectedLanguages.join('|')])
+
+  const activeRunPolling = Boolean(actionLatestRun && ['queued', 'running'].includes(actionLatestRun.status))
   const activeAnnouncementPolling = Boolean(current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status)))
-  useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus, activeRunPolling || activeAnnouncementPolling)
+  useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus, activeRunPolling || activeAnnouncementPolling, isCurrentRunScope)
 
   useEffect(() => {
     if (deleteProjectTarget && !projects.some((project) => project.id === deleteProjectTarget.id)) {
@@ -323,25 +548,48 @@ function App() {
       return
     }
     const artifacts = current.artifacts || []
-    const latestProjectRun = (current.runs || [])[0] || null
-    const hydratedRun = latestProjectRun ? { ...latestProjectRun, artifacts: runArtifacts(current, latestProjectRun.id) } : null
-    setSourceArtifact(artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['language_table']))
     setTermArtifact(artifactsByRole(current, 'glossary_curated')[0] || artifactsByRole(current, 'glossary_source')[0] || newestArtifact(artifacts, ['glossary_final', 'term_base']))
-    const preferredQa = preferredTranslationResultArtifact(current, hydratedRun)
-    setQaArtifact(preferredQa || artifactsByRole(current, 'translation_workbook')[0] || newestArtifact(artifacts, ['final_workbook']))
-    setArchiveArtifact(preferredQa || artifactsByRole(current, 'translation_workbook')[0] || artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['final_workbook', 'language_table']))
     setAssetArtifacts(uniqueArtifactsByContent(artifacts.filter((artifact) => artifact.kind === 'asset')))
-    setLatestRun(hydratedRun)
+    const fallbackArchive = artifactsByRole(current, 'translation_workbook')[0] || artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['final_workbook', 'language_table'])
+    setArchiveArtifact(fallbackArchive)
+    const session = translationTaskSessionsRef.current.get(current.id)
+    if (session) {
+      const source = artifacts.find((artifact) => artifact.id === session.sourceArtifactId) || null
+      const task = formalTranslationTasks(current).find((item) => item.id === session.id) || null
+      const hydratedRun = task ? { ...task.latestRun, artifacts: runArtifacts(current, task.latestRun.id) } : null
+      setSourceArtifact(source)
+      setPrimaryLanguages(session.selectedLanguages, normalizeLanguageCode(hydratedRun?.language) || session.selectedLanguages[0])
+      setLatestRun(hydratedRun)
+      setQaArtifact(hydratedRun ? preferredTranslationResultArtifact(current, hydratedRun) : null)
+      setStep(session.step)
+    } else {
+      const latestProjectRun = (current.runs || [])[0] || null
+      const hydratedRun = latestProjectRun ? { ...latestProjectRun, artifacts: runArtifacts(current, latestProjectRun.id) } : null
+      const preferredQa = preferredTranslationResultArtifact(current, hydratedRun)
+      setSourceArtifact(artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['language_table']))
+      setQaArtifact(preferredQa || artifactsByRole(current, 'translation_workbook')[0] || newestArtifact(artifacts, ['final_workbook']))
+      setArchiveArtifact(preferredQa || fallbackArchive)
+      setLatestRun(hydratedRun)
+    }
     setDeliverables([])
     setDeliverablesLoading(false)
     setDeliverablesError('')
     setSourceInputNotice(null)
     setInvalidSourceArtifactIds([])
-  }, [current?.id, current?.artifacts?.length, current?.runs?.length])
+  }, [current?.id, current?.artifacts?.length, current?.runs?.length, setPrimaryLanguages])
 
   useEffect(() => {
-    if (current?.id) refreshGlossaryBatches(current.id)
-  }, [current?.id, scopedLatestRun?.id, scopedLatestRun?.status, selectedLanguage])
+    if (!current?.id) return
+    if (view === 'wizard' && currentTaskSession) {
+      if (scopedSourceArtifact?.id) refreshGlossaryBatches(current.id, scopedSourceArtifact.id)
+      else {
+        setGlossaryBatches([])
+        setGlossaryCandidates([])
+      }
+      return
+    }
+    refreshGlossaryBatches(current.id)
+  }, [current?.id, wizardLatestRun?.id, wizardLatestRun?.status, selectedLanguage, view, currentTaskSession?.id, scopedSourceArtifact?.id])
 
   useEffect(() => {
     // Reset the content scroll position when the user switches project, view,
@@ -362,6 +610,19 @@ function App() {
   }, [current?.id, current?.runs?.length, current?.artifacts?.length, tab, selectedLanguage, view, step])
 
   useEffect(() => {
+    if (!current?.id || !currentTaskSession) return
+    const generatedBelongsToTask = Boolean(
+      generatedDelivery?.projectId === current.id
+      && generatedDelivery.files.length
+      && (translationTaskId
+        ? generatedDelivery.translationTaskId === translationTaskId
+        : generatedDelivery.runId === wizardLatestRun?.id)
+    )
+    if (!generatedBelongsToTask && currentFormalTask?.state !== 'delivered') return
+    translationTaskSessionsRef.current.set(current.id, { ...currentTaskSession, status: 'delivered' })
+  }, [current?.id, currentTaskSession?.id, generatedDelivery?.runId, generatedDelivery?.translationTaskId, generatedDelivery?.files.length, currentFormalTask?.state, translationTaskId, wizardLatestRun?.id])
+
+  useEffect(() => {
     if (current?.id && scopedSourceArtifact) void syncLanguageFromArtifact(scopedSourceArtifact)
   }, [current?.id, scopedSourceArtifact?.id])
 
@@ -370,7 +631,7 @@ function App() {
       setTranslationReadiness(null)
       return
     }
-    refreshTranslationReadiness(scopedSourceArtifact.id)
+    refreshTranslationReadiness(scopedSourceArtifact.id, currentIdRef.current, selectedLanguage, false)
   }, [scopedSourceArtifact?.id, settings?.batch_size, selectedLanguage])
 
   useEffect(() => {
@@ -386,33 +647,34 @@ function App() {
 
   useEffect(() => {
     if (!current || scopedQaArtifact) return
-    const artifact = preferredTranslationResultArtifact(current, scopedLatestRun)
+    const artifact = preferredTranslationResultArtifact(current, actionLatestRun)
     if (artifact) setQaArtifact(artifact)
-  }, [current?.id, current?.artifacts?.length, current?.runs?.length, scopedLatestRun?.id, scopedLatestRun?.status, scopedQaArtifact?.id])
+  }, [current?.id, current?.artifacts?.length, current?.runs?.length, actionLatestRun?.id, actionLatestRun?.status, scopedQaArtifact?.id])
 
   useEffect(() => {
-    if (!current || !scopedLatestRun || scopedLatestRun.kind !== 'translation' || scopedLatestRun.status !== 'passed') return
-    if (!isCurrentProject(scopedLatestRun.project_id) || !busy) return
-    const resultArtifact = preferredTranslationResultArtifact(current, scopedLatestRun)
+    if (!current || !actionLatestRun || actionLatestRun.kind !== 'translation' || actionLatestRun.status !== 'passed') return
+    if (!isCurrentProject(actionLatestRun.project_id) || !isCurrentRunScope(actionLatestRun) || !busy) return
+    const resultArtifact = preferredTranslationResultArtifact(current, actionLatestRun)
     if (resultArtifact) setQaArtifact(resultArtifact)
     setStep((prev) => (prev < 8 ? 8 : prev))
-    setBusyForProject(scopedLatestRun.project_id, false)
-    setStatusForProject(scopedLatestRun.project_id, projectTranslationPassedStatusText(scopedLatestRun, selectedLanguage))
-  }, [busy, current?.id, current?.artifacts?.length, scopedLatestRun?.id, scopedLatestRun?.kind, scopedLatestRun?.status])
+    setBusyForProject(actionLatestRun.project_id, false)
+    setStatusForProject(actionLatestRun.project_id, projectTranslationPassedStatusText(actionLatestRun, selectedLanguage))
+  }, [busy, current?.id, current?.artifacts?.length, actionLatestRun?.id, actionLatestRun?.kind, actionLatestRun?.status, isCurrentRunScope])
 
   useEffect(() => {
-    if (!scopedLatestRun || !['failed', 'needs_input'].includes(scopedLatestRun.status)) {
+    if (!actionLatestRun || !['failed', 'needs_input'].includes(actionLatestRun.status) || !isCurrentRunScope(actionLatestRun)) {
       setQualityIssues([])
       return
     }
-    loadQualityIssues(scopedLatestRun.id)
-  }, [scopedLatestRun?.id, scopedLatestRun?.status])
+    loadQualityIssues(actionLatestRun.id, actionLatestRun.project_id, () => isCurrentRunScope(actionLatestRun))
+  }, [actionLatestRun?.id, actionLatestRun?.status, isCurrentRunScope])
 
   useRunStatusPolling(
-    scopedLatestRun,
+    actionLatestRun,
     tab,
     selectedLanguage,
     isCurrentProject,
+    isCurrentRunScope,
     setLatestRun,
     setStep,
     setQualityIssues,
@@ -492,8 +754,7 @@ function App() {
             <div className="sidebar-title quick"><Zap size={15} aria-hidden="true" />快捷入口</div>
             <button className="project-item quick-entry" onClick={() => {
               if (!current) return
-              setStatusForProject(current.id, '翻译任务已就绪。')
-              setView('wizard')
+              void openNewTranslationTask()
             }} disabled={!current || projectContextLoading}>
               <span className="pname"><WandSparkles size={16} aria-hidden="true" />新翻译任务</span>
               <span className="pmeta">基于当前项目启动工作流</span>
@@ -579,7 +840,7 @@ function App() {
                     setTab('translation')
                   }
                 }}
-                onStartTask={() => { setStatusForProject(current.id, '翻译任务已就绪。'); setView('wizard') }}
+                onStartTask={() => { void openNewTranslationTask() }}
                 onStartAnnouncement={() => openAnnouncementTask()}
                 onStartQuickTask={() => { setStatusForProject(current.id, '快速任务已就绪。'); setView('quick') }}
                 onStartAnnouncementTask={openAnnouncementTask}
@@ -636,6 +897,7 @@ function App() {
                 ) : (
                   <Wizard
                     project={currentScoped || current}
+                    translationTaskId={translationTaskId}
                     step={step}
                     setStep={setStep}
                     intro={intro}
@@ -644,7 +906,7 @@ function App() {
                     termArtifact={scopedTermArtifact}
                     qaArtifact={scopedQaArtifact}
                     assetArtifacts={scopedAssetArtifacts}
-                    latestRun={scopedLatestRun}
+                    latestRun={wizardLatestRun}
                     translationReadiness={translationReadiness}
                     sourceInputNotice={sourceInputNotice}
                     invalidSourceArtifactIds={invalidSourceArtifactIds}
@@ -663,7 +925,7 @@ function App() {
                     toggleSelectedLanguage={toggleTargetLanguage}
                     lineProofread={lineProofread}
                     setLineProofread={setLineProofread}
-                    setSourceArtifact={selectSourceArtifact}
+                    setSourceArtifact={selectWizardSourceArtifact}
                     setTermArtifact={setTermArtifact}
                     setQaArtifact={selectQaArtifact}
                     glossaryPreview={glossaryPreview}
@@ -690,7 +952,8 @@ function App() {
                     onUploadTranslation={uploadTranslationWorkbook}
                     onCreateDelivery={createDeliveryPackage}
                     onCreateMergedDelivery={createMergedDeliveryPackage}
-                    onFinishDelivery={finishWizardDelivery}
+                    onFinishDelivery={() => { void finishCurrentTranslationTask() }}
+                    onStartNextTask={() => { void startNextTranslationTask() }}
                     onFreq={() => setFreqOpen(true)}
                     onSaveHarness={saveHarness}
                     onUpdateCandidate={updateGlossaryCandidate}

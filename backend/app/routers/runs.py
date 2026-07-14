@@ -14,12 +14,15 @@ from ..schemas import (
     TranslateRequest,
 )
 from ..workflow import (
+    abandon_legacy_translation_run,
     cancel_translation_run,
     multilingual_status,
+    mark_translation_task_state,
     run_translate_sync,
     start_multilingual_translation_queue,
     translation_batch_file,
     translation_run_progress,
+    translation_task_continuation_metadata,
     user_facing_error,
 )
 from .shared import (
@@ -62,6 +65,15 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail=f"reference artifact not found: {artifact_id}") from exc
         if artifact["project_id"] != payload.project_id:
             raise HTTPException(status_code=400, detail=f"reference artifact does not belong to project: {artifact_id}")
+    continuation_metadata: dict[str, Any] = {}
+    if payload.kind == "qa" and payload.source_run_id:
+        try:
+            source_run = db.get_run(payload.source_run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="source run not found") from exc
+        if source_run["project_id"] != payload.project_id:
+            raise HTTPException(status_code=400, detail="source run does not belong to project")
+        continuation_metadata = translation_task_continuation_metadata(source_run)
     metadata = {
         "input_artifact_id": payload.input_artifact_id,
         "term_artifact_id": payload.term_artifact_id,
@@ -70,6 +82,12 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
         "task_origin": payload.task_origin or ("direct_import" if payload.kind == "qa" else "translation_run"),
         "source_run_id": payload.source_run_id,
         "task_code": _resolve_task_code(payload),
+        **continuation_metadata,
+        "translation_task_id": (
+            payload.translation_task_id
+            if payload.translation_task_id is not None
+            else continuation_metadata.get("translation_task_id")
+        ),
     }
     run = db.insert_run(payload.project_id, payload.kind, language, metadata)
     db.add_event(run["id"], operator_context.prefixed_message(f"run created (kind={payload.kind})"))
@@ -81,14 +99,39 @@ def list_runs(project_id: str | None = None) -> list[dict[str, Any]]:
     return db.list_runs(project_id)
 
 
-@router.get("/api/projects/{project_id}/multilingual/status")
-def get_multilingual_status(project_id: str, input_artifact_id: str, languages: str) -> dict[str, Any]:
+@router.post("/api/runs/{run_id}/abandon-translation-task")
+def abandon_legacy_run_translation_task(run_id: str) -> dict[str, Any]:
     try:
-        return multilingual_status(project_id, input_artifact_id, languages)
+        return abandon_legacy_translation_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
+
+
+@router.get("/api/projects/{project_id}/multilingual/status")
+def get_multilingual_status(
+    project_id: str,
+    input_artifact_id: str,
+    languages: str,
+    translation_task_id: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return multilingual_status(project_id, input_artifact_id, languages, translation_task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+
+
+@router.post("/api/projects/{project_id}/translation-tasks/{translation_task_id}/abandon")
+def abandon_translation_task(project_id: str, translation_task_id: str) -> dict[str, Any]:
+    try:
+        return mark_translation_task_state(project_id, translation_task_id, "abandoned")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="translation task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
 
 
 @router.post("/api/projects/{project_id}/multilingual/translate/start")

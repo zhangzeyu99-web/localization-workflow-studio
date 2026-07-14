@@ -35,7 +35,6 @@ LANGUAGE_SPECS: dict[str, LanguageSpec] = {
         "English",
         "EN",
         ("en", "english", "英文", "英语", "译文", "translation", "target"),
-        alt_header="EN2",
         alt_aliases=("en2", "en 2", "english2", "英语2", "英文2", "target_alt", "alt", "alternate", "variant"),
     ),
     "ko": _spec(

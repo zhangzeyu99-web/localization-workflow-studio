@@ -16,11 +16,13 @@ export interface UseProjectActionsParams {
   intro: string
   assetArtifacts: Artifact[]
   selectedLanguage: LanguageCode
+  translationTaskId: string
   currentLang: LanguageOption
   busy: boolean
   deleteHoldTimer: { current: number | null }
   longPressTriggeredProjectId: { current: string }
   isCurrentProject: (projectId?: string | null) => boolean
+  isCurrentTranslationTask: (projectId: string, translationTaskId: string) => boolean
   setProjects: Dispatch<SetStateAction<Project[]>>
   setCurrentId: (id: string) => void
   setView: (view: AppView) => void
@@ -62,11 +64,13 @@ export function useProjectActions(params: UseProjectActionsParams) {
     intro,
     assetArtifacts,
     selectedLanguage,
+    translationTaskId,
     currentLang,
     busy,
     deleteHoldTimer,
     longPressTriggeredProjectId,
     isCurrentProject,
+    isCurrentTranslationTask,
     setProjects,
     setCurrentId,
     setView,
@@ -214,13 +218,13 @@ export function useProjectActions(params: UseProjectActionsParams) {
     }
   }, [current, refreshCurrent, setStatus])
 
-  const loadQualityIssues = useCallback(async (runId: string, projectId = currentIdRef.current): Promise<QualityIssue[]> => {
+  const loadQualityIssues = useCallback(async (runId: string, projectId = currentIdRef.current, accept: () => boolean = () => true): Promise<QualityIssue[]> => {
     try {
       const result = await api<{ issues: QualityIssue[] }>(`/api/runs/${runId}/quality-issues`)
-      if (isCurrentProject(projectId)) setQualityIssues(result.issues)
+      if (isCurrentProject(projectId) && accept()) setQualityIssues(result.issues)
       return result.issues
     } catch (error) {
-      setStatusForProject(projectId, `QA 问题加载失败：${errorText(error)}`)
+      if (accept()) setStatusForProject(projectId, `QA 问题加载失败：${errorText(error)}`)
       return []
     }
   }, [currentIdRef, isCurrentProject, setQualityIssues, setStatusForProject])
@@ -243,31 +247,38 @@ export function useProjectActions(params: UseProjectActionsParams) {
     setStatus(created.duplicate ? `项目“${created.name}”已存在，已切换到已有项目。` : `项目“${created.name}”已创建。`)
   }, [setNewProjectOpen, refreshProjects, setView, setTab, setStatus])
 
-  const upload = useCallback(async (file: File, kind: string, purpose = ''): Promise<Artifact | null> => {
+  const upload = useCallback(async (file: File, kind: string, purpose = '', accept: () => boolean = () => true): Promise<Artifact | null> => {
     if (!current) return null
+    const projectId = current.id
+    if (!accept()) return null
     setBusy(true)
     setStatus(`正在上传：${file.name}`)
     try {
-      const artifact = await uploadProjectFile(current.id, file, kind, purpose, (done, total) => {
-        if (total > 1) setStatus(`正在上传：${file.name}（分片 ${done}/${total}）`)
+      const artifact = await uploadProjectFile(projectId, file, kind, purpose, (done, total) => {
+        if (total > 1 && accept()) setStatus(`正在上传：${file.name}（分片 ${done}/${total}）`)
       })
-      await refreshCurrent()
-      if (artifact.duplicate) {
-        setStatus(`已存在，已复用：${artifactPickerLabel(artifact)}`)
-      } else {
-        setStatus(`已上传：${artifactPickerLabel(artifact)}`)
+      await refreshCurrent(projectId)
+      if (accept()) {
+        if (artifact.duplicate) {
+          setStatus(`已存在，已复用：${artifactPickerLabel(artifact)}`)
+        } else {
+          setStatus(`已上传：${artifactPickerLabel(artifact)}`)
+        }
       }
       return artifact
     } catch (error) {
-      setStatus(`上传失败：${errorText(error)}`)
+      if (accept()) setStatus(`上传失败：${errorText(error)}`)
       return null
     } finally {
-      setBusy(false)
+      if (accept()) setBusy(false)
     }
   }, [current, setBusy, setStatus, refreshCurrent])
 
   const runAnalysis = useCallback(async () => {
     if (!current) return
+    const projectId = current.id
+    const taskId = translationTaskId
+    const analysisStillCurrent = () => isCurrentTranslationTask(projectId, taskId)
     setBusy(true)
     setStatus('正在读取项目资料并调用 AI 分析...')
     try {
@@ -280,9 +291,8 @@ export function useProjectActions(params: UseProjectActionsParams) {
           target_language: selectedLanguage
         })
       })
-      if (isCurrentProject(current.id)) {
-        setProjects((prev) => prev.map((p) => (p.id === result.project.id ? result.project : p)))
-      }
+      if (!analysisStillCurrent()) return
+      setProjects((prev) => prev.map((p) => (p.id === result.project.id ? result.project : p)))
       const summary = result.analysis?.summary || {}
       const warning = result.analysis?.warning
       setStatus(`${currentLang.short} 项目分析完成：已读取 ${summary.parsed ?? 0}/${summary.total ?? 0} 个资料${warning ? `；${warning}` : ''}`)
@@ -293,22 +303,23 @@ export function useProjectActions(params: UseProjectActionsParams) {
           confirmLabel: '现在扫描',
           cancelLabel: '暂不扫描'
         })
+        if (!analysisStillCurrent()) return
         if (confirmScan) {
           const candidate = candidates[0]
           const artifacts = result.project.artifacts || []
           const artifact = artifacts.find((item) => item.id === candidate.artifact_id) || assetArtifacts.find((item) => item.id === candidate.artifact_id) || null
-          if (artifact) {
+          if (artifact && analysisStillCurrent()) {
             setSourceArtifact(artifact)
             await runGlossaryExtract(artifact)
           }
         }
       }
     } catch (error) {
-      setStatus(`项目分析失败：${errorText(error)}`)
+      if (analysisStillCurrent()) setStatus(`项目分析失败：${errorText(error)}`)
     } finally {
-      setBusy(false)
+      if (analysisStillCurrent()) setBusy(false)
     }
-  }, [current, setBusy, setStatus, intro, assetArtifacts, selectedLanguage, isCurrentProject, setProjects, currentLang, confirm, setSourceArtifact, runGlossaryExtract])
+  }, [current, setBusy, setStatus, intro, assetArtifacts, selectedLanguage, translationTaskId, isCurrentTranslationTask, setProjects, currentLang, confirm, setSourceArtifact, runGlossaryExtract])
 
   const saveHarness = useCallback(async (updates: Partial<ProjectHarness>) => {
     if (!current) return

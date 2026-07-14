@@ -2658,9 +2658,12 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         try:
             ws = wb.active
             headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "EN2", "分类", "备注"]
+            assert headers == ["ID", "CN", "EN", "分类", "备注"]
         finally:
             wb.close()
+        csv_response = client.get(f"/api/projects/{project['id']}/glossary/export?format=csv")
+        assert csv_response.status_code == 200
+        assert csv_response.content.decode("utf-8-sig").splitlines()[0] == "ID,CN,EN,分类,备注"
 
 
 def test_glossary_preview_rejects_invalid_template(tmp_path: Path) -> None:
@@ -4307,9 +4310,15 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         wb = load_workbook(glossary_export, read_only=True, data_only=True)
         try:
             headers = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "FR", "DE", "IDN", "TH", "AR", "分类", "备注"]
+            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "AR", "分类", "备注"]
+            values = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=2, max_row=2))]
+            assert "Warplane" in values
+            assert "Fighter" not in values
         finally:
             wb.close()
+        glossary_csv = workflow.export_glossary(project["id"], "csv")
+        assert isinstance(glossary_csv, Path)
+        assert glossary_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,AR,分类,备注"
 
         ko_glossary_export = workflow.export_glossary(project["id"], "xlsx", language="ko")
         assert isinstance(ko_glossary_export, Path)
@@ -4327,9 +4336,15 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         wb = load_workbook(archive_export, read_only=True, data_only=True)
         try:
             headers = [cell.value for cell in next(wb["Translations"].iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "EN2", "KR", "JP", "FR", "DE", "IDN", "TH", "AR", "备注"]
+            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "AR", "备注"]
+            values = [cell.value for cell in next(wb["Translations"].iter_rows(min_row=2, max_row=2))]
+            assert "Claim Rewards" in values
+            assert "Claim" not in values
         finally:
             wb.close()
+        archive_csv = workflow.export_translation_archive(project["id"], "csv")
+        assert isinstance(archive_csv, Path)
+        assert archive_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,AR,备注"
 
 
 def test_announcement_lookup_uses_glossary_and_qa_passed_archive(tmp_path: Path) -> None:

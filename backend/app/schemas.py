@@ -254,6 +254,7 @@ class RunCreate(BaseModel):
     task_origin: str | None = None
     source_run_id: str | None = None
     task_code: str | None = None
+    translation_task_id: str | None = None
 
 
 class ManualFixItem(BaseModel):
@@ -316,6 +317,7 @@ class MultilingualQueueRequest(BaseModel):
     confirm_term_gap: bool = False
     large_text_mode: str | None = None
     enable_line_proofread: bool = False
+    translation_task_id: str | None = None
 
 
 class SettingsUpdate(BaseModel):

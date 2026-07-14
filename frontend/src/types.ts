@@ -313,6 +313,7 @@ export type DeliveryLanguageResult = {
 export type GeneratedDeliveryState = {
   projectId: string
   runId: string
+  translationTaskId?: string
   sourceArtifactId?: string
   files: DeliveryFile[]
   mergedLanguages?: string[]
@@ -387,6 +388,7 @@ export type MultilingualQueueLanguage = {
 export type MultilingualQueueStatus = {
   project_id: string
   input_artifact_id: string
+  translation_task_id?: string
   overall_status: string
   active_job_id?: string | null
   languages: MultilingualQueueLanguage[]
@@ -507,6 +509,7 @@ export type AnnouncementLookupOptions = {
 
 export type DeliverableTask = {
   run_id: string
+  translation_task_id?: string
   task_code: 'A' | 'T' | 'QA' | string
   task_id: string
   task_label: string

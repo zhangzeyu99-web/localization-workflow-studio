@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from openpyxl import load_workbook
+
 from .. import db
 from ..config import GLOSSARY_ROOT, REAL_PROVIDERS, load_settings, normalize_provider_name
 from ..languages import language_spec, require_supported_language
@@ -18,6 +20,58 @@ from .naming import _safe_source_stem, _today_stamp
 from .glossary_ai import supplement_language_table_glossary_candidates_with_ai
 from .glossary_backfill import backfill_project_glossary_from_final
 from .subprocess_runner import parse_key_output, run_subprocess, user_facing_error
+
+
+_LEGACY_EN_ALT_HEADERS = frozenset({"en2", "en 2", "english2", "英语2", "英文2", "target_alt"})
+_GENERATED_EN2_NOTE_REPLACEMENTS = {
+    "LearningModel": "Curated rules keep approved EN decisions; observation store accumulates seen variants and usage drift.",
+    "Columns": "ID = text id, CN = source term, EN = approved English.",
+    "Rule": "Only the EN target column is included in newly generated artifacts.",
+}
+_GENERATED_EN2_TEXT_REPLACEMENTS = {
+    "关键术语以随附术语表为准，EN 为标准译法，EN2 为项目中稳定出现的手动适配译法。":
+        "关键术语以随附术语表为准，EN 为唯一主译。",
+}
+
+
+def _normalize_new_english_glossary_artifact(path: Path) -> None:
+    if not path.exists():
+        return
+    workbook = load_workbook(path)
+    try:
+        changed = False
+        for worksheet in workbook.worksheets:
+            alternate_columns = [
+                cell.column
+                for cell in worksheet[1]
+                if str(cell.value or "").strip().casefold() in _LEGACY_EN_ALT_HEADERS
+            ]
+            for column in reversed(alternate_columns):
+                worksheet.delete_cols(column)
+                changed = True
+            if worksheet.title != "Notes":
+                continue
+            for row in worksheet.iter_rows(min_row=2, min_col=1, max_col=2):
+                label = str(row[0].value or "").strip()
+                replacement = _GENERATED_EN2_NOTE_REPLACEMENTS.get(label)
+                if replacement and isinstance(row[1].value, str) and "en2" in row[1].value.casefold():
+                    row[1].value = replacement
+                    changed = True
+        if changed:
+            workbook.save(path)
+    finally:
+        workbook.close()
+
+
+def _normalize_new_english_glossary_text_artifact(path: Path) -> None:
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    normalized = text
+    for legacy_text, replacement in _GENERATED_EN2_TEXT_REPLACEMENTS.items():
+        normalized = normalized.replace(legacy_text, replacement)
+    if normalized != text:
+        path.write_text(normalized, encoding="utf-8")
 
 
 def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
@@ -135,6 +189,12 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
     try:
         proc = run_subprocess(args, GLOSSARY_ROOT, run["id"])
         parsed = parse_key_output(proc.stdout)
+        if language == "en":
+            for generated_path in (detail_output, final_output, announcement_output):
+                if generated_path is not None:
+                    _normalize_new_english_glossary_artifact(generated_path)
+            for generated_path in (brief_output, prompt_output):
+                _normalize_new_english_glossary_text_artifact(generated_path)
         artifacts = []
         backfill: dict[str, Any] = {}
         if not announcement_only:

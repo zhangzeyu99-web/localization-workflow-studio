@@ -529,6 +529,69 @@ def merge_run_metadata(run_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         return merged
 
 
+def set_translation_task_terminal_state(project_id: str, translation_task_id: str, state: str) -> dict[str, Any]:
+    """Atomically persist the first terminal state across every run in a translation task."""
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        get_project(project_id, conn=conn)
+        rows = conn.execute(
+            """
+            SELECT * FROM runs
+            WHERE project_id = ? AND kind IN ('translation', 'qa')
+            ORDER BY created_at DESC
+            """,
+            (project_id,),
+        ).fetchall()
+        runs = [row_to_dict(row) for row in rows]
+        runs = [
+            run
+            for run in runs
+            if str((run.get("metadata") or {}).get("translation_task_id") or "") == translation_task_id
+        ]
+        if not runs:
+            raise KeyError("translation task not found")
+
+        current_states = {
+            str((run.get("metadata") or {}).get("translation_task_state") or "").strip().lower()
+            for run in runs
+        }
+        protected_state = next(
+            (terminal_state for terminal_state in ("closed", "abandoned", "delivered") if terminal_state in current_states),
+            "",
+        )
+        if protected_state:
+            return {
+                "project_id": project_id,
+                "translation_task_id": translation_task_id,
+                "state": protected_state,
+                "updated_run_ids": [],
+            }
+        if state == "abandoned" and any(run.get("status") in {"queued", "running"} for run in runs):
+            raise ValueError("running translation task cannot be abandoned")
+
+        updated_at = now_iso()
+        for run in runs:
+            metadata = {
+                **(run.get("metadata") or {}),
+                "translation_task_state": state,
+                "translation_task_state_updated_at": updated_at,
+            }
+            conn.execute(
+                "UPDATE runs SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False), updated_at, run["id"]),
+            )
+            conn.execute(
+                "INSERT INTO events (run_id, level, message, created_at) VALUES (?, ?, ?, ?)",
+                (run["id"], "info", f"translation task marked {state}", updated_at),
+            )
+        return {
+            "project_id": project_id,
+            "translation_task_id": translation_task_id,
+            "state": state,
+            "updated_run_ids": [run["id"] for run in runs],
+        }
+
+
 def list_runs(project_id: str | None = None) -> list[dict[str, Any]]:
     with connect() as conn:
         if project_id:

@@ -96,6 +96,110 @@ def test_start_multilingual_translation_creates_missing_child_runs(tmp_path: Pat
     assert all(item["status"] == "passed" for item in status["languages"])
 
 
+def test_new_translation_task_does_not_reuse_same_source_child_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("task isolated queue", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN"])
+    old_run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={
+            "input_artifact_id": artifact["id"],
+            "task_origin": "translation_run",
+            "translation_task_id": "task-old",
+        },
+    )
+    db.update_run(old_run["id"], status="passed")
+
+    def fake_translate(run_id: str, request: object, cancel_event: object | None = None) -> dict:
+        _ = request, cancel_event
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id), "artifacts": []}
+
+    monkeypatch.setattr(multilingual, "run_translate_sync", fake_translate)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project['id']}/multilingual/translate/start",
+            json={
+                "input_artifact_id": artifact["id"],
+                "languages": ["en"],
+                "translation_task_id": "task-new",
+            },
+        )
+        wait_for_background_jobs()
+        status = client.get(
+            f"/api/projects/{project['id']}/multilingual/status",
+            params={
+                "input_artifact_id": artifact["id"],
+                "languages": "en",
+                "translation_task_id": "task-new",
+            },
+        ).json()
+
+    assert response.status_code == 200
+    created_ids = response.json()["created_run_ids"]
+    assert len(created_ids) == 1
+    assert created_ids[0] != old_run["id"]
+    assert db.get_run(created_ids[0])["metadata"]["translation_task_id"] == "task-new"
+    assert status["translation_task_id"] == "task-new"
+    assert status["languages"][0]["translation_run_id"] == created_ids[0]
+
+
+def test_abandon_translation_task_marks_only_matching_runs(tmp_path: Path) -> None:
+    project = db.insert_project("task abandon", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN", "KR"])
+    task_runs = [
+        db.insert_run(
+            project["id"],
+            kind,
+            language,
+            metadata={"input_artifact_id": artifact["id"], "translation_task_id": "task-a"},
+        )
+        for kind, language in [("translation", "en"), ("qa", "ko")]
+    ]
+    other_run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"input_artifact_id": artifact["id"], "translation_task_id": "task-b"},
+    )
+    for run in [*task_runs, other_run]:
+        db.update_run(run["id"], status="needs_input")
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project['id']}/translation-tasks/task-a/abandon",
+        )
+
+    assert response.status_code == 200
+    assert set(response.json()["updated_run_ids"]) == {run["id"] for run in task_runs}
+    for run in task_runs:
+        assert db.get_run(run["id"])["metadata"]["translation_task_state"] == "abandoned"
+    assert "translation_task_state" not in db.get_run(other_run["id"])["metadata"]
+
+
+def test_translation_task_continuation_metadata_preserves_original_source_scope() -> None:
+    from app.workflow.translation_tasks import translation_task_continuation_metadata
+
+    metadata = translation_task_continuation_metadata({
+        "metadata": {
+            "input_artifact_id": "fixed-input",
+            "parent_input_artifact_id": "source-root",
+            "multilingual_source_artifact_id": "source-root",
+            "translation_task_id": "task-a",
+        },
+    })
+
+    assert metadata == {
+        "parent_input_artifact_id": "source-root",
+        "multilingual_source_artifact_id": "source-root",
+        "translation_task_id": "task-a",
+    }
+
+
 def test_italian_translation_writes_it_column_in_multilingual_workbook(tmp_path: Path) -> None:
     project = db.insert_project("Italian target column", "QA", "")
     artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN", "IT"])

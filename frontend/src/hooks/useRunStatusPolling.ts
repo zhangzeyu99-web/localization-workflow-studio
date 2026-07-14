@@ -19,6 +19,7 @@ export function useRunStatusPolling(
   tab: ProjectTab,
   selectedLanguage: LanguageCode,
   isCurrentProject: (projectId?: string | null) => boolean,
+  isCurrentRunScope: (run: Run) => boolean,
   setLatestRun: (run: Run | null) => void,
   setStep: Dispatch<SetStateAction<number>>,
   setQualityIssues: (issues: QualityIssue[]) => void,
@@ -26,7 +27,7 @@ export function useRunStatusPolling(
   setStatus: (message: string) => void,
   setStatusForProject: (projectId: string, message: string) => void,
   setBusyForProject: (projectId: string, value: boolean) => void,
-  loadQualityIssues: (runId: string, projectId?: string) => Promise<QualityIssue[]>,
+  loadQualityIssues: (runId: string, projectId?: string, accept?: () => boolean) => Promise<QualityIssue[]>,
   refreshCurrent: (projectId?: string) => Promise<Project | null>,
   refreshDeliverables: (projectId?: string) => Promise<void>,
   refreshProjects?: () => Promise<void>
@@ -45,7 +46,7 @@ export function useRunStatusPolling(
       const updated = await api<Run>(`/api/runs/${latestRun.id}`, { signal })
       if (isStale()) return
       consecutiveFailuresRef.current = 0
-      if (!isCurrentProject(runProjectId)) return
+      if (!isCurrentProject(runProjectId) || !isCurrentRunScope(updated)) return
       setLatestRun(updated)
       const latestEvent = updated.events?.[updated.events.length - 1]
       const modelFixStatus = String(updated.metadata?.model_fix_status || '')
@@ -56,14 +57,15 @@ export function useRunStatusPolling(
         } else if (modelFixResultRunId) {
           const resultRun = await api<Run>(`/api/runs/${modelFixResultRunId}`, { signal })
           if (isStale()) return
-          if (!isCurrentProject(runProjectId)) return
+          if (!isCurrentProject(runProjectId) || !isCurrentRunScope(resultRun)) return
           setLatestRun(resultRun)
           setStep((prev) => (prev < 8 ? 8 : prev))
           if (resultRun.status === 'passed') {
             setQualityIssues([])
             setStatus('模型修复并重跑 QA 已通过，可进入交付。')
           } else {
-            const issues = await loadQualityIssues(resultRun.id, runProjectId)
+            const issues = await loadQualityIssues(resultRun.id, runProjectId, () => isCurrentRunScope(resultRun))
+            if (isStale() || !isCurrentRunScope(resultRun)) return
             const hardCount = issues.filter((issue) => issue.severity === 'hard').length
             setStatus(`模型修复已完成，但 QA 仍有${issueCountPhrase(hardCount || issues.length)}问题。请继续修复；时间受限时可生成带问题摘要的交付。`)
           }
@@ -99,7 +101,8 @@ export function useRunStatusPolling(
         setQualityIssues([])
         setStatus('QA 通过，可进入交付。')
       } else if (updated.kind === 'qa' && updated.status === 'failed') {
-        const issues = await loadQualityIssues(updated.id, runProjectId)
+        const issues = await loadQualityIssues(updated.id, runProjectId, () => isCurrentRunScope(updated))
+        if (isStale() || !isCurrentRunScope(updated)) return
         const hardCount = issues.filter((issue) => issue.severity === 'hard').length
         setStatus(`QA 未通过：发现${issueCountPhrase(hardCount || issues.length)}问题。建议先修复并重跑；时间受限时可生成带问题摘要的交付。`)
       } else if (updated.kind === 'qa' && updated.status === 'canceled') {
@@ -110,6 +113,7 @@ export function useRunStatusPolling(
       if (!['queued', 'running'].includes(updated.status)) {
         setBusyForProject(runProjectId, false)
         await refreshCurrent()
+        if (isStale() || !isCurrentRunScope(updated)) return
         if (tab === 'delivery') await refreshDeliverables()
         // Refresh the project list immediately so sidebar badges reflect the
         // terminal state now instead of after the next 10s list poll.
@@ -117,6 +121,7 @@ export function useRunStatusPolling(
       }
     } catch (error) {
       if (isStale()) return
+      if (!isCurrentRunScope(latestRun)) return
       consecutiveFailuresRef.current += 1
       if (consecutiveFailuresRef.current >= 5) {
         // Escape hatch: if progress polling keeps failing (backend restart,
@@ -128,5 +133,5 @@ export function useRunStatusPolling(
         setStatusForProject(runProjectId, `后台任务进度刷新失败：${errorText(error)}`)
       }
     }
-  }, { intervalMs: 2000, enabled, skipWhenHidden: true }, [latestRun?.id, latestRun?.status, tab])
+  }, { intervalMs: 2000, enabled, skipWhenHidden: true }, [latestRun?.id, latestRun?.status, tab, isCurrentRunScope])
 }

@@ -25,6 +25,7 @@ from .common import (
 )
 from .semantic_qa import run_semantic_qa_report
 from .subprocess_runner import run_subprocess, run_subprocess_allow_failure
+from .translation_tasks import translation_task_continuation_metadata
 
 
 WORKBOOK_ID_HEADER_ALIASES = ["id", "key", "编号", "序号"]
@@ -358,6 +359,7 @@ def create_manual_fix_qa_run(
             "manual_fix_source_artifact_id": source_artifact["id"],
             "manual_fix_count": len(applied),
             "manual_fixes": applied,
+            **translation_task_continuation_metadata(source_run),
         },
     )
 

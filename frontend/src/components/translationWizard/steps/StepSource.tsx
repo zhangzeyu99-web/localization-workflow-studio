@@ -60,7 +60,7 @@ export function StepSource({
       <div className="panel-desc">上传语言表，系统自动分流。</div>
       <div className="action-card input-type-card">
         <div className="input-source-grid">
-          <AssetSelect label="选择已有语言表" project={displayProject} role="language_source" value={sourceArtifact && invalidSourceArtifactIds.includes(sourceArtifact.id) ? null : sourceArtifact} onChange={setSourceArtifact} />
+          <AssetSelect label="选择已有语言表" project={displayProject} role="language_source" value={sourceArtifact && invalidSourceArtifactIds.includes(sourceArtifact.id) ? null : sourceArtifact} onChange={setSourceArtifact} allowEmpty />
           <FileBoxWithTemplate label="上传语言表" onFile={onUploadSource} templateKind="language-table" />
         </div>
         {notice ? (

@@ -121,7 +121,7 @@ export function StepFreqV2({
             {reviewPreview.length ? (
               <div className="table-scroll">
                 <table className="pending-term-table">
-                  <thead><tr><th>状态</th><th>ID</th><th>CN</th><th>{lang.targetHeader}</th><th>{lang.altHeader}</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
+                  <thead><tr><th>状态</th><th>ID</th><th>CN</th><th>{lang.targetHeader}</th><th>分类</th><th>备注</th><th>操作</th></tr></thead>
                   <tbody>
                     {reviewPreview.map((term) => (
                       <PendingTermReviewRowV2
@@ -170,7 +170,6 @@ export function PendingTermReviewRowV2({
     term_key: candidate.term_key || '',
     source: candidate.source || '',
     target: candidate.target || '',
-    target_alt: candidate.target_alt || '',
     category: candidate.category || '',
     note: normalizeGlossaryNote(candidate.note)
   })
@@ -180,12 +179,11 @@ export function PendingTermReviewRowV2({
       term_key: candidate.term_key || '',
       source: candidate.source || '',
       target: candidate.target || '',
-      target_alt: candidate.target_alt || '',
       category: candidate.category || '',
       note: normalizeGlossaryNote(candidate.note)
     })
     setEditing(false)
-  }, [candidate.id, candidate.term_key, candidate.source, candidate.target, candidate.target_alt, candidate.category, candidate.note])
+  }, [candidate.id, candidate.term_key, candidate.source, candidate.target, candidate.category, candidate.note])
 
   const canAcceptDraft = Boolean(draft.target.trim())
   const canAcceptCandidate = Boolean(candidate.target?.trim())
@@ -208,7 +206,6 @@ export function PendingTermReviewRowV2({
       <td>{cell('term_key')}</td>
       <td>{cell('source')}</td>
       <td>{cell('target')}</td>
-      <td>{cell('target_alt')}</td>
       <td>{cell('category')}</td>
       <td>{cell('note')}</td>
       <td>

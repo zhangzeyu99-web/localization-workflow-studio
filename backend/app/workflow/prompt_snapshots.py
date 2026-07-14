@@ -185,11 +185,11 @@ def create_project_glossary_snapshot(
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["ID", "CN", spec.target_header, *(["EN2"] if spec.alt_header else []), "分类", "备注"])
+    ws.append(["ID", "CN", spec.target_header, "分类", "备注"])
     terms = db.list_glossary_terms(project_id, language=language)
     seen_sources: set[str] = set()
     for term in reversed(terms):
-        ws.append(_glossary_export_row(term, include_alt=bool(spec.alt_header)))
+        ws.append(_glossary_export_row(term, include_alt=False))
         source_key = str(term.get("source") or "").strip()
         if source_key:
             seen_sources.add(source_key)
@@ -213,7 +213,6 @@ def create_project_glossary_snapshot(
                         row.get("term_key", ""),
                         source,
                         target,
-                        *( [row.get("target_alt", "")] if spec.alt_header else [] ),
                         row.get("category", ""),
                         row.get("note", ""),
                     ])

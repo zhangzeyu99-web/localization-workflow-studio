@@ -307,6 +307,8 @@ wb.close()
   await selectWizardStep(page, 4)
   await expect(page.getByTestId('step-menu-toggle')).toContainText('判定输入')
   const sourceSelect = page.locator('.step-panel.active label.asset-select select')
+  await expect(sourceSelect).toHaveValue('')
+  await sourceSelect.selectOption(uploadedArtifactIds.get(second.id)!)
   await expect(sourceSelect).toHaveValue(uploadedArtifactIds.get(second.id)!)
   await expect(sourceSelect.locator('option:checked')).toContainText('second-scope')
   await expect(sourceSelect.locator('option:checked')).not.toContainText('first-scope')
@@ -319,6 +321,486 @@ wb.close()
   await expect(page.getByTestId('step-menu-toggle')).toContainText('判定输入')
   await expect(sourceSelect).toHaveValue(uploadedArtifactIds.get(second.id)!)
 })
+
+test('new translation task lets the user continue or discard an unfinished draft', async ({ page, request }) => {
+  const projectName = `E2E Translation Draft Choice ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Draft choice regression.' },
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 4)
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
+
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await expect(page.getByRole('alertdialog')).toContainText('已有未完成翻译任务')
+  await expect(page.getByTestId('confirm-modal-cancel')).toHaveText('继续当前任务')
+  await expect(page.getByTestId('confirm-modal-confirm')).toHaveText('放弃草稿并新建')
+  await page.getByTestId('confirm-modal-cancel').click()
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('判定输入')
+
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await page.getByTestId('confirm-modal-confirm').click()
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await expect(page.getByRole('heading', { name: '新翻译任务', exact: true })).toBeVisible()
+})
+
+
+test('new translation task redirects to the active multilingual task without creating another run', async ({ page, request }) => {
+  const projectName = `E2E Running Translation Redirect ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Running task redirect regression.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'running-task-source.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  for (const [kind, language] of [['translation', 'en'], ['qa', 'ko']]) {
+    const created = await request.post(`${baseURL}/api/runs`, {
+      data: {
+        project_id: project.id,
+        kind,
+        language,
+        input_artifact_id: source.id,
+        task_origin: kind === 'qa' ? 'translation_continuation' : 'translation_run',
+        translation_task_id: 'task-running-multilingual',
+      },
+    })
+    expect(created.ok()).toBeTruthy()
+  }
+
+  const beforeRuns = await request.get(`${baseURL}/api/runs?project_id=${project.id}`).then((response) => response.json())
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('QA 校对')
+  await expect(page.getByTestId('multilingual-workflow-board').locator('[data-testid^="multilingual-language-"]')).toHaveCount(2)
+  await expect(page.locator('.status')).toContainText('已带你回到当前任务')
+  const afterRuns = await request.get(`${baseURL}/api/runs?project_id=${project.id}`).then((response) => response.json())
+  expect(afterRuns).toHaveLength(beforeRuns.length)
+})
+
+test('redirecting to an externally active task clears a stale upload busy lock', async ({ page, request }) => {
+  const projectName = `E2E Active Task Busy Reset ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Active task redirect busy reset regression.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'external-active-task-source.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+
+  let uploadRequested = false
+  let uploadCompleted = false
+  let releaseUpload!: () => void
+  const uploadGate = new Promise<void>((resolve) => { releaseUpload = resolve })
+  await page.route(`**/api/projects/${project.id}/files?kind=language_table`, async (route) => {
+    uploadRequested = true
+    await uploadGate
+    await route.continue()
+    uploadCompleted = true
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 4)
+  await page.locator('label.upload-box', { hasText: '上传语言表' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
+  await expect.poll(() => uploadRequested).toBeTruthy()
+  await expect(page.locator('.inline-status.running')).toBeVisible()
+
+  const externalRun = await request.post(`${baseURL}/api/runs`, {
+    data: {
+      project_id: project.id,
+      kind: 'translation',
+      language: 'en',
+      input_artifact_id: source.id,
+      task_origin: 'translation_run',
+      translation_task_id: 'task-external-active',
+    },
+  })
+  expect(externalRun.ok()).toBeTruthy()
+
+  try {
+    await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+    await expect(page.getByTestId('step-menu-toggle')).toContainText('AI 翻译')
+    await expect(page.locator('.inline-status.running')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '暂停', exact: true })).toBeEnabled()
+  } finally {
+    releaseUpload()
+  }
+  await expect.poll(() => uploadCompleted).toBeTruthy()
+  await expect(page.locator('.inline-status.running')).toHaveCount(0)
+})
+
+test('stale source upload cannot overwrite a replacement translation task', async ({ page, request }) => {
+  const projectName = `E2E Source Upload Stale Guard ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Source upload task race regression.' },
+  }).then((response) => response.json())
+
+  let uploadRequested = false
+  let uploadCompleted = false
+  let releaseUpload!: () => void
+  const uploadGate = new Promise<void>((resolve) => { releaseUpload = resolve })
+  await page.route(`**/api/projects/${project.id}/files?kind=language_table`, async (route) => {
+    uploadRequested = true
+    await uploadGate
+    await route.continue()
+    uploadCompleted = true
+  })
+  let analysisRequested = false
+  let analysisCompleted = false
+  let releaseAnalysis!: () => void
+  const analysisGate = new Promise<void>((resolve) => { releaseAnalysis = resolve })
+  await page.route(`**/api/projects/${project.id}/analyze`, async (route) => {
+    analysisRequested = true
+    await analysisGate
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ project, analysis: { summary: { parsed: 0, total: 0 }, language_table_candidates: [] } }),
+    })
+    analysisCompleted = true
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 4)
+  await page.locator('label.upload-box', { hasText: '上传语言表' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
+  await expect.poll(() => uploadRequested).toBeTruthy()
+
+  await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+  await page.getByTestId('confirm-modal-confirm').click()
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await expect(page.locator('.status')).toContainText('新的翻译任务已就绪')
+
+  await selectWizardStep(page, 2)
+  await page.getByRole('button', { name: '开始分析', exact: true }).click()
+  await expect.poll(() => analysisRequested).toBeTruthy()
+  await expect(page.locator('.inline-status.running')).toBeVisible()
+
+  try {
+    releaseUpload()
+    await expect.poll(() => uploadCompleted).toBeTruthy()
+    await expect(page.locator('.inline-status.running')).toBeVisible()
+    await expect(page.locator('.status')).toContainText('正在读取项目资料并调用 AI 分析')
+  } finally {
+    releaseAnalysis()
+  }
+  await expect.poll(() => analysisCompleted).toBeTruthy()
+  await selectWizardStep(page, 4)
+  await expect(page.locator('.step-panel.active label.asset-select select')).toHaveValue('')
+})
+
+test('stale translation upload cannot attach a QA artifact to a replacement translation task', async ({ page, request }) => {
+  const projectName = `E2E Translation Upload Stale Guard ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Translation upload task race regression.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'translation-upload-stale-source.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+
+  let uploadRequested = false
+  let uploadCompleted = false
+  let releaseUpload!: () => void
+  const uploadGate = new Promise<void>((resolve) => { releaseUpload = resolve })
+  await page.route(`**/api/projects/${project.id}/files?kind=final_workbook`, async (route) => {
+    uploadRequested = true
+    await uploadGate
+    await route.continue()
+    uploadCompleted = true
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 4)
+  await page.locator('.step-panel.active label.asset-select select').selectOption(source.id)
+  await selectWizardStep(page, 8)
+  await page.locator('label.upload-box', { hasText: '上传译文' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
+  await expect.poll(() => uploadRequested).toBeTruthy()
+
+  await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+  await page.getByTestId('confirm-modal-confirm').click()
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await expect(page.locator('.status')).toContainText('新的翻译任务已就绪')
+
+  releaseUpload()
+  await expect.poll(() => uploadCompleted).toBeTruthy()
+  await expect(page.locator('.status')).toContainText('新的翻译任务已就绪')
+  await expect(page.locator('.inline-status.running')).toHaveCount(0)
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
+  await page.getByRole('button', { name: '校对', exact: true }).click()
+  await expect(page.getByTestId('qa-outcome-panel').locator('.qa-current-grid')).toContainText('未选择')
+  await expect(page.getByTestId('qa-outcome-panel').locator('.qa-current-grid')).not.toContainText(fileName(sourceWorkbook))
+})
+
+test('stale source inspection cannot overwrite a replacement translation task', async ({ page, request }) => {
+  const projectName = `E2E Translation Stale Guard ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Same-project task race regression.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'stale-guard-source.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+
+  await page.route(`**/api/projects/${project.id}/artifacts/${source.id}/translation-readiness?**`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    await route.continue()
+  })
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 4)
+  await page.locator('.step-panel.active label.asset-select select').selectOption(source.id)
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await page.getByTestId('confirm-modal-confirm').click()
+  await page.waitForTimeout(1500)
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await selectWizardStep(page, 4)
+  await expect(page.locator('.step-panel.active label.asset-select select')).toHaveValue('')
+  await expect(page.locator('.translation-readiness-box')).toContainText('等待语言表')
+})
+
+test('stale legacy task response cannot overwrite a replacement translation task', async ({ page, request }) => {
+  const projectName = `E2E Legacy Translation Stale Guard ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Legacy task race regression.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'legacy-stale-guard-source.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const legacyRun = await request.post(`${baseURL}/api/runs`, {
+    data: {
+      project_id: project.id,
+      kind: 'translation',
+      language: 'en',
+      input_artifact_id: source.id,
+      batch_size: 2,
+      task_code: 'T',
+    },
+  }).then((response) => response.json())
+  await request.post(`${baseURL}/api/runs/${legacyRun.id}/translate/cancel`)
+
+  let targetsRequested = 0
+  await page.route(`**/api/projects/${project.id}/artifacts/${source.id}/translation-targets`, async (route) => {
+    targetsRequested += 1
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        artifact_id: source.id,
+        label: source.label,
+        supported_file: true,
+        source_detected: true,
+        detected_languages: ['ko'],
+        suggested_language: 'ko',
+        reason: 'detected',
+      }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await expect(page.getByRole('alertdialog')).toContainText('已有未完成翻译任务')
+  await page.getByTestId('confirm-modal-cancel').click()
+  await expect.poll(() => targetsRequested).toBeGreaterThan(0)
+
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await expect(page.getByRole('alertdialog')).toContainText('已有未完成翻译任务')
+  await page.getByTestId('confirm-modal-confirm').click()
+
+  await page.waitForTimeout(1500)
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await expect(page.locator('.status')).toContainText('新的翻译任务已就绪')
+})
+
+test('stale project analysis cannot attach candidates to a replacement translation task', async ({ page, request }) => {
+  const projectName = `E2E Analysis Stale Guard ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Analysis task race regression.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'analysis-stale-guard-source.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const projectSnapshot = await request.get(`${baseURL}/api/projects/${project.id}`).then((response) => response.json())
+
+  let analysisRequested = 0
+  await page.route(`**/api/projects/${project.id}/analyze`, async (route) => {
+    analysisRequested += 1
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        project: projectSnapshot,
+        analysis: {
+          summary: { parsed: 1, total: 1 },
+          language_table_candidates: [{ artifact_id: source.id }],
+        },
+      }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 2)
+  await page.getByRole('button', { name: '开始分析', exact: true }).click()
+  await expect.poll(() => analysisRequested).toBeGreaterThan(0)
+
+  await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+  await expect(page.getByRole('alertdialog')).toContainText('已有未完成翻译任务')
+  await page.getByTestId('confirm-modal-confirm').click()
+
+  await page.waitForTimeout(1500)
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  await expect(page.locator('.status')).toContainText('新的翻译任务已就绪')
+})
+
+test('stale glossary extraction cannot hydrate a replacement translation task', async ({ page, request }) => {
+  const projectName = `E2E Glossary Stale Guard ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'lifecycle', description: 'Glossary task race regression.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: 'glossary-stale-source.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+
+  let extractionResolved = false
+  await page.route(`**/api/projects/${project.id}/artifacts/${source.id}/translation-readiness?**`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        artifact_id: source.id,
+        label: source.label,
+        target_language: 'en',
+        source_rows: 2,
+        translated_rows: 0,
+        empty_target_rows: 2,
+        cjk_target_rows: 0,
+        needs_translation: true,
+        ready_for_translation: true,
+        ready_for_qa: false,
+        reason: 'target_column_empty',
+        batch_size: 90,
+        estimated_batches: 1,
+        input_mode: 'needs_translation',
+        next_step: 5,
+      }),
+    })
+  })
+  await page.route(`**/api/projects/${project.id}/glossary/extract`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    extractionResolved = true
+    const now = new Date().toISOString()
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        run: { id: 'run-stale-glossary', project_id: project.id, kind: 'glossary', language: 'en', status: 'passed', created_at: now, updated_at: now, metadata: {} },
+        artifacts: [{ id: 'artifact-stale-glossary', project_id: project.id, run_id: 'run-stale-glossary', kind: 'glossary_final', label: 'stale glossary', path: 'stale.xlsx', created_at: now }],
+        glossary_backfill: { candidates: 1, unique_candidates: 1, pending_confirmation: 1 },
+      }),
+    })
+  })
+  await page.route(`**/api/projects/${project.id}/glossary/batches?**`, async (route) => {
+    const batch = {
+      id: 'batch-stale-glossary',
+      project_id: project.id,
+      label: 'stale batch',
+      status: 'pending',
+      language: 'en',
+      source_artifact_id: source.id,
+      counts: { pending: 1, accepted: 0, rejected: 0 },
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(extractionResolved ? {
+        batches: [batch],
+        active_batch: batch,
+        candidates: [{
+          id: 'candidate-stale-glossary', batch_id: batch.id, project_id: project.id,
+          term_key: 'stale', source: '旧任务术语', target: 'Stale', target_alt: '', language: 'en',
+          category: 'stale', note: 'must not hydrate replacement task', status: 'pending',
+        }],
+      } : { batches: [], active_batch: null, candidates: [] }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 4)
+  await page.locator('.step-panel.active label.asset-select select').selectOption(source.id)
+  await selectWizardStep(page, 5)
+  await page.getByRole('button', { name: '扫描候选' }).click()
+  await expect(inlineStatus(page, '正在从待翻译语言表扫描术语候选')).toBeVisible()
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await page.getByTestId('confirm-modal-confirm').click()
+
+  await page.waitForTimeout(1700)
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await expect(page.locator('.status')).toContainText('新的翻译任务已就绪')
+  await selectWizardStep(page, 5)
+  await expect(page.locator('.pending-term-table')).toHaveCount(0)
+})
+
 
 test('deleting the active project refreshes the list and lands on a surviving project', async ({ page, request }) => {
   const keepName = `E2E Delete Keep ${Date.now()}`
@@ -401,6 +883,7 @@ test('user can complete the EN localization workflow from project tabs', async (
   const manualPrompt = '\u4eba\u5de5\u4fee\u8ba2\u9879\u76ee\u63d0\u793a\u8bcd\uff1a\u4fdd\u6301 UI \u7b80\u6d01\uff0c\u672f\u8bed\u4e25\u683c\u6309\u9879\u76ee\u8868\u6267\u884c\u3002'
   await page.locator('textarea.prompt-editor').fill(manualPrompt)
   await page.locator('.reference-card .row-actions .btn-primary').click()
+  await expect(page.locator('textarea.prompt-editor')).toHaveCount(0)
   const promptProjects = await request.get(`${baseURL}/api/projects`).then((response) => response.json())
   const promptSavedProject = promptProjects.find((item: { name: string }) => item.name === projectName)
   expect(promptSavedProject.prompt_text).toBe(manualPrompt)
@@ -412,7 +895,6 @@ test('user can complete the EN localization workflow from project tabs', async (
   await page.locator('input[name="term_key"]').fill('T-1')
   await page.locator('input[name="source"]').fill('战机')
   await page.locator('input[name="target"]').fill('Warplane')
-  await page.locator('input[name="target_alt"]').fill('Fighter')
   await page.locator('input[name="category"]').fill('unit')
   await page.locator('input[name="note"]').fill('E2E manual glossary assertion')
   await page.getByRole('button', { name: '+ 新增 EN' }).click()
@@ -421,7 +903,6 @@ test('user can complete the EN localization workflow from project tabs', async (
   const glossaryRow = page.locator('.glossary-table tbody tr').first()
   await expect(glossaryRow.getByText('战机')).toBeVisible()
   await expect(glossaryRow.getByText('Warplane')).toBeVisible()
-  await expect(glossaryRow.getByText('Fighter')).toBeVisible()
   await glossaryRow.getByRole('button', { name: '编辑' }).click()
   await glossaryRow.locator('input').nth(2).fill('Fighter Jet')
   await glossaryRow.getByRole('button', { name: '保存' }).click()
@@ -433,7 +914,7 @@ test('user can complete the EN localization workflow from project tabs', async (
   expect(project).toBeTruthy()
   const exportedGlossary = await request.get(`${baseURL}/api/projects/${project.id}/glossary/export?format=json`)
   const exportedTerms = (await exportedGlossary.json()).terms
-  expect(exportedTerms).toContainEqual(expect.objectContaining({ source: '战机', target: 'Fighter Jet', target_alt: 'Fighter' }))
+  expect(exportedTerms).toContainEqual(expect.objectContaining({ source: '战机', target: 'Fighter Jet', target_alt: '' }))
   expect(Object.keys(exportedTerms[0])).not.toContain('source_type')
   expect(Object.keys(exportedTerms[0])).not.toContain('confirmed')
 
@@ -462,6 +943,9 @@ test('user can complete the EN localization workflow from project tabs', async (
   await expect(inlineStatus(page, '最终交付已生成：2 个文件')).toBeVisible({ timeout: 30000 })
   await expect(page.getByRole('link', { name: '下载最终译文' })).toBeVisible()
   await expect(page.getByRole('link', { name: '下载修改记录' })).toBeVisible()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await expect(page.locator('.workflow-file-link')).toHaveCount(0)
 })
 
 test('real project formal translation is blocked without configured API credential', async ({ page, request }) => {
@@ -599,10 +1083,75 @@ test('new translation task exposes the full supported language set', async ({ pa
   const jpButton = page.getByRole('button', { name: /JP 日语/ })
   await krButton.click()
   await jpButton.click()
+  await page.waitForTimeout(750)
   await expect(enButton).toHaveClass(/selected/)
   await expect(krButton).toHaveClass(/selected/)
   await expect(jpButton).toHaveClass(/selected/)
   await expect(jpButton).toHaveClass(/current/)
+})
+
+test('EN glossary candidate review exposes one translation column', async ({ page, request }) => {
+  const projectName = `E2E Single EN Candidate ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'glossary', description: 'Single EN candidate column regression.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const batch = {
+    id: 'batch-single-en',
+    project_id: project.id,
+    label: 'Single EN candidates',
+    status: 'pending',
+    language: 'en',
+    source_artifact_id: source.id,
+    counts: { pending: 1, accepted: 0, rejected: 0 },
+  }
+  await page.route(`**/api/projects/${project.id}/glossary/batches?**`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        batches: [batch],
+        active_batch: batch,
+        candidates: [{
+          id: 'candidate-single-en',
+          batch_id: batch.id,
+          project_id: project.id,
+          term_key: 'term-1',
+          source: '战机',
+          target: 'Warplane',
+          target_alt: 'Fighter',
+          language: 'en',
+          category: 'unit',
+          note: 'legacy alternate must stay hidden',
+          status: 'pending',
+        }],
+      }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 4)
+  await page.locator('.step-panel.active label.asset-select select').selectOption(source.id)
+  await selectWizardStep(page, 5)
+
+  const table = page.locator('.pending-term-table')
+  await expect(table).toBeVisible()
+  await expect(table.locator('thead')).not.toContainText('EN2')
+  await expect(table.locator('thead th')).toHaveCount(7)
+  const row = table.locator('tbody tr').first()
+  await expect(row.locator('td')).toHaveCount(7)
+  await row.getByRole('button', { name: '编辑' }).click()
+  await expect(row.locator('input')).toHaveCount(5)
 })
 
 test('language table headers auto-select targets and start one multilingual queue', async ({ page, request }) => {
@@ -645,6 +1194,8 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+  await selectWizardStep(page, 4)
+  await page.locator('.step-panel.active label.asset-select select').selectOption(artifact.id)
   await selectWizardStep(page, 6)
   await expect(page.locator('.step-panel.active .lang-chip.selected')).toHaveCount(10)
 
@@ -715,6 +1266,119 @@ test('multilingual workflow separates structural reruns from deliverable QA issu
 })
 
 
+test('formal workflow selectors isolate runs by translation task id', async ({ page }) => {
+  await page.goto(baseURL)
+  const result = await page.evaluate(async () => {
+    const { matchesTranslationRun, findVisibleQualityRun } = await import('/src/domain/translationFlow.ts')
+    const project = {
+      id: 'project-1',
+      runs: [
+        {
+          id: 'run-old', project_id: 'project-1', kind: 'translation', language: 'en', status: 'passed',
+          created_at: '2026-07-14T01:00:00Z', updated_at: '2026-07-14T01:00:00Z',
+          metadata: { input_artifact_id: 'source-1', task_origin: 'translation_run', translation_task_id: 'task-old' },
+        },
+        {
+          id: 'run-new', project_id: 'project-1', kind: 'translation', language: 'en', status: 'queued',
+          created_at: '2026-07-14T02:00:00Z', updated_at: '2026-07-14T02:00:00Z',
+          metadata: { input_artifact_id: 'source-1', task_origin: 'translation_run', translation_task_id: 'task-new' },
+        },
+      ],
+    } as any
+    return {
+      oldDoesNotMatchNew: matchesTranslationRun(project.runs[0], 'en', 'source-1', 'translation_run', 'task-new'),
+      visibleNew: findVisibleQualityRun(project, 'en', 'source-1', 'task-new')?.id,
+      missingTask: findVisibleQualityRun(project, 'en', 'source-1', 'task-missing')?.id || null,
+    }
+  })
+
+  expect(result).toEqual({ oldDoesNotMatchNew: false, visibleNew: 'run-new', missingTask: null })
+})
+
+
+test('wizard delivery run stays inside the current translation task', async ({ page }) => {
+  await page.goto(baseURL)
+  const result = await page.evaluate(async () => {
+    const { findWizardDeliveryRun } = await import('/src/components/translationWizard/steps/StepDone.tsx')
+    const project = {
+      id: 'project-1',
+      runs: [{
+        id: 'run-old', project_id: 'project-1', kind: 'translation', language: 'en', status: 'passed',
+        created_at: '2026-07-14T01:00:00Z', updated_at: '2026-07-14T01:00:00Z',
+        metadata: { input_artifact_id: 'source-1', translation_task_id: 'task-old' },
+        artifacts: [{ id: 'artifact-old', project_id: 'project-1', run_id: 'run-old', kind: 'qa_final_workbook' }],
+      }],
+    } as any
+    const scope = { inputArtifactId: 'source-1', language: 'en' }
+    return {
+      oldTask: findWizardDeliveryRun(project, project.runs[0], { ...scope, translationTaskId: 'task-old' })?.id || null,
+      newTask: findWizardDeliveryRun(project, project.runs[0], { ...scope, translationTaskId: 'task-new' })?.id || null,
+    }
+  })
+
+  expect(result).toEqual({ oldTask: 'run-old', newTask: null })
+})
+
+
+test('translation task lifecycle groups multilingual runs and ignores closed tasks', async ({ page }) => {
+  await page.goto(baseURL)
+  const result = await page.evaluate(async () => {
+    const {
+      findActiveFormalTask,
+      findUnfinishedFormalTask,
+      translationTaskResumeStep,
+    } = await import('/src/domain/translationTaskLifecycle.ts')
+    const run = (id: string, kind: string, language: string, status: string, taskId: string, state = '') => ({
+      id,
+      project_id: 'project-1',
+      kind,
+      language,
+      status,
+      created_at: `2026-07-14T0${id.length}:00:00Z`,
+      updated_at: `2026-07-14T0${id.length}:00:00Z`,
+      metadata: {
+        input_artifact_id: 'source-1',
+        parent_input_artifact_id: 'source-1',
+        task_origin: 'translation_run',
+        translation_task_id: taskId,
+        translation_task_state: state,
+      },
+    })
+    const activeProject = {
+      id: 'project-1',
+      runs: [
+        run('run-ko-qa', 'qa', 'ko', 'running', 'task-running'),
+        run('run-en', 'translation', 'en', 'passed', 'task-running'),
+        run('run-delivered', 'translation', 'fr', 'failed', 'task-delivered', 'delivered'),
+      ],
+    } as any
+    const active = findActiveFormalTask(activeProject)
+    const unfinishedProject = {
+      id: 'project-1',
+      runs: [
+        run('run-closed', 'translation', 'fr', 'failed', 'task-closed', 'abandoned'),
+        run('run-unfinished', 'translation', 'en', 'passed', 'task-unfinished'),
+        { ...run('run-legacy', 'translation', 'en', 'passed', ''), metadata: { input_artifact_id: 'source-1', task_origin: 'translation_run' } },
+      ],
+    } as any
+    const unfinished = findUnfinishedFormalTask(unfinishedProject)
+    return {
+      activeId: active?.id || null,
+      activeLanguages: active?.languages || [],
+      activeStep: active ? translationTaskResumeStep(active) : 0,
+      unfinishedId: unfinished?.id || null,
+    }
+  })
+
+  expect(result).toEqual({
+    activeId: 'task-running',
+    activeLanguages: ['ko', 'en'],
+    activeStep: 8,
+    unfinishedId: 'task-unfinished',
+  })
+})
+
+
 test('multilingual task stays in one flow through translation, QA overview, and merged delivery', async ({ page, request }) => {
   await request.patch(`${baseURL}/api/settings`, {
     data: {
@@ -743,7 +1407,7 @@ ws.append([2, "开始游戏", "", "", ""])
 wb.save(sys.argv[1])
 wb.close()
 `, workbook])
-  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+  const sourceArtifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
     multipart: {
       file: {
         name: fileName(workbook),
@@ -751,11 +1415,13 @@ wb.close()
         buffer: fs.readFileSync(workbook),
       },
     },
-  })
+  }).then((response) => response.json())
 
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
+  await selectWizardStep(page, 4)
+  await page.locator('.step-panel.active label.asset-select select').selectOption(sourceArtifact.id)
   await selectWizardStep(page, 7)
   await expect(page.locator('[data-testid^="multilingual-language-"]')).toHaveCount(3)
   await page.getByTestId('multilingual-translate').click()
@@ -769,6 +1435,13 @@ wb.close()
   await expect(page.getByTestId('multilingual-delivery-results').locator(':scope > div')).toHaveCount(3, { timeout: 30000 })
   await expect(page.locator('.workflow-file-link')).toHaveCount(2)
   await expect(page.getByTestId('wizard-generate-delivery')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '返回项目', exact: true })).toBeVisible()
+  await expect(page.getByTestId('start-next-translation-task')).toHaveText(/开始下一翻译任务/)
+  await page.getByRole('button', { name: '返回项目', exact: true }).click()
+  await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
+  await selectWizardStep(page, 4)
+  await expect(page.locator('.step-panel.active label.asset-select select')).toHaveValue('')
 })
 
 
@@ -908,8 +1581,8 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('.quick-entry').first().click()
-  await selectWizardStep(page, 4)
-  await page.locator('.asset-select select').selectOption(upload.id)
+  await expect(page.getByRole('alertdialog')).toContainText('已有未完成翻译任务')
+  await page.getByTestId('confirm-modal-cancel').click()
   await selectWizardStep(page, 7)
   await page.locator('details.translation-details > summary').click()
   await expect(page.getByTestId('large-text-panel')).toBeVisible()
@@ -1208,6 +1881,15 @@ test('project tabs show multilingual wide glossary and archive assets', async ({
     data: { name: projectName, type: 'wide', description: 'Multilingual wide table smoke.' },
   })
   const project = await createResponse.json()
+  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  })
   await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
     data: { term_key: 'plane', source: '战机', target: 'Warplane', target_alt: 'Fighter', language: 'en', category: 'unit', note: 'wide' },
   })
@@ -1231,19 +1913,26 @@ test('project tabs show multilingual wide glossary and archive assets', async ({
   await expect(page.locator('.stat-grid')).toContainText('已归档文本')
 
   await page.locator('.view-tabs .view-tab').nth(1).click()
+  const manualGlossaryTools = page.getByTestId('manual-glossary-tools')
+  await manualGlossaryTools.locator('summary').click()
+  await manualGlossaryTools.getByRole('button', { name: 'KR 韩语' }).click()
+  await page.waitForTimeout(750)
+  await expect(page.locator('input[name="target"]')).toHaveAttribute('placeholder', 'KR')
+  await expect(page.getByRole('button', { name: '+ 新增 KR' })).toBeVisible()
   await expect(page.locator('.glossary-wide-table thead')).toContainText('EN')
-  await expect(page.locator('.glossary-wide-table thead')).toContainText('EN2')
+  await expect(page.locator('.glossary-wide-table thead')).not.toContainText('EN2')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR2')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP2')
+  await expect(page.getByPlaceholder('EN2')).toHaveCount(0)
   await page.getByTestId('glossary-display-lang-ko').click()
   await page.getByTestId('glossary-display-lang-ja').click()
   await expect(page.locator('.glossary-wide-table thead')).toContainText('KR')
   await expect(page.locator('.glossary-wide-table thead')).toContainText('JP')
   const glossaryRow = page.locator('.glossary-wide-table tbody tr', { hasText: '战机' }).first()
   await expect(glossaryRow).toContainText('Warplane')
-  await expect(glossaryRow).toContainText('Fighter')
+  await expect(glossaryRow).not.toContainText('Fighter')
   await expect(glossaryRow).toContainText('전투기')
   await expect(glossaryRow).toContainText('戦闘機')
 
@@ -1343,7 +2032,7 @@ wb.close()
   await page.getByTestId('glossary-display-lang-ja').click()
   const wideRow = page.locator('.glossary-wide-table tbody tr', { hasText: '战机' }).first()
   await expect(wideRow).toContainText('Warplane')
-  await expect(wideRow).toContainText('Fighter')
+  await expect(wideRow).not.toContainText('Fighter')
   await expect(wideRow).toContainText('전투기')
   await expect(wideRow).toContainText('戦闘機')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR2')
@@ -1615,7 +2304,7 @@ wb.close()
 })
 
 
-test('wizard QA refreshes readiness after manually selecting another translated language table', async ({ page, request }) => {
+test('wizard QA refreshes readiness after manually selecting a translated language table', async ({ page, request }) => {
   const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-manual-readiness-'))
   const emptyWorkbook = path.join(fixtureDir, 'empty-language.xlsx')
   const translatedWorkbook = path.join(fixtureDir, 'manual-translated-language.xlsx')
@@ -1667,7 +2356,9 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '\u65b0\u7ffb\u8bd1\u4efb\u52a1', exact: true }).click()
-  await selectWizardStep(page, 8)
+  await selectWizardStep(page, 4)
+  await page.locator('.step-panel.active label.asset-select select').selectOption(translatedArtifact.id)
+  await page.getByRole('button', { name: '去校对' }).click()
   await page.locator('.step-panel.active label.asset-select select').selectOption(translatedArtifact.id)
 
   const skipPanel = page.locator('details.manual-maintenance', { hasText: '\u4e34\u65f6\u8df3\u8fc7 QA \u76f4\u63a5\u5f52\u6863' })
@@ -1885,7 +2576,7 @@ wb.close()
     },
   }).then((response) => response.json())
   const run = await request.post(`${baseURL}/api/runs`, {
-    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: upload.id },
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: upload.id, translation_task_id: 'translation-evidence-task' },
   }).then((response) => response.json())
   const translated = await request.post(`${baseURL}/api/runs/${run.id}/translate`, {
     data: { provider: 'test-fake', enable_line_proofread: true },
@@ -1895,6 +2586,7 @@ wb.close()
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await page.getByTestId('confirm-modal-cancel').click()
   await selectWizardStep(page, 7)
   const referenceAudit = page.getByTestId('translation-reference-audit')
   await expect(referenceAudit).toContainText('已检索 2 条项目译文', { timeout: 20000 })
@@ -1908,7 +2600,7 @@ test('workflow remains usable without page overflow at compact desktop and mobil
   const project = await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'responsive', description: 'Responsive workbench smoke.' },
   }).then((response) => response.json())
-  await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+  const sourceArtifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
     multipart: {
       file: {
         name: fileName(sourceWorkbook),
@@ -1916,14 +2608,16 @@ test('workflow remains usable without page overflow at compact desktop and mobil
         buffer: fs.readFileSync(sourceWorkbook),
       },
     },
-  })
+  }).then((response) => response.json())
 
   for (const viewport of [{ width: 1125, height: 903 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport)
     await page.goto(baseURL)
     await page.getByRole('button', { name: projectName }).click()
     await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
-    await selectWizardStep(page, 8)
+    await selectWizardStep(page, 4)
+    await page.locator('.step-panel.active label.asset-select select').selectOption(sourceArtifact.id)
+    await selectWizardStep(page, 7)
     await expect(page.locator('.phase-item.active')).toContainText('处理')
     await expect(page.locator('.actions .btn-primary')).toBeVisible()
     const dimensions = await page.evaluate(() => ({
