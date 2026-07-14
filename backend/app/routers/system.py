@@ -213,6 +213,7 @@ def get_active_jobs() -> list[dict[str, Any]]:
                 "project_id": project_id,
                 "project_name": project_name,
                 "started_at": entry.get("started_at"),
+                "operator_name": str(entry.get("operator_name") or ""),
             }
         )
     return result

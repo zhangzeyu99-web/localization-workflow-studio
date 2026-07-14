@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from .. import db
+from .. import db, operator_context
 from ..ai_input_audit import announcement_ai_input_summary
 from ..jobs import (
-    active_job_id_for_project,
+    active_job_for_project,
     cancel_singleton_job,
     start_singleton_job,
 )
@@ -249,11 +249,16 @@ def _start_announcement_translation_background(task_id: str, payload: Announceme
         task = get_announcement_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc
+    operator_context.require_operator_for_cloud()
     project_id = task["project_id"]
-    active = active_job_id_for_project(project_id)
+    active = active_job_for_project(project_id)
+    active_job_id = str((active or {}).get("job_id") or "")
     job_id = f"announcement:{task_id}"
-    if active and active != job_id:
-        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
+    if active_job_id and active_job_id != job_id:
+        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", **(active or {})}))
+    original_status = str(task.get("status") or "prepared")
+    original_step = int(task.get("current_step") or 1)
+    original_metadata = dict(task.get("metadata") or {})
     db.merge_announcement_task_metadata(task_id, {"queued_at": db.now_iso()})
     db.update_announcement_task(task_id, status="queued", current_step=7)
 
@@ -271,6 +276,12 @@ def _start_announcement_translation_background(task_id: str, payload: Announceme
 
     started, conflict = start_singleton_job(project_id, job_id, worker)
     if not started and conflict:
+        db.update_announcement_task(
+            task_id,
+            status=original_status,
+            current_step=original_step,
+            metadata=original_metadata,
+        )
         raise HTTPException(status_code=409, detail=_job_conflict_detail(conflict))
     return {"task": get_announcement_task(task_id), "summary": {"status": "queued"}}
 

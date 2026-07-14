@@ -19,7 +19,7 @@ export function ActiveJobsPanel({ jobs, onClose }: { jobs: ActiveJob[]; onClose:
                   <span className="active-jobs-item-project">{job.project_name || '未知项目'}</span>
                   <span className="active-jobs-item-kind">{activeJobKindLabel(job.job_kind)}</span>
                 </div>
-                <div className="active-jobs-item-time">{relativeTimeFromNow(job.started_at)}</div>
+                <div className="active-jobs-item-time">操作人 {job.operator_name || '未署名用户'} · {relativeTimeFromNow(job.started_at)}</div>
               </div>
             ))}
           </div>

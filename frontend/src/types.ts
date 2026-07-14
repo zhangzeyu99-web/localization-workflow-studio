@@ -392,7 +392,7 @@ export type MultilingualQueueStatus = {
   languages: MultilingualQueueLanguage[]
   created_run_ids?: string[]
   queue_started?: boolean
-  active_conflict?: string
+  active_conflict?: Record<string, unknown>
 }
 
 export type ProjectMaterialAnalysis = {
@@ -554,5 +554,6 @@ export type ActiveJob = {
   job_kind: string
   project_id: string
   project_name: string
+  operator_name: string
   started_at: string | null
 }

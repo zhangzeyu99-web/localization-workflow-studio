@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import tempfile
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from openpyxl import Workbook
 
 import app.db as db
 import app.jobs as jobs
+import app.routers.announcement as announcement_router
 import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
@@ -133,13 +135,22 @@ def test_same_project_second_translation_rejected_as_project_busy(tmp_path: Path
             metadata={"input_artifact_id": artifact_2["id"], "batch_size": 2, "task_origin": "translation_run"},
         )
 
-        started_1 = client.post(f"/api/runs/{run_1['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        started_1 = client.post(
+            f"/api/runs/{run_1['id']}/translate/start",
+            json={"provider": "test-fake", "batch_size": 2},
+            headers={"X-Operator": "Alice"},
+        )
         assert started_1.status_code == 200, started_1.text
 
-        rejected = client.post(f"/api/runs/{run_2['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        rejected = client.post(
+            f"/api/runs/{run_2['id']}/translate/start",
+            json={"provider": "test-fake", "batch_size": 2},
+            headers={"X-Operator": "Bob"},
+        )
         assert rejected.status_code == 409
         detail = rejected.json()["detail"]
-        assert "该项目正在执行任务" in detail
+        assert "该项目正在由" in detail
+        assert "Alice" in detail
 
         terminal_1 = _wait_for_terminal_run(client, run_1["id"])
         assert terminal_1["status"] == "passed"
@@ -152,6 +163,7 @@ def test_capacity_limit_rejects_second_project_when_workbench_is_full(tmp_path: 
     with TestClient(app) as client:
         project_a, run_a = _create_project_with_run(client, tmp_path, "Capacity A")
         project_b, run_b = _create_project_with_run(client, tmp_path, "Capacity B")
+        run_b = db.update_run(run_b["id"], status="needs_input")
 
         started_a = client.post(f"/api/runs/{run_a['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
         assert started_a.status_code == 200, started_a.text
@@ -161,6 +173,10 @@ def test_capacity_limit_rejects_second_project_when_workbench_is_full(tmp_path: 
         detail = rejected.json()["detail"]
         assert "工作台已有" in detail
         assert "上限 1" in detail
+        restored_b = client.get(f"/api/runs/{run_b['id']}").json()
+        assert restored_b["status"] == run_b["status"]
+        assert "queued_at" not in restored_b["metadata"]
+        assert restored_b["metadata"]["queue_error"]
 
         terminal_a = _wait_for_terminal_run(client, run_a["id"])
         assert terminal_a["status"] == "passed"
@@ -170,6 +186,35 @@ def test_capacity_limit_rejects_second_project_when_workbench_is_full(tmp_path: 
         assert started_b_retry.status_code == 200, started_b_retry.text
         terminal_b = _wait_for_terminal_run(client, run_b["id"])
         assert terminal_b["status"] == "passed"
+
+
+def test_announcement_capacity_rejection_restores_pre_queue_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    project = db.insert_project("Announcement Queue Rollback", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {
+            "title": "Rollback",
+            "selected_languages": ["en"],
+            "status": "prepared",
+            "current_step": 6,
+        },
+    )
+    monkeypatch.setattr(
+        announcement_router,
+        "start_singleton_job",
+        lambda project_id, job_id, worker: (False, {"reason": "capacity", "active_count": 2, "limit": 2}),
+    )
+
+    with TestClient(app) as client:
+        rejected = client.post(
+            f"/api/announcement-tasks/{task['id']}/translate/start",
+            json={"languages": ["en"], "provider": "test-fake", "batch_size": 2},
+        )
+
+    assert rejected.status_code == 409
+    restored = db.get_announcement_task(task["id"])
+    assert restored["status"] == "prepared"
+    assert restored["current_step"] == 6
 
 
 def test_reconcile_interrupted_background_jobs_clears_multiple_residual_leases() -> None:
@@ -198,12 +243,69 @@ def test_reconcile_interrupted_background_jobs_clears_multiple_residual_leases()
     assert jobs.active_jobs() == []
 
 
+def test_job_lease_persists_operator_name() -> None:
+    project = db.insert_project("Operator Lease", "QA", "")
+    lease_name = jobs.lease_name_for_project(project["id"])
+
+    assert db.acquire_job_lease(lease_name, "run:operator", operator_name="Alice")
+
+    lease = db.get_job_lease(lease_name)
+    assert lease is not None
+    assert lease["operator_name"] == "Alice"
+
+
+def test_init_db_adds_operator_name_to_v132_job_lease_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_db = tmp_path / "v1.3.2.sqlite3"
+    with sqlite3.connect(legacy_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE job_leases (
+                name TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'idle',
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO job_leases
+              (name, job_id, status, cancel_requested, metadata_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("long_text:legacy", "run:legacy", "running", 0, "{}", "2026-07-14T00:00:00Z", "2026-07-14T00:00:00Z"),
+        )
+
+    monkeypatch.setattr(db, "DB_PATH", legacy_db)
+    db.init_db()
+
+    with sqlite3.connect(legacy_db) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(job_leases)")}
+        row = conn.execute(
+            "SELECT operator_name FROM job_leases WHERE name = ?",
+            ("long_text:legacy",),
+        ).fetchone()
+
+    assert "operator_name" in columns
+    assert row == ("",)
+
+
 def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
     with TestClient(app) as client:
         project, run = _create_project_with_run(client, tmp_path, "Active Jobs Panel")
-        started = client.post(f"/api/runs/{run['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        started = client.post(
+            f"/api/runs/{run['id']}/translate/start",
+            json={"provider": "test-fake", "batch_size": 2},
+            headers={"X-Operator": "Alice"},
+        )
         assert started.status_code == 200, started.text
 
         entry = None
@@ -219,6 +321,7 @@ def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, 
         assert entry["project_name"] == "Active Jobs Panel"
         assert entry["lease_name"] == f"long_text:{project['id']}"
         assert entry["started_at"]
+        assert entry["operator_name"] == "Alice"
 
         _wait_for_terminal_run(client, run["id"])
 

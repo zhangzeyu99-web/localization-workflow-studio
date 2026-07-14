@@ -2,12 +2,16 @@ import { getOperatorName } from './operator'
 
 export const API = import.meta.env.VITE_API_BASE_URL || ''
 
+function isProjectBusyMessage(text: string): boolean {
+  return text.includes('该项目正在执行任务') || (text.includes('该项目正在由') && text.includes('执行任务'))
+}
+
 // Matches the two M2 per-project-lease/capacity 409 rejection texts (see the
 // sanitizeUserFacingError patterns below). Shared so the inline status
 // renderer can offer a "查看活跃任务" action without duplicating the regexes.
 export function isQueueConflictMessage(text: string): boolean {
   const raw = String(text || '')
-  return /该项目正在执行任务/.test(raw) || /工作台已有.*个任务在跑/.test(raw)
+  return isProjectBusyMessage(raw) || /工作台已有.*个任务在跑/.test(raw)
 }
 
 function defaultFailureText(operation?: string): string {
@@ -35,9 +39,9 @@ export function sanitizeUserFacingError(text: string, fallback?: string, operati
     // an older backend build is still deployed alongside this frontend.
     return '\u5df2\u6709\u4e00\u4e2a\u957f\u6587\u672c AI \u4efb\u52a1\u6b63\u5728\u8fd0\u884c\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u6216\u5148\u53d6\u6d88\u540e\u518d\u7ee7\u7eed\u3002'
   }
-  if (/该项目正在执行任务/.test(raw)) {
+  if (isProjectBusyMessage(raw)) {
     // Post-M2 per-project lease rejection; backend detail is already a
-    // complete, user-facing Chinese sentence (e.g. "该项目正在执行任务（翻译任务），
+    // complete, user-facing Chinese sentence (e.g. "该项目正在由“Alice”执行任务（翻译任务），
     // 请等它完成或先取消"), so pass it through unless it grew unexpectedly long.
     return raw.length <= 200 ? raw : '该项目正在执行任务，请等它完成或先取消。'
   }

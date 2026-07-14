@@ -5,6 +5,7 @@ import { altColumnVisible } from '../../domain/projectAssets'
 import { formatDuration } from '../../domain/translationFlow'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
 import { isQueueConflictMessage } from '../../apiClient'
+import { isOperatorRequiredMessage, requestOpenOperatorIdentity } from '../../operator'
 import { requestOpenActiveJobsPanel } from '../system/activeJobsPanelBus'
 import type { Artifact, GlossaryPreviewRow, Project, TranslationProgress } from '../../types'
 
@@ -44,6 +45,7 @@ export function ActionStatus({ status, busy }: { status: string; busy: boolean }
   // pattern once at the render point avoids wiring an "open active jobs panel"
   // callback through every wizard/tab component between main.tsx and those sites.
   const queueConflict = !busy && isQueueConflictMessage(status)
+  const operatorRequired = !busy && isOperatorRequiredMessage(status)
   return (
     <div className={`inline-status ${busy ? 'running' : ''}`} role="status" aria-live="polite">
       {busy ? <span className="loading" /> : null}
@@ -56,6 +58,16 @@ export function ActionStatus({ status, busy }: { status: string; busy: boolean }
           onClick={() => requestOpenActiveJobsPanel()}
         >
           查看活跃任务
+        </button>
+      ) : null}
+      {operatorRequired ? (
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm inline-status-action"
+          data-testid="inline-status-set-operator"
+          onClick={() => requestOpenOperatorIdentity()}
+        >
+          设置昵称
         </button>
       ) : null}
       {!busy ? (

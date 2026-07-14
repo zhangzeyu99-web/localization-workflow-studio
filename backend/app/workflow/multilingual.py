@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import db
+from .. import db, operator_context
 from ..config import load_settings
-from ..jobs import active_job_id_for_project, start_singleton_job
+from ..jobs import active_job_for_project, active_job_id_for_project, start_singleton_job
 from ..languages import require_supported_language, visible_language_code
 from ..schemas import MultilingualQueueRequest, TranslateRequest
 from .qa import QaCanceled, run_qa_sync
@@ -57,8 +57,16 @@ def multilingual_status(project_id: str, input_artifact_id: str, languages: list
 
 def start_multilingual_translation_queue(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
     source = _require_project_artifact(project_id, payload.input_artifact_id)
+    operator_context.require_operator_for_cloud()
     selected = normalize_language_list(payload.languages)
     _validate_reference_artifacts(project_id, payload)
+    active = active_job_for_project(project_id)
+    if active:
+        status = multilingual_status(project_id, payload.input_artifact_id, selected)
+        status["created_run_ids"] = []
+        status["queue_started"] = False
+        status["active_conflict"] = {"reason": "project_busy", **active}
+        return status
     created = []
     for language in selected:
         run = _find_translation_run(project_id, payload.input_artifact_id, language)
@@ -115,6 +123,10 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
                     pass
 
     started, conflict = start_singleton_job(project_id, job_id, worker)
+    if conflict:
+        for run_id in created:
+            db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
+            db.update_run(run_id, status="created")
     status = multilingual_status(project_id, payload.input_artifact_id, selected)
     status["created_run_ids"] = created
     status["queue_started"] = started
@@ -125,8 +137,16 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
 
 def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
     _require_project_artifact(project_id, payload.input_artifact_id)
+    operator_context.require_operator_for_cloud()
     selected = normalize_language_list(payload.languages)
     _validate_reference_artifacts(project_id, payload)
+    active = active_job_for_project(project_id)
+    if active:
+        status = multilingual_status(project_id, payload.input_artifact_id, selected)
+        status["created_run_ids"] = []
+        status["queue_started"] = False
+        status["active_conflict"] = {"reason": "project_busy", **active}
+        return status
     created = []
     for language in selected:
         if _find_passed_or_deliverable_run(project_id, payload.input_artifact_id, language):
@@ -185,6 +205,10 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
                     pass
 
     started, conflict = start_singleton_job(project_id, job_id, worker)
+    if conflict:
+        for run_id in created:
+            db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
+            db.update_run(run_id, status="created")
     status = multilingual_status(project_id, payload.input_artifact_id, selected)
     status["created_run_ids"] = created
     status["queue_started"] = started

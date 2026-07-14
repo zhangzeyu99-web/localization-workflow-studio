@@ -25,6 +25,7 @@ import { useGlossaryActions } from './hooks/useGlossaryActions'
 import { useAnnouncementActions } from './hooks/useAnnouncementActions'
 import { ActiveJobsBadge } from './components/system/ActiveJobsBadge'
 import { ActiveJobsPanel } from './components/system/ActiveJobsPanel'
+import { OperatorIdentityControl } from './components/system/OperatorIdentityControl'
 import { onOpenActiveJobsPanelRequest } from './components/system/activeJobsPanelBus'
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { artifactForProject, preferredTranslationResultArtifact, runForProject } from './domain/projectState'
@@ -482,6 +483,7 @@ function App() {
             >
               {versionMismatch ? `v${bundleVersion} / 后端 v${backendVersion} 版本不一致` : `v${bundleVersion}`}
             </span>
+            <OperatorIdentityControl />
             {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}><Settings size={16} aria-hidden="true" />设置</button> : null}
           </div>
         </header>

@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.3.3 - 2026-07-14
+
+Shared-workbench operator attribution release.
+
+- Added an always-visible operator nickname control independent of the hidden online settings page; the nickname remains browser-local and is sent with API requests through `X-Operator`.
+- Cloud deployments now require a nickname before background translation, QA, model-fix, announcement, or multilingual AI work can start or resume, and reject the request before changing task state.
+- Background job leases persist the initiating operator. Active-job panels and same-project conflict messages now show who owns the running task, with a clear fallback for older unsigned leases.
+- Added direct “设置昵称” recovery from blocked workflow status messages and responsive desktop/narrow-screen coverage for the new control.
+
 ## 1.3.2 - 2026-07-14
 
 Production deployment reliability release.

@@ -1693,6 +1693,45 @@ wb.close()
 // frontend's polling + rendering + inline-action logic without racing a job
 // that would already be gone by the time the page checks.
 
+test('operator nickname can be set from the always-visible header control', async ({ page }) => {
+  await page.goto(baseURL)
+
+  const trigger = page.getByTestId('operator-identity-trigger')
+  await expect(trigger).toBeVisible()
+  await expect(trigger).toContainText('设置昵称')
+  await trigger.click()
+
+  const dialog = page.getByTestId('operator-identity-dialog')
+  await expect(dialog).toBeVisible()
+  await dialog.getByTestId('operator-name-input').fill('   ')
+  await dialog.getByRole('button', { name: '保存昵称' }).click()
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('请输入昵称')
+  await dialog.getByTestId('operator-name-input').fill('Alice')
+  await dialog.getByRole('button', { name: '保存昵称' }).click()
+
+  await expect(dialog).toHaveCount(0)
+  await expect(trigger).toContainText('Alice')
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('lws.operatorName'))).toBe('Alice')
+})
+
+test('operator nickname dialog traps focus and restores it after Escape', async ({ page }) => {
+  await page.goto(baseURL)
+  const trigger = page.getByTestId('operator-identity-trigger')
+  await trigger.click()
+
+  const dialog = page.getByTestId('operator-identity-dialog')
+  const closeButton = dialog.getByRole('button', { name: '关闭' })
+  const saveButton = dialog.getByRole('button', { name: '保存昵称' })
+  await closeButton.focus()
+  await page.keyboard.press('Shift+Tab')
+  await expect(saveButton).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(trigger).toBeFocused()
+})
+
 test('active jobs badge stays hidden when no task is running', async ({ page }) => {
   await page.goto(baseURL)
   await expect(page.getByRole('heading', { name: '本地化工作台' })).toBeVisible()
@@ -1785,6 +1824,7 @@ test('active jobs badge and panel show the running project name and task type', 
           job_kind: 'translation',
           project_id: project.id,
           project_name: projectName,
+          operator_name: 'Alice',
           started_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
         },
       ]),
@@ -1800,6 +1840,7 @@ test('active jobs badge and panel show the running project name and task type', 
   await expect(panel).toBeVisible()
   await expect(panel).toContainText(projectName)
   await expect(panel).toContainText('翻译')
+  await expect(panel).toContainText('操作人 Alice')
   await expect(panel).toContainText('分钟前')
 })
 
@@ -1814,8 +1855,8 @@ test('starting a second task on a busy project shows a queue hint that opens the
 
   // Exact text backend/app/routers/shared.py's _job_conflict_detail renders
   // for a project_busy rejection; apiClient.ts's sanitizeUserFacingError
-  // passes it through unchanged (see the "该项目正在执行任务" branch).
-  const conflictDetail = '该项目正在执行任务（翻译任务），请等它完成或先取消'
+  // passes it through unchanged and offers the active-jobs action.
+  const conflictDetail = '该项目正在由“Alice”执行任务（翻译任务），请等它完成或先取消'
   await page.route('**/api/runs/*/translate/start', async (route) => {
     await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ detail: conflictDetail }) })
   })
@@ -1830,6 +1871,7 @@ test('starting a second task on a busy project shows a queue hint that opens the
           job_kind: 'translation',
           project_id: project.id,
           project_name: projectName,
+          operator_name: 'Alice',
           started_at: new Date(Date.now() - 60 * 1000).toISOString(),
         },
       ]),
@@ -1843,7 +1885,7 @@ test('starting a second task on a busy project shows a queue hint that opens the
   await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeEnabled()
   await page.getByTestId('formal-translate').click()
-  await expect(inlineStatus(page, '该项目正在执行任务')).toBeVisible({ timeout: 15000 })
+  await expect(inlineStatus(page, '该项目正在由“Alice”执行任务')).toBeVisible({ timeout: 15000 })
 
   const action = page.getByTestId('inline-status-view-active-jobs')
   await expect(action).toBeVisible()
@@ -1852,6 +1894,36 @@ test('starting a second task on a busy project shows a queue hint that opens the
   await expect(panel).toBeVisible()
   await expect(panel).toContainText(projectName)
   await expect(panel).toContainText('翻译')
+})
+
+test('operator-required task error offers a direct nickname action', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 24 },
+  })
+  const projectName = `E2E Operator Required ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'operator-required', description: 'Operator recovery action smoke.' },
+  }).then((response) => response.json())
+
+  await page.route('**/api/runs/*/translate/start', async (route) => {
+    await route.fulfill({
+      status: 400,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '请先设置操作人昵称，再启动 AI 任务。' }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '翻译', exact: true }).click()
+  await page.locator('label.upload-box', { hasText: '上传待翻译表格' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
+  await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
+  await expect(page.getByTestId('formal-translate')).toBeEnabled()
+  await page.getByTestId('formal-translate').click()
+
+  await expect(inlineStatus(page, '请先设置操作人昵称')).toBeVisible({ timeout: 15000 })
+  await page.getByTestId('inline-status-set-operator').click()
+  await expect(page.getByTestId('operator-identity-dialog')).toBeVisible()
 })
 
 test('translation evidence shows archive references and line proofreading stages', async ({ page, request }) => {

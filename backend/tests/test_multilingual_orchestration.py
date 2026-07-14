@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
 import app.db as db
+import app.jobs as jobs
 import app.workflow.multilingual as multilingual
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
@@ -94,6 +95,55 @@ def test_start_multilingual_translation_creates_missing_child_runs(tmp_path: Pat
     assert {item["language"] for item in response.json()["languages"]} == {"en", "ko"}
     assert all(item["translation_run_id"] for item in status["languages"])
     assert all(item["status"] == "passed" for item in status["languages"])
+
+
+def test_multilingual_start_rejects_existing_project_job_before_creating_child_runs(tmp_path: Path) -> None:
+    project = db.insert_project("multi busy", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN", "KR"])
+    lease_name = jobs.lease_name_for_project(project["id"])
+
+    with TestClient(app) as client:
+        assert db.acquire_job_lease(lease_name, "run:existing", operator_name="Alice")
+        try:
+            response = client.post(
+                f"/api/projects/{project['id']}/multilingual/translate/start",
+                json={"input_artifact_id": artifact["id"], "languages": ["en", "ko"], "batch_size": 10, "task_code": "T"},
+            )
+
+            assert response.status_code == 409
+            assert "Alice" in response.json()["detail"]
+            assert db.list_runs(project["id"]) == []
+        finally:
+            db.release_job_lease(lease_name, "run:existing")
+
+
+def test_multilingual_capacity_rejection_does_not_leave_child_runs_queued(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("multi capacity", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN", "KR"])
+    monkeypatch.setattr(
+        multilingual,
+        "start_singleton_job",
+        lambda project_id, job_id, worker: (False, {"reason": "capacity", "active_count": 2, "limit": 2}),
+    )
+
+    result = multilingual.start_multilingual_translation_queue(
+        project["id"],
+        multilingual.MultilingualQueueRequest(
+            input_artifact_id=artifact["id"],
+            languages=["en", "ko"],
+            batch_size=10,
+            task_code="T",
+        ),
+    )
+
+    assert result["queue_started"] is False
+    assert result["active_conflict"]["reason"] == "capacity"
+    child_runs = db.list_runs(project["id"])
+    assert len(child_runs) == 2
+    assert {run["status"] for run in child_runs} == {"created"}
 
 
 def test_italian_translation_writes_it_column_in_multilingual_workbook(tmp_path: Path) -> None:

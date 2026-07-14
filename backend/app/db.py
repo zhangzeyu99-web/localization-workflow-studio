@@ -244,6 +244,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS job_leases (
                 name TEXT PRIMARY KEY,
                 job_id TEXT NOT NULL DEFAULT '',
+                operator_name TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'idle',
                 cancel_requested INTEGER NOT NULL DEFAULT 0,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -267,6 +268,7 @@ def init_db() -> None:
         _ensure_column(conn, "translation_entries", "target_alt", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "translation_entries", "language", "TEXT NOT NULL DEFAULT 'en'")
         _ensure_column(conn, "translation_entries", "source_artifact_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "job_leases", "operator_name", "TEXT NOT NULL DEFAULT ''")
         _dedupe_unique_index_rows(conn)
         _ensure_indexes(conn)
 
@@ -1721,7 +1723,13 @@ def list_translation_entries(project_id: str, language: str | None = None) -> li
     return sorted(rows, key=_translation_entry_rank)
 
 
-def acquire_job_lease(name: str, job_id: str, metadata: dict[str, Any] | None = None) -> bool:
+def acquire_job_lease(
+    name: str,
+    job_id: str,
+    metadata: dict[str, Any] | None = None,
+    *,
+    operator_name: str = "",
+) -> bool:
     ts = now_iso()
     with connect() as conn:
         row = conn.execute("SELECT * FROM job_leases WHERE name = ?", (name,)).fetchone()
@@ -1731,16 +1739,17 @@ def acquire_job_lease(name: str, job_id: str, metadata: dict[str, Any] | None = 
             return True
         conn.execute(
             """
-            INSERT INTO job_leases (name, job_id, status, cancel_requested, metadata_json, created_at, updated_at)
-            VALUES (?, ?, 'running', 0, ?, ?, ?)
+            INSERT INTO job_leases (name, job_id, operator_name, status, cancel_requested, metadata_json, created_at, updated_at)
+            VALUES (?, ?, ?, 'running', 0, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
               job_id = excluded.job_id,
+              operator_name = excluded.operator_name,
               status = 'running',
               cancel_requested = 0,
               metadata_json = excluded.metadata_json,
               updated_at = excluded.updated_at
             """,
-            (name, job_id, json.dumps(metadata or {}, ensure_ascii=False), ts, ts),
+            (name, job_id, operator_name, json.dumps(metadata or {}, ensure_ascii=False), ts, ts),
         )
         return True
 

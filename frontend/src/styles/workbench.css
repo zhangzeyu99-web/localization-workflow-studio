@@ -1705,6 +1705,7 @@ a {
 
 .modal,
 .settings-modal,
+.operator-identity-modal,
 .active-jobs-panel {
   border-color: #c7ced4;
   border-radius: 8px;

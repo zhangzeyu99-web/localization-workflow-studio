@@ -129,7 +129,7 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: grayscale(.6); }
 }
 .header h1 { font-size: var(--fs-3xl); letter-spacing: 0; }
 .header p { opacity: 0.9; font-size: var(--fs-base); margin-top: 4px; }
-.header-actions { display: flex; align-items: center; gap: 10px; }
+.header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
 .status {
   min-width: 180px;
   max-width: 420px;
@@ -224,6 +224,40 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: grayscale(.6); }
   font-size: var(--fs-xs);
 }
 .active-jobs-item-time { color: var(--c-neutral-400); font-size: var(--fs-sm); }
+.operator-identity-trigger {
+  max-width: 160px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.operator-identity-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.operator-identity-modal {
+  width: min(420px, calc(100vw - 36px));
+  padding: var(--space-5);
+  background: var(--c-surface-modal-alt);
+}
+.operator-identity-field {
+  display: grid;
+  gap: 7px;
+  color: var(--c-neutral-300);
+  font-size: var(--fs-base);
+}
+.operator-identity-field input { height: 40px; }
+.operator-identity-note {
+  margin: 12px 0 0;
+  color: var(--c-neutral-400);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+.operator-identity-error {
+  margin: 8px 0 0;
+  color: var(--c-red-300);
+  font-size: var(--fs-sm);
+}
 .layout { display: flex; min-height: 760px; }
 .sidebar {
   width: 260px;

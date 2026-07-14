@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from .. import db
+from .. import db, operator_context
 from ..config import load_settings
-from ..jobs import active_job_id_for_project, cancel_singleton_job, start_singleton_job
+from ..jobs import active_job_for_project, cancel_singleton_job, start_singleton_job
 from ..schemas import (
     ManualFixRequest,
     ModelFixRequest,
@@ -49,11 +49,13 @@ def _start_background_qa(run_id: str) -> dict[str, Any]:
     jobs, so the same project serializes while other projects keep running.
     """
     run = db.get_run(run_id)  # KeyError -> caller maps to 404
+    operator_context.require_operator_for_cloud()
     project_id = run["project_id"]
     job_id = f"qa:{run_id}"
-    active = active_job_id_for_project(project_id)
-    if active and active != job_id:
-        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
+    active = active_job_for_project(project_id)
+    active_job_id = str((active or {}).get("job_id") or "")
+    if active_job_id and active_job_id != job_id:
+        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", **(active or {})}))
     # Snapshot settings at the task entry point (same rule as model-fix /
     # multilingual jobs): a settings PATCH mid-job must not switch the
     # semantic QA provider halfway through this run.
@@ -113,7 +115,11 @@ def qa_cancel(run_id: str) -> dict[str, Any]:
 @router.post("/api/projects/{project_id}/multilingual/qa/start")
 def start_multilingual_qa(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
     try:
-        return start_multilingual_qa_queue(project_id, payload)
+        result = start_multilingual_qa_queue(project_id, payload)
+        conflict = result.get("active_conflict")
+        if isinstance(conflict, dict):
+            raise HTTPException(status_code=409, detail=_job_conflict_detail(conflict))
+        return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:
@@ -149,10 +155,14 @@ def manual_fixes_start(run_id: str, payload: ManualFixRequest) -> dict[str, Any]
     """
     try:
         source_run = db.get_run(run_id)
+        if payload.rerun_qa:
+            operator_context.require_operator_for_cloud()
         no_rerun = payload.model_copy(update={"rerun_qa": False})
         result = apply_manual_fixes(run_id, no_rerun)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
     response: dict[str, Any] = {
@@ -186,6 +196,7 @@ def model_fixes(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
 def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
     try:
         run = db.get_run(run_id)
+        operator_context.require_operator_for_cloud()
         # Snapshot settings once here (the task's entry point) and thread the
         # same snapshot through apply_model_fixes -> the QA rerun below, so a
         # concurrent settings PATCH mid-job can't change provider/model
@@ -197,9 +208,10 @@ def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     project_id = run["project_id"]
     job_id = f"model-fix:{run_id}"
-    active = active_job_id_for_project(project_id)
-    if active and active != job_id:
-        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
+    active = active_job_for_project(project_id)
+    active_job_id = str((active or {}).get("job_id") or "")
+    if active_job_id and active_job_id != job_id:
+        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", **(active or {})}))
     original_status = str(run.get("status") or "failed")
     db.merge_run_metadata(
         run_id,
