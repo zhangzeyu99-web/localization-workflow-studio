@@ -1,0 +1,21 @@
+[Unit]
+Description=Localization Workflow Studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lwstudio
+Group=lwstudio
+WorkingDirectory=/srv/lwstudio/current
+EnvironmentFile=/etc/lwstudio/lws.env
+ExecStart=/srv/lwstudio/current/.venv/bin/uvicorn app.main:app --app-dir /srv/lwstudio/current/backend --host 127.0.0.1 --port 8082 --workers 1
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

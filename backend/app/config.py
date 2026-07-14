@@ -3,12 +3,40 @@ from __future__ import annotations
 import json
 import os
 import re
-from pathlib import Path
+import tempfile
+from collections.abc import Mapping
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_ROOT = Path(os.environ.get("LWS_DATA_ROOT", r"D:\codex\localization-workflow-studio-data"))
+
+
+def _resolve_data_root(env: Mapping[str, str]) -> Path:
+    raw_data_root = str(env.get("LWS_DATA_ROOT") or "").strip()
+    deployment_mode = str(env.get("LWS_DEPLOYMENT_MODE") or "local").strip().lower()
+    data_root = Path(raw_data_root or r"D:\codex\localization-workflow-studio-data")
+    if deployment_mode == "cloud":
+        if not raw_data_root:
+            raise RuntimeError("LWS_DATA_ROOT is required when LWS_DEPLOYMENT_MODE=cloud")
+        if not (
+            Path(raw_data_root).is_absolute()
+            or PurePosixPath(raw_data_root).is_absolute()
+        ):
+            raise RuntimeError("LWS_DATA_ROOT must be an absolute path in cloud mode")
+        resolved_data_root = data_root.resolve(strict=False)
+        resolved_repo_root = REPO_ROOT.resolve(strict=False)
+        if (
+            resolved_data_root == resolved_repo_root
+            or resolved_repo_root in resolved_data_root.parents
+        ):
+            raise RuntimeError(
+                "LWS_DATA_ROOT must be outside the repository and release directory in cloud mode"
+            )
+    return data_root
+
+
+DATA_ROOT = _resolve_data_root(os.environ)
 LOCALIZATION_ROOT = REPO_ROOT / "workflow" / "localization"
 GLOSSARY_ROOT = REPO_ROOT / "workflow" / "glossary"
 SETTINGS_PATH = DATA_ROOT / "settings.local.json"
@@ -180,13 +208,41 @@ def load_settings() -> dict[str, Any]:
     return normalize_settings(merged)
 
 
+def _atomic_write_private_json(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    platform_name: str = os.name,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temp_path = Path(temp_name)
+    try:
+        if platform_name == "posix":
+            os.chmod(temp_path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        if platform_name == "posix":
+            os.chmod(path, 0o600)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
     ensure_data_dirs()
     sanitized = dict(DEFAULT_SETTINGS)
     sanitized.update(settings)
     sanitized["multimodal"] = {**DEFAULT_SETTINGS["multimodal"], **settings.get("multimodal", {})}
     sanitized = normalize_settings(sanitized)
-    SETTINGS_PATH.write_text(json.dumps(sanitized, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_private_json(SETTINGS_PATH, sanitized)
     return sanitized
 
 
@@ -251,4 +307,3 @@ def _normalize_max_concurrent_ai_jobs(payload: dict[str, Any]) -> None:
     except (TypeError, ValueError):
         value = int(DEFAULT_SETTINGS["max_concurrent_ai_jobs"])
     payload["max_concurrent_ai_jobs"] = max(1, min(value, 4))
-

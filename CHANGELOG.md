@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.3.2 - 2026-07-14
+
+Production deployment reliability release.
+
+- Added installable single-node systemd and Nginx templates with same-origin routing, production cache headers, large-upload handling, and a release-independent persistent data directory.
+- Deployment checks now reject Vite development pages, stale HTML/API cache policy, Git/version mismatches, missing public assets, and any mismatch between public HTML, backend asset metadata, and the packaged frontend build.
+- Full-page refresh restores the current project and all workbench views while project, run, artifact, and settings data continue to reload from the API.
+- Release packaging now uses a production allowlist, excludes private/runtime material, scans source and archive text for credentials, and verifies every archive member and checksum after writing.
+
 ## 1.3.1 - 2026-07-12
 
 Background-task model for QA and removal of the global busy lock — the three items deferred from the 2026-07-11 UX audit.

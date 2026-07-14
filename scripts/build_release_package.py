@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import zipfile
@@ -11,71 +12,179 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+
 ROOT = Path(__file__).resolve().parents[1]
 
-DEFAULT_EXCLUDE_DIRS = {
+EXCLUDED_DIR_NAMES = {
     ".git",
     ".github",
+    ".local-logs",
+    ".playwright-cli",
     ".pytest_cache",
     ".ruff_cache",
+    ".tmp",
     ".venv",
     "__pycache__",
-    "node_modules",
-    "playwright-report",
-    "test-results",
-    ".local-logs",
-    "logs",
-    "tmp",
-    ".tmp",
-    "lws-data",
-    "localization-workflow-studio-data",
-    "uploads",
-    "runs",
-    "projects",
     "artifacts",
-    "outputs",
-    "release_archives",
+    "codex-handoffs",
     "frontend-v2",
-    # Internal process docs (plans, audit reports with screenshots); they are
-    # repo evidence, not deployment content, and inflate the zip by >10 MB.
+    "localization-workflow-studio-data",
+    "logs",
+    "lws-data",
+    "node_modules",
+    "outputs",
+    "playwright-report",
+    "projects",
+    "release-staging",
+    "release_archives",
+    "runs",
+    "runtime",
     "superpowers",
-    ".playwright-cli",
+    "test-results",
+    "tmp",
+    "uploads",
 }
-DEFAULT_EXCLUDE_SUFFIXES = {
+EXCLUDED_SUFFIXES = {
+    ".bak",
+    ".db",
+    ".log",
     ".pyc",
     ".pyo",
-    ".log",
-    ".tmp",
-    ".bak",
     ".sqlite",
     ".sqlite3",
-    ".db",
+    ".tmp",
 }
-DEFAULT_EXCLUDE_NAMES = {
-    "settings.local.json",
-    ".env",
-    "api_key",
-    "api_key.txt",
+
+REQUIRED_SOURCE_MEMBERS = {
+    "frontend/dist/index.html",
+    "deploy/lws.service",
+    "deploy/nginx.conf",
+    "deploy/lws.env.example",
+    "start-lws.sh",
+    "backend/app/main.py",
+    "settings.example.json",
+}
+REQUIRED_MEMBERS = REQUIRED_SOURCE_MEMBERS | {
+    "ONLINE_DEPLOY_README.zh-CN.md",
+    "PACKAGE_MANIFEST.json",
+    "SHA256SUMS.txt",
+}
+GENERATED_MEMBERS = {
+    "ONLINE_DEPLOY_README.zh-CN.md",
+    "PACKAGE_MANIFEST.json",
+    "SHA256SUMS.txt",
+}
+
+TOP_LEVEL_RELEASE_FILES = {
+    "VERSION",
+    "check.py",
+    "settings.example.json",
+    "start-lws.sh",
+}
+DEPLOY_RELEASE_FILES = {
+    "deploy/lws.env.example",
+    "deploy/lws.service",
+    "deploy/nginx.conf",
+}
+SCRIPT_RELEASE_FILES = {
+    "scripts/deployment_check.py",
+    "scripts/stability_check.py",
+}
+GLOSSARY_ROOT_RELEASE_FILES = {
+    "workflow/glossary/VERSION",
+    "workflow/glossary/requirements.txt",
+}
+LOCALIZATION_ROOT_RELEASE_FILES = {
+    "workflow/localization/cli.py",
+    "workflow/localization/process_language.py",
+    "workflow/localization/requirements.txt",
+    "workflow/localization/workspace_runner.py",
+}
+TEXT_EXTENSIONS = {
+    ".cfg",
+    ".csv",
+    ".conf",
+    ".css",
+    ".html",
+    ".ini",
+    ".js",
+    ".jsx",
+    ".json",
+    ".md",
+    ".map",
+    ".py",
+    ".service",
+    ".sh",
+    ".svg",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".tsv",
+    ".txt",
+    ".yaml",
+    ".yml",
+    ".xml",
+}
+SECRET_PATTERNS = (
+    (
+        "provider key",
+        re.compile(
+            r"(?<![A-Za-z0-9])((?:sk-ant-|sk-)[A-Za-z0-9._-]{20,})"
+        ),
+    ),
+    (
+        "bearer token",
+        re.compile(r"(?i)\bBearer\s+([A-Za-z0-9][A-Za-z0-9._-]{19,})"),
+    ),
+    (
+        "assigned API credential",
+        re.compile(
+            r"(?im)(?:^|[\"'])\s*(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret)"
+            r"\s*[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9][A-Za-z0-9._-]{19,})"
+        ),
+    ),
+    (
+        "service token",
+        re.compile(
+            r"(?<![A-Za-z0-9])((?:ghp_|github_pat_|xox[baprs]-|AIza)[A-Za-z0-9._-]{16,})"
+        ),
+    ),
+)
+PLACEHOLDER_MARKERS = {
+    "changeme",
+    "dummy",
+    "example",
+    "not-a-real",
+    "placeholder",
+    "replace-me",
+    "sample",
+    "test-key",
+    "your-api-key",
+    "your_api_key",
 }
 
 
 def _git_sha() -> str:
     try:
-        return subprocess.check_output(["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, text=True).strip()
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
     except Exception:
         return "unknown"
 
 
 def _git_dirty() -> bool:
     try:
-        out = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)
-        ignored = []
-        for line in out.splitlines():
-            path = line[3:] if len(line) > 3 else line
-            if path in {"settings.local.json"} or path.startswith("release_archives/"):
-                continue
-            ignored.append(line)
-        return bool(ignored)
+        output = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        return bool(output.strip())
     except Exception:
         return True
 
@@ -87,35 +196,140 @@ def _version() -> str:
         return "unknown"
 
 
-def _should_skip(path: Path) -> bool:
-    rel_parts = path.relative_to(ROOT).parts
-    if any(part in DEFAULT_EXCLUDE_DIRS for part in rel_parts):
+def _is_forbidden_relative(relative: Path) -> bool:
+    lowered_parts = tuple(part.lower() for part in relative.parts)
+    if any(part in EXCLUDED_DIR_NAMES for part in lowered_parts[:-1]):
         return True
-    name = path.name
-    if name in DEFAULT_EXCLUDE_NAMES:
-        return True
+
+    for part in lowered_parts:
+        if "handoff" in part or "process-doc" in part:
+            return True
+        if "credential" in part:
+            return True
+        if part == "settings.local.json" or part.startswith("settings.local."):
+            return True
+        if part == ".env" or part.startswith(".env."):
+            return True
+        if part in {".netrc", ".npmrc", ".pypirc"}:
+            return True
+        if "api_key" in part or "api-key" in part or "apikey" in part:
+            return True
+        if "secret" in part:
+            return True
+
+    name = relative.name.lower()
     if name.endswith(".local"):
         return True
-    if path.suffix.lower() in DEFAULT_EXCLUDE_SUFFIXES:
+    return relative.suffix.lower() in EXCLUDED_SUFFIXES
+
+
+def _is_allowed_source_member(relative: Path) -> bool:
+    member = relative.as_posix()
+    if member in TOP_LEVEL_RELEASE_FILES | DEPLOY_RELEASE_FILES | SCRIPT_RELEASE_FILES:
         return True
-    if "secret" in name.lower():
+    if member == "backend/requirements.txt":
         return True
+    if member.startswith("backend/app/"):
+        return relative.suffix.lower() == ".py"
+    if member.startswith("frontend/dist/"):
+        return True
+    if member in GLOSSARY_ROOT_RELEASE_FILES:
+        return True
+    if member.startswith("workflow/glossary/glossary_extraction/"):
+        return relative.suffix.lower() == ".py"
+    if member.startswith("workflow/glossary/scripts/"):
+        return relative.suffix.lower() == ".py"
+    if member.startswith("workflow/glossary/templates/"):
+        return True
+    if member.startswith("workflow/glossary/fixtures/"):
+        return relative.suffix.lower() == ".json"
+    if member.startswith("workflow/glossary/data/experience/"):
+        return relative.suffix.lower() == ".json"
+    if member in LOCALIZATION_ROOT_RELEASE_FILES:
+        return True
+    if member.startswith("workflow/localization/utils/"):
+        return relative.suffix.lower() == ".py"
+    if member.startswith("workflow/localization/scripts/"):
+        return relative.suffix.lower() == ".py"
+    if member.startswith("workflow/localization/templates/"):
+        return True
+    if member.startswith("workflow/localization/fixtures/"):
+        return relative.suffix.lower() == ".json"
     return False
 
 
-def _iter_files() -> Iterable[Path]:
+def _is_allowed_archive_member(relative: Path) -> bool:
+    return relative.as_posix() in GENERATED_MEMBERS or _is_allowed_source_member(relative)
+
+
+def _is_text_candidate(relative: Path) -> bool:
+    name = relative.name.lower()
+    return (
+        relative.suffix.lower() in TEXT_EXTENSIONS
+        or name == "version"
+        or name.endswith(".env.example")
+    )
+
+
+def _is_placeholder(value: str) -> bool:
+    lowered = value.lower()
+    return any(marker in lowered for marker in PLACEHOLDER_MARKERS)
+
+
+def _scan_text_bytes(content: bytes, *, origin: str) -> None:
+    if b"\x00" in content:
+        return
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return
+    for label, pattern in SECRET_PATTERNS:
+        for match in pattern.finditer(text):
+            candidate = match.group(1)
+            if not _is_placeholder(candidate):
+                raise RuntimeError(
+                    f"secret-like credential or token detected in {origin} ({label})"
+                )
+
+
+def _scan_file(path: Path, relative: Path) -> None:
+    if _is_text_candidate(relative):
+        _scan_text_bytes(path.read_bytes(), origin=relative.as_posix())
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _iter_files(*, excluded_roots: Iterable[Path] = ()) -> Iterable[Path]:
+    resolved_exclusions = tuple(path.resolve() for path in excluded_roots)
     for path in ROOT.rglob("*"):
-        if path.is_dir() or _should_skip(path):
+        if path.is_dir():
             continue
+        relative = path.relative_to(ROOT)
+        if _is_allowed_source_member(relative) and path.is_symlink():
+            raise RuntimeError(f"refusing symlink in release source: {relative.as_posix()}")
+        resolved = path.resolve()
+        if any(_is_within(resolved, excluded) for excluded in resolved_exclusions):
+            continue
+        if not _is_allowed_source_member(relative):
+            continue
+        if _is_forbidden_relative(relative):
+            continue
+        _scan_file(path, relative)
         yield path
 
 
 def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _build_frontend(*, hide_settings: bool) -> None:
@@ -124,252 +338,349 @@ def _build_frontend(*, hide_settings: bool) -> None:
         env["LWS_HIDE_SETTINGS"] = "1"
     else:
         env.pop("LWS_HIDE_SETTINGS", None)
-    subprocess.check_call(["npm", "run", "build"], cwd=ROOT / "frontend", env=env, shell=(os.name == "nt"))
+    subprocess.check_call(
+        ["npm", "run", "build"],
+        cwd=ROOT / "frontend",
+        env=env,
+        shell=(os.name == "nt"),
+    )
 
 
-def _write_install_doc(target_root: Path, version: str, sha: str, *, includes_settings: bool, hide_settings: bool) -> None:
-    settings_note = (
-        "本包已包含 settings.local.json。部署时请复制到 $LWS_DATA_ROOT/settings.local.json，并确认该文件只保留在服务器数据目录，不提交到 Git。"
-        if includes_settings
-        else "本包不包含 settings.local.json。请基于 settings.example.json 创建 $LWS_DATA_ROOT/settings.local.json。"
+def _assert_required_source_members() -> None:
+    missing = sorted(
+        member for member in REQUIRED_SOURCE_MEMBERS if not (ROOT / member).is_file()
     )
-    frontend_build_cmd = "LWS_HIDE_SETTINGS=1 npm run build" if hide_settings else "npm run build"
-    hide_settings_note = (
-        "\n本包前端已在构建时隐藏「设置」入口（LWS_HIDE_SETTINGS=1）。如需在服务器重新构建，必须保留该环境变量，否则设置按钮会重新出现。\n"
-        if hide_settings
-        else ""
-    )
+    if missing:
+        raise RuntimeError("release package is missing required source members: " + ", ".join(missing))
+
+
+def _write_install_doc(target_root: Path, version: str, sha: str) -> None:
     text = f"""# 本地化工作台线上部署说明
 
 版本：{version}
 源码提交：{sha}
 打包时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-## 包内包含
+## 包内内容
 
-- `backend/`：FastAPI 后端。
-- `frontend/`：前端源码和已构建的 `frontend/dist/`。
-- `workflow/`：术语提取、翻译、QA、公告处理等本地工作流。
-- `scripts/`：部署检查、稳定性检查和打包脚本。
-- `check.py`：线上健康检查入口。
-- `settings.example.json`：配置模板。
-- `settings.local.json`：仅在显式指定时打入包内，用于服务器配置。
-- `PACKAGE_MANIFEST.json`：包清单。
-- `SHA256SUMS.txt`：文件校验清单。
+- `backend/`：FastAPI 后端及依赖清单。
+- `frontend/dist/`：已经构建完成、可直接由 Nginx 托管的前端文件。
+- `workflow/glossary/`、`workflow/localization/`：运行所需代码、模板和回归规则。
+- `deploy/lws.service`：systemd 服务模板。
+- `deploy/nginx.conf`：Nginx 反向代理与缓存策略模板。
+- `deploy/lws.env.example`：非敏感环境变量模板。
+- `start-lws.sh`：后端启动入口。
+- `settings.example.json`：服务端 API 配置模板，不含密钥。
+- `PACKAGE_MANIFEST.json`：包来源与安全状态。
+- `SHA256SUMS.txt`：除校验清单自身外，每个包成员的 SHA-256。
 
-## 包内不包含
+包内绝不包含 `settings.local.json`、`.env`、API 密钥、私有交接文档或运行期数据。
+仓库文档、测试/E2E、前端源码及非生产脚本也不在发布白名单内。
 
-- `.git`、`.github`、`node_modules`、Python 虚拟环境和缓存。
-- SQLite 数据库、上传文件、运行产物、项目数据和日志。
-- 本机临时文件、release_archives 和历史压缩包。
+## 目录与配置
 
-## 配置
-
-{settings_note}{hide_settings_note}
-
-推荐环境变量：
+发布代码和运行数据必须分离。示例：
 
 ```bash
-export APP_HOME=/data/web/lwstudio
-export LWS_DATA_ROOT=/data/web/lwstudio/lws-data
-export LWS_DEPLOYMENT_MODE=cloud
-export LWS_MAX_UPLOAD_MB=1024
-export LWS_CORS_ORIGINS=https://ai-lwstudio.gz4399.com
+export APP_HOME=/srv/lwstudio/current
+export LWS_DATA_ROOT=/srv/lwstudio/data
+sudo install -d -m 750 -o lwstudio -g lwstudio "$LWS_DATA_ROOT"
+sudo -u lwstudio cp "$APP_HOME/settings.example.json" "$LWS_DATA_ROOT/settings.local.json"
+sudo -u lwstudio chmod 600 "$LWS_DATA_ROOT/settings.local.json"
 ```
 
-推荐目录：
+随后只在独立的 `$LWS_DATA_ROOT/settings.local.json` 中填写线上 API 地址与密钥。不要把该文件放回发布目录。
+
+## 安装后端依赖
+
+前端已经在可信构建环境中完成构建；服务器不需要 Node.js，也不要重新构建前端。
 
 ```bash
-/data/web/lwstudio
-/data/web/lwstudio/lws-data
+cd /srv/lwstudio/current
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
+.venv/bin/python -m pip install -r workflow/glossary/requirements.txt
+.venv/bin/python -m pip install -r workflow/localization/requirements.txt
 ```
 
-## 安装依赖
+## 启动与接入
+
+1. 按实际路径调整 `deploy/lws.env.example`，安装为 systemd 的 EnvironmentFile。
+2. 安装并调整 `deploy/lws.service`，启动后端服务。
+3. 安装并调整 `deploy/nginx.conf`，让 `/api/` 反代后端，让其余请求读取 `frontend/dist/`。
+4. 确认 CDN 或上游代理不会把 `/api/` 和 HTML 改写成长缓存。
+
+部署后执行：
 
 ```bash
-cd /data/web/lwstudio
-python3.11 -m pip install -r backend/requirements.txt
-python3.11 -m pip install -r workflow/glossary/requirements.txt
-python3.11 -m pip install -r workflow/localization/requirements.txt
-
-cd frontend
-npm install
-{frontend_build_cmd}
-cd ..
-```
-
-如果包内已有 `frontend/dist/`，仍建议在目标服务器上重新执行一次 `{frontend_build_cmd}`，确认 Node 环境兼容。
-
-## 启动后端
-
-```bash
-chmod +x ./start-lws.sh
-APP_HOME=/data/web/lwstudio \
-LWS_DATA_ROOT=/data/web/lwstudio/lws-data \
-LWS_DEPLOYMENT_MODE=cloud \
-LWS_MAX_UPLOAD_MB=1024 \
-./start-lws.sh
-```
-
-生产环境建议只启动一个后端进程。当前任务队列使用 SQLite lease，本轮不建议多 worker 并发启动同一数据目录。
-
-## Nginx 示例
-
-```nginx
-server {{
-  listen 80;
-  server_name ai-lwstudio.gz4399.com;
-
-  root /data/web/lwstudio/frontend/dist;
-  client_max_body_size 1024m;
-
-  # index.html 不带 hash，必须每次回源验证，否则浏览器会长期使用旧 bundle 引用。
-  location = /index.html {{
-    add_header Cache-Control "no-cache" always;
-    try_files $uri =404;
-  }}
-
-  # Vite 构建产物带内容 hash，可以长期缓存。
-  location /assets/ {{
-    add_header Cache-Control "public, max-age=31536000, immutable" always;
-    try_files $uri =404;
-  }}
-
-  location / {{
-    add_header Cache-Control "no-cache" always;
-    try_files $uri $uri/ /index.html;
-  }}
-
-  location /api/ {{
-    proxy_pass http://127.0.0.1:8082;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_read_timeout 600s;
-    proxy_send_timeout 600s;
-  }}
-}}
-```
-
-## 部署后检查
-
-```bash
-python3.11 check.py --base-url https://ai-lwstudio.gz4399.com --require-cloud --require-provider --expect-version {version}
+release_sha="$(python3.11 -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
+python3.11 check.py \
+  --base-url https://ai-lwstudio.gz4399.com \
+  --require-cloud \
+  --require-provider \
+  --expect-version {version} \
+  --expect-git-sha "$release_sha" \
+  --check-frontend-assets frontend/dist/assets
 python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.gz4399.com
 ```
-
-必须确认：
-
-- `/api/version` 返回 `{version}`。
-- 前端右下角显示 `v{version}`。
-- `/api/health` 返回 `deployment_mode=cloud`。
-- data root、uploads、DB 路径指向服务器数据目录。
-- Provider 已配置且可联通。
-- 静态资源 hash 与当前包一致。
-
-## 运行边界
-
-- AI 只通过已配置 Provider 调用；工作台本地负责拆批、限流、断点续跑、QA、回填和交付。
-- 长任务会落盘保存批次状态。刷新页面后可继续查看进度，后端重启后可恢复未完成任务。
-- 不接入外部机翻或在线翻译聚合器。
 """
     (target_root / "ONLINE_DEPLOY_README.zh-CN.md").write_text(text, encoding="utf-8")
 
-def _write_manifest(target_root: Path, version: str, sha: str, files: list[Path], *, includes_settings: bool, hide_settings: bool) -> None:
+
+def _write_manifest(
+    target_root: Path,
+    version: str,
+    sha: str,
+    *,
+    dirty: bool,
+    hide_settings: bool,
+) -> None:
+    current_files = sum(1 for path in target_root.rglob("*") if path.is_file())
     manifest = {
         "name": "localization-workflow-studio",
         "version": version,
         "git_sha": sha,
-        "source_git_dirty": _git_dirty(),
-        "source_state": "working_tree" if _git_dirty() else "clean_git_commit",
+        "source_git_dirty": dirty,
+        "source_state": "dirty_working_tree_allowed" if dirty else "clean_git_commit",
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "file_count": len(files),
-        "contains_frontend_dist": (target_root / "frontend" / "dist" / "index.html").exists(),
-        "contains_settings_local": includes_settings,
+        "file_count": current_files + 2,
+        "contains_frontend_dist": True,
+        "contains_settings_local": False,
         "frontend_settings_button_hidden": hide_settings,
         "excluded_runtime_data": True,
+        "archive_verified": True,
+        "package_policy": "production_runtime_allowlist",
+        "credential_scan": "source_and_archive_text",
         "entrypoints": {
             "linux_backend": "start-lws.sh",
-            "windows_local": "start-workbench.cmd",
+            "backend_app": "backend/app/main.py",
             "deployment_check": "check.py",
             "stability_check": "scripts/stability_check.py",
         },
     }
-    (target_root / "PACKAGE_MANIFEST.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    (target_root / "PACKAGE_MANIFEST.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _write_sha256sums(target_root: Path) -> None:
-    rows: list[str] = []
+    rows = []
     for path in sorted(target_root.rglob("*")):
-        if path.is_file():
-            rel = path.relative_to(target_root).as_posix()
-            rows.append(f"{_sha256(path)}  {rel}")
+        if path.is_file() and path.name != "SHA256SUMS.txt":
+            relative = path.relative_to(target_root).as_posix()
+            rows.append(f"{_sha256(path)}  {relative}")
     (target_root / "SHA256SUMS.txt").write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
-def build(output_dir: Path, package_label: str, settings_file: Path | None = None, *, hide_settings: bool = False, rebuild_frontend: bool = True) -> Path:
+def _relative_archive_files(archive: zipfile.ZipFile) -> dict[str, str]:
+    file_names = [name for name in archive.namelist() if not name.endswith("/")]
+    if not file_names:
+        raise RuntimeError("release archive is empty")
+    roots = {name.split("/", 1)[0] for name in file_names}
+    if len(roots) != 1:
+        raise RuntimeError("release archive must contain exactly one package root")
+    root = next(iter(roots)) + "/"
+    relative: dict[str, str] = {}
+    for name in file_names:
+        member = name.removeprefix(root)
+        member_path = Path(member)
+        if not member or member_path.is_absolute() or ".." in member_path.parts:
+            raise RuntimeError(f"unsafe archive member: {name}")
+        if member in relative:
+            raise RuntimeError(f"duplicate archive member: {member}")
+        relative[member] = name
+    return relative
+
+
+def _verify_archive(zip_path: Path, *, dirty: bool) -> None:
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            bad_member = archive.testzip()
+            if bad_member:
+                raise RuntimeError(f"corrupt archive member: {bad_member}")
+
+            relative = _relative_archive_files(archive)
+            missing = sorted(REQUIRED_MEMBERS - set(relative))
+            if missing:
+                raise RuntimeError("release archive is missing required members: " + ", ".join(missing))
+            forbidden = sorted(
+                member for member in relative if _is_forbidden_relative(Path(member))
+            )
+            if forbidden:
+                raise RuntimeError("release archive contains forbidden members: " + ", ".join(forbidden))
+            unexpected = sorted(
+                member for member in relative if not _is_allowed_archive_member(Path(member))
+            )
+            if unexpected:
+                raise RuntimeError(
+                    "release archive contains members outside the production allowlist: "
+                    + ", ".join(unexpected)
+                )
+            for member, archive_name in relative.items():
+                member_path = Path(member)
+                if _is_text_candidate(member_path):
+                    _scan_text_bytes(
+                        archive.read(archive_name),
+                        origin=f"archive:{member}",
+                    )
+
+            manifest = json.loads(archive.read(relative["PACKAGE_MANIFEST.json"]))
+            if manifest.get("contains_settings_local") is not False:
+                raise RuntimeError("manifest must state that settings.local.json is absent")
+            if manifest.get("archive_verified") is not True:
+                raise RuntimeError("manifest is missing archive verification state")
+            if manifest.get("source_git_dirty") is not dirty:
+                raise RuntimeError("manifest dirty state does not match the source tree")
+
+            rows = archive.read(relative["SHA256SUMS.txt"]).decode("utf-8").splitlines()
+            expected_hashes: dict[str, str] = {}
+            for row in rows:
+                try:
+                    digest, member = row.split("  ", 1)
+                except ValueError as exc:
+                    raise RuntimeError(f"invalid SHA256SUMS row: {row!r}") from exc
+                if member in expected_hashes:
+                    raise RuntimeError(f"duplicate SHA256SUMS member: {member}")
+                expected_hashes[member] = digest
+
+            expected_members = set(relative) - {"SHA256SUMS.txt"}
+            if set(expected_hashes) != expected_members:
+                missing_hashes = sorted(expected_members - set(expected_hashes))
+                extra_hashes = sorted(set(expected_hashes) - expected_members)
+                raise RuntimeError(
+                    f"SHA256SUMS member mismatch; missing={missing_hashes}, extra={extra_hashes}"
+                )
+            for member, expected in expected_hashes.items():
+                actual = hashlib.sha256(archive.read(relative[member])).hexdigest()
+                if actual != expected:
+                    raise RuntimeError(f"SHA-256 mismatch for {member}")
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError(f"release archive is not readable: {zip_path}") from exc
+
+
+def build(
+    output_dir: Path,
+    package_label: str,
+    *,
+    hide_settings: bool = False,
+    rebuild_frontend: bool = True,
+    allow_dirty: bool = False,
+) -> Path:
+    dirty = _git_dirty()
+    if dirty and not allow_dirty:
+        raise RuntimeError(
+            "refusing to package a dirty or untracked source tree; commit/stash it or pass --allow-dirty explicitly"
+        )
+
     version = _version()
     sha = _git_sha()
     if rebuild_frontend:
         _build_frontend(hide_settings=hide_settings)
+    _assert_required_source_members()
+
     stamp = datetime.now().strftime("%Y%m%d")
     root_name = f"localization-workflow-studio-v{version}-{stamp}"
-    staging_root = ROOT.parent / "release-staging" / root_name
+    staging_parent = ROOT.parent / "release-staging"
+    staging_root = staging_parent / root_name
+    output_dir = output_dir.resolve()
+
     if staging_root.exists():
         shutil.rmtree(staging_root)
     staging_root.mkdir(parents=True, exist_ok=True)
 
-    copied: list[Path] = []
-    for source in _iter_files():
-        relative = source.relative_to(ROOT)
-        target = staging_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        copied.append(relative)
+    try:
+        for source in _iter_files(excluded_roots=(output_dir, staging_parent)):
+            relative = source.relative_to(ROOT)
+            target = staging_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
 
-    includes_settings = False
-    if settings_file:
-        resolved = settings_file.resolve()
-        if not resolved.exists():
-            raise FileNotFoundError(f"settings file not found: {resolved}")
-        shutil.copy2(resolved, staging_root / "settings.local.json")
-        copied.append(Path("settings.local.json"))
-        includes_settings = True
+        _write_install_doc(staging_root, version, sha)
+        _write_manifest(
+            staging_root,
+            version,
+            sha,
+            dirty=dirty,
+            hide_settings=hide_settings,
+        )
+        _write_sha256sums(staging_root)
 
-    _write_install_doc(staging_root, version, sha, includes_settings=includes_settings, hide_settings=hide_settings)
-    copied.append(Path("ONLINE_DEPLOY_README.zh-CN.md"))
-    _write_manifest(staging_root, version, sha, copied, includes_settings=includes_settings, hide_settings=hide_settings)
-    copied.append(Path("PACKAGE_MANIFEST.json"))
-    _write_sha256sums(staging_root)
-    copied.append(Path("SHA256SUMS.txt"))
+        staged_members = {
+            path.relative_to(staging_root).as_posix()
+            for path in staging_root.rglob("*")
+            if path.is_file()
+        }
+        missing = sorted(REQUIRED_MEMBERS - staged_members)
+        if missing:
+            raise RuntimeError("staged release is missing required members: " + ", ".join(missing))
+        forbidden = sorted(
+            member for member in staged_members if _is_forbidden_relative(Path(member))
+        )
+        if forbidden:
+            raise RuntimeError("staged release contains forbidden members: " + ", ".join(forbidden))
+        unexpected = sorted(
+            member for member in staged_members if not _is_allowed_archive_member(Path(member))
+        )
+        if unexpected:
+            raise RuntimeError(
+                "staged release contains members outside the production allowlist: "
+                + ", ".join(unexpected)
+            )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = output_dir / f"{package_label}-v{version}-{stamp}.zip"
-    if zip_path.exists():
-        zip_path.unlink()
-    # strict_timestamps=False：个别文件带 1980 年前的异常时间戳时自动钳到 1980，避免整包失败。
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
-        for path in staging_root.rglob("*"):
-            if path.is_file():
-                archive.write(path, path.relative_to(staging_root.parent).as_posix())
-    return zip_path
+        output_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = output_dir / f"{package_label}-v{version}-{stamp}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        with zipfile.ZipFile(
+            zip_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            strict_timestamps=False,
+        ) as archive:
+            for path in sorted(staging_root.rglob("*")):
+                if path.is_file():
+                    archive.write(path, path.relative_to(staging_root.parent).as_posix())
+
+        try:
+            _verify_archive(zip_path, dirty=dirty)
+        except Exception:
+            zip_path.unlink(missing_ok=True)
+            raise
+        return zip_path
+    finally:
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build a sanitized release zip for Localization Workflow Studio.")
+    parser = argparse.ArgumentParser(
+        description="Build and read back a sanitized Localization Workflow Studio release zip."
+    )
     parser.add_argument("--output-dir", default=str(Path.home() / "Desktop"))
     parser.add_argument("--label", default="本地化工作台线上部署包")
-    parser.add_argument("--settings-file", default="", help="Optional settings.local.json to include in the package root.")
-    parser.add_argument("--hide-settings", action="store_true", help="Build the frontend with the settings button hidden (LWS_HIDE_SETTINGS=1).")
-    parser.add_argument("--no-rebuild-frontend", action="store_true", help="Package the existing frontend/dist without rebuilding.")
+    parser.add_argument(
+        "--hide-settings",
+        action="store_true",
+        help="Build the frontend with the settings button hidden (LWS_HIDE_SETTINGS=1).",
+    )
+    parser.add_argument(
+        "--no-rebuild-frontend",
+        action="store_true",
+        help="Package the existing frontend/dist without rebuilding it.",
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Explicitly package a dirty working tree and mark that state in the manifest.",
+    )
     args = parser.parse_args()
-    settings = Path(args.settings_file) if args.settings_file else None
     zip_path = build(
         Path(args.output_dir),
         args.label,
-        settings,
         hide_settings=args.hide_settings,
         rebuild_frontend=not args.no_rebuild_frontend,
+        allow_dirty=args.allow_dirty,
     )
     print(zip_path)
     return 0

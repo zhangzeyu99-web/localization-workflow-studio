@@ -31,6 +31,7 @@ import { artifactForProject, preferredTranslationResultArtifact, runForProject }
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
 import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
+import { clearSessionNavigation, readSessionNavigation, writeSessionNavigation, type SessionNavigation } from './sessionNavigation'
 
 const QuickTaskWizard = lazy(() => import('./components/quickTask/QuickTaskWizard').then((m) => ({ default: m.QuickTaskWizard })))
 const AnnouncementWizard = lazy(() => import('./components/announcement/AnnouncementWorkflow').then((m) => ({ default: m.AnnouncementWizard })))
@@ -70,6 +71,8 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('准备就绪')
   const currentIdRef = useRef('')
+  const restoredNavigationRef = useRef<SessionNavigation | null | undefined>(undefined)
+  if (restoredNavigationRef.current === undefined) restoredNavigationRef.current = readSessionNavigation()
   const [hydratedProjectId, setHydratedProjectId] = useState('')
   const projectNavigationRef = useRef(new Map<string, { view: AppView; tab: ProjectTab; step: number }>())
   const [intro, setIntro] = useState('')
@@ -243,7 +246,22 @@ function App() {
   })
 
   useEffect(() => {
-    refreshProjects().catch(() => undefined).finally(() => setProjectsReady(true))
+    const restored = restoredNavigationRef.current
+    refreshProjects(restored?.projectId)
+      .then(() => {
+        if (restored && currentIdRef.current === restored.projectId) {
+          setView(restored.view)
+          setTab(restored.tab)
+          setStep(restored.step)
+          return
+        }
+        clearSessionNavigation()
+        setView('overview')
+        setTab('meta')
+        setStep(1)
+      })
+      .catch(() => clearSessionNavigation())
+      .finally(() => setProjectsReady(true))
     refreshSettings()
     refreshRuntimeVersion()
     refreshLanguageOptions(API)
@@ -280,6 +298,11 @@ function App() {
   useEffect(() => {
     if (currentId) projectNavigationRef.current.set(currentId, { view, tab, step })
   }, [currentId, view, tab, step])
+
+  useEffect(() => {
+    if (!projectsReady || !currentId) return
+    writeSessionNavigation({ projectId: currentId, view, tab, step })
+  }, [projectsReady, currentId, view, tab, step])
 
   const activeRunPolling = Boolean(scopedLatestRun && ['queued', 'running'].includes(scopedLatestRun.status))
   const activeAnnouncementPolling = Boolean(current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status)))

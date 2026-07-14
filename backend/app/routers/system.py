@@ -107,7 +107,7 @@ def _frontend_assets() -> list[str]:
     assets_dir = APP_ROOT / "frontend" / "dist" / "assets"
     if not assets_dir.exists():
         return []
-    return sorted(path.name for path in assets_dir.glob("*") if path.is_file())[:20]
+    return sorted(path.name for path in assets_dir.glob("*") if path.is_file())
 
 
 @router.get("/api/version")

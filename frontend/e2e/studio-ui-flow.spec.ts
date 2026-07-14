@@ -400,7 +400,13 @@ test('user can complete the EN localization workflow from project tabs', async (
   await page.locator('.reference-card .card-actions button').nth(1).click()
   const manualPrompt = '\u4eba\u5de5\u4fee\u8ba2\u9879\u76ee\u63d0\u793a\u8bcd\uff1a\u4fdd\u6301 UI \u7b80\u6d01\uff0c\u672f\u8bed\u4e25\u683c\u6309\u9879\u76ee\u8868\u6267\u884c\u3002'
   await page.locator('textarea.prompt-editor').fill(manualPrompt)
+  const promptSave = page.waitForResponse((response) => (
+    response.request().method() === 'PATCH'
+    && response.url().includes('/api/projects/')
+  ))
   await page.locator('.reference-card .row-actions .btn-primary').click()
+  expect((await promptSave).ok()).toBeTruthy()
+  await expect(page.locator('textarea.prompt-editor')).toHaveCount(0)
   const promptProjects = await request.get(`${baseURL}/api/projects`).then((response) => response.json())
   const promptSavedProject = promptProjects.find((item: { name: string }) => item.name === projectName)
   expect(promptSavedProject.prompt_text).toBe(manualPrompt)
