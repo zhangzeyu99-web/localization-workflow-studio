@@ -2,6 +2,16 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.4.0 - 2026-07-15
+
+Persistent dual-lane queue and shared-workbench reliability release.
+
+- Added two durable FIFO channels: one global formal language-table worker and one global quick-task/announcement worker. The two channels may run concurrently for the same project while each channel remains strictly serial.
+- Added restart recovery, queue-level cancellation audit, operator/position visibility, dual-lane queue APIs, and queue-authoritative header/project badges. Running work pauses for explicit continuation after restart; waiting work resumes automatically.
+- Fixed orphaned legacy QA cleanup, created-to-queued state ordering, line-proofread Chinese status text, queue/handler race conditions, and graceful single-worker shutdown.
+- Quick tasks and announcements still generate downloadable outputs but no longer write project translation archives; formal language-table QA/delivery continues to archive normally.
+- Release packaging now emits and verifies a `.zip.sha256` sidecar in addition to the archive's internal member checksum manifest.
+
 ## 1.3.4 - 2026-07-15
 
 Unicode operator nickname compatibility release.
