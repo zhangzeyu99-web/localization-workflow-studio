@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import db, operator_context
+from .. import background_jobs, db, job_queue, operator_context
 from ..config import load_settings
-from ..jobs import active_job_for_project, active_job_id_for_project, start_singleton_job
 from ..languages import require_supported_language, visible_language_code
 from ..schemas import MultilingualQueueRequest, TranslateRequest
 from .qa import QaCanceled, run_qa_sync
@@ -50,7 +49,7 @@ def multilingual_status(project_id: str, input_artifact_id: str, languages: list
         "project_id": project_id,
         "input_artifact_id": input_artifact_id,
         "overall_status": overall,
-        "active_job_id": active_job_id_for_project(project_id),
+        "active_job_id": _active_controller_job_id(project_id, input_artifact_id),
         "languages": rows,
     }
 
@@ -60,17 +59,20 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
     operator_context.require_operator_for_cloud()
     selected = normalize_language_list(payload.languages)
     _validate_reference_artifacts(project_id, payload)
-    active = active_job_for_project(project_id)
-    if active:
+    job_id = _queue_job_id("translate", project_id, payload.input_artifact_id)
+    active = job_queue.get_job(job_id)
+    if active and active.get("status") in ACTIVE_STATUSES:
         status = multilingual_status(project_id, payload.input_artifact_id, selected)
         status["created_run_ids"] = []
         status["queue_started"] = False
-        status["active_conflict"] = {"reason": "project_busy", **active}
         return status
     created = []
+    run_ids = []
     for language in selected:
         run = _find_translation_run(project_id, payload.input_artifact_id, language)
         if run:
+            if run.get("status") != "passed":
+                run_ids.append(run["id"])
             continue
         metadata = {
             "input_artifact_id": payload.input_artifact_id,
@@ -87,51 +89,18 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
         }
         run = db.insert_run(project_id, "translation", language, metadata)
         created.append(run["id"])
+        run_ids.append(run["id"])
 
-    job_id = _queue_job_id("translate", project_id, payload.input_artifact_id)
-
-    def worker(cancel_event: Any) -> None:
-        for language in selected:
-            if cancel_event.is_set():
-                break
-            run = _find_translation_run(project_id, payload.input_artifact_id, language)
-            if not run:
-                continue
-            if run.get("status") == "passed":
-                continue
-            if run.get("status") in ACTIVE_STATUSES and active_job_id_for_project(project_id) != job_id:
-                continue
-            try:
-                db.add_event(run["id"], f"multilingual queue translating {visible_language_code(language)}")
-                request = TranslateRequest(
-                    batch_size=payload.batch_size,
-                    confirm_api_budget=payload.confirm_api_budget,
-                    confirm_term_gap=payload.confirm_term_gap,
-                    large_text_mode=payload.large_text_mode or "auto",
-                    enable_line_proofread=bool(payload.enable_line_proofread),
-                )
-                run_translate_sync(run["id"], request, cancel_event=cancel_event)
-            except Exception as exc:
-                try:
-                    current = db.get_run(run["id"])
-                    db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})
-                    db.update_run(
-                        run["id"],
-                        status=current.get("status") if current.get("status") in TERMINAL_STATUSES else "failed",
-                    )
-                except Exception:
-                    pass
-
-    started, conflict = start_singleton_job(project_id, job_id, worker)
-    if conflict:
-        for run_id in created:
-            db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
-            db.update_run(run_id, status="created")
+    queued = background_jobs.start_multilingual(
+        "multilingual_translate",
+        project_id,
+        payload.input_artifact_id,
+        payload,
+        run_ids,
+    ) if run_ids else None
     status = multilingual_status(project_id, payload.input_artifact_id, selected)
     status["created_run_ids"] = created
-    status["queue_started"] = started
-    if conflict:
-        status["active_conflict"] = conflict
+    status["queue_started"] = bool(queued)
     return status
 
 
@@ -140,18 +109,22 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
     operator_context.require_operator_for_cloud()
     selected = normalize_language_list(payload.languages)
     _validate_reference_artifacts(project_id, payload)
-    active = active_job_for_project(project_id)
-    if active:
+    job_id = _queue_job_id("qa", project_id, payload.input_artifact_id)
+    active = job_queue.get_job(job_id)
+    if active and active.get("status") in ACTIVE_STATUSES:
         status = multilingual_status(project_id, payload.input_artifact_id, selected)
         status["created_run_ids"] = []
         status["queue_started"] = False
-        status["active_conflict"] = {"reason": "project_busy", **active}
         return status
     created = []
+    run_ids = []
     for language in selected:
         if _find_passed_or_deliverable_run(project_id, payload.input_artifact_id, language):
             continue
-        if _find_qa_run(project_id, payload.input_artifact_id, language):
+        existing_qa = _find_qa_run(project_id, payload.input_artifact_id, language)
+        if existing_qa:
+            if existing_qa.get("status") != "passed":
+                run_ids.append(existing_qa["id"])
             continue
         qa_input = _qa_input_artifact(project_id, payload.input_artifact_id, language, payload.batch_size)
         if not qa_input:
@@ -170,51 +143,85 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
         }
         run = db.insert_run(project_id, "qa", language, metadata)
         created.append(run["id"])
+        run_ids.append(run["id"])
 
-    job_id = _queue_job_id("qa", project_id, payload.input_artifact_id)
-
-    def worker(cancel_event: Any) -> None:
-        # Snapshot settings once for this job and reuse it for every
-        # language's QA pass, instead of each run_qa_sync call reloading
-        # settings.local.json mid-task.
-        job_settings = load_settings()
-        for language in selected:
-            if cancel_event.is_set():
-                break
-            run = _find_qa_run(project_id, payload.input_artifact_id, language)
-            if not run or run.get("status") == "passed":
-                continue
-            if run.get("status") in ACTIVE_STATUSES and active_job_id_for_project(project_id) != job_id:
-                continue
-            try:
-                db.add_event(run["id"], f"multilingual queue running QA {visible_language_code(language)}")
-                run_qa_sync(run["id"], settings=job_settings, cancel_event=cancel_event)
-            except QaCanceled:
-                try:
-                    db.merge_run_metadata(run["id"], {"canceled_at": db.now_iso()})
-                    db.update_run(run["id"], status="canceled")
-                    db.add_event(run["id"], "multilingual queue QA canceled")
-                except Exception:
-                    pass
-                break
-            except Exception as exc:
-                try:
-                    db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})
-                    db.update_run(run["id"], status="failed")
-                except Exception:
-                    pass
-
-    started, conflict = start_singleton_job(project_id, job_id, worker)
-    if conflict:
-        for run_id in created:
-            db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
-            db.update_run(run_id, status="created")
+    queued = background_jobs.start_multilingual(
+        "multilingual_qa",
+        project_id,
+        payload.input_artifact_id,
+        payload,
+        run_ids,
+    ) if run_ids else None
     status = multilingual_status(project_id, payload.input_artifact_id, selected)
     status["created_run_ids"] = created
-    status["queue_started"] = started
-    if conflict:
-        status["active_conflict"] = conflict
+    status["queue_started"] = bool(queued)
     return status
+
+
+def execute_multilingual_translation_job(record: dict[str, Any], cancel_event: Any) -> None:
+    payload = MultilingualQueueRequest.model_validate((record.get("payload") or {}).get("request") or {})
+    selected = normalize_language_list(payload.languages)
+    for language in selected:
+        if cancel_event.is_set():
+            break
+        run = _find_translation_run(record["project_id"], payload.input_artifact_id, language)
+        if not run or run.get("status") == "passed":
+            continue
+        try:
+            db.add_event(run["id"], f"multilingual queue translating {visible_language_code(language)}")
+            request = TranslateRequest(
+                batch_size=payload.batch_size,
+                confirm_api_budget=payload.confirm_api_budget,
+                confirm_term_gap=payload.confirm_term_gap,
+                large_text_mode=payload.large_text_mode or "auto",
+                enable_line_proofread=bool(payload.enable_line_proofread),
+            )
+            run_translate_sync(run["id"], request, cancel_event=cancel_event)
+        except Exception as exc:
+            current = db.get_run(run["id"])
+            db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})
+            db.update_run(run["id"], status=current.get("status") if current.get("status") in TERMINAL_STATUSES else "failed")
+    if cancel_event.is_set():
+        _cancel_unstarted_children(record)
+
+
+def execute_multilingual_qa_job(record: dict[str, Any], cancel_event: Any) -> None:
+    payload = MultilingualQueueRequest.model_validate((record.get("payload") or {}).get("request") or {})
+    selected = normalize_language_list(payload.languages)
+    job_settings = load_settings()
+    for language in selected:
+        if cancel_event.is_set():
+            break
+        run = _find_qa_run(record["project_id"], payload.input_artifact_id, language)
+        if not run or run.get("status") == "passed":
+            continue
+        try:
+            db.add_event(run["id"], f"multilingual queue running QA {visible_language_code(language)}")
+            run_qa_sync(run["id"], settings=job_settings, cancel_event=cancel_event)
+        except QaCanceled:
+            db.merge_run_metadata(run["id"], {"canceled_at": db.now_iso()})
+            db.update_run(run["id"], status="canceled")
+            db.add_event(run["id"], "multilingual queue QA canceled")
+            break
+        except Exception as exc:
+            db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})
+            db.update_run(run["id"], status="failed")
+    if cancel_event.is_set():
+        _cancel_unstarted_children(record)
+
+
+def _cancel_unstarted_children(record: dict[str, Any]) -> None:
+    queue_job = job_queue.get_job(str(record["job_id"])) or {}
+    audit = {
+        "canceled_by": str(queue_job.get("canceled_by") or ""),
+        "cancel_requested_at": queue_job.get("cancel_requested_at"),
+        "canceled_at": db.now_iso(),
+    }
+    for run_id in (record.get("payload") or {}).get("child_run_ids") or []:
+        run = db.get_run(str(run_id))
+        if run.get("status") == "queued":
+            db.merge_run_metadata(str(run_id), audit)
+            db.update_run(str(run_id), status="canceled")
 
 
 def _language_status(project_id: str, input_artifact_id: str, language: str) -> dict[str, Any]:
@@ -321,6 +328,13 @@ def _validate_reference_artifacts(project_id: str, payload: MultilingualQueueReq
 
 def _queue_job_id(kind: str, project_id: str, input_artifact_id: str) -> str:
     return f"multilingual:{kind}:{project_id}:{input_artifact_id}"
+
+
+def _active_controller_job_id(project_id: str, input_artifact_id: str) -> str | None:
+    for row in job_queue.list_active_jobs(project_id=project_id, lane="language_table"):
+        if row.get("job_kind") in {"multilingual_translate", "multilingual_qa"} and row.get("target_id") == input_artifact_id:
+            return str(row["job_id"])
+    return None
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]

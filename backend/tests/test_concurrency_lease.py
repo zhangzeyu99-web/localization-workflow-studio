@@ -14,8 +14,8 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import app.db as db
+import app.job_queue as job_queue
 import app.jobs as jobs
-import app.routers.announcement as announcement_router
 import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
@@ -103,7 +103,7 @@ def test_two_projects_translate_in_parallel_independently(tmp_path: Path, monkey
         assert terminal_a["id"] != terminal_b["id"]
 
 
-def test_same_project_second_translation_rejected_as_project_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_same_project_second_translation_is_accepted_into_fifo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
     with TestClient(app) as client:
@@ -124,14 +124,10 @@ def test_same_project_second_translation_rejected_as_project_busy(tmp_path: Path
             "/api/runs",
             json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": artifact_1["id"], "batch_size": 2},
         ).json()
-        # create_run() itself already guards against two active runs of the same
-        # kind in one project (pre-existing, independent of the job lease), so
-        # insert run_2 directly via the db layer to exercise the *lease-level*
-        # project_busy rejection in isolation.
         run_2 = db.insert_run(
             project["id"],
             "translation",
-            "ko",
+            "en",
             metadata={"input_artifact_id": artifact_2["id"], "batch_size": 2, "task_origin": "translation_run"},
         )
 
@@ -142,21 +138,22 @@ def test_same_project_second_translation_rejected_as_project_busy(tmp_path: Path
         )
         assert started_1.status_code == 200, started_1.text
 
-        rejected = client.post(
+        queued = client.post(
             f"/api/runs/{run_2['id']}/translate/start",
             json={"provider": "test-fake", "batch_size": 2},
             headers={"X-Operator": "Bob"},
         )
-        assert rejected.status_code == 409
-        detail = rejected.json()["detail"]
-        assert "该项目正在由" in detail
-        assert "Alice" in detail
+        assert queued.status_code == 200, queued.text
+        assert job_queue.get_job(f"run:{run_2['id']}")["status"] == "queued"
+        assert db.get_run(run_2["id"])["status"] == "queued"
 
         terminal_1 = _wait_for_terminal_run(client, run_1["id"])
+        terminal_2 = _wait_for_terminal_run(client, run_2["id"])
         assert terminal_1["status"] == "passed"
+        assert terminal_2["status"] == "passed"
 
 
-def test_capacity_limit_rejects_second_project_when_workbench_is_full(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_capacity_setting_does_not_reject_second_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     save_settings({**DEFAULT_SETTINGS, "max_concurrent_ai_jobs": 1})
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
@@ -168,27 +165,21 @@ def test_capacity_limit_rejects_second_project_when_workbench_is_full(tmp_path: 
         started_a = client.post(f"/api/runs/{run_a['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
         assert started_a.status_code == 200, started_a.text
 
-        rejected = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
-        assert rejected.status_code == 409
-        detail = rejected.json()["detail"]
-        assert "工作台已有" in detail
-        assert "上限 1" in detail
-        restored_b = client.get(f"/api/runs/{run_b['id']}").json()
-        assert restored_b["status"] == run_b["status"]
-        assert "queued_at" not in restored_b["metadata"]
-        assert restored_b["metadata"]["queue_error"]
+        queued = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        assert queued.status_code == 200, queued.text
+        stored_b = client.get(f"/api/runs/{run_b['id']}").json()
+        assert stored_b["status"] == "queued"
+        assert stored_b["metadata"]["queued_at"]
+        assert "queue_error" not in stored_b["metadata"]
 
         terminal_a = _wait_for_terminal_run(client, run_a["id"])
         assert terminal_a["status"] == "passed"
 
-        # Once project A's job clears, project B should be able to start.
-        started_b_retry = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
-        assert started_b_retry.status_code == 200, started_b_retry.text
         terminal_b = _wait_for_terminal_run(client, run_b["id"])
         assert terminal_b["status"] == "passed"
 
 
-def test_announcement_capacity_rejection_restores_pre_queue_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_announcement_start_uses_quick_lane_without_legacy_capacity_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
     project = db.insert_project("Announcement Queue Rollback", "QA", "")
     task = db.insert_announcement_task(
         project["id"],
@@ -199,22 +190,23 @@ def test_announcement_capacity_rejection_restores_pre_queue_state(monkeypatch: p
             "current_step": 6,
         },
     )
-    monkeypatch.setattr(
-        announcement_router,
-        "start_singleton_job",
-        lambda project_id, job_id, worker: (False, {"reason": "capacity", "active_count": 2, "limit": 2}),
-    )
+    def fake_translate(task_id: str, payload: object, *, cancel_event: object) -> dict:
+        _ = payload, cancel_event
+        db.update_announcement_task(task_id, status="translated", current_step=8)
+        return {"task": db.get_announcement_task(task_id)}
+
+    monkeypatch.setattr(workflow, "translate_announcement_task", fake_translate)
 
     with TestClient(app) as client:
-        rejected = client.post(
+        started = client.post(
             f"/api/announcement-tasks/{task['id']}/translate/start",
             json={"languages": ["en"], "provider": "test-fake", "batch_size": 2},
         )
 
-    assert rejected.status_code == 409
-    restored = db.get_announcement_task(task["id"])
-    assert restored["status"] == "prepared"
-    assert restored["current_step"] == 6
+    assert started.status_code == 200, started.text
+    queued = job_queue.get_job(f"announcement:{task['id']}")
+    assert queued is not None
+    assert queued["lane"] == "quick_announcement"
 
 
 def test_reconcile_interrupted_background_jobs_clears_multiple_residual_leases() -> None:
@@ -326,7 +318,7 @@ def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, 
         _wait_for_terminal_run(client, run["id"])
 
 
-def test_active_jobs_endpoint_reports_two_projects_running_concurrently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_active_jobs_excludes_second_project_waiting_in_same_lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
     with TestClient(app) as client:
@@ -338,19 +330,15 @@ def test_active_jobs_endpoint_reports_two_projects_running_concurrently(tmp_path
         started_b = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
         assert started_b.status_code == 200, started_b.text
 
-        observed_both_running = False
-        for _ in range(40):
-            active = client.get("/api/system/active-jobs").json()
-            project_ids = {item["project_id"] for item in active}
-            if {project_a["id"], project_b["id"]}.issubset(project_ids):
-                observed_both_running = True
-                lease_names = {item["lease_name"] for item in active}
-                assert f"long_text:{project_a['id']}" in lease_names
-                assert f"long_text:{project_b['id']}" in lease_names
-                assert all(item["job_kind"] == "translation" for item in active)
-                break
-            time.sleep(0.05)
-        assert observed_both_running, "expected both projects' jobs to be reported by /api/system/active-jobs concurrently"
+        active = client.get("/api/system/active-jobs").json()
+        assert [item["project_id"] for item in active] == [project_a["id"]]
+        assert active[0]["lane"] == "language_table"
+        queues = client.get("/api/system/job-queues").json()
+        language_lane = next(item for item in queues["lanes"] if item["lane"] == "language_table")
+        assert language_lane["running"]["project_id"] == project_a["id"]
+        assert language_lane["queued"][0]["project_id"] == project_b["id"]
+        assert language_lane["queued"][0]["position"] == 1
+        assert language_lane["queued"][0]["ahead"] == 1
 
         assert _wait_for_terminal_run(client, run_a["id"])["status"] == "passed"
         assert _wait_for_terminal_run(client, run_b["id"])["status"] == "passed"

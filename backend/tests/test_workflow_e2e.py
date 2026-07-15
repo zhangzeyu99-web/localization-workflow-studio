@@ -4022,8 +4022,16 @@ def test_model_fix_requires_configured_provider(tmp_path: Path) -> None:
         assert response.status_code == 409
         assert "API key" in response.json()["detail"]
         start_response = client.post(f"/api/runs/{failed_run['id']}/model-fixes/start", json={"max_issues": 20, "rerun_qa": True})
-        assert start_response.status_code == 409
-        assert "API key" in start_response.json()["detail"]
+        assert start_response.status_code == 200
+        final_source = None
+        for _ in range(120):
+            final_source = client.get(f"/api/runs/{failed_run['id']}").json()
+            if final_source["metadata"].get("model_fix_status") == "failed":
+                break
+            time.sleep(0.05)
+        assert final_source is not None
+        assert final_source["metadata"]["model_fix_status"] == "failed"
+        assert "API key" in final_source["metadata"]["model_fix_error"]
 
 
 def test_model_fix_applies_provider_suggestions_and_reruns_qa(tmp_path: Path, monkeypatch) -> None:
@@ -4100,12 +4108,12 @@ def test_model_fix_background_start_returns_and_finishes(tmp_path: Path, monkeyp
         response = client.post(f"/api/runs/{failed_run['id']}/model-fixes/start", json={"max_issues": 20, "rerun_qa": True})
         assert response.status_code == 200, response.text
         started = response.json()
-        assert started["metadata"]["model_fix_status"] in {"running", "passed"}
+        assert started["metadata"]["model_fix_status"] in {"queued", "running", "passed"}
 
         final_source = None
         for _ in range(120):
             final_source = client.get(f"/api/runs/{failed_run['id']}").json()
-            if final_source["metadata"].get("model_fix_status") != "running":
+            if final_source["metadata"].get("model_fix_status") not in {"queued", "running"}:
                 break
             time.sleep(0.2)
         assert final_source is not None

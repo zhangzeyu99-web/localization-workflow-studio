@@ -12,14 +12,14 @@ from fastapi.responses import JSONResponse
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app import db, operator_context
+    from app import background_jobs, db, job_queue, operator_context
     from app.errors import UserFacingError, http_status_for_user_facing_error
-    from app.workflow import reconcile_interrupted_background_jobs, user_facing_error
+    from app.workflow import user_facing_error
     from app.routers.api import router as api_router
 else:
-    from . import db, operator_context
+    from . import background_jobs, db, job_queue, operator_context
     from .errors import UserFacingError, http_status_for_user_facing_error
-    from .workflow import reconcile_interrupted_background_jobs, user_facing_error
+    from .workflow import user_facing_error
     from .routers.api import router as api_router
 
 
@@ -27,7 +27,10 @@ else:
 async def lifespan(app: FastAPI):
     _ = app
     db.init_db()
-    reconcile_interrupted_background_jobs()
+    background_jobs.register_handlers()
+    interrupted = job_queue.recover_interrupted_jobs()
+    background_jobs.reconcile_startup(interrupted)
+    job_queue.resume_dispatchers()
     yield
 
 

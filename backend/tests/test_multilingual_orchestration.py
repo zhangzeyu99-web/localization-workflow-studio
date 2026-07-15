@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
@@ -12,6 +13,8 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
 import app.db as db
+import app.background_jobs as background_jobs
+import app.job_queue as job_queue
 import app.jobs as jobs
 import app.workflow.multilingual as multilingual
 from app.config import DEFAULT_SETTINGS, save_settings
@@ -97,10 +100,91 @@ def test_start_multilingual_translation_creates_missing_child_runs(tmp_path: Pat
     assert all(item["status"] == "passed" for item in status["languages"])
 
 
-def test_multilingual_start_rejects_existing_project_job_before_creating_child_runs(tmp_path: Path) -> None:
+def test_multilingual_translation_uses_persistent_controller_and_duplicate_start_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("multi persistent controller", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source-controller.xlsx", ["EN", "KR"])
+    release = threading.Event()
+    started = threading.Event()
+
+    def fake_translate(run_id: str, request: object, cancel_event: object | None = None) -> dict:
+        _ = request, cancel_event
+        db.update_run(run_id, status="running")
+        started.set()
+        release.wait(2.0)
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id), "artifacts": []}
+
+    monkeypatch.setattr(multilingual, "run_translate_sync", fake_translate)
+    with TestClient(app) as client:
+        first = client.post(
+            f"/api/projects/{project['id']}/multilingual/translate/start",
+            json={"input_artifact_id": artifact["id"], "languages": ["en", "ko"], "batch_size": 10},
+            headers={"X-Operator": "Alice"},
+        )
+        assert first.status_code == 200, first.text
+        assert started.wait(2.0)
+        duplicate = client.post(
+            f"/api/projects/{project['id']}/multilingual/translate/start",
+            json={"input_artifact_id": artifact["id"], "languages": ["en", "ko"], "batch_size": 10},
+            headers={"X-Operator": "Bob"},
+        )
+        assert duplicate.status_code == 200, duplicate.text
+
+        job_id = f"multilingual:translate:{project['id']}:{artifact['id']}"
+        controller = job_queue.get_job(job_id)
+        assert controller is not None
+        assert controller["job_kind"] == "multilingual_translate"
+        assert controller["lane"] == "language_table"
+        assert controller["operator_name"] == "Alice"
+        assert len(job_queue.list_jobs()) == 1
+        assert duplicate.json()["active_job_id"] == job_id
+
+        release.set()
+        wait_for_background_jobs()
+
+
+def test_multilingual_enqueue_failure_keeps_new_children_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("multi enqueue failure", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source-enqueue-failure.xlsx", ["EN", "KR"])
+    monkeypatch.setattr(
+        background_jobs.job_queue,
+        "enqueue_job",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("queue write failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="queue write failed"):
+        multilingual.start_multilingual_translation_queue(
+            project["id"],
+            multilingual.MultilingualQueueRequest(
+                input_artifact_id=artifact["id"],
+                languages=["en", "ko"],
+                batch_size=10,
+            ),
+        )
+
+    assert {run["status"] for run in db.list_runs(project["id"])} == {"created"}
+
+
+def test_multilingual_start_ignores_legacy_project_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project = db.insert_project("multi busy", "QA", "")
     artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN", "KR"])
     lease_name = jobs.lease_name_for_project(project["id"])
+
+    def fake_translate(run_id: str, request: object, cancel_event: object | None = None) -> dict:
+        _ = request, cancel_event
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id), "artifacts": []}
+
+    monkeypatch.setattr(multilingual, "run_translate_sync", fake_translate)
 
     with TestClient(app) as client:
         assert db.acquire_job_lease(lease_name, "run:existing", operator_name="Alice")
@@ -110,40 +194,51 @@ def test_multilingual_start_rejects_existing_project_job_before_creating_child_r
                 json={"input_artifact_id": artifact["id"], "languages": ["en", "ko"], "batch_size": 10, "task_code": "T"},
             )
 
-            assert response.status_code == 409
-            assert "Alice" in response.json()["detail"]
-            assert db.list_runs(project["id"]) == []
+            assert response.status_code == 200, response.text
+            assert len(db.list_runs(project["id"])) == 2
+            assert job_queue.get_job(f"multilingual:translate:{project['id']}:{artifact['id']}") is not None
+            wait_for_background_jobs()
         finally:
             db.release_job_lease(lease_name, "run:existing")
 
 
-def test_multilingual_capacity_rejection_does_not_leave_child_runs_queued(
+def test_multilingual_controllers_queue_fifo_without_legacy_capacity_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = db.insert_project("multi capacity", "QA", "")
-    artifact = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN", "KR"])
-    monkeypatch.setattr(
-        multilingual,
-        "start_singleton_job",
-        lambda project_id, job_id, worker: (False, {"reason": "capacity", "active_count": 2, "limit": 2}),
-    )
+    first_project = db.insert_project("multi capacity first", "QA", "")
+    second_project = db.insert_project("multi capacity second", "QA", "")
+    first_artifact = _add_language_table(first_project["id"], tmp_path / "source-first.xlsx", ["EN"])
+    second_artifact = _add_language_table(second_project["id"], tmp_path / "source-second.xlsx", ["EN"])
+    release = threading.Event()
+    started = threading.Event()
 
-    result = multilingual.start_multilingual_translation_queue(
-        project["id"],
-        multilingual.MultilingualQueueRequest(
-            input_artifact_id=artifact["id"],
-            languages=["en", "ko"],
-            batch_size=10,
-            task_code="T",
-        ),
-    )
+    def fake_translate(run_id: str, request: object, cancel_event: object | None = None) -> dict:
+        _ = request, cancel_event
+        db.update_run(run_id, status="running")
+        started.set()
+        release.wait(2.0)
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id), "artifacts": []}
 
-    assert result["queue_started"] is False
-    assert result["active_conflict"]["reason"] == "capacity"
-    child_runs = db.list_runs(project["id"])
-    assert len(child_runs) == 2
-    assert {run["status"] for run in child_runs} == {"created"}
+    monkeypatch.setattr(multilingual, "run_translate_sync", fake_translate)
+    with TestClient(app) as client:
+        first = client.post(
+            f"/api/projects/{first_project['id']}/multilingual/translate/start",
+            json={"input_artifact_id": first_artifact["id"], "languages": ["en"]},
+        )
+        assert first.status_code == 200, first.text
+        assert started.wait(2.0)
+        second = client.post(
+            f"/api/projects/{second_project['id']}/multilingual/translate/start",
+            json={"input_artifact_id": second_artifact["id"], "languages": ["en"]},
+        )
+        assert second.status_code == 200, second.text
+        second_job = job_queue.get_job(f"multilingual:translate:{second_project['id']}:{second_artifact['id']}")
+        assert second_job is not None
+        assert second_job["status"] == "queued"
+        release.set()
+        wait_for_background_jobs()
 
 
 def test_italian_translation_writes_it_column_in_multilingual_workbook(tmp_path: Path) -> None:

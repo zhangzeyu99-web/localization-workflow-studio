@@ -42,11 +42,10 @@ def wait_for_background_jobs(timeout: float = 15.0) -> None:
     try:
         import app.jobs as jobs
     except Exception:
-        return
-    with jobs._LOCK:  # type: ignore[attr-defined]
-        active_jobs = [job for job in jobs._ACTIVE_JOBS.values() if job.thread.is_alive()]  # type: ignore[attr-defined]
-    if not active_jobs:
-        return
+        active_jobs = []
+    else:
+        with jobs._LOCK:  # type: ignore[attr-defined]
+            active_jobs = [job for job in jobs._ACTIVE_JOBS.values() if job.thread.is_alive()]  # type: ignore[attr-defined]
     for job in active_jobs:
         job.thread.join(timeout)
     still_running = [job for job in active_jobs if job.thread.is_alive()]
@@ -54,6 +53,29 @@ def wait_for_background_jobs(timeout: float = 15.0) -> None:
         job.cancel_event.set()
     for job in still_running:
         job.thread.join(timeout)
+
+    try:
+        import app.job_queue as job_queue
+    except Exception:
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with job_queue._RUNTIME_LOCK:  # type: ignore[attr-defined]
+            queue_threads = [thread for thread in job_queue._THREADS if thread.is_alive()]  # type: ignore[attr-defined]
+        if not queue_threads:
+            return
+        for thread in queue_threads:
+            thread.join(min(0.1, max(0.0, deadline - time.monotonic())))
+    job_queue.shutdown_dispatchers(timeout=timeout, cancel_running=True)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with job_queue._RUNTIME_LOCK:  # type: ignore[attr-defined]
+            queue_threads = [thread for thread in job_queue._THREADS if thread.is_alive()]  # type: ignore[attr-defined]
+        if not queue_threads:
+            break
+        for thread in queue_threads:
+            thread.join(min(0.1, max(0.0, deadline - time.monotonic())))
+    job_queue.reset_dispatcher_state()
 
 
 def reset_data_root(path: Path) -> None:

@@ -502,7 +502,7 @@ def insert_run(project_id: str, kind: str, language: str = "en", metadata: dict[
             INSERT INTO runs (id, project_id, kind, language, status, metadata_json, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (run_id, project_id, kind, language, "queued", json.dumps(metadata or {}, ensure_ascii=False), ts, ts),
+            (run_id, project_id, kind, language, "created", json.dumps(metadata or {}, ensure_ascii=False), ts, ts),
         )
         return get_run(run_id, conn=conn)
 

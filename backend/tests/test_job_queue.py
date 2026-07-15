@@ -75,6 +75,217 @@ def _enqueue(
     )
 
 
+def test_new_runs_are_created_and_same_kind_does_not_block_creation() -> None:
+    project = db.insert_project("created run queue contract", "QA", "")
+
+    first = db.insert_run(project["id"], "translation", "en", metadata={})
+    second = db.insert_run(project["id"], "translation", "ko", metadata={})
+
+    assert first["status"] == "created"
+    assert second["status"] == "created"
+
+
+def test_business_lane_classification_uses_quick_origin_only_for_translation_and_qa() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    quick_run = {"metadata": {"task_origin": "quick_task"}}
+    formal_run = {"metadata": {"task_origin": "translation_run"}}
+
+    assert background_jobs.lane_for_run(quick_run, "translation") == "quick_announcement"
+    assert background_jobs.lane_for_run(quick_run, "qa") == "quick_announcement"
+    assert background_jobs.lane_for_run(formal_run, "translation") == "language_table"
+    assert background_jobs.lane_for_job("announcement") == "quick_announcement"
+    assert background_jobs.lane_for_job("model_fix") == "language_table"
+    assert background_jobs.lane_for_job("multilingual_translate") == "language_table"
+
+
+def test_translation_enqueue_failure_does_not_leave_false_queued_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    project = db.insert_project("enqueue rollback", "QA", "")
+    run = db.insert_run(project["id"], "translation", "en", metadata={"task_origin": "translation_run"})
+    monkeypatch.setattr(background_jobs.job_queue, "enqueue_job", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")))
+
+    with pytest.raises(RuntimeError, match="disk full"):
+        background_jobs.start_translation(run["id"], {"batch_size": 8})
+
+    stored = db.get_run(run["id"])
+    assert stored["status"] == "created"
+    assert "queued_at" not in stored["metadata"]
+
+
+def test_qa_handler_loads_settings_after_dispatch_and_restores_operator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    from app import operator_context
+    from app.config import DEFAULT_SETTINGS, save_settings
+    import app.workflow as workflow
+
+    queue = _queue()
+    release = threading.Event()
+    blocker_started = threading.Event()
+    observed: dict[str, Any] = {}
+
+    def blocker(record: dict[str, Any], cancel_event: threading.Event) -> None:
+        _ = record, cancel_event
+        blocker_started.set()
+        release.wait(2.0)
+
+    def fake_qa(run_id: str, *, settings: dict[str, Any], cancel_event: threading.Event) -> dict[str, Any]:
+        observed.update(run_id=run_id, model=settings["model"], operator=operator_context.current_operator())
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id)}
+
+    background_jobs.register_handlers()
+    queue.register_handler("blocker", blocker)
+    _enqueue("settings-blocker", job_kind="blocker")
+    assert blocker_started.wait(2.0)
+
+    project = db.insert_project("runtime settings", "QA", "")
+    run = db.insert_run(project["id"], "qa", "en", metadata={"task_origin": "direct_import"})
+    monkeypatch.setattr(workflow, "run_qa_sync", fake_qa)
+    save_settings({**DEFAULT_SETTINGS, "provider": "test-fake", "model": "before-enqueue"})
+    operator_context.set_current_operator("Alice")
+    queued = background_jobs.start_qa(run["id"])
+    assert queued["status"] == "queued"
+    assert queue.get_job(f"qa:{run['id']}")["payload"] == {}
+
+    save_settings({**DEFAULT_SETTINGS, "provider": "test-fake", "model": "after-enqueue"})
+    release.set()
+    _wait_until(lambda: queue.get_job(f"qa:{run['id']}")["status"] == "completed")
+
+    assert observed == {"run_id": run["id"], "model": "after-enqueue", "operator": "Alice"}
+
+
+def test_business_adapter_registers_all_six_handlers_idempotently() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    queue = _queue()
+
+    background_jobs.register_handlers()
+    first = dict(queue._HANDLERS)
+    background_jobs.register_handlers()
+
+    assert set(queue._HANDLERS) == {
+        "translation",
+        "qa",
+        "model_fix",
+        "announcement",
+        "multilingual_translate",
+        "multilingual_qa",
+    }
+    assert queue._HANDLERS == first
+
+
+def test_model_fix_handler_reads_settings_only_when_dispatched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    from app.config import DEFAULT_SETTINGS, save_settings
+    import app.workflow as workflow
+
+    queue = _queue()
+    release = threading.Event()
+    blocker_started = threading.Event()
+    observed: dict[str, Any] = {}
+
+    def blocker(record: dict[str, Any], cancel_event: threading.Event) -> None:
+        _ = record, cancel_event
+        blocker_started.set()
+        release.wait(2.0)
+
+    def fake_apply(run_id: str, payload: object, *, settings: dict[str, Any]) -> dict[str, Any]:
+        _ = payload
+        observed.update(run_id=run_id, model=settings["model"])
+        return {"model_fixes": [], "qa_result": {"run": {"id": run_id, "status": "passed"}}}
+
+    background_jobs.register_handlers()
+    queue.register_handler("blocker", blocker)
+    _enqueue("model-settings-blocker", job_kind="blocker")
+    assert blocker_started.wait(2.0)
+
+    project = db.insert_project("model fix runtime settings", "QA", "")
+    run = db.insert_run(project["id"], "qa", "en", metadata={})
+    db.update_run(run["id"], status="failed")
+    monkeypatch.setattr(workflow, "apply_model_fixes", fake_apply)
+    save_settings({**DEFAULT_SETTINGS, "provider": "test-fake", "model": "before-model-fix"})
+    queued = background_jobs.start_model_fix(run["id"], {"max_issues": 3, "rerun_qa": False})
+    assert queued["status"] == "queued"
+
+    save_settings({**DEFAULT_SETTINGS, "provider": "test-fake", "model": "after-model-fix"})
+    release.set()
+    _wait_until(lambda: queue.get_job(f"model-fix:{run['id']}")["status"] == "completed")
+
+    assert observed == {"run_id": run["id"], "model": "after-model-fix"}
+    assert db.get_run(run["id"])["status"] == "passed"
+
+
+def test_multilingual_qa_handler_reads_one_fresh_settings_snapshot_after_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    from app.config import DEFAULT_SETTINGS, save_settings
+    import app.workflow.multilingual as multilingual
+
+    queue = _queue()
+    release = threading.Event()
+    blocker_started = threading.Event()
+    observed: list[str] = []
+
+    def blocker(record: dict[str, Any], cancel_event: threading.Event) -> None:
+        _ = record, cancel_event
+        blocker_started.set()
+        release.wait(2.0)
+
+    def fake_qa(run_id: str, *, settings: dict[str, Any], cancel_event: threading.Event) -> dict[str, Any]:
+        _ = cancel_event
+        observed.append(settings["model"])
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id)}
+
+    background_jobs.register_handlers()
+    queue.register_handler("blocker", blocker)
+    _enqueue("multi-qa-settings-blocker", job_kind="blocker")
+    assert blocker_started.wait(2.0)
+    project = db.insert_project("multilingual QA settings", "QA", "")
+    child = db.insert_run(
+        project["id"],
+        "qa",
+        "en",
+        metadata={"parent_input_artifact_id": "source", "multilingual_source_artifact_id": "source"},
+    )
+    monkeypatch.setattr(multilingual, "run_qa_sync", fake_qa)
+    save_settings({**DEFAULT_SETTINGS, "provider": "test-fake", "model": "multi-before"})
+    background_jobs.start_multilingual(
+        "multilingual_qa",
+        project["id"],
+        "source",
+        background_jobs.MultilingualQueueRequest(input_artifact_id="source", languages=["en"]),
+        [child["id"]],
+    )
+    save_settings({**DEFAULT_SETTINGS, "provider": "test-fake", "model": "multi-after"})
+    release.set()
+    _wait_until(lambda: queue.get_job(f"multilingual:qa:{project['id']}:source")["status"] == "completed")
+
+    assert observed == ["multi-after"]
+
+
+def test_announcement_enqueue_failure_keeps_prepared_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    project = db.insert_project("announcement enqueue rollback", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {"title": "rollback", "selected_languages": ["en"], "status": "prepared", "current_step": 6},
+    )
+    monkeypatch.setattr(background_jobs.job_queue, "enqueue_job", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("db busy")))
+
+    with pytest.raises(RuntimeError, match="db busy"):
+        background_jobs.start_announcement(task["id"], {"languages": ["en"], "batch_size": 2})
+
+    stored = db.get_announcement_task(task["id"])
+    assert stored["status"] == "prepared"
+    assert stored["current_step"] == 6
+    assert "queued_at" not in stored["metadata"]
+
+
 def test_enqueue_is_atomic_idempotent_and_round_trips_safe_payload() -> None:
     safe_payload = {"provider": "openai", "batch_size": 8, "languages": ["en", "ko"]}
 
@@ -365,6 +576,31 @@ def test_default_shutdown_preserves_running_for_restart_and_stops_lane() -> None
     assert handled == ["shutdown-running", "shutdown-queued"]
 
 
+def test_test_cleanup_stops_lane_before_forcing_cancel_so_next_job_does_not_spawn() -> None:
+    from conftest import wait_for_background_jobs
+
+    queue = _queue()
+    first_started = threading.Event()
+    handled: list[str] = []
+
+    def handler(record: dict[str, Any], cancel_event: threading.Event) -> None:
+        handled.append(record["job_id"])
+        first_started.set()
+        cancel_event.wait(2.0)
+
+    queue.register_handler("translate", handler)
+    _enqueue("cleanup-first")
+    assert first_started.wait(2.0)
+    _enqueue("cleanup-second")
+
+    wait_for_background_jobs(timeout=0.05)
+
+    with queue._RUNTIME_LOCK:
+        assert not [thread for thread in queue._THREADS if thread.is_alive()]
+    assert handled == ["cleanup-first"]
+    assert queue.get_job("cleanup-second")["status"] == "queued"
+
+
 def test_recovery_interrupts_old_running_and_requires_explicit_resume() -> None:
     queue = _queue()
     _enqueue("old-running", project_id="project-old")
@@ -398,6 +634,132 @@ def test_interrupted_job_id_can_be_reenqueued_for_explicit_retry() -> None:
     assert retried["status"] == "queued"
     assert retried["payload"] == {"attempt": 2}
     assert len(queue.list_jobs()) == 1
+
+
+def test_business_reconcile_marks_interrupted_run_needs_input_without_rerunning_handler() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    queue = _queue()
+    project = db.insert_project("restart interrupted", "QA", "")
+    run = db.insert_run(project["id"], "qa", "en", metadata={})
+    db.update_run(run["id"], status="running")
+    _enqueue(
+        f"qa:{run['id']}",
+        job_kind="qa",
+        project_id=project["id"],
+        target_id=run["id"],
+        autostart=False,
+    )
+    assert queue.claim_next_job("language_table")["job_id"] == f"qa:{run['id']}"
+
+    interrupted = queue.recover_interrupted_jobs()
+    summary = background_jobs.reconcile_startup(interrupted)
+
+    stored = db.get_run(run["id"])
+    assert summary["interrupted_runs"] == 1
+    assert stored["status"] == "needs_input"
+    assert stored["metadata"]["reason"] == "service_restart_continue"
+    assert any(event["message"] == "服务已重启，请继续当前任务" for event in db.list_events(run["id"]))
+    handled: list[str] = []
+    queue.register_handler("qa", lambda record, cancel_event: handled.append(record["job_id"]))
+    queue.resume_dispatchers()
+    assert handled == []
+
+
+def test_business_reconcile_preserves_terminal_run_and_cleans_queued_residual() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    queue = _queue()
+    project = db.insert_project("restart terminal", "QA", "")
+    run = db.insert_run(project["id"], "translation", "en", metadata={"delivery_artifact_id": "art_keep"})
+    db.update_run(run["id"], status="passed")
+    _enqueue(
+        f"run:{run['id']}",
+        job_kind="translation",
+        project_id=project["id"],
+        target_id=run["id"],
+        autostart=False,
+    )
+
+    summary = background_jobs.reconcile_startup([])
+
+    stored = db.get_run(run["id"])
+    assert summary["terminal_queue_rows_cleaned"] == 1
+    assert stored["status"] == "passed"
+    assert stored["metadata"]["delivery_artifact_id"] == "art_keep"
+    assert queue.get_job(f"run:{run['id']}")["status"] == "completed"
+    handled: list[str] = []
+    queue.register_handler("translation", lambda record, cancel_event: handled.append(record["job_id"]))
+    queue.resume_dispatchers()
+    assert handled == []
+
+
+def test_business_reconcile_cancels_orphaned_queued_qa_and_interrupts_legacy_running() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    project = db.insert_project("legacy cleanup", "QA", "")
+    orphan = db.insert_run(project["id"], "qa", "en", metadata={})
+    legacy_running = db.insert_run(project["id"], "translation", "ko", metadata={})
+    db.update_run(orphan["id"], status="queued")
+    db.update_run(legacy_running["id"], status="running")
+
+    summary = background_jobs.reconcile_startup([])
+
+    cleaned = db.get_run(orphan["id"])
+    interrupted = db.get_run(legacy_running["id"])
+    assert summary["orphaned_queued_runs"] == 1
+    assert cleaned["status"] == "canceled"
+    assert cleaned["metadata"]["reason"] == "orphaned_legacy_queue_cleanup"
+    assert any("孤立" in event["message"] for event in db.list_events(orphan["id"]))
+    assert interrupted["status"] == "needs_input"
+    assert interrupted["metadata"]["reason"] == "service_restart_continue"
+
+
+def test_business_reconcile_safely_interrupts_queued_run_with_matching_legacy_lease() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    from app import jobs
+
+    project = db.insert_project("matching legacy lease", "QA", "")
+    run = db.insert_run(project["id"], "qa", "en", metadata={})
+    db.update_run(run["id"], status="queued")
+    assert db.acquire_job_lease(jobs.lease_name_for_project(project["id"]), f"qa:{run['id']}")
+
+    background_jobs.reconcile_startup([])
+
+    stored = db.get_run(run["id"])
+    assert stored["status"] == "needs_input"
+    assert stored["metadata"]["reason"] == "service_restart_continue"
+
+
+def test_business_reconcile_marks_interrupted_announcement_and_prepares_languages() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    queue = _queue()
+    project = db.insert_project("restart announcement", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {"title": "restart", "selected_languages": ["en", "ko"], "status": "running", "current_step": 7},
+    )
+    for item in task["languages"]:
+        db.upsert_announcement_task_language(
+            task["id"],
+            project["id"],
+            item["language"],
+            status="running",
+            current_step=7,
+        )
+    _enqueue(
+        f"announcement:{task['id']}",
+        lane="quick_announcement",
+        job_kind="announcement",
+        project_id=project["id"],
+        target_id=task["id"],
+        autostart=False,
+    )
+    assert queue.claim_next_job("quick_announcement")["job_id"] == f"announcement:{task['id']}"
+
+    background_jobs.reconcile_startup(queue.recover_interrupted_jobs())
+
+    stored = db.get_announcement_task(task["id"])
+    assert stored["status"] == "needs_input"
+    assert stored["metadata"]["reason"] == "service_restart_continue"
+    assert {item["status"] for item in stored["languages"]} == {"prepared"}
 
 
 def test_jobs_active_views_prefer_persistent_queue_rows() -> None:

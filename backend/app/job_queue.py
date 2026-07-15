@@ -234,6 +234,19 @@ def _finish_job(job_id: str, status: str) -> None:
         )
 
 
+def set_job_status(job_id: str, status: str) -> JobRecord | None:
+    if status not in TERMINAL_STATUSES:
+        raise ValueError(f"unsupported terminal job status: {status}")
+    timestamp = db.now_iso()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE job_queue SET status = ?, updated_at = ? WHERE job_id = ?",
+            (status, timestamp, job_id),
+        )
+        row = conn.execute("SELECT * FROM job_queue WHERE job_id = ?", (job_id,)).fetchone()
+    return _record(row) if row is not None else None
+
+
 def register_handler(job_kind: str, handler: JobHandler) -> None:
     with _RUNTIME_LOCK:
         _HANDLERS[job_kind] = handler
