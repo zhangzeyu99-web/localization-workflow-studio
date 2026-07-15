@@ -3,6 +3,18 @@
 > 目标：线上（cloud）部署提供账号登录和三档权限；本地（local）模式默认保持现状免登录，可用环境变量开启。
 > 边界：不改 SQLite 技术栈；不改翻译/QA/交付业务语义；不接入飞书；公司账号体系（SSO）只预留接口、本期不实现。
 > 前置：本计划是 2026-07-08 多人并发计划的续篇。该计划明确"不做鉴权"，本计划补上鉴权层，复用其项目级锁与留痕地基。
+> 执行模式：fable5 主线程调度+验收，sonnet-5 / gpt-5.6-sol 子 agent 执行批次；隔离 worktree `feature/account-permission-system`，每批全量回归后合并。
+
+## 执行进度
+
+- [x] A1 批 1（2026-07-15，sonnet-5，commit 4d56791）：users/sessions 表、argon2id、session 签发、登录防爆破、/api/auth/login|logout|me。
+- [x] A1 批 2（2026-07-15，gpt-5.6-sol，commit bd4d12a）：`LWS_AUTH_MODE` 开关（cloud 默认 required）、强制登录中间件（白名单仅 login/logout/me/version/health）、初始管理员 fail-closed 引导、scripts/create_admin.py。验收返工一次：upload-readability 端点因写盘风险移出免登录白名单，deployment_check 的登录适配留给 A4。
+- [x] A1 批 3（2026-07-15，sonnet-5，commit 7369eb0）：require_admin 依赖（authz.py）、/api/users 管理 API（无 DELETE，停用代替）、停用/重置密码即撤销 session、/api/auth/change-password、首登强制改密门禁（403）。
+- [ ] A2 权限执行层
+- [ ] A3 前端
+- [ ] A4 部署收尾
+
+A1 遗留（进 A2/A4 待办）：conftest 缺少对 `importlib.reload(main_module)` 全局状态泄漏的通用防护（现只在 test_users_admin.py 局部处理）；create_admin.py CLI 路径不写审计；密码策略仅长度下限；防爆破为进程内存态（单实例部署下可接受）。
 
 ---
 
