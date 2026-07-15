@@ -270,6 +270,15 @@ def init_db() -> None:
                 last_seen_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
+            CREATE TABLE IF NOT EXISTS project_members (
+                project_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                added_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, user_id),
+                FOREIGN KEY(project_id) REFERENCES projects(id),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
             """
         )
         _ensure_column(conn, "artifacts", "role", "TEXT NOT NULL DEFAULT ''")
@@ -485,6 +494,7 @@ def delete_project(project_id: str) -> None:
         conn.execute("DELETE FROM glossary_terms WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM translation_entries WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM runs WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
@@ -2009,3 +2019,70 @@ def delete_sessions_for_user(user_id: str) -> int:
     with connect() as conn:
         cur = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         return cur.rowcount
+
+
+def add_project_member(project_id: str, user_id: str, added_by: str = "") -> dict[str, Any]:
+    """Insert-or-refresh a membership row (idempotent: re-adding an existing
+    member just leaves the original ``created_at``/``added_by`` untouched).
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM project_members WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        if row is not None:
+            return dict(row)
+        conn.execute(
+            """
+            INSERT INTO project_members (project_id, user_id, added_by, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (project_id, user_id, added_by, now_iso()),
+        )
+        row = conn.execute(
+            "SELECT * FROM project_members WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        return dict(row)
+
+
+def remove_project_member(project_id: str, user_id: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def list_project_members(project_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT project_members.*, users.username, users.display_name, users.role, users.status
+            FROM project_members
+            JOIN users ON users.id = project_members.user_id
+            WHERE project_members.project_id = ?
+            ORDER BY project_members.created_at ASC
+            """,
+            (project_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def list_member_project_ids(user_id: str) -> set[str]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT project_id FROM project_members WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        return {row["project_id"] for row in rows}
+
+
+def is_project_member(project_id: str, user_id: str) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        return row is not None

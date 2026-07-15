@@ -345,6 +345,10 @@ class UserPasswordResetRequest(BaseModel):
     initial_password: str
 
 
+class ProjectMemberAddRequest(BaseModel):
+    user_id: str
+
+
 class SettingsUpdate(BaseModel):
     provider: str | None = None
     preset: str | None = None

@@ -6,18 +6,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app import auth, db, operator_context
+    from app import auth, db, operator_context, route_capabilities
     from app.errors import UserFacingError, http_status_for_user_facing_error
     from app.workflow import reconcile_interrupted_background_jobs, user_facing_error
     from app.routers.api import router as api_router
 else:
-    from . import auth, db, operator_context
+    from . import auth, db, operator_context, route_capabilities
     from .errors import UserFacingError, http_status_for_user_facing_error
     from .workflow import reconcile_interrupted_background_jobs, user_facing_error
     from .routers.api import router as api_router
@@ -44,7 +44,15 @@ def _cors_origins() -> list[str]:
 
 
 app = FastAPI(title="Localization Workflow Studio", version="1.3.1", lifespan=lifespan)
-app.include_router(api_router)
+# A single, centrally-reviewable dependency guards every /api/ route's
+# capability + project-membership requirement -- see route_capabilities.py
+# for the (method, path) -> capability table and docs/ROUTE_CAPABILITIES.md
+# for the per-route rationale. assert_full_route_coverage() fails the app at
+# construction time (not just "on first request") if any /api/ route is not
+# explicitly registered there, so a forgotten new route can't default to
+# "allowed".
+app.include_router(api_router, dependencies=[Depends(route_capabilities.enforce_route_access)])
+route_capabilities.assert_full_route_coverage(app)
 
 
 @app.middleware("http")

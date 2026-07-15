@@ -6,7 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from .. import db
+from .. import auth, db
 from .. import jobs
 from ..config import (
     DATA_ROOT,
@@ -192,11 +192,19 @@ def _project_id_from_lease_name(lease_name: str) -> str:
 
 @router.get("/api/system/active-jobs")
 def get_active_jobs() -> list[dict[str, Any]]:
+    user = auth.current_user()
+    is_admin = user is None or user.get("role") == "admin"
+    member_ids = None if is_admin else db.list_member_project_ids(user["id"])
     result: list[dict[str, Any]] = []
     for entry in jobs.active_jobs():
         lease_name = str(entry.get("lease_name") or "")
         job_id = str(entry.get("job_id") or "")
         project_id = _project_id_from_lease_name(lease_name)
+        # This is a cross-project list (unlike every other endpoint here);
+        # a non-admin must not see other projects' running jobs, even just
+        # their lease/job-kind metadata.
+        if member_ids is not None and project_id not in member_ids:
+            continue
         project_name = ""
         if project_id:
             try:
