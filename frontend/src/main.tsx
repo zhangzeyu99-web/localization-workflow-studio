@@ -26,11 +26,10 @@ import { useAnnouncementActions } from './hooks/useAnnouncementActions'
 import { ActiveJobsBadge } from './components/system/ActiveJobsBadge'
 import { ActiveJobsPanel } from './components/system/ActiveJobsPanel'
 import { OperatorIdentityControl } from './components/system/OperatorIdentityControl'
-import { onOpenActiveJobsPanelRequest } from './components/system/activeJobsPanelBus'
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { artifactForProject, preferredTranslationResultArtifact, runForProject } from './domain/projectState'
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
-import { projectQueueJobCount, queueJobForTarget, queueJobKindLabel, queueJobStatusText } from './domain/jobQueues'
+import { projectQueueJobCount, queueJobKindLabel } from './domain/jobQueues'
 import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
 import { clearSessionNavigation, readSessionNavigation, writeSessionNavigation, type SessionNavigation } from './sessionNavigation'
@@ -273,8 +272,6 @@ function App() {
 
   useProjectListPolling(refreshProjects, currentIdRef)
   const { queues: jobQueues, refresh: refreshJobQueues } = useActiveJobsPolling()
-  const workflowQueueStatus = queueJobStatusText(queueJobForTarget(jobQueues, scopedLatestRun?.id))
-  const workflowStatus = workflowQueueStatus || status
 
   const cancelQueueJob = useCallback(async (job: JobQueueEntry) => {
     const accepted = await confirm(
@@ -289,8 +286,6 @@ function App() {
       setStatus(`取消后台任务失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }, [confirm, refreshJobQueues])
-
-  useEffect(() => onOpenActiveJobsPanelRequest(() => setActiveJobsPanelOpen(true)), [])
 
   useEffect(() => {
     currentIdRef.current = currentId
@@ -560,7 +555,7 @@ function App() {
                 setTab={setTab}
                 settings={settings}
                 busy={busy}
-                status={workflowStatus}
+                status={status}
                 intro={intro}
                 setIntro={setIntro}
                 sourceArtifact={scopedSourceArtifact}
@@ -639,9 +634,10 @@ function App() {
               <Suspense fallback={<span className="loading" />}>
                 {view === 'quick' ? (
                   <QuickTaskWizard
+                    key={current.id}
                     project={current}
                     busy={busy}
-                    status={workflowStatus}
+                    status={status}
                     jobQueues={jobQueues}
                     settings={settings}
                     latestRun={scopedLatestRun}
@@ -713,7 +709,8 @@ function App() {
                     setQaArtifact={selectQaArtifact}
                     glossaryPreview={glossaryPreview}
                     settings={settings}
-                    status={workflowStatus}
+                    status={status}
+                    jobQueues={jobQueues}
                     onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
                     onUploadSource={uploadSourceWorkbook}
                     onUploadTerm={handleUploadTerm}

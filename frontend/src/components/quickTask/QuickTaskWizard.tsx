@@ -157,11 +157,13 @@ export function QuickTaskWizard({
     ? `${readiness.source_rows} 行源文 / 已译 ${readiness.translated_rows} / 空译文 ${readiness.empty_target_rows} / 预计 ${readiness.estimated_batches || '-'} 批`
     : '上传后自动检查'
   const apiConfigurationReminder = objective === 'translate' ? aiProviderConfigurationReminder(settings) : ''
-  const quickQueueTargetRun = startedRun || (latestRun?.metadata?.task_origin === 'quick_task' ? latestRun : null)
-  const quickQueueJob = queueJobForTarget(jobQueues, quickQueueTargetRun?.id)
+  const projectStartedRun = startedRun?.project_id === project.id ? startedRun : null
+  const projectLatestQuickRun = latestRun?.project_id === project.id && latestRun.metadata?.task_origin === 'quick_task' ? latestRun : null
+  const quickQueueTargetRun = projectStartedRun || projectLatestQuickRun
+  const quickQueueJob = queueJobForTarget(jobQueues, quickQueueTargetRun?.id, project.id)
   // Background tasks no longer hold the global busy flag, so also guard on
   // the run this panel just started still being active.
-  const startedRunActive = Boolean(quickQueueJob || (startedRun && ['queued', 'running'].includes(startedRun.status)))
+  const startedRunActive = Boolean(quickQueueJob || (projectStartedRun && ['queued', 'running'].includes(projectStartedRun.status)))
   const canStart = Boolean(inputArtifact && !busy && !startedRunActive)
   const resumableQuickRun = inputArtifact ? quickTaskRuns(project).find((run) =>
     matchesTranslationRun(run, language, inputArtifact.id, 'quick_task')
@@ -186,7 +188,7 @@ export function QuickTaskWizard({
     if (run.kind === 'translation' && run.status === 'failed' && quality?.passed === false) return '\u9700\u6821\u5bf9'
     return quickStatusLabel(run.status)
   }
-  const displayRun = quickTaskDisplayRun(startedRun, latestRun)
+  const displayRun = quickTaskDisplayRun(projectStartedRun, projectLatestQuickRun)
   const effectiveStatus = queueJobStatusText(quickQueueJob) || status
   return (
     <>

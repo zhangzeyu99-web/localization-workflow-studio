@@ -6,14 +6,6 @@ function isProjectBusyMessage(text: string): boolean {
   return text.includes('该项目正在执行任务') || (text.includes('该项目正在由') && text.includes('执行任务'))
 }
 
-// Matches the two M2 per-project-lease/capacity 409 rejection texts (see the
-// sanitizeUserFacingError patterns below). Shared so the inline status
-// renderer can offer a "查看活跃任务" action without duplicating the regexes.
-export function isQueueConflictMessage(text: string): boolean {
-  const raw = String(text || '')
-  return isProjectBusyMessage(raw) || /工作台已有.*个任务在跑/.test(raw)
-}
-
 function defaultFailureText(operation?: string): string {
   return operation ? `\u300c${operation}\u300d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002` : '\u64cd\u4f5c\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002'
 }

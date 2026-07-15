@@ -26,6 +26,15 @@ test('spreadsheet column errors are shown as actionable Chinese', async ({ page 
   expect(message).toBe('所选工作表“fminth”中找不到目标译文列。请确认译文列存在，或返回“判定输入”重新选择语言表。')
 })
 
+test('API client no longer exposes the obsolete 409 queue-conflict navigation classifier', async ({ page }) => {
+  await page.goto(baseURL)
+  const hasLegacyClassifier = await page.evaluate(async () => {
+    const apiClient = await import('/src/apiClient.ts')
+    return 'isQueueConflictMessage' in apiClient
+  })
+  expect(hasLegacyClassifier).toBe(false)
+})
+
 test('glossary scan events do not expose backend diagnostics', async ({ page }) => {
   await page.goto(baseURL)
   const messages = await page.evaluate(async () => {
@@ -116,8 +125,8 @@ test('job queue presentation maps lanes, task kinds, counts, and target status',
       count: allQueueJobs(queues).length,
       projectCount: projectQueueJobCount(queues, 'p1'),
       kinds: ['translation', 'qa', 'announcement'].map(queueJobKindLabel),
-      queuedStatus: queueJobStatusText(queueJobForTarget(queues, 'run-2')),
-      runningStatus: queueJobStatusText(queueJobForTarget(queues, 'ann-1')),
+      queuedStatus: queueJobStatusText(queueJobForTarget(queues, 'run-2', 'p1')),
+      runningStatus: queueJobStatusText(queueJobForTarget(queues, 'ann-1', 'p2')),
     }
   })
 
@@ -127,6 +136,75 @@ test('job queue presentation maps lanes, task kinds, counts, and target status',
     kinds: ['翻译', 'QA 校对', '公告翻译'],
     queuedStatus: '排队第 1 位、前方 1 个 · 操作人 Bob',
     runningStatus: '运行中 · 操作人 Carol',
+  })
+})
+
+test('job queue target matching is project scoped and formal workflow prefers the multilingual source job', async ({ page }) => {
+  await page.goto(baseURL)
+  const result = await page.evaluate(async () => {
+    const { formalWorkflowQueueJob, queueJobForTarget } = await import('/src/domain/jobQueues.ts')
+    const queues = {
+      lanes: [
+        {
+          lane: 'language_table',
+          label: '语言表',
+          running: {
+            job_id: 'formal-run-job', job_kind: 'translation', lane: 'language_table',
+            project_id: 'project-a', project_name: '项目 A', target_id: 'formal-run',
+            operator_name: 'Formal Operator', status: 'running',
+          },
+          queued: [{
+            job_id: 'multilingual-job', job_kind: 'multilingual_translate', lane: 'language_table',
+            project_id: 'project-a', project_name: '项目 A', target_id: 'source-a',
+            operator_name: 'Multi Operator', status: 'queued', position: 1, ahead: 1,
+          }],
+        },
+        {
+          lane: 'quick_announcement',
+          label: '快速/公告',
+          running: {
+            job_id: 'wrong-project-job', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: 'project-b', project_name: '项目 B', target_id: 'shared-run',
+            operator_name: 'Wrong Project', status: 'running',
+          },
+          queued: [{
+            job_id: 'right-project-job', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: 'project-a', project_name: '项目 A', target_id: 'shared-run',
+            operator_name: 'Right Project', status: 'queued', position: 1, ahead: 1,
+          }],
+        },
+      ],
+    } as any
+    const project = {
+      id: 'project-a',
+      runs: [
+        { id: 'quick-run', project_id: 'project-a', kind: 'translation', metadata: { task_origin: 'quick_task', input_artifact_id: 'source-a' } },
+        { id: 'formal-run', project_id: 'project-a', kind: 'translation', metadata: { task_origin: 'translation_run', input_artifact_id: 'source-a' } },
+      ],
+    } as any
+    const qaQueues = {
+      lanes: [
+        {
+          ...queues.lanes[0],
+          running: null,
+          queued: [{ ...queues.lanes[0].queued[0], job_id: 'multilingual-qa-job', job_kind: 'multilingual_qa' }],
+        },
+        queues.lanes[1],
+      ],
+    } as any
+    return {
+      scopedOperator: queueJobForTarget(queues, 'shared-run', 'project-a')?.operator_name,
+      formalKind: formalWorkflowQueueJob(queues, project, 'source-a')?.job_kind,
+      formalOperator: formalWorkflowQueueJob(queues, project, 'source-a')?.operator_name,
+      formalQaKind: formalWorkflowQueueJob(qaQueues, project, 'source-a')?.job_kind,
+    }
+  })
+
+  expect(result).toEqual({
+    scopedOperator: 'Right Project',
+    formalKind: 'multilingual_translate',
+    formalOperator: 'Multi Operator',
+    formalQaKind: 'multilingual_qa',
   })
 })
 
@@ -1954,7 +2032,7 @@ test('dual-lane queue panel shows FIFO jobs, drives project badges, and confirms
   await expect(page.getByRole('button', { name: projectName })).toContainText('后台 2')
 })
 
-test('formal task page shows the queue state and operator for its target run', async ({ page, request }) => {
+test('formal task page shows a multilingual source queue state and operator', async ({ page, request }) => {
   const projectName = `E2E Queue Target ${Date.now()}`
   const project = await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'queue-target', description: 'Queue target status smoke.' },
@@ -1968,10 +2046,6 @@ test('formal task page shows the queue state and operator for its target run', a
       },
     },
   }).then((response) => response.json())
-  const run = await request.post(`${baseURL}/api/runs`, {
-    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: artifact.id, task_origin: 'translation_run' },
-  }).then((response) => response.json())
-
   await page.route('**/api/system/job-queues', async (route) => {
     await route.fulfill({
       status: 200,
@@ -1980,9 +2054,9 @@ test('formal task page shows the queue state and operator for its target run', a
         {
           lane: 'language_table', label: '语言表', running: null,
           queued: [{
-            job_id: 'job-target-run', job_kind: 'translation', lane: 'language_table',
-            project_id: project.id, project_name: projectName, target_id: run.id,
-            operator_name: 'Bob', status: 'queued', position: 2, ahead: 2,
+            job_id: 'job-target-source', job_kind: 'multilingual_translate', lane: 'language_table',
+            project_id: project.id, project_name: projectName, target_id: artifact.id,
+            operator_name: 'Multi Bob', status: 'queued', position: 2, ahead: 2,
             queued_at: new Date().toISOString(), started_at: null,
           }],
         },
@@ -1994,7 +2068,129 @@ test('formal task page shows the queue state and operator for its target run', a
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '新翻译任务', exact: true }).click()
-  await expect(inlineStatus(page, '排队第 2 位、前方 2 个 · 操作人 Bob')).toBeVisible({ timeout: 15000 })
+  await expect(inlineStatus(page, '排队第 2 位、前方 2 个 · 操作人 Multi Bob')).toBeVisible({ timeout: 15000 })
+})
+
+test('formal and quick task pages do not leak each others queue status', async ({ page, request }) => {
+  const projectName = `E2E Queue Isolation ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'queue-isolation', description: 'Formal and quick queue status isolation.' },
+  }).then((response) => response.json())
+  const artifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const formalRun = await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: artifact.id, task_origin: 'translation_run' },
+  }).then((response) => response.json())
+  const quickRun = await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: artifact.id, task_origin: 'quick_task' },
+  }).then((response) => response.json())
+
+  await page.route('**/api/system/job-queues', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ lanes: [
+        {
+          lane: 'language_table', label: '语言表',
+          running: {
+            job_id: 'formal-isolated', job_kind: 'translation', lane: 'language_table',
+            project_id: project.id, project_name: projectName, target_id: formalRun.id,
+            operator_name: 'Formal Alice', status: 'running', started_at: new Date().toISOString(),
+          },
+          queued: [],
+        },
+        {
+          lane: 'quick_announcement', label: '快速/公告',
+          running: {
+            job_id: 'quick-isolated', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: project.id, project_name: projectName, target_id: quickRun.id,
+            operator_name: 'Quick Bob', status: 'running', started_at: new Date().toISOString(),
+          },
+          queued: [],
+        },
+      ] }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await expect(inlineStatus(page, '运行中 · 操作人 Formal Alice')).toBeVisible({ timeout: 15000 })
+  await expect(inlineStatus(page, 'Quick Bob')).toHaveCount(0)
+
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await expect(inlineStatus(page, '运行中 · 操作人 Quick Bob')).toBeVisible({ timeout: 15000 })
+  await expect(inlineStatus(page, 'Formal Alice')).toHaveCount(0)
+})
+
+test('quick task local run and input reset when project polling switches the current project', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 1 },
+  })
+  const suffix = Date.now()
+  const projectA = await request.post(`${baseURL}/api/projects`, {
+    data: { name: `E2E Quick Stale A ${suffix}`, type: 'quick-stale', description: 'Quick task source project.' },
+  }).then((response) => response.json())
+  const projectB = await request.post(`${baseURL}/api/projects`, {
+    data: { name: `E2E Quick Stale B ${suffix}`, type: 'quick-stale', description: 'Quick task replacement project.' },
+  }).then((response) => response.json())
+  const projectBDetail = await request.get(`${baseURL}/api/projects/${projectB.id}`).then((response) => response.json())
+  let hideProjectA = false
+  let startedRun: any = null
+
+  await page.route('**/api/projects', async (route) => {
+    if (route.request().method() === 'GET' && hideProjectA) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([projectBDetail]) })
+      return
+    }
+    await route.continue()
+  })
+  await page.route('**/api/runs/*/translate/start', async (route) => {
+    const runId = route.request().url().match(/\/api\/runs\/([^/]+)\/translate\/start/)?.[1] || ''
+    const created = await request.get(`${baseURL}/api/runs/${runId}`).then((response) => response.json())
+    startedRun = { ...created, status: 'queued' }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(startedRun) })
+  })
+  await page.route('**/api/system/job-queues', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ lanes: [
+        { lane: 'language_table', label: '语言表', running: null, queued: [] },
+        {
+          lane: 'quick_announcement', label: '快速/公告', running: startedRun ? {
+            job_id: 'quick-stale-a', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: projectA.id, project_name: projectA.name, target_id: startedRun.id,
+            operator_name: 'Project A Alice', status: 'running', started_at: new Date().toISOString(),
+          } : null, queued: [],
+        },
+      ] }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectA.name }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await page.getByTestId('quick-text-input').fill('项目 A 的快速任务')
+  await page.getByTestId('quick-text-next').click()
+  await page.getByTestId('quick-reference-next').click()
+  await page.getByTestId('quick-objective-translate').click()
+  await page.getByTestId('quick-task-start').click()
+  await expect(inlineStatus(page, '运行中 · 操作人 Project A Alice')).toBeVisible({ timeout: 15000 })
+
+  hideProjectA = true
+  await expect(page.locator('.project-item.active')).toContainText(projectB.name, { timeout: 15000 })
+  await expect(page.getByRole('heading', { name: '快速任务' })).toBeVisible()
+  await expect(page.getByTestId('quick-text-input')).toHaveValue('')
+  await expect(inlineStatus(page, 'Project A Alice')).toHaveCount(0)
 })
 
 test('operator-required task error offers a direct nickname action', async ({ page, request }) => {

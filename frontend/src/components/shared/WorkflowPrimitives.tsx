@@ -4,9 +4,7 @@ import { artifactDownloadHref, artifactFileName, artifactPickerLabel, artifactsB
 import { altColumnVisible } from '../../domain/projectAssets'
 import { formatDuration } from '../../domain/translationFlow'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
-import { isQueueConflictMessage } from '../../apiClient'
 import { isOperatorRequiredMessage, requestOpenOperatorIdentity } from '../../operator'
-import { requestOpenActiveJobsPanel } from '../system/activeJobsPanelBus'
 import type { Artifact, GlossaryPreviewRow, Project, TranslationProgress } from '../../types'
 
 export function SelectedInput({ label, artifact }: { label: string; artifact: Artifact | null }) {
@@ -40,26 +38,11 @@ export function ActionStatus({ status, busy }: { status: string; busy: boolean }
   const [dismissedStatus, setDismissedStatus] = useState('')
   if (!status || (!busy && status === '准备就绪')) return null
   if (!busy && dismissedStatus === status) return null
-  // A 409 project_busy/capacity rejection (see apiClient's sanitizeUserFacingError)
-  // lands here as plain status text from ~60 different call sites; detecting the
-  // pattern once at the render point avoids wiring an "open active jobs panel"
-  // callback through every wizard/tab component between main.tsx and those sites.
-  const queueConflict = !busy && isQueueConflictMessage(status)
   const operatorRequired = !busy && isOperatorRequiredMessage(status)
   return (
     <div className={`inline-status ${busy ? 'running' : ''}`} role="status" aria-live="polite">
       {busy ? <span className="loading" /> : null}
       <span>{actionStatusText(status, busy)}</span>
-      {queueConflict ? (
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm inline-status-action"
-          data-testid="inline-status-view-active-jobs"
-          onClick={() => requestOpenActiveJobsPanel()}
-        >
-          查看活跃任务
-        </button>
-      ) : null}
       {operatorRequired ? (
         <button
           type="button"

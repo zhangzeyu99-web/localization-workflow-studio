@@ -118,7 +118,7 @@ export function AnnouncementWizard({
   const [step, setStep] = useState(1)
   const [taskId, setTaskId] = useState(initialTaskId || tasks[0]?.id || '')
   const activeTask = allTasks.find((task) => task.id === taskId) || null
-  const effectiveStatus = queueJobStatusText(queueJobForTarget(jobQueues, activeTask?.id)) || status
+  const effectiveStatus = queueJobStatusText(queueJobForTarget(jobQueues, activeTask?.id, project.id)) || status
   const [sourceArtifactId, setSourceArtifactId] = useState(activeTask?.source_artifact_id || '')
   const [constraintArtifactIds, setConstraintArtifactIds] = useState<string[]>(announcementTaskConstraintIds(activeTask))
   const [selectedLanguages, setSelectedLanguages] = useState<LanguageCode[]>(activeTask?.selected_languages?.length ? activeTask.selected_languages : [])
