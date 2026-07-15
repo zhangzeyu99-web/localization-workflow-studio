@@ -1,12 +1,13 @@
 import React from 'react'
 import { Folder } from 'lucide-react'
 import type { Project } from '../../types'
-import { projectActiveTaskCount, visibleAnnouncementTaskCount } from '../../domain/projectActivity'
+import { visibleAnnouncementTaskCount } from '../../domain/projectActivity'
 
 function ProjectListItemImpl({
-  project, isActive, isDeleteHold, onPointerDown, onPointerUp, onPointerLeave, onPointerCancel, onSelect
+  project, backgroundTaskCount, isActive, isDeleteHold, onPointerDown, onPointerUp, onPointerLeave, onPointerCancel, onSelect
 }: {
   project: Project,
+  backgroundTaskCount: number,
   isActive: boolean,
   isDeleteHold: boolean,
   onPointerDown: (project: Project, event: React.PointerEvent<HTMLButtonElement>) => void,
@@ -28,7 +29,7 @@ function ProjectListItemImpl({
     >
       <span className="pname"><Folder size={15} aria-hidden="true" />{project.name}</span>
       <span className="pmeta">语言包 {project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))} · 公告 {visibleAnnouncementTaskCount(project)} · 归档 {project.stats.archived_rows || 0}</span>
-      {projectActiveTaskCount(project) ? <span className="ptag ptag-live">后台 {projectActiveTaskCount(project)}</span> : null}
+      {backgroundTaskCount ? <span className="ptag ptag-live">后台 {backgroundTaskCount}</span> : null}
       {project.type ? <span className="ptag">{project.type}</span> : null}
     </button>
   )

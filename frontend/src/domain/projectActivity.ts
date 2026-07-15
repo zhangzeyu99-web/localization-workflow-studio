@@ -27,14 +27,6 @@ export function latestProjectActivityRun(project: Project | null | undefined): R
   return latest
 }
 
-export function projectActiveTaskCount(project: Project | null | undefined): number {
-  if (!project) return 0
-  const activeRuns = (project.runs || []).filter((run) => ['translation', 'qa'].includes(run.kind) && ['queued', 'running'].includes(run.status)).length
-  const activeAnnouncements = activeAnnouncementTasks(project.announcement_tasks || [])
-    .filter((task) => ['queued', 'running'].includes(task.status)).length
-  return activeRuns + activeAnnouncements
-}
-
 export function projectRunTitle(run: Run): string {
   const lang = languageSpec(normalizeLanguageCode(run.language) || 'en').short
   if (run.kind === 'qa') return `${lang} QA \u6821\u5bf9`

@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Zap } from 'lucide-react'
 import { api } from '../../apiClient'
 import { artifactDownloadHref, artifactPickerLabel, newestArtifact, uniqueArtifactsByContent } from '../../domain/artifacts'
+import { queueJobForTarget, queueJobStatusText } from '../../domain/jobQueues'
 import { aiProviderConfigurationReminder } from '../../domain/providerSettings'
 import { canSkipModelTranslation, effectiveBatchSize, isTranslationRunResumable, matchesTranslationRun } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { ActionStatus, ArtifactNote, FileBox } from '../shared/WorkflowPrimitives'
 import { runStatusLabel } from '../../uiText'
-import type { AppSettings, Artifact, Project, QuickObjective, Run, TranslationReadiness, TranslationTargets } from '../../types'
+import type { AppSettings, Artifact, JobQueues, Project, QuickObjective, Run, TranslationReadiness, TranslationTargets } from '../../types'
 
 export function quickTaskRuns(project: Project): Run[] {
   return (project.runs || []).filter((run) => run.metadata?.task_origin === 'quick_task')
@@ -41,6 +42,7 @@ export function QuickTaskWizard({
   project,
   busy,
   status,
+  jobQueues,
   settings,
   latestRun,
   onBack,
@@ -52,6 +54,7 @@ export function QuickTaskWizard({
   project: Project
   busy: boolean
   status: string
+  jobQueues: JobQueues
   settings: AppSettings | null
   latestRun: Run | null
   onBack: () => void
@@ -154,9 +157,11 @@ export function QuickTaskWizard({
     ? `${readiness.source_rows} 行源文 / 已译 ${readiness.translated_rows} / 空译文 ${readiness.empty_target_rows} / 预计 ${readiness.estimated_batches || '-'} 批`
     : '上传后自动检查'
   const apiConfigurationReminder = objective === 'translate' ? aiProviderConfigurationReminder(settings) : ''
+  const quickQueueTargetRun = startedRun || (latestRun?.metadata?.task_origin === 'quick_task' ? latestRun : null)
+  const quickQueueJob = queueJobForTarget(jobQueues, quickQueueTargetRun?.id)
   // Background tasks no longer hold the global busy flag, so also guard on
   // the run this panel just started still being active.
-  const startedRunActive = Boolean(startedRun && ['queued', 'running'].includes(startedRun.status))
+  const startedRunActive = Boolean(quickQueueJob || (startedRun && ['queued', 'running'].includes(startedRun.status)))
   const canStart = Boolean(inputArtifact && !busy && !startedRunActive)
   const resumableQuickRun = inputArtifact ? quickTaskRuns(project).find((run) =>
     matchesTranslationRun(run, language, inputArtifact.id, 'quick_task')
@@ -182,6 +187,7 @@ export function QuickTaskWizard({
     return quickStatusLabel(run.status)
   }
   const displayRun = quickTaskDisplayRun(startedRun, latestRun)
+  const effectiveStatus = queueJobStatusText(quickQueueJob) || status
   return (
     <>
       <div className="proj-head">
@@ -206,7 +212,7 @@ export function QuickTaskWizard({
           </button>
         ))}
       </div>
-      <ActionStatus status={status} busy={busy} />
+      <ActionStatus status={effectiveStatus} busy={busy} />
       <div className="quick-task-card">
         {quickStep === 1 ? (
           <>

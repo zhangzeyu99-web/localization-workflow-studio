@@ -4,11 +4,12 @@ import { announcementLanguages, languageChipTitle, languageSpec, normalizeLangua
 import { artifactDownloadHref, artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
 import { aiProviderConfigurationReminder, isAiProviderReady, providerLabel } from '../../domain/providerSettings'
 import { announcementStatusLabel } from '../../domain/announcementText'
+import { queueJobForTarget, queueJobStatusText } from '../../domain/jobQueues'
 import { activeAnnouncementTasks, announcementLanguageSummary, announcementTaskCanCancel } from './AnnouncementProjectPanel'
 import { ActionStatus, ArtifactNote, FileBox, FileBoxWithTemplate, TranslationProgressBar } from '../shared/WorkflowPrimitives'
 import { AiInputAuditPanel } from '../shared/AiInputAudit'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
-import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, Project, TranslationProgress } from '../../types'
+import type { AnnouncementLookupOptions, AnnouncementLookupResult, AnnouncementTask, AnnouncementTaskResult, AnnouncementTermRow, AppSettings, Artifact, JobQueues, Project, TranslationProgress } from '../../types'
 import { PhaseStepper } from '../translationWizard/PhaseStepper'
 
 export const announcementSteps = ['公告资料', '约束来源', '目标语言', '术语提取', '译文反查', '翻译准备', 'AI翻译', '校对回填', '交付']
@@ -71,6 +72,7 @@ export function AnnouncementWizard({
   project,
   busy,
   status,
+  jobQueues,
   settings,
   assetArtifacts,
   onUploadAsset,
@@ -89,6 +91,7 @@ export function AnnouncementWizard({
   project: Project
   busy: boolean
   status: string
+  jobQueues: JobQueues
   settings: AppSettings | null
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
@@ -115,6 +118,7 @@ export function AnnouncementWizard({
   const [step, setStep] = useState(1)
   const [taskId, setTaskId] = useState(initialTaskId || tasks[0]?.id || '')
   const activeTask = allTasks.find((task) => task.id === taskId) || null
+  const effectiveStatus = queueJobStatusText(queueJobForTarget(jobQueues, activeTask?.id)) || status
   const [sourceArtifactId, setSourceArtifactId] = useState(activeTask?.source_artifact_id || '')
   const [constraintArtifactIds, setConstraintArtifactIds] = useState<string[]>(announcementTaskConstraintIds(activeTask))
   const [selectedLanguages, setSelectedLanguages] = useState<LanguageCode[]>(activeTask?.selected_languages?.length ? activeTask.selected_languages : [])
@@ -245,7 +249,7 @@ export function AnnouncementWizard({
       </div>
 
       <PhaseStepper step={step} steps={announcementSteps} onStepChange={setStep} />
-      {busy || (status && status !== '准备就绪') ? <ActionStatus status={status} busy={busy} /> : null}
+      {busy || (effectiveStatus && effectiveStatus !== '准备就绪') ? <ActionStatus status={effectiveStatus} busy={busy} /> : null}
       {activeTask ? (
         <div
           className={`announcement-current-task ${announcementCancelHoldTaskId === activeTask.id ? 'cancel-hold' : ''}`}

@@ -1725,11 +1725,25 @@ a {
 
 .active-jobs-item-project,
 .active-jobs-panel-head strong,
+.job-queue-lane-head strong,
 .audit-item-head strong,
 .material-read-row strong,
 .settings-head h3,
 .preset-note strong {
   color: #172026;
+}
+
+.job-queue-lane + .job-queue-lane {
+  border-top-color: #d9dee3;
+}
+
+.job-queue-lane-head span,
+.active-jobs-item-time {
+  color: #687680;
+}
+
+.active-jobs-item-state {
+  color: #0f766e;
 }
 
 .active-jobs-item-kind,

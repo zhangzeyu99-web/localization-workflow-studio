@@ -546,14 +546,30 @@ export type QuickObjective = 'translate' | 'qa'
 
 export type HistoryKind = 'translation' | 'qa' | 'all'
 
-// Mirrors GET /api/system/active-jobs (backend/app/routers/system.py); one
-// entry per currently-held per-project lease (backend/app/jobs.py).
-export type ActiveJob = {
-  lease_name: string
+export type JobQueueLaneName = 'language_table' | 'quick_announcement'
+
+export type JobQueueEntry = {
   job_id: string
   job_kind: string
+  lane: JobQueueLaneName
   project_id: string
   project_name: string
+  target_id: string
   operator_name: string
+  status: 'queued' | 'running' | string
+  position?: number | null
+  ahead?: number | null
+  queued_at?: string | null
   started_at: string | null
+}
+
+export type JobQueueLane = {
+  lane: JobQueueLaneName
+  label: string
+  running: JobQueueEntry | null
+  queued: JobQueueEntry[]
+}
+
+export type JobQueues = {
+  lanes: JobQueueLane[]
 }

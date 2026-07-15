@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { FolderKanban, Languages, Plus, Settings, WandSparkles, Zap } from 'lucide-react'
 import './styles.css'
 import './styles/workbench.css'
-import { API } from './apiClient'
+import { API, api } from './apiClient'
 import { refreshLanguageOptions, languageSpec, normalizeLanguageCode, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { useConfirmDialog } from './components/modals/ConfirmModal'
@@ -30,6 +30,7 @@ import { onOpenActiveJobsPanelRequest } from './components/system/activeJobsPane
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { artifactForProject, preferredTranslationResultArtifact, runForProject } from './domain/projectState'
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
+import { projectQueueJobCount, queueJobForTarget, queueJobKindLabel, queueJobStatusText } from './domain/jobQueues'
 import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
 import { clearSessionNavigation, readSessionNavigation, writeSessionNavigation, type SessionNavigation } from './sessionNavigation'
@@ -44,7 +45,7 @@ declare global {
   }
 }
 
-import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, AppSettings, Artifact, DeliverableTask, GeneratedDeliveryState, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, Project, ProjectTab, QualityIssue, Run, TranslationReadiness, AppView } from './types'
+import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, AppSettings, Artifact, DeliverableTask, GeneratedDeliveryState, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, JobQueueEntry, Project, ProjectTab, QualityIssue, Run, TranslationReadiness, AppView } from './types'
 
 
 function App() {
@@ -271,7 +272,23 @@ function App() {
   }, [])
 
   useProjectListPolling(refreshProjects, currentIdRef)
-  const activeJobs = useActiveJobsPolling()
+  const { queues: jobQueues, refresh: refreshJobQueues } = useActiveJobsPolling()
+  const workflowQueueStatus = queueJobStatusText(queueJobForTarget(jobQueues, scopedLatestRun?.id))
+  const workflowStatus = workflowQueueStatus || status
+
+  const cancelQueueJob = useCallback(async (job: JobQueueEntry) => {
+    const accepted = await confirm(
+      `确定取消“${job.project_name || '未知项目'}”的${queueJobKindLabel(job.job_kind)}任务吗？`,
+      { title: '取消后台任务', confirmLabel: '确认取消', cancelLabel: '返回', tone: 'warn' }
+    )
+    if (!accepted) return
+    try {
+      await api(`/api/system/job-queues/${encodeURIComponent(job.job_id)}/cancel`, { method: 'POST' }, '取消后台任务')
+      await refreshJobQueues()
+    } catch (error) {
+      setStatus(`取消后台任务失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }, [confirm, refreshJobQueues])
 
   useEffect(() => onOpenActiveJobsPanelRequest(() => setActiveJobsPanelOpen(true)), [])
 
@@ -472,8 +489,8 @@ function App() {
           <div className="header-actions">
             <span className={`status ${busy ? 'running' : ''}`} role="status" aria-live="polite">{busy ? <span className="loading" /> : null}{status}</span>
             <div className="active-jobs-anchor">
-              <ActiveJobsBadge jobs={activeJobs} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
-              {activeJobsPanelOpen ? <ActiveJobsPanel jobs={activeJobs} onClose={() => setActiveJobsPanelOpen(false)} /> : null}
+              <ActiveJobsBadge queues={jobQueues} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
+              {activeJobsPanelOpen ? <ActiveJobsPanel queues={jobQueues} onClose={() => setActiveJobsPanelOpen(false)} onCancel={cancelQueueJob} /> : null}
             </div>
             <span
               className={versionMismatch ? 'runtime-version-badge version-mismatch' : 'runtime-version-badge'}
@@ -496,6 +513,7 @@ function App() {
                 <ProjectListItem
                   key={project.id}
                   project={project}
+                  backgroundTaskCount={projectQueueJobCount(jobQueues, project.id)}
                   isActive={project.id === currentId}
                   isDeleteHold={deleteHoldProjectId === project.id}
                   onPointerDown={handleProjectPointerDown}
@@ -542,7 +560,7 @@ function App() {
                 setTab={setTab}
                 settings={settings}
                 busy={busy}
-                status={status}
+                status={workflowStatus}
                 intro={intro}
                 setIntro={setIntro}
                 sourceArtifact={scopedSourceArtifact}
@@ -623,7 +641,8 @@ function App() {
                   <QuickTaskWizard
                     project={current}
                     busy={busy}
-                    status={status}
+                    status={workflowStatus}
+                    jobQueues={jobQueues}
                     settings={settings}
                     latestRun={scopedLatestRun}
                     onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
@@ -637,6 +656,7 @@ function App() {
                     project={current}
                     busy={busy}
                     status={status}
+                    jobQueues={jobQueues}
                     selectedLanguage={selectedLanguage}
                     setSelectedLanguage={setSelectedLanguage}
                     assetArtifacts={scopedAssetArtifacts}
@@ -693,7 +713,7 @@ function App() {
                     setQaArtifact={selectQaArtifact}
                     glossaryPreview={glossaryPreview}
                     settings={settings}
-                    status={status}
+                    status={workflowStatus}
                     onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
                     onUploadSource={uploadSourceWorkbook}
                     onUploadTerm={handleUploadTerm}
