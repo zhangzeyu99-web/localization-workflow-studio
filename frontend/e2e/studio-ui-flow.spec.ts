@@ -1030,7 +1030,24 @@ wb.close()
   const run = await request.post(`${baseURL}/api/runs`, {
     data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: upload.id, batch_size: 2, task_code: 'T' },
   }).then((response) => response.json())
-  await request.post(`${baseURL}/api/runs/${run.id}/translate/cancel`)
+
+  await page.route(`**/api/projects/${project.id}`, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    const detail = await response.json()
+    await route.fulfill({
+      response,
+      json: {
+        ...detail,
+        runs: (detail.runs || []).map((item: any) => item.id === run.id
+          ? { ...item, status: 'needs_input', metadata: { ...item.metadata, reason: 'background_job_interrupted' } }
+          : item),
+      },
+    })
+  })
 
   let resumeCalled = 0
   let startCalled = 0
@@ -1042,7 +1059,7 @@ wb.close()
       body: JSON.stringify({ ...run, status: 'queued', metadata: { ...run.metadata, input_artifact_id: upload.id } }),
     })
   })
-  await page.route(`**/api/runs/${run.id}/translate/start`, async (route) => {
+  await page.route('**/api/runs/*/translate/start', async (route) => {
     startCalled += 1
     await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'start should not be called for resumable run' }) })
   })
