@@ -49,6 +49,19 @@ def capability_allowed(role: str, capability: str) -> bool:
     return capability in ROLE_CAPABILITIES.get(role, set())
 
 
+def capabilities_for_role(role: str) -> list[str]:
+    """The full capability list a role has, for the frontend to drive
+    permission-aware UI (``GET /api/auth/me``'s ``capabilities`` field).
+
+    Admin gets every capability in ``ALL_CAPABILITIES`` (not an enumerated
+    set) for the same "new capability defaults to admin-only" reason as
+    ``capability_allowed`` above.
+    """
+    if role == "admin":
+        return sorted(ALL_CAPABILITIES)
+    return sorted(ROLE_CAPABILITIES.get(role, set()))
+
+
 def require_admin() -> dict[str, Any]:
     user = auth.current_user()
     if user is None:

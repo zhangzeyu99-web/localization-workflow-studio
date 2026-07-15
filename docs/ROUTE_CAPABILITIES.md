@@ -245,6 +245,11 @@ member = `{project:read, task:run}`。
 - `POST /api/projects/{project_id}/glossary/extract`：AI 从项目资料提取术语候选，产物是待审核的
   `glossary_batches`/`glossary_candidates`（尚未写入已确认的 `glossary_terms`），但矩阵把"AI 补充"整体
   归入 `assets:curate`，按此处理而非 `task:run`。
+  **裁决（A3 批 1+2，2026-07-15）**：`/glossary/extract`、`/glossary/batches/*`、`/glossary/candidates/*`
+  保持 `assets:curate` 不变——矩阵的权威语义是三档（member）"不能主动修改术语库"，而确认候选会写入
+  项目术语库，必须封锁。翻译向导第 5 步（术语候选，`StepFreqV2`）对无 `assets:curate` 的用户降级为
+  **只读**：隐藏扫描/补译/确认/跳过/编辑等操作入口（候选数据仍可见），并且向导前进判定忽略
+  pending 候选数（member 无法确认候选，不应被运营遗留的 pending 卡住；扫描任务进行中仍阻塞前进）。
 - `POST /api/projects/{project_id}/improvements` 与 `POST /api/runs/{run_id}/improvement-review`：
   两者都是"QA 结果 → 项目改进建议队列"的写入动作，会被人工"应用到 Harness"，按项目资料维护
   (`assets:curate`) 处理而非任务操作；对应的 `GET`（列表）保持 `project:read`，因为同一数据本来就会随

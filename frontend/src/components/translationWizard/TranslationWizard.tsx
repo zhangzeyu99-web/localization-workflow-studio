@@ -1,4 +1,5 @@
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Languages } from 'lucide-react'
+import { ASSETS_CURATE, useAuth } from '../../auth'
 import { findVisibleTranslationRun, matchesTranslationRun, translationInputMode, translationNextStep } from '../../domain/translationFlow'
 import { projectPromptForLanguage } from '../../domain/projectAssets'
 import { type LanguageCode } from '../../languages'
@@ -84,6 +85,8 @@ export function Wizard(props: {
   confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
   const { project, step, setStep } = props
+  const { can } = useAuth()
+  const canCurate = can(ASSETS_CURATE)
   const sourceReadiness = props.sourceArtifact && props.translationReadiness?.artifact_id === props.sourceArtifact.id ? props.translationReadiness : null
   const stepTranslationRun = props.latestRun && matchesTranslationRun(props.latestRun, props.selectedLanguage, props.sourceArtifact?.id, 'translation_run')
     ? props.latestRun
@@ -108,6 +111,9 @@ export function Wizard(props: {
   const stepDeliveryReady = step !== 9 || stepDeliveryFiles.length > 0
   const stepSourceMissing = step === 4 && !props.sourceArtifact
   const glossaryReview = glossaryReviewState(props.latestRun, props.glossaryBatches, props.glossaryCandidates)
+  // 无 assets:curate 的用户（member）不能确认候选，pending 候选不应把它们卡在
+  // 步骤 5——那是运营的待办，不是它们的。仅扫描进行中仍然阻塞。
+  const glossaryBlockAdvance = canCurate ? glossaryReview.blockAdvance : glossaryReview.extractionActive
   const skippedSteps = translationInputMode(sourceReadiness) === 'ready_for_qa' ? [5, 6, 7] : []
   const nextButtonLabels = ['去 AI 分析', '确认分析', '继续', '确认输入', '继续', '确认语言', '去 QA 校对', '去交付']
   const goNext = async () => {
@@ -151,7 +157,7 @@ export function Wizard(props: {
         {step === 2 ? <StepAnalyze {...props} /> : null}
         {step === 3 ? <StepTerm {...props} /> : null}
         {step === 4 ? <StepSource {...props} /> : null}
-        {step === 5 ? <StepFreqV2 {...props} /> : null}
+        {step === 5 ? <StepFreqV2 {...props} canCurate={canCurate} /> : null}
         {step === 6 ? <StepLang {...props} /> : null}
         {step === 7 ? <StepTranslate {...props} /> : null}
         {step === 8 ? <StepQA {...props} showHistory={false} onRetryTranslations={props.onTranslateQueue || props.onTranslate} onRerunTranslation={() => props.setStep(7)} onGoDelivery={(run) => {
@@ -165,7 +171,7 @@ export function Wizard(props: {
         <button className="btn btn-ghost btn-icon" aria-label="上一步" title="上一步" disabled={step === 1} onClick={() => setStep(step - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>
         <button
           className="btn btn-primary"
-          disabled={props.busy || stepTranslationActive || stepSourceMissing || (step === 5 && glossaryReview.blockAdvance) || (step === 7 && !stepCanEnterQa) || (step === 8 && !stepCanGoDelivery) || (step === 9 && !stepDeliveryReady)}
+          disabled={props.busy || stepTranslationActive || stepSourceMissing || (step === 5 && glossaryBlockAdvance) || (step === 7 && !stepCanEnterQa) || (step === 8 && !stepCanGoDelivery) || (step === 9 && !stepDeliveryReady)}
           onClick={step === 9 ? props.onFinishDelivery : goNext}
           title={stepSourceMissing ? '请先上传或选择待翻译语言表。' : step === 9 && !stepDeliveryReady ? '请先生成交付文件，下载入口出现后再完成。' : undefined}
         >

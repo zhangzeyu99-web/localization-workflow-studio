@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Bot, Clipboard, FileInput, Pencil, Pin, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { api, sanitizeUserFacingError } from '../../apiClient'
+import { ASSETS_CURATE, useAuth } from '../../auth'
 import { formatDate } from '../../domain/format'
 import { fieldText, fixedTermsSummary, fixedTermsToLines, getProjectHarness, linesToFixedTerms, linesToList, listToLines, linesToRules, projectPromptForLanguage, profileText, ruleSummary, rulesToLines } from '../../domain/projectAssets'
 import { improvementStatusLabel } from '../../uiText'
@@ -64,6 +65,8 @@ export function MetaTab({
   assetArtifacts: Artifact[]
   onUploadMaterial: (file: File) => Promise<Artifact | null>
 }) {
+  const { can } = useAuth()
+  const canCurate = can(ASSETS_CURATE)
   const promptText = projectPromptForLanguage(project, selectedLanguage)
   const lang = languageSpec(selectedLanguage)
   const [name, setName] = useState(project.name)
@@ -140,11 +143,11 @@ export function MetaTab({
           <div className="left icon-title"><Bot size={16} aria-hidden="true" />当前项目翻译提示词（{lang.short}）</div>
           <div className="card-actions">
             <button className="btn btn-ghost btn-sm" disabled={!promptText} onClick={copyPrompt}><Clipboard size={14} aria-hidden="true" />复制</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditingPrompt((value) => !value)}><Pencil size={14} aria-hidden="true" />编辑</button>
-            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onAnalyze}><RefreshCw size={14} aria-hidden="true" />重新生成</button>
+            {canCurate ? <button className="btn btn-ghost btn-sm" onClick={() => setEditingPrompt((value) => !value)}><Pencil size={14} aria-hidden="true" />编辑</button> : null}
+            {canCurate ? <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onAnalyze}><RefreshCw size={14} aria-hidden="true" />重新生成</button> : null}
           </div>
         </div>
-        {editingPrompt ? (
+        {editingPrompt && canCurate ? (
           <>
             <textarea className="prompt-editor" value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} placeholder="输入当前项目专属翻译提示词" />
             <div className="row-actions align-right">
@@ -160,58 +163,63 @@ export function MetaTab({
         project={project}
         editing={editingMeta}
         draft={metaDraft}
+        canEdit={canCurate}
         onDraftChange={(key, value) => setMetaDraft((prev) => ({ ...prev, [key]: value }))}
         onEdit={() => setEditingMeta(true)}
         onCancel={() => { setMetaDraft(metaDraftFromProject(project)); setEditingMeta(false) }}
         onSave={saveMetaDraft}
       />
-      <details className="advanced-panel meta-secondary-panel">
-        <summary className="icon-title"><FileInput size={15} aria-hidden="true" />资料与重新分析</summary>
-        <div className="advanced-body">
-          <div className="card material-card">
-            <div className="card-title">
-              <div className="left">项目资料投放</div>
-              <div className="card-actions">
-                <button className="btn btn-ghost btn-sm" disabled={busy} onClick={saveMaterialInput}>保存资料说明</button>
-                <button className="btn btn-primary btn-sm" disabled={busy} onClick={onAnalyze}>重新分析项目</button>
+      {canCurate ? (
+        <details className="advanced-panel meta-secondary-panel">
+          <summary className="icon-title"><FileInput size={15} aria-hidden="true" />资料与重新分析</summary>
+          <div className="advanced-body">
+            <div className="card material-card">
+              <div className="card-title">
+                <div className="left">项目资料投放</div>
+                <div className="card-actions">
+                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={saveMaterialInput}>保存资料说明</button>
+                  <button className="btn btn-primary btn-sm" disabled={busy} onClick={onAnalyze}>重新分析项目</button>
+                </div>
               </div>
-            </div>
-            <p className="section-hint">这里放项目 brief、需求文档、语言表、图片或视频素材；重复文件会自动复用，不重复参与分析。</p>
-            <div className="meta-grid material-input-grid">
-              <label><span>项目名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
-              <label><span>题材/分类</span><input value={type} onChange={(event) => setType(event.target.value)} placeholder="体育 / SLG / 休闲 / RPG" /></label>
-              <label className="wide"><span>投进去的信息 / 本次分析补充</span><textarea value={materialNotes} onChange={(event) => { setMaterialNotes(event.target.value); setIntro(event.target.value) }} placeholder="写项目背景、目标用户、风格要求；也可以直接上传 project brief、需求文档、语言表、截图或视频。" /></label>
-            </div>
-            <div className="material-upload-row">
-              <FileBox label="上传项目资料（MD/TXT/DOCX/PDF/XLSX/图片/视频）" onFile={(file) => { void onUploadMaterial(file) }} />
-              <div className="material-list">
-                <strong>已投资料 {assetArtifacts.length} 个</strong>
-                <span className="muted">这些资料会进入下一次项目分析；完整语言表只参与分析和候选扫描，不会直接写入术语库。</span>
-                <div className="material-notes">
-                  {assetArtifacts.slice(0, 4).map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
-                  {assetArtifacts.length > 4 ? <span className="muted">还有 {assetArtifacts.length - 4} 个资料已归档。</span> : null}
-                  {!assetArtifacts.length ? <span className="muted">暂无上传资料。可以先写上方说明，也可以直接上传文件。</span> : null}
+              <p className="section-hint">这里放项目 brief、需求文档、语言表、图片或视频素材；重复文件会自动复用，不重复参与分析。</p>
+              <div className="meta-grid material-input-grid">
+                <label><span>项目名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+                <label><span>题材/分类</span><input value={type} onChange={(event) => setType(event.target.value)} placeholder="体育 / SLG / 休闲 / RPG" /></label>
+                <label className="wide"><span>投进去的信息 / 本次分析补充</span><textarea value={materialNotes} onChange={(event) => { setMaterialNotes(event.target.value); setIntro(event.target.value) }} placeholder="写项目背景、目标用户、风格要求；也可以直接上传 project brief、需求文档、语言表、截图或视频。" /></label>
+              </div>
+              <div className="material-upload-row">
+                <FileBox label="上传项目资料（MD/TXT/DOCX/PDF/XLSX/图片/视频）" onFile={(file) => { void onUploadMaterial(file) }} />
+                <div className="material-list">
+                  <strong>已投资料 {assetArtifacts.length} 个</strong>
+                  <span className="muted">这些资料会进入下一次项目分析；完整语言表只参与分析和候选扫描，不会直接写入术语库。</span>
+                  <div className="material-notes">
+                    {assetArtifacts.slice(0, 4).map((artifact) => <ArtifactNote key={artifact.id} artifact={artifact} compact />)}
+                    {assetArtifacts.length > 4 ? <span className="muted">还有 {assetArtifacts.length - 4} 个资料已归档。</span> : null}
+                    {!assetArtifacts.length ? <span className="muted">暂无上传资料。可以先写上方说明，也可以直接上传文件。</span> : null}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      </details>
-      <details className="advanced-panel meta-secondary-panel">
-        <summary className="icon-title"><SlidersHorizontal size={15} aria-hidden="true" />高级：项目 Harness / 规则包</summary>
-        <div className="advanced-body">
-          <div className="card harness-card">
-            <div className="card-title">
-              <div>
-                <div className="left">项目 Harness / 规则包</div>
-                <div className="muted-left">只影响当前项目；后续翻译、AI 校对和 QA 都会读取这份规则。</div>
+        </details>
+      ) : null}
+      {canCurate ? (
+        <details className="advanced-panel meta-secondary-panel">
+          <summary className="icon-title"><SlidersHorizontal size={15} aria-hidden="true" />高级：项目 Harness / 规则包</summary>
+          <div className="advanced-body">
+            <div className="card harness-card">
+              <div className="card-title">
+                <div>
+                  <div className="left">项目 Harness / 规则包</div>
+                  <div className="muted-left">只影响当前项目；后续翻译、AI 校对和 QA 都会读取这份规则。</div>
+                </div>
               </div>
+              <HarnessEditor project={project} onSave={onSaveHarness} compact />
+              <ImprovementQueue project={project} onSaveHarness={onSaveHarness} />
             </div>
-            <HarnessEditor project={project} onSave={onSaveHarness} compact />
-            <ImprovementQueue project={project} onSaveHarness={onSaveHarness} />
           </div>
-        </div>
-      </details>
+        </details>
+      ) : null}
     </>
   )
 }
@@ -220,6 +228,7 @@ export function ProjectMetaTable({
   project,
   editing = false,
   draft,
+  canEdit = true,
   onDraftChange,
   onEdit,
   onCancel,
@@ -228,6 +237,7 @@ export function ProjectMetaTable({
   project: Project
   editing?: boolean
   draft?: MetaDraft
+  canEdit?: boolean
   onDraftChange?: (key: keyof MetaDraft, value: string) => void
   onEdit?: () => void
   onCancel?: () => void
@@ -249,9 +259,9 @@ export function ProjectMetaTable({
               <button className="btn btn-ghost btn-sm" onClick={onCancel}>取消</button>
               <button className="btn btn-primary btn-sm" onClick={onSave}>保存元信息</button>
             </>
-          ) : (
+          ) : canEdit ? (
             <button className="btn btn-ghost btn-sm" onClick={onEdit}><Pencil size={14} aria-hidden="true" />编辑元信息</button>
-          )}
+          ) : null}
         </div>
       </div>
       {editing ? (

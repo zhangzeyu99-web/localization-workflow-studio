@@ -31,6 +31,7 @@ export function StepFreqV2({
   glossaryBatches,
   glossaryCandidates,
   busy,
+  canCurate = true,
   onUpdateCandidate,
   onResolveCandidates,
   onTranslateMissingCandidates,
@@ -47,6 +48,7 @@ export function StepFreqV2({
   glossaryBatches: GlossaryBatch[]
   glossaryCandidates: GlossaryCandidate[]
   busy: boolean
+  canCurate?: boolean
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
   onTranslateMissingCandidates: (batchId: string) => void
@@ -91,14 +93,15 @@ export function StepFreqV2({
       ) : null}
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
-        <button className="btn btn-primary" disabled={blocked || busy || reviewState.extractionActive} onClick={() => onGlossaryExtract(sourceArtifact)}>扫描候选</button>
+        {canCurate ? <button className="btn btn-primary" disabled={blocked || busy || reviewState.extractionActive} onClick={() => onGlossaryExtract(sourceArtifact)}>扫描候选</button> : null}
       </div>
+      {!canCurate ? <div className="info-line compact">术语候选由项目运营维护；如无待确认候选，可直接进入下一步。</div> : null}
       {reviewState.extractionActive ? <div className="info-line compact">正在整理术语候选，请完成后再继续。</div> : null}
       <details className="manual-maintenance compact-maintenance">
         <summary>更多设置</summary>
         <div className="language-inline-select">
           <span>候选补译与扫描规则。</span>
-          <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补译空候选</button>
+          {canCurate ? <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补译空候选</button> : null}
           <button className="btn btn-ghost" onClick={onFreq}>查看扫描规则</button>
         </div>
       </details>
@@ -113,10 +116,12 @@ export function StepFreqV2({
               <div>
                 <strong>确认候选</strong>
               </div>
-              <div className="confirm-actions">
-                <button className="btn btn-ghost btn-sm" disabled={!activeBatch || !pendingCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, pendingCandidates, 'reject')}>全部跳过</button>
-                <button className="btn btn-primary btn-sm" disabled={!activeBatch || !readyCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, readyCandidates, 'accept')}>确认可用候选</button>
-              </div>
+              {canCurate ? (
+                <div className="confirm-actions">
+                  <button className="btn btn-ghost btn-sm" disabled={!activeBatch || !pendingCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, pendingCandidates, 'reject')}>全部跳过</button>
+                  <button className="btn btn-primary btn-sm" disabled={!activeBatch || !readyCandidates.length || busy} onClick={() => activeBatch && onResolveCandidates(activeBatch.id, readyCandidates, 'accept')}>确认可用候选</button>
+                </div>
+              ) : null}
             </div>
             {reviewPreview.length ? (
               <div className="table-scroll">
@@ -129,6 +134,7 @@ export function StepFreqV2({
                         candidate={term}
                         batchId={activeBatch?.id || ''}
                         busy={busy}
+                        canCurate={canCurate}
                         onUpdateCandidate={onUpdateCandidate}
                         onResolveCandidates={onResolveCandidates}
                       />
@@ -156,12 +162,14 @@ export function PendingTermReviewRowV2({
   candidate,
   batchId,
   busy,
+  canCurate = true,
   onUpdateCandidate,
   onResolveCandidates
 }: {
   candidate: GlossaryCandidate
   batchId: string
   busy: boolean
+  canCurate?: boolean
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
 }) {
@@ -213,7 +221,7 @@ export function PendingTermReviewRowV2({
       <td>{cell('note')}</td>
       <td>
         <div className="term-review-actions">
-          {editing ? (
+          {!canCurate ? null : editing ? (
             <>
               <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => save(false)}>保存</button>
               <button type="button" className="btn btn-sm" disabled={busy || !batchId || !canAcceptDraft} onClick={() => save(true)}>保存并加入</button>

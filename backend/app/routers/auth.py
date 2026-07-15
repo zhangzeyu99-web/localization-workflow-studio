@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from .. import auth, db, operator_context
+from .. import auth, authz, db, operator_context
 from ..config import DATA_ROOT, deployment_mode
 from ..schemas import ChangePasswordRequest, LoginRequest
 
@@ -75,11 +75,33 @@ def logout(request: Request, response: Response) -> dict[str, Any]:
 
 @router.get("/api/auth/me")
 def me(request: Request) -> dict[str, Any]:
+    """Report the caller's identity plus the frontend's permission-gate inputs.
+
+    Auth-off/local mode's dominant case is "no session cookie at all" (the
+    frontend never shows a login page here) -- that must resolve to the
+    synthetic local administrator, not 401, or the app-shell gate would
+    wrongly bounce every local deployment to a login screen. A *present*
+    session cookie is still honored either way (an operator can log in with
+    a real account even while enforcement happens to be off), and an
+    invalid/expired cookie is always rejected regardless of mode -- only the
+    "no cookie presented" case falls back to the synthetic admin, and only
+    when enforcement is off.
+    """
+    auth_enabled = auth.auth_required()
     token = request.cookies.get(auth.SESSION_COOKIE_NAME, "")
-    user = auth.get_user_for_session_token(token)
-    if user is None:
+    if token:
+        user = auth.get_user_for_session_token(token)
+        if user is None:
+            raise HTTPException(status_code=401, detail="未登录")
+    elif auth_enabled:
         raise HTTPException(status_code=401, detail="未登录")
-    return auth.public_user(user)
+    else:
+        user = auth.current_user() or auth.LOCAL_ADMIN_USER
+    return {
+        **auth.public_user(user),
+        "auth_enabled": auth_enabled,
+        "capabilities": authz.capabilities_for_role(user.get("role", "")),
+    }
 
 
 @router.post("/api/auth/change-password")

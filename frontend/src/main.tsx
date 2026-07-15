@@ -1,9 +1,11 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { FolderKanban, Languages, Plus, Settings, WandSparkles, Zap } from 'lucide-react'
+import { FolderKanban, Languages, LogOut, Plus, Settings, WandSparkles, Zap } from 'lucide-react'
 import './styles.css'
 import './styles/workbench.css'
 import { API } from './apiClient'
+import { AuthGate, AuthProvider, PROJECT_MANAGE, useAuth } from './auth'
+import { roleBadgeLabel } from './auth/roleText'
 import { refreshLanguageOptions, languageSpec, normalizeLanguageCode, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { useConfirmDialog } from './components/modals/ConfirmModal'
@@ -46,6 +48,7 @@ import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, App
 
 
 function App() {
+  const { user, authEnabled, can, logout } = useAuth()
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsReady, setProjectsReady] = useState(false)
   const [, setLanguageVersion] = useState(0)
@@ -200,8 +203,8 @@ function App() {
     setTermArtifact(await upload(file, 'term_base'))
   }, [upload])
   const handleProjectPointerDown = useCallback((project: Project, event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.button === 0) beginProjectDeleteHold(project)
-  }, [beginProjectDeleteHold])
+    if (event.button === 0 && can(PROJECT_MANAGE)) beginProjectDeleteHold(project)
+  }, [beginProjectDeleteHold, can])
   const {
     refreshTranslationReadiness, selectSourceArtifact, selectQaArtifact, syncLanguageFromArtifact,
     classifySourceArtifact, inspectTranslationTargets, startQuickTask, runTranslate,
@@ -460,6 +463,13 @@ function App() {
               {versionMismatch ? `v${bundleVersion} / 后端 v${backendVersion} 版本不一致` : `v${bundleVersion}`}
             </span>
             {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}><Settings size={16} aria-hidden="true" />设置</button> : null}
+            {authEnabled && user ? (
+              <div className="current-user-chip" data-testid="current-user-chip">
+                <span className="current-user-name">{user.display_name || user.username}</span>
+                <span className="badge current-user-role">{roleBadgeLabel(user.role)}</span>
+                <button className="btn btn-ghost btn-sm" onClick={() => { void logout() }}><LogOut size={14} aria-hidden="true" />退出</button>
+              </div>
+            ) : null}
           </div>
         </header>
 
@@ -722,4 +732,10 @@ if (!rootElement) {
   throw new Error('Missing root element')
 }
 window.__lwsRoot = window.__lwsRoot ?? createRoot(rootElement)
-window.__lwsRoot.render(<App />)
+window.__lwsRoot.render(
+  <AuthProvider>
+    <AuthGate>
+      <App />
+    </AuthGate>
+  </AuthProvider>
+)

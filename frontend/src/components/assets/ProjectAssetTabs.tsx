@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { WIDE_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
+import { ASSETS_CURATE, useAuth } from '../../auth'
 import { artifactPickerLabel } from '../../domain/artifacts'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
 import { ActionStatus, AssetSelect, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector } from '../shared/WorkflowPrimitives'
@@ -149,6 +150,8 @@ function GlossaryTabImpl({
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
 }) {
+  const { can } = useAuth()
+  const canCurate = can(ASSETS_CURATE)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [displayLanguages, setDisplayLanguages] = useState<LanguageCode[]>([])
@@ -193,6 +196,7 @@ function GlossaryTabImpl({
             termArtifact={termArtifact}
             setTermArtifact={setTermArtifact}
             busy={busy}
+            canCurate={canCurate}
             onUploadTerm={onUploadTerm}
             onGlossaryPreview={onGlossaryPreview}
             onGlossaryImport={onGlossaryImport}
@@ -203,23 +207,25 @@ function GlossaryTabImpl({
         ) : null}
         <ActionStatus status={status} busy={busy} />
         {toolsOpen && glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} selectedLanguage={selectedLanguage} /> : null}
-        <details className="manual-maintenance" data-testid="manual-glossary-tools">
-          <summary>手动新增 / 多语言维护</summary>
-          <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTerm(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
-            <input name="term_key" placeholder="ID" />
-            <input name="source" placeholder="CN" required />
-            <input name="target" placeholder={lang.targetHeader} />
-            {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
-            <input name="category" placeholder="分类" />
-            <input name="note" placeholder="备注" />
-            <input name="language" type="hidden" value={selectedLanguage} />
-            <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
-          </form>
-          <div className="language-inline-select">
-            <span>新增 / 生成语言：</span>
-            <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
-          </div>
-        </details>
+        {canCurate ? (
+          <details className="manual-maintenance" data-testid="manual-glossary-tools">
+            <summary>手动新增 / 多语言维护</summary>
+            <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTerm(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
+              <input name="term_key" placeholder="ID" />
+              <input name="source" placeholder="CN" required />
+              <input name="target" placeholder={lang.targetHeader} />
+              {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
+              <input name="category" placeholder="分类" />
+              <input name="note" placeholder="备注" />
+              <input name="language" type="hidden" value={selectedLanguage} />
+              <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
+            </form>
+            <div className="language-inline-select">
+              <span>新增 / 生成语言：</span>
+              <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+            </div>
+          </details>
+        ) : null}
         <WideTableLanguageControls
           testIdPrefix="glossary"
           availableLanguages={availableDisplayLanguages}
@@ -248,7 +254,7 @@ function GlossaryTabImpl({
             </thead>
             <tbody>
               {currentRows.map((row) => (
-                <WideGlossaryTermRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdateTerm={onUpdateTerm} onDeleteTerm={onDeleteTerm} />
+                <WideGlossaryTermRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} canCurate={canCurate} onUpdateTerm={onUpdateTerm} onDeleteTerm={onDeleteTerm} />
               ))}
               {!rows.length ? <tr><td colSpan={colSpan} className="muted">暂无术语。可上传已有术语表、从语言表生成，或手工新增。</td></tr> : null}
               {rows.length && !filteredRows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
@@ -269,6 +275,7 @@ export function GlossaryToolsPanel({
   termArtifact,
   setTermArtifact,
   busy,
+  canCurate = true,
   onUploadTerm,
   onGlossaryPreview,
   onGlossaryImport,
@@ -281,6 +288,7 @@ export function GlossaryToolsPanel({
   termArtifact: Artifact | null
   setTermArtifact: (artifact: Artifact | null) => void
   busy: boolean
+  canCurate?: boolean
   onUploadTerm: (file: File) => void
   onGlossaryPreview: () => void
   onGlossaryImport: () => void
@@ -292,22 +300,32 @@ export function GlossaryToolsPanel({
   return (
     <div className="glossary-tools-panel">
       <div className="action-card">
-        <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} allowEmpty />
-        <FileBoxWithTemplate label="上传已确认术语表模板 xlsx/csv/json" onFile={onUploadTerm} templateKind="glossary" />
-        <div className="language-inline-select">
-          <span>从完整语言表扫描候选：</span>
-          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
-        </div>
-        <div className="row-actions">
-          <button type="button" className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语模板</button>
-          <button type="button" className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入已确认术语</button>
-          <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>从翻译语言表生成候选</button>
-          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出全部 XLSX</a>
-          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=csv`}>导出全部 CSV</a>
-          <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=json`}>导出全部 JSON</a>
-        </div>
-        {!sourceArtifact ? <div className="warn-line">需要从完整语言表生成术语时，先在“翻译”页上传语言表。</div> : null}
-        <div className="muted-left">完整语言表不会直接写入项目术语库；只能先生成候选，再人工确认加入。</div>
+        {canCurate ? (
+          <>
+            <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} allowEmpty />
+            <FileBoxWithTemplate label="上传已确认术语表模板 xlsx/csv/json" onFile={onUploadTerm} templateKind="glossary" />
+            <div className="language-inline-select">
+              <span>从完整语言表扫描候选：</span>
+              <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+            </div>
+            <div className="row-actions">
+              <button type="button" className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语模板</button>
+              <button type="button" className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入已确认术语</button>
+              <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>从翻译语言表生成候选</button>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出全部 XLSX</a>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=csv`}>导出全部 CSV</a>
+              <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=json`}>导出全部 JSON</a>
+            </div>
+            {!sourceArtifact ? <div className="warn-line">需要从完整语言表生成术语时，先在“翻译”页上传语言表。</div> : null}
+            <div className="muted-left">完整语言表不会直接写入项目术语库；只能先生成候选，再人工确认加入。</div>
+          </>
+        ) : (
+          <div className="row-actions">
+            <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出全部 XLSX</a>
+            <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=csv`}>导出全部 CSV</a>
+            <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=json`}>导出全部 JSON</a>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -316,11 +334,13 @@ export function GlossaryToolsPanel({
 function WideGlossaryTermRowImpl({
   row,
   visibleLanguages,
+  canCurate = true,
   onUpdateTerm,
   onDeleteTerm
 }: {
   row: WideGlossaryRow
   visibleLanguages: LanguageCode[]
+  canCurate?: boolean
   onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => Promise<void>
   onDeleteTerm: (term: GlossaryTerm) => Promise<void>
 }) {
@@ -402,7 +422,7 @@ function WideGlossaryTermRowImpl({
       <td>{sharedCell('note')}</td>
       <td>
         <div className="table-actions">
-          {editing ? (
+          {!canCurate ? null : editing ? (
             <>
               <button type="button" className="btn btn-primary btn-sm" onClick={save}>保存</button>
               <button type="button" className="btn btn-sm btn-danger" onClick={remove}>删除</button>
@@ -446,6 +466,8 @@ function TranslationArchiveTabImpl({
   setSelectedLanguage: (language: LanguageCode) => void
   onGoQA?: () => void
 }) {
+  const { can } = useAuth()
+  const canCurate = can(ASSETS_CURATE)
   const [importOpen, setImportOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportLanguage, setExportLanguage] = useState<LanguageCode | 'all'>('all')
@@ -475,7 +497,7 @@ function TranslationArchiveTabImpl({
       <div className="card-title">
         <div className="left">项目译文归档（{rows.length} 个 CN 源文）</div>
         <div className="card-actions">
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button>
+          {canCurate ? <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button> : null}
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setExportOpen((value) => !value)}>{exportOpen ? '收起导出' : '导出'}</button>
         </div>
       </div>
@@ -489,7 +511,7 @@ function TranslationArchiveTabImpl({
       />
       {exportOpen ? <TranslationArchiveExportPanel project={project} exportLanguage={exportLanguage} setExportLanguage={setExportLanguage} /> : null}
       <ActionStatus status={status} busy={busy} />
-      {importOpen ? (
+      {importOpen && canCurate ? (
         <TranslationArchiveImportModal
           archiveArtifact={archiveArtifact}
           busy={busy}
@@ -505,27 +527,29 @@ function TranslationArchiveTabImpl({
             <span>可导入已有译文表，或先运行 QA。标准交付会写入可信归档；带问题交付也会归档，并明确标记为“待复核”。</span>
           </div>
           <div className="row-actions compact-actions">
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button>
+            {canCurate ? <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button> : null}
             {onGoQA ? <button type="button" className="btn btn-ghost btn-sm" onClick={onGoQA}>去校对</button> : null}
           </div>
         </div>
       ) : null}
-      <details className="manual-maintenance" data-testid="manual-archive-tools">
-        <summary>手动维护归档</summary>
-        <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTranslation(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
-          <input name="entry_key" placeholder="ID" />
-          <input name="source" placeholder="CN" required />
-          <input name="target" placeholder={lang.targetHeader} />
-          {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
-          <input name="note" placeholder="备注" />
-          <input name="language" type="hidden" value={selectedLanguage} />
-          <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
-        </form>
-        <div className="language-inline-select">
-          <span>新增语言：</span>
-          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
-        </div>
-      </details>
+      {canCurate ? (
+        <details className="manual-maintenance" data-testid="manual-archive-tools">
+          <summary>手动维护归档</summary>
+          <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTranslation(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
+            <input name="entry_key" placeholder="ID" />
+            <input name="source" placeholder="CN" required />
+            <input name="target" placeholder={lang.targetHeader} />
+            {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
+            <input name="note" placeholder="备注" />
+            <input name="language" type="hidden" value={selectedLanguage} />
+            <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
+          </form>
+          <div className="language-inline-select">
+            <span>新增语言：</span>
+            <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+          </div>
+        </details>
+      ) : null}
       {rows.length ? (
         <>
           <WideTableLanguageControls
@@ -556,7 +580,7 @@ function TranslationArchiveTabImpl({
               </thead>
               <tbody>
                 {currentRows.map((row) => (
-                  <WideTranslationEntryRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
+                  <WideTranslationEntryRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} canCurate={canCurate} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
                 ))}
                 {!filteredRows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
               </tbody>
@@ -660,11 +684,13 @@ export function TranslationArchiveExportPanel({
 function WideTranslationEntryRowImpl({
   row,
   visibleLanguages,
+  canCurate = true,
   onUpdate,
   onDelete
 }: {
   row: WideTranslationRow
   visibleLanguages: LanguageCode[]
+  canCurate?: boolean
   onUpdate: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
   onDelete: (entry: TranslationEntry) => Promise<void>
 }) {
@@ -749,7 +775,7 @@ function WideTranslationEntryRowImpl({
       <td>{sharedCell('note')}</td>
       <td>
         <div className="table-actions">
-          {editing ? (
+          {!canCurate ? null : editing ? (
             <>
               <button type="button" className="btn btn-primary btn-sm" onClick={save}>保存</button>
               <button type="button" className="btn btn-sm btn-danger" onClick={remove}>删除</button>

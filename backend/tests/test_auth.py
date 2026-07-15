@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.auth as auth
+import app.authz as authz
 import app.db as db
 from app.main import app
 from conftest import reset_data_root
@@ -85,10 +86,20 @@ def test_login_disabled_user_returns_401_even_with_correct_password() -> None:
         assert response.json()["detail"] == "用户名或密码错误"
 
 
-def test_me_without_session_returns_401() -> None:
+def test_me_without_session_falls_back_to_local_admin_when_auth_is_off() -> None:
+    """This module's app is built with no LWS_AUTH_MODE/cloud deployment env,
+    so enforcement is off. The dominant real-world case for that mode is a
+    fresh page load with no session cookie at all -- the frontend's app-shell
+    gate must see the synthetic local administrator (200), not 401, or every
+    local deployment would incorrectly show a login screen."""
     with TestClient(app) as client:
         response = client.get(ME_URL)
-        assert response.status_code == 401
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["id"] == auth.LOCAL_ADMIN_USER["id"]
+        assert body["role"] == "admin"
+        assert body["auth_enabled"] is False
+        assert body["capabilities"] == sorted(authz.ALL_CAPABILITIES)
 
 
 def test_me_with_valid_session_returns_current_user() -> None:
@@ -99,7 +110,12 @@ def test_me_with_valid_session_returns_current_user() -> None:
 
         me_response = client.get(ME_URL)
         assert me_response.status_code == 200
-        assert me_response.json()["username"] == "dave"
+        body = me_response.json()
+        assert body["username"] == "dave"
+        # A real session cookie is honored even though this app's enforcement
+        # switch is off (see the fallback test above for the "no cookie" case).
+        assert body["auth_enabled"] is False
+        assert body["capabilities"] == sorted(authz.ALL_CAPABILITIES)
 
 
 def test_logout_invalidates_session_and_is_idempotent() -> None:
@@ -112,7 +128,12 @@ def test_logout_invalidates_session_and_is_idempotent() -> None:
         assert logout_response.status_code == 200
         assert logout_response.json()["ok"] is True
 
-        assert client.get(ME_URL).status_code == 401
+        # Logout clears the cookie, so this app's "no cookie + auth off"
+        # fallback answers with the synthetic local admin rather than 401 --
+        # the important assertion is that it is no longer erin's session.
+        after_logout = client.get(ME_URL)
+        assert after_logout.status_code == 200, after_logout.text
+        assert after_logout.json()["id"] == auth.LOCAL_ADMIN_USER["id"]
 
         # Logging out again with no active session must not error.
         second_logout = client.post(LOGOUT_URL)
