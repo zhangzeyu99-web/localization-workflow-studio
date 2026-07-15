@@ -48,6 +48,13 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail=f"reference artifact not found: {artifact_id}") from exc
         if artifact["project_id"] != payload.project_id:
             raise HTTPException(status_code=400, detail=f"reference artifact does not belong to project: {artifact_id}")
+    if payload.source_run_id:
+        try:
+            source_run = db.get_run(payload.source_run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="source run not found") from exc
+        if source_run["project_id"] != payload.project_id:
+            raise HTTPException(status_code=400, detail="source run does not belong to project")
     metadata = {
         "input_artifact_id": payload.input_artifact_id,
         "term_artifact_id": payload.term_artifact_id,

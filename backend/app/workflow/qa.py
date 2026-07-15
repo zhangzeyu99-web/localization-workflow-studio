@@ -45,7 +45,10 @@ def _is_quick_task_run(run: dict[str, Any], seen: set[str] | None = None) -> boo
         if not source_run_id or source_run_id in seen:
             continue
         try:
-            if _is_quick_task_run(db.get_run(source_run_id), seen):
+            source_run = db.get_run(source_run_id)
+            if source_run.get("project_id") != run.get("project_id"):
+                continue
+            if _is_quick_task_run(source_run, seen):
                 return True
         except KeyError:
             continue

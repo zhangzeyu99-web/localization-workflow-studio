@@ -22,6 +22,7 @@ from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
 from app.providers import TranslationItem, test_fake_translate_batch
 from app.workflow import backfill_project_glossary_from_final
+from app.workflow.qa import _is_quick_task_run
 from conftest import reset_data_root, wait_for_background_jobs
 
 
@@ -3705,6 +3706,39 @@ def test_quick_task_qa_creates_reference_snapshot(tmp_path: Path) -> None:
         package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}").json()
         assert package["archive"] is None
         assert client.get(f"/api/projects/{project['id']}/translations").json() == []
+
+
+def test_cross_project_quick_source_cannot_suppress_formal_archive_lineage() -> None:
+    quick_project = db.insert_project("quick lineage source", "quick-task", "")
+    formal_project = db.insert_project("formal lineage target", "QA", "")
+    quick_run = db.insert_run(
+        quick_project["id"],
+        "translation",
+        "en",
+        metadata={"task_origin": "quick_task"},
+    )
+    formal_run = db.insert_run(
+        formal_project["id"],
+        "qa",
+        "en",
+        metadata={"task_origin": "translation_continuation", "source_run_id": quick_run["id"]},
+    )
+
+    assert _is_quick_task_run(formal_run) is False
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/runs",
+            json={
+                "project_id": formal_project["id"],
+                "kind": "qa",
+                "language": "en",
+                "source_run_id": quick_run["id"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "source run does not belong to project" in response.json()["detail"]
 
 
 def test_translation_archive_import_edit_and_export(tmp_path: Path) -> None:
