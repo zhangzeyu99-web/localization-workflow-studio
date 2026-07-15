@@ -1715,6 +1715,24 @@ test('operator nickname can be set from the always-visible header control', asyn
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem('lws.operatorName'))).toBe('Alice')
 })
 
+test('Chinese operator nickname remains usable for API-backed actions', async ({ page }) => {
+  const projectName = `E2E Chinese Operator ${Date.now()}`
+  await page.goto(baseURL)
+
+  await page.getByTestId('operator-identity-trigger').click()
+  await page.getByTestId('operator-name-input').fill('张三')
+  await page.getByRole('button', { name: '保存昵称' }).click()
+  await expect(page.getByTestId('operator-identity-trigger')).toContainText('张三')
+
+  await page.locator('.new-project-btn').click()
+  await page.getByPlaceholder('例如：星际边境 / 机甲纪元').fill(projectName)
+  await page.getByPlaceholder('目标用户、题材、语气要求').fill('验证中文操作人昵称可安全随 API 请求发送。')
+  await page.getByRole('button', { name: '创建' }).click()
+
+  await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 15000 })
+  await expect(page.getByText(/String contains non ISO-8859-1 code point/)).toHaveCount(0)
+})
+
 test('operator nickname dialog traps focus and restores it after Escape', async ({ page }) => {
   await page.goto(baseURL)
   const trigger = page.getByTestId('operator-identity-trigger')

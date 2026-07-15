@@ -97,7 +97,7 @@ function withOperatorHeader(init?: RequestInit): RequestInit | undefined {
   const operator = getOperatorName()
   if (!operator) return init
   const headers = new Headers(init?.headers)
-  headers.set('X-Operator', operator)
+  headers.set('X-Operator', encodeURIComponent(operator))
   return { ...init, headers }
 }
 

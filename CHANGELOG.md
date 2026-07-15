@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.3.4 - 2026-07-15
+
+Unicode operator nickname compatibility release.
+
+- Operator nicknames are now percent-encoded before being attached to browser API requests, so Chinese and other non-Latin nicknames no longer trigger the browser `Headers` ISO-8859-1 error.
+- The backend decodes the transport-safe nickname before attribution, preserving the original nickname in events, active-job ownership, and conflict messages.
+- Added backend and browser regression coverage for a Chinese nickname creating an API-backed project/run.
+- Deployment guidance now requires a fresh release directory and atomic switch instead of overlaying new files onto an old frontend build.
+
 ## 1.3.3 - 2026-07-14
 
 Shared-workbench operator attribution release.

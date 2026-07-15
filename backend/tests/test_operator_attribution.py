@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
 
@@ -258,6 +259,18 @@ def test_run_creation_event_is_prefixed_with_operator_nickname_when_header_prese
         events = client.get(f"/api/runs/{run_without_operator['id']}/events").json()
         creation_messages = [str(event.get("message") or "") for event in events if "run created" in str(event.get("message") or "")]
         assert creation_messages == ["run created (kind=translation)"]
+
+
+def test_percent_encoded_unicode_operator_header_is_decoded_before_attribution() -> None:
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Unicode Operator", "type": "QA"}).json()
+        run = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en"},
+            headers={"X-Operator": quote("张三", safe="")},
+        ).json()
+
+        assert "[张三] run created" in _events_text(client, run["id"])
 
 
 def test_delivery_event_is_prefixed_with_operator_nickname(tmp_path: Path) -> None:

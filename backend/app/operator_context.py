@@ -25,6 +25,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from fastapi import HTTPException
 
@@ -42,7 +43,12 @@ def sanitize_operator_name(value: Any) -> str:
 
 
 def set_current_operator(value: Any) -> None:
-    _operator_var.set(sanitize_operator_name(value))
+    raw_value = str(value or "")
+    try:
+        decoded_value = unquote(raw_value, encoding="utf-8", errors="strict")
+    except UnicodeDecodeError:
+        decoded_value = raw_value
+    _operator_var.set(sanitize_operator_name(decoded_value))
 
 
 def current_operator() -> str:

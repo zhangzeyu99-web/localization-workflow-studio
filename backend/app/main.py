@@ -38,7 +38,7 @@ def _cors_origins() -> list[str]:
     return [*defaults, *[origin for origin in extra if origin not in defaults]]
 
 
-app = FastAPI(title="Localization Workflow Studio", version="1.3.3", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="1.3.4", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
