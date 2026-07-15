@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -9,15 +10,29 @@ from typing import Any
 import httpx
 from openpyxl import Workbook
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from deployment_auth import login as auth_login  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / ".tmp" / "stability"
 
 
 class StabilityCheck:
-    def __init__(self, base_url: str, keep_project: bool = False) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        keep_project: bool = False,
+        auth_user: str | None = None,
+        auth_password: str | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.keep_project = keep_project
+        self.auth_user = auth_user
+        self.auth_password = auth_password
         self.session = httpx.Client(follow_redirects=True)
         self.results: list[dict[str, Any]] = []
         self.project_id = ""
@@ -181,6 +196,11 @@ class StabilityCheck:
         fixtures = self.make_fixtures()
         try:
             self.run_step("00_backend_health", lambda: self.get("/api/health"))
+            if self.auth_user:
+                self.run_step(
+                    "00b_auth_login",
+                    lambda: auth_login(self.session, self.base_url, self.auth_user, self.auth_password or ""),
+                )
             settings = self.run_step("01_provider_settings", lambda: self.get("/api/settings"))
             provider = str(settings.get("provider") or "")
             if provider in {"openai", "openai-chat", "anthropic"} and settings.get("api_key") != "configured":
@@ -348,8 +368,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run no-Codex stability checks against a running Localization Workflow Studio.")
     parser.add_argument("--base-url", default="http://127.0.0.1:5174", help="Workbench URL. Use the front-end URL so proxy failures are tested too.")
     parser.add_argument("--keep-project", action="store_true", help="Keep the temporary project for manual inspection.")
+    parser.add_argument(
+        "--auth-user",
+        default=None,
+        help=(
+            "Log in as this user before running the flow (needed once the deployment "
+            "enforces login). Use an admin or ops account: this flow curates glossary/"
+            "translations and deletes the temp project, which need ASSETS_CURATE/PROJECT_MANAGE."
+        ),
+    )
+    parser.add_argument("--auth-password", default=None, help="Password for --auth-user.")
     args = parser.parse_args()
-    return StabilityCheck(args.base_url, keep_project=args.keep_project).execute()
+    return StabilityCheck(
+        args.base_url,
+        keep_project=args.keep_project,
+        auth_user=args.auth_user,
+        auth_password=args.auth_password,
+    ).execute()
 
 
 if __name__ == "__main__":

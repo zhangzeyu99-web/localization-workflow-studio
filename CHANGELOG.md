@@ -2,6 +2,16 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.4.0 - 2026-07-15
+
+Account and permission system. Planned in `docs/superpowers/plans/2026-07-15-account-permission-system.md`; the previous 2026-07-08 multiuser-concurrency plan explicitly deferred authentication to this follow-up.
+
+- Three global roles (`admin` / `ops` / `member`) layered on top of a per-project membership table: admins see and manage everything, ops/member visibility is scoped to projects they're a member of, and a single centrally-reviewed route-capability table (`route_capabilities.py`) gates all ~104 `/api/` routes fail-closed (an unregistered route defaults to `admin`-only, not "allowed").
+- Cloud deployments (`LWS_DEPLOYMENT_MODE=cloud`, or `LWS_AUTH_MODE=required` anywhere) now require login: server-side sessions with `HttpOnly`/`Secure` cookies, argon2id password hashing, a login brute-force guard, and forced first-login password changes. Local deployments default to zero behavior change — no login, no user table, the existing `X-Operator` nickname attribution keeps working exactly as before.
+- User management (admin-only): create/list/update users, disable-instead-of-delete (revokes sessions immediately), reset passwords. Project member management (admin, or ops for their own member projects): add/remove members, list addable users.
+- Frontend: a login gate in front of the app shell, permission-aware UI (buttons/entries hidden per role and capability), an admin user-management panel and a project member-management panel, and a forced change-password flow for first logins.
+- Deployment: `check.py`/`scripts/deployment_check.py` and `scripts/stability_check.py` gained `--auth-user`/`--auth-password` to log in before running checks that need a session, plus a new `auth_fail_closed` self-check asserting unauthenticated access to core business APIs is rejected (hard failure under `--require-cloud`). `operator_audit.log` now also records `login`/`logout` (failed logins are intentionally not recorded, to avoid a brute-force run flooding the log).
+
 ## 1.3.1 - 2026-07-12
 
 Background-task model for QA and removal of the global busy lock — the three items deferred from the 2026-07-11 UX audit.

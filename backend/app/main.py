@@ -43,7 +43,7 @@ def _cors_origins() -> list[str]:
     return [*defaults, *[origin for origin in extra if origin not in defaults]]
 
 
-app = FastAPI(title="Localization Workflow Studio", version="1.3.1", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="1.4.0", lifespan=lifespan)
 # A single, centrally-reviewable dependency guards every /api/ route's
 # capability + project-membership requirement -- see route_capabilities.py
 # for the (method, path) -> capability table and docs/ROUTE_CAPABILITIES.md

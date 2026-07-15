@@ -10,9 +10,10 @@
 - [x] A1 批 1（2026-07-15，sonnet-5，commit 4d56791）：users/sessions 表、argon2id、session 签发、登录防爆破、/api/auth/login|logout|me。
 - [x] A1 批 2（2026-07-15，gpt-5.6-sol，commit bd4d12a）：`LWS_AUTH_MODE` 开关（cloud 默认 required）、强制登录中间件（白名单仅 login/logout/me/version/health）、初始管理员 fail-closed 引导、scripts/create_admin.py。验收返工一次：upload-readability 端点因写盘风险移出免登录白名单，deployment_check 的登录适配留给 A4。
 - [x] A1 批 3（2026-07-15，sonnet-5，commit 7369eb0）：require_admin 依赖（authz.py）、/api/users 管理 API（无 DELETE，停用代替）、停用/重置密码即撤销 session、/api/auth/change-password、首登强制改密门禁（403）。
-- [ ] A2 权限执行层
-- [ ] A3 前端
-- [ ] A4 部署收尾
+- [x] A2 权限执行层（2026-07-15，commit a4c25ed 批1+2、57ff6c2 批3+4）：capability 常量与角色映射、`route_capabilities.py` 一张表挂全部 ~104 条 `/api/` 路由并 fail-closed 兜底、项目成员表 + 成员管理 API + 列表按成员过滤、三档角色权限矩阵 e2e 覆盖、下载/artifact 直链权限复核。裁决记录见下一行。
+  - **裁决（2026-07-15）**：`/glossary/extract`、`/glossary/batches/*`、`/glossary/candidates/*` 维持 `assets:curate`（member 不能主动修改术语库，确认候选即写入术语库必须封锁）；翻译向导第 5 步（术语候选，`StepFreqV2`）对无 `assets:curate` 的用户降级为只读——隐藏扫描/补译/确认/跳过/编辑入口，向导前进判定忽略 pending 候选数。详见 `docs/ROUTE_CAPABILITIES.md`。
+- [x] A3 前端（2026-07-15，commit 0270c1a 批1+2、399729b 批3+4）：登录页 + apiClient 统一 401 跳登录 + `credentials: include`、能力驱动的 UI 显隐（隐藏删项目/术语归档编辑/项目资料维护入口）、管理员用户管理面板、项目成员管理面板、`X-Operator` 昵称设置在认证开启时隐藏、认证专用 e2e 套件（`npm run e2e:auth`）覆盖三档角色主路径与越权拒绝。
+- [x] A4 部署收尾（2026-07-15，本批）：`check.py`/`scripts/deployment_check.py`、`scripts/stability_check.py` 加 `--auth-user/--auth-password` 登录支持（`scripts/deployment_auth.py` 公共函数）与 `auth_fail_closed` 未登录 401 自检项；`operator_audit.log` 补 `login`/`logout` 事件（登录失败不记）；`docs/CLOUD_DEPLOYMENT.md`/`docs/STABILITY_TEST_LIST.md`/`README.md` 更新；版本联动 1.3.1 → 1.4.0。
 
 A1 遗留（进 A2/A4 待办）：conftest 缺少对 `importlib.reload(main_module)` 全局状态泄漏的通用防护（现只在 test_users_admin.py 局部处理）；create_admin.py CLI 路径不写审计；密码策略仅长度下限；防爆破为进程内存态（单实例部署下可接受）。
 
@@ -167,13 +168,13 @@ local + LWS_AUTH_MODE=required → 与 cloud 相同的强制登录
 
 ## 5. 完成标准
 
-- [ ] 云端部署未登录访问任何业务 API 返回 401；登录后按档位工作。
-- [ ] 本地模式默认零感知：不建号、不登录，行为与当前版本一致。
-- [ ] member 完整跑通翻译任务/快速任务并自动写归档；手动删项目/改术语/改归档全部 403 且 UI 无入口。
-- [ ] ops 仅见成员项目，可维护术语/归档、可删项目；admin 可见全部并可管理用户和成员。
-- [ ] 停用账号后其 session 立即失效。
-- [ ] 密码仅存 argon2id 哈希；session 票据仅存哈希；登录有防爆破。
-- [ ] 全量 pytest + e2e 绿；CLOUD_DEPLOYMENT/STABILITY_TEST_LIST 更新；权限矩阵表进 docs。
+- [x] 云端部署未登录访问任何业务 API 返回 401；登录后按档位工作。(A1-A2 后端强制 + A4 `check.py` `auth_fail_closed` 自检项覆盖)
+- [x] 本地模式默认零感知：不建号、不登录，行为与当前版本一致。(`test_local_mode_defaults_to_auth_off_and_exposes_synthetic_admin` 等回归测试)
+- [x] member 完整跑通翻译任务/快速任务并自动写归档；手动删项目/改术语/改归档全部 403 且 UI 无入口。(A2 矩阵测试 + A3 UI 显隐)
+- [x] ops 仅见成员项目，可维护术语/归档、可删项目；admin 可见全部并可管理用户和成员。(A2 成员过滤 + A3 管理面板)
+- [x] 停用账号后其 session 立即失效。(`db.delete_sessions_for_user`，A1 批 3)
+- [x] 密码仅存 argon2id 哈希；session 票据仅存哈希；登录有防爆破。(A1 批 1)
+- [x] 全量 pytest + e2e 绿；CLOUD_DEPLOYMENT/STABILITY_TEST_LIST 更新；权限矩阵表进 docs。(A4：`pytest -q backend/tests` 328 passed；`npm run e2e:auth` 5 passed；文档见本批改动)
 
 ## 6. 风险与对策
 

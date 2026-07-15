@@ -50,21 +50,37 @@ def prefixed_message(message: str, operator: str | None = None) -> str:
     return f"[{name}] {message}" if name else message
 
 
-def record_operator_audit(data_root: Path, action: str, detail: dict[str, Any] | None = None) -> None:
+def record_operator_audit(
+    data_root: Path,
+    action: str,
+    detail: dict[str, Any] | None = None,
+    *,
+    operator: str | None = None,
+) -> None:
     """Append-only audit trail for actions that do not have a durable
     per-run event sink -- most notably project deletion, which cascades to
     delete that project's own run events in the same transaction, so logging
     to ``db.add_event`` there would be immediately erased.
 
-    No-ops when no operator nickname is set for the current request.
+    ``operator`` lets a caller name the actor explicitly instead of reading
+    the ``current_operator()`` contextvar. This is required for the login
+    action itself: the request that logs a user in has no session yet, so
+    the authentication middleware has not (and cannot) populate the
+    contextvar with that user's identity for this request -- it only reads
+    whatever ``X-Operator`` nickname header happened to be sent, which is not
+    who actually authenticated. Every other call site keeps relying on the
+    contextvar as before.
+
+    No-ops when there is no operator name to attribute to (neither an
+    explicit ``operator`` nor a set nickname).
     """
-    operator = current_operator()
-    if not operator:
+    name = sanitize_operator_name(operator) if operator is not None else current_operator()
+    if not name:
         return
     data_root.mkdir(parents=True, exist_ok=True)
     entry: dict[str, Any] = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "operator": operator,
+        "operator": name,
         "action": action,
     }
     if detail:

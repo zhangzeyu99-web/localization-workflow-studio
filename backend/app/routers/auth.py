@@ -62,6 +62,16 @@ def login(payload: LoginRequest, request: Request, response: Response) -> dict[s
     token, _session = auth.issue_session(user["id"])
     db.update_user(user["id"], {"last_login_at": db.now_iso()})
     _set_session_cookie(response, token)
+    # The login request itself has no session yet, so the authentication
+    # middleware cannot have populated operator_context's contextvar with
+    # this user's identity for this request -- pass it explicitly instead of
+    # falling back to whatever (unrelated) X-Operator nickname was sent.
+    operator_context.record_operator_audit(
+        DATA_ROOT,
+        "login",
+        {"username": user["username"]},
+        operator=user.get("display_name") or user["username"],
+    )
     return auth.public_user(user)
 
 
@@ -70,6 +80,11 @@ def logout(request: Request, response: Response) -> dict[str, Any]:
     token = request.cookies.get(auth.SESSION_COOKIE_NAME, "")
     auth.revoke_session(token)
     _clear_session_cookie(response)
+    # Login failures are intentionally not audited (would let a brute-force
+    # attempt flood the audit log); a logout call with no prior valid session
+    # has no identity to attribute either, so record_operator_audit's
+    # contextvar-empty no-op is exactly the right behavior here.
+    operator_context.record_operator_audit(DATA_ROOT, "logout")
     return {"ok": True}
 
 

@@ -146,7 +146,58 @@ export LWS_CORS_ORIGINS=https://ai-lwstudio.example.com
 export LWS_GIT_SHA=$(git rev-parse --short=12 HEAD)
 ```
 
-## 上线前自检
+## 账号与认证
+
+账号/权限系统落地后（`docs/superpowers/plans/2026-07-15-account-permission-system.md`），云端部署默认强制登录；本地部署默认免登录，行为与升级前完全一致。
+
+### 开关语义
+
+```text
+cloud 模式（LWS_DEPLOYMENT_MODE=cloud，未显式设置 LWS_AUTH_MODE）→ 强制登录
+local 模式（默认）                                              → 免登录，请求视为内置管理员 local-admin
+本地 + LWS_AUTH_MODE=required                                    → 与云端相同的强制登录
+任意模式 + LWS_AUTH_MODE=off                                      → 强制关闭登录（覆盖 cloud 默认）
+```
+
+`LWS_AUTH_MODE` 只接受 `required` 或 `off`；设了其它值后端启动即报错，不会静默回退到免登录。
+
+### 首次上线引导管理员
+
+强制登录模式下，若 `users` 表为空，后端启动时会从环境变量创建初始管理员：
+
+```bash
+export LWS_ADMIN_USER=admin
+export LWS_ADMIN_PASSWORD='一个足够强的初始密码'
+```
+
+两者缺一，后端直接拒绝启动（fail-closed，不留后门）。也可以不设这两个变量，改用：
+
+```bash
+python3.11 scripts/create_admin.py --username admin
+```
+
+它会直接对着当前 `LWS_DATA_ROOT` 指向的数据库创建或重置一个管理员（密码从 `LWS_ADMIN_PASSWORD` 环境变量或交互式输入读取）。
+
+不管走哪条路径，初始管理员的 `must_change_password` 都是 `true`：首次登录后，除了 `GET /api/auth/me`、`POST /api/auth/logout`、`POST /api/auth/change-password` 之外的所有 `/api/*` 请求都会收到 403 `首次登录请先修改密码`，直到调用 `POST /api/auth/change-password` 完成改密。这是设计行为，不是故障——`check.py --auth-user/--auth-password` 遇到这种账号会明确报告 `action_required: change_password`，而不是笼统报错。
+
+### Cookie 与 HTTPS
+
+会话使用服务端 session + `HttpOnly` cookie；`deployment_mode=cloud` 时 cookie 会带 `Secure` 属性，这要求前端页面本身通过 HTTPS 访问，否则浏览器会拒绝写入该 cookie，登录会看起来"成功了但下一个请求又被 401"。反向代理必须：
+
+- 对 `/api/` 路径原样转发请求 cookie（Nginx 默认行为，不需要额外配置，只要不是显式 `proxy_set_header Cookie ""` 之类的清空操作）。
+- 对响应的 `Set-Cookie` 头不做重写、不做压缩合并。
+- 不在 CDN/反代层缓存带 `Set-Cookie` 或 `Cache-Control: no-store` 的响应（`/api/` 响应已统一带 `no-store`，见 `main.py` 的 `_no_store_api_responses` 中间件）。
+
+同源 SPA + `SameSite=Lax` 已能覆盖 CSRF 基线；不要为了图方便把 `SameSite` 改成 `None`。
+
+### 用户与成员管理
+
+- 三档角色：管理员（`admin`）、项目运营（`ops`）、普通用户（`member`），角色是全局属性；项目可见性由项目成员表决定，管理员始终可见全部项目。
+- 用户管理：`GET/POST /api/users`、`PATCH /api/users/{id}`、`POST /api/users/{id}/reset-password`，仅管理员可调用；停用（`status=disabled`）代替硬删除，停用立即撤销该用户全部 session。
+- 项目成员管理：`GET/POST /api/projects/{id}/members`、`DELETE /api/projects/{id}/members/{user_id}`，管理员管全部项目，运营管自己是成员的项目。
+- 完整角色/能力矩阵见计划文档 §2.1。
+
+### 上线前自检
 
 ```bash
 python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider --expect-version $(cat VERSION)
@@ -161,7 +212,19 @@ python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud -
 - `uploads_writable=true`。
 - `database.connected=true`。
 - `provider_configured=true`。
-- 上传自检能返回 `sha256` 和 `preview`。
+- `auth_fail_closed` 步骤 `ok=true`：未登录访问 `GET /api/projects` 必须是 401（云端强制登录生效）。加了 `--require-cloud` 时这一项是硬失败。
+- 上传自检能返回 `sha256` 和 `preview`（认证开启的部署需要先登录，见下）。
+
+云端部署一旦开启强制登录，`upload_readability` 探针本身需要 ADMIN 能力，必须带上管理员账号：
+
+```bash
+python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider \
+  --expect-version $(cat VERSION) --auth-user admin --auth-password '管理员密码'
+```
+
+- 会先 `POST /api/auth/login`，成功后用同一个 session 继续跑 `upload_readability`。
+- 如果该账号还处于首次登录强制改密状态，会得到 `auth_login` 步骤 `ok=false` 且 `action_required: change_password`，而不是一个看起来像部署故障的报错——先用这个账号登录前端完成改密，或运行 `scripts/create_admin.py --username <该账号>` 重置密码，再重跑 `check.py`。
+- 不带 `--auth-user` 但部署已强制登录时，`upload_readability` 会给出明确指引（提示补 `--auth-user/--auth-password`），而不是一个裸的 401/403。
 
 完整业务冒烟测试：
 
@@ -169,7 +232,11 @@ python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud -
 python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 ```
 
-它会临时创建测试项目，跑项目资料上传、AI 分析、术语导入、翻译、QA、归档、公告准备等关键路径，默认结束后删除测试项目。
+它会临时创建测试项目，跑项目资料上传、AI 分析、术语导入、翻译、QA、归档、公告准备等关键路径，默认结束后删除测试项目。认证开启的部署同样需要登录（`stability_check.py` 会创建/删除项目、导入术语和归档，至少需要 `ops` 角色）：
+
+```bash
+python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com --auth-user admin --auth-password '管理员密码'
+```
 
 多人并发冒烟测试（建议在隔离实例上跑，不要对着生产库跑）：
 
@@ -188,6 +255,9 @@ python3.11 scripts/concurrency_smoke.py --base-url http://127.0.0.1:18800
 | 上传 413 | Nginx 或后端上传上限不一致 | 同时设置 `client_max_body_size` 和 `LWS_MAX_UPLOAD_MB` |
 | 页面能开但上传/分析失败 | 前端和后端不是同一版本，或 `/api/` 反代错 | 看右下角版本号、`/api/version` 和浏览器 network |
 | 下载 Not Found | 数据目录变了或旧 artifact 文件不存在 | 确认 `LWS_DATA_ROOT` 持久且未被覆盖 |
+| 登录后马上又被 401 | HTTPS 缺失导致 `Secure` cookie 没写进浏览器，或反代清空/重写了 `Set-Cookie`/`Cookie` 头 | 确认站点是 HTTPS、反代原样转发 cookie 相关头 |
+| `check.py` 强制登录部署下报 `LWS_ADMIN_USER/LWS_ADMIN_PASSWORD` 缺失 | 首次以强制登录启动且 `users` 表为空，未设引导环境变量 | 设置这两个变量后重启，或运行 `scripts/create_admin.py --username <用户名>` |
+| `check.py` 报 `action_required: change_password` | 该账号还处于首次登录强制改密状态 | 用该账号登录前端完成改密，或 `scripts/create_admin.py` 重置密码 |
 | 多人同时跑任务混乱 | 多 worker/多实例共用 SQLite（不是并发模型本身的问题——不同项目并行任务是受支持的设计） | 确认只有一个 uvicorn worker/实例在跑；检查 `GET /api/system/active-jobs` 和 409 提示文案（`project_busy` vs `capacity`）区分是"同项目冲突"还是"工作台容量满" |
 
 ## 不要做

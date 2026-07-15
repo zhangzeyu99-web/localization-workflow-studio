@@ -18,6 +18,14 @@ python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 python3.11 scripts/concurrency_smoke.py --base-url https://ai-lwstudio.example.com
 ```
 
+强制登录的部署（云端默认）需要额外带 `--auth-user/--auth-password`，见 `docs/CLOUD_DEPLOYMENT.md`「账号与认证」一节：
+
+```bash
+python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider \
+  --expect-version $(cat VERSION) --auth-user admin --auth-password '管理员密码'
+python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com --auth-user admin --auth-password '管理员密码'
+```
+
 多人并发场景务必在隔离实例（临时数据目录、独立端口）上跑，不要对生产库跑。
 
 ## 必测项
@@ -47,6 +55,15 @@ python3.11 scripts/concurrency_smoke.py --base-url https://ai-lwstudio.example.c
 20. 一个任务运行期间，另一处修改全局 `settings.local.json`（provider/preset 等）不影响已经在跑的任务——已启动任务使用启动时的 settings 快照，运行结果不受运行中途配置变更影响。
 21. 项目存在活跃任务时尝试删除该项目，被拒绝且提示"该项目正在执行任务（{任务描述}），请先取消或等待任务完成再删除"；任务结束后删除能正常成功。
 
+## 账号与权限测试项（A1-A4）
+
+22. 云端/强制登录部署下，未登录访问 `GET /api/projects`（或任意业务 API）返回 401；`check.py` 的 `auth_fail_closed` 步骤覆盖这一项，`--require-cloud` 时是硬失败。
+23. `member` 角色账号跑完整翻译任务/快速任务全流程（含自动写归档）成功；手动 `DELETE`/`PATCH` 术语、归档、项目资料，以及删除项目、管理项目成员，全部返回 403。
+24. `member`/`ops` 账号访问自己不是成员的项目：列表中不出现该项目，直接按 id 访问返回 404（不是 403，防止项目存在性被枚举）。
+25. 管理员停用一个用户后，该用户所有已签发 session 立即失效（下一次任意 `/api/*` 请求 401），不需要等 cookie 过期。
+26. 首次登录（管理员引导账号或新建账号）在完成 `POST /api/auth/change-password` 之前，除 `GET /api/auth/me`、`POST /api/auth/logout`、`POST /api/auth/change-password` 外的所有 `/api/*` 请求返回 403 `首次登录请先修改密码`。
+27. `operator_audit.log` 能看到 `login`（登录成功）、`logout` 事件，且操作者字段是真实登录用户名/显示名，不是 `X-Operator` 请求头里的昵称；登录失败不产生 `login` 记录（防止爆破刷日志）。
+
 ## 失败即阻断
 
 - 页面能打开但 `/api/version` 404。
@@ -56,3 +73,4 @@ python3.11 scripts/concurrency_smoke.py --base-url https://ai-lwstudio.example.c
 - provider 未配置但尝试跑正式 AI 翻译。
 - 下载最终交付文件返回 Not Found。
 - 测试项目删除失败。
+- 云端/强制登录部署下，未登录访问业务 API 不是 401（fail-closed 失效）。
