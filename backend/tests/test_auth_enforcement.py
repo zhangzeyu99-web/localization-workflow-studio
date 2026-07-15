@@ -73,11 +73,22 @@ def test_required_mode_rejects_business_api_then_allows_it_after_login(monkeypat
     with TestClient(test_app) as client:
         denied = client.get("/api/projects")
         login = client.post("/api/auth/login", json={"username": "admin", "password": PASSWORD})
+        # Bootstrap always forces a first-login password change (A1 batch 3),
+        # so the business API stays gated by a distinct 403 until that
+        # happens -- see test_first_login_password_change_gate below for the
+        # dedicated coverage of that gate itself.
+        still_gated = client.get("/api/projects")
+        client.post(
+            "/api/auth/change-password",
+            json={"current_password": PASSWORD, "new_password": "Post-Bootstrap-Pass1!"},
+        )
         allowed = client.get("/api/projects")
 
     assert denied.status_code == 401
     assert denied.json() == {"detail": "未登录"}
     assert login.status_code == 200, login.text
+    assert still_gated.status_code == 403
+    assert still_gated.json() == {"detail": "首次登录请先修改密码"}
     assert allowed.status_code == 200, allowed.text
 
 
@@ -153,7 +164,10 @@ def test_authenticated_operator_uses_display_name_not_spoofed_header(monkeypatch
     with TestClient(test_app) as client:
         user = db.get_user_by_username("auditor")
         assert user is not None
-        db.update_user(user["id"], {"display_name": "真实管理员"})
+        # Bootstrap forces a first-login password change (A1 batch 3); clear
+        # it directly so this test can focus on operator-attribution rather
+        # than re-proving the password-change gate covered elsewhere.
+        db.update_user(user["id"], {"display_name": "真实管理员", "must_change_password": False})
         login = client.post("/api/auth/login", json={"username": "auditor", "password": PASSWORD})
         assert login.status_code == 200, login.text
         project = client.post("/api/projects", json={"name": "Audit Project", "type": "QA"}).json()

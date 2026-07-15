@@ -1,7 +1,9 @@
-"""Login/logout/me endpoints (A1 batch 1: no global enforcement yet).
+"""Login/logout/me/change-password endpoints.
 
-Nothing here changes any other router's behavior. The mode switch that makes
-authentication mandatory in cloud deployments is A1 batch 2's job.
+login/logout/me are A1 batch 1 (no global enforcement); the mode switch that
+makes authentication mandatory in cloud deployments is A1 batch 2's job.
+change-password is A1 batch 3, paired with the first-login enforcement gate
+in ``main.py``'s ``_enforce_authentication`` middleware.
 """
 
 from __future__ import annotations
@@ -10,13 +12,14 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from .. import auth, db
-from ..config import deployment_mode
-from ..schemas import LoginRequest
+from .. import auth, db, operator_context
+from ..config import DATA_ROOT, deployment_mode
+from ..schemas import ChangePasswordRequest, LoginRequest
 
 router = APIRouter()
 
 LOGIN_ERROR_DETAIL = "用户名或密码错误"
+MIN_NEW_PASSWORD_LENGTH = 8
 
 
 def _client_ip(request: Request) -> str:
@@ -77,3 +80,34 @@ def me(request: Request) -> dict[str, Any]:
     if user is None:
         raise HTTPException(status_code=401, detail="未登录")
     return auth.public_user(user)
+
+
+@router.post("/api/auth/change-password")
+def change_password(payload: ChangePasswordRequest, response: Response) -> dict[str, Any]:
+    user = auth.current_user()
+    if user is None:
+        raise HTTPException(status_code=401, detail="未登录")
+    if user["id"] == auth.LOCAL_ADMIN_USER["id"]:
+        # Auth-off mode never persists LOCAL_ADMIN_USER to the users table --
+        # there is no password row to change.
+        raise HTTPException(status_code=400, detail="本地模式无需修改密码")
+
+    stored = db.get_user(user["id"])
+    if not auth.verify_password(stored["password_hash"], payload.current_password):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    if len(payload.new_password) < MIN_NEW_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400, detail=f"新密码至少 {MIN_NEW_PASSWORD_LENGTH} 位")
+
+    db.update_user(
+        user["id"],
+        {"password_hash": auth.hash_password(payload.new_password), "must_change_password": False},
+    )
+    # Revoke every existing session (including the one used for this request)
+    # and issue a fresh one -- simpler than "revoke others, keep this one" and
+    # gives the same guarantee: the pre-change-password token is dead, and
+    # exactly one valid session (this browser's) survives.
+    db.delete_sessions_for_user(user["id"])
+    token, _session = auth.issue_session(user["id"])
+    _set_session_cookie(response, token)
+    operator_context.record_operator_audit(DATA_ROOT, "change_password", {"username": user["username"]})
+    return {"ok": True}

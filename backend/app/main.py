@@ -75,6 +75,16 @@ _PRELOGIN_API_ENDPOINTS = {
     ("GET", "/api/health"),
 }
 
+# While a forced first-login password change is pending, a logged-in user may
+# only look at their own identity, log out, or change the password itself --
+# every other /api/* route is blocked with a 403 (not 401: the session is
+# valid, it just isn't allowed to do business yet) until the change succeeds.
+_FORCE_PASSWORD_CHANGE_ALLOWED_ENDPOINTS = {
+    ("GET", "/api/auth/me"),
+    ("POST", "/api/auth/logout"),
+    ("POST", "/api/auth/change-password"),
+}
+
 
 @app.middleware("http")
 async def _enforce_authentication(request: Request, call_next):
@@ -99,6 +109,12 @@ async def _enforce_authentication(request: Request, call_next):
         request.state.user = user
         auth.set_current_user(user)
         operator_context.set_current_operator(user.get("display_name") or user.get("username"))
+        if user.get("must_change_password") and (request.method.upper(), path) not in _FORCE_PASSWORD_CHANGE_ALLOWED_ENDPOINTS:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "首次登录请先修改密码"},
+                headers={"Cache-Control": "no-store"},
+            )
         return await call_next(request)
 
     operator_context.set_current_operator(operator_header)

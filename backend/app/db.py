@@ -1918,6 +1918,12 @@ def count_users() -> int:
         return int(row[0])
 
 
+def list_users() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM users ORDER BY created_at ASC").fetchall()
+        return [user_row_to_dict(row) for row in rows]
+
+
 def get_user(user_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     own = conn is None
     ctx = connect() if own else None
@@ -1995,4 +2001,11 @@ def delete_session(token_hash: str) -> None:
 def purge_expired_sessions() -> int:
     with connect() as conn:
         cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now_iso(),))
+        return cur.rowcount
+
+
+def delete_sessions_for_user(user_id: str) -> int:
+    """Revoke every session belonging to a user (disable/reset-password/change-password)."""
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         return cur.rowcount

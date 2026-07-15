@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -321,6 +321,28 @@ class MultilingualQueueRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class UserCreateRequest(BaseModel):
+    username: str
+    display_name: str = ""
+    role: Literal["admin", "ops", "member"]
+    initial_password: str
+
+
+class UserUpdateRequest(BaseModel):
+    display_name: str | None = None
+    role: Literal["admin", "ops", "member"] | None = None
+    status: Literal["active", "disabled"] | None = None
+
+
+class UserPasswordResetRequest(BaseModel):
+    initial_password: str
 
 
 class SettingsUpdate(BaseModel):

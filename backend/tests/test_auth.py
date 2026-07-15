@@ -199,6 +199,19 @@ def test_login_endpoint_returns_429_after_repeated_failures_and_recovers_after_w
         assert recovered_response.status_code == 200, recovered_response.text
 
 
+def test_change_password_in_local_auth_off_mode_returns_400() -> None:
+    """In auth-off/local mode every request is the synthetic LOCAL_ADMIN_USER
+    (see _enforce_authentication), which has no row in the users table --
+    there is no password to change."""
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/auth/change-password",
+            json={"current_password": "whatever", "new_password": "New-Strong-Pass1!"},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "本地模式无需修改密码"
+
+
 def test_login_rate_limit_is_scoped_per_username_and_ip_key() -> None:
     _create_user("jack")
     key_a = auth.login_rate_limiter.key("jack", "1.1.1.1")
