@@ -332,6 +332,16 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_archive_sidecar(zip_path: Path) -> Path:
+    sidecar = zip_path.with_name(f"{zip_path.name}.sha256")
+    expected = _sha256(zip_path)
+    sidecar.write_text(f"{expected}  {zip_path.name}\n", encoding="utf-8")
+    digest, filename = sidecar.read_text(encoding="utf-8").strip().split("  ", 1)
+    if filename != zip_path.name or digest != expected:
+        raise RuntimeError("release archive SHA-256 sidecar verification failed")
+    return sidecar
+
+
 def _build_frontend(*, hide_settings: bool) -> None:
     env = dict(os.environ)
     if hide_settings:
@@ -630,8 +640,10 @@ def build(
 
         output_dir.mkdir(parents=True, exist_ok=True)
         zip_path = output_dir / f"{package_label}-v{version}-{stamp}.zip"
+        sidecar_path = zip_path.with_name(f"{zip_path.name}.sha256")
         if zip_path.exists():
             zip_path.unlink()
+        sidecar_path.unlink(missing_ok=True)
         with zipfile.ZipFile(
             zip_path,
             "w",
@@ -644,8 +656,10 @@ def build(
 
         try:
             _verify_archive(zip_path, dirty=dirty)
+            _write_archive_sidecar(zip_path)
         except Exception:
             zip_path.unlink(missing_ok=True)
+            sidecar_path.unlink(missing_ok=True)
             raise
         return zip_path
     finally:

@@ -213,6 +213,11 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     zip_path = package.build(tmp_path / "out", "release", rebuild_frontend=False)
     _, files = _archive_files(zip_path)
 
+    sidecar = zip_path.with_name(f"{zip_path.name}.sha256")
+    digest, filename = sidecar.read_text(encoding="utf-8").strip().split("  ", 1)
+    assert filename == zip_path.name
+    assert digest == hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
     assert package.REQUIRED_MEMBERS <= set(files)
     assert "settings.local.json" not in files
     manifest = json.loads(files["PACKAGE_MANIFEST.json"])
