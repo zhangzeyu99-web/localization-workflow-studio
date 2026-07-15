@@ -179,16 +179,30 @@ def test_ops_manages_own_member_project_members_successfully(monkeypatch: pytest
         project = admin_client.post(PROJECTS_URL, json={"name": "Ops Managed Project", "type": "QA"}).json()
         _create_user_via_api(admin_client, "managing-ops", "ops")
         _create_user_via_api(admin_client, "invitee", "member")
+        _create_user_via_api(admin_client, "disabled-invitee", "member")
         ops_user = db.get_user_by_username("managing-ops")
         invitee = db.get_user_by_username("invitee")
+        disabled_invitee = db.get_user_by_username("disabled-invitee")
+        db.update_user(disabled_invitee["id"], {"status": "disabled"})
         db.add_project_member(project["id"], ops_user["id"], added_by="root-admin")
 
     with TestClient(test_app) as ops_client:
         _login(ops_client, "managing-ops", USER_PASSWORD)
+        addable_response = ops_client.get(f"/api/projects/{project['id']}/members/addable")
+        assert addable_response.status_code == 200, addable_response.text
+        assert addable_response.json() == [
+            {
+                "id": invitee["id"],
+                "username": "invitee",
+                "display_name": "invitee",
+                "role": "member",
+            }
+        ]
         add_response = ops_client.post(
             f"/api/projects/{project['id']}/members", json={"user_id": invitee["id"]}
         )
         assert add_response.status_code == 200, add_response.text
+        assert ops_client.get(f"/api/projects/{project['id']}/members/addable").json() == []
         list_response = ops_client.get(f"/api/projects/{project['id']}/members")
         assert list_response.status_code == 200, list_response.text
         usernames = {row["username"] for row in list_response.json()}
@@ -209,10 +223,13 @@ def test_ops_managing_non_member_project_gets_404(monkeypatch: pytest.MonkeyPatc
 
     with TestClient(test_app) as ops_client:
         _login(ops_client, "outsider-ops-2", USER_PASSWORD)
-        response = ops_client.post(
-            f"/api/projects/{project['id']}/members", json={"user_id": someone["id"]}
-        )
-    assert response.status_code == 404, response.text
+        responses = [
+            ops_client.get(f"/api/projects/{project['id']}/members/addable"),
+            ops_client.post(
+                f"/api/projects/{project['id']}/members", json={"user_id": someone["id"]}
+            ),
+        ]
+    assert all(response.status_code == 404 for response in responses), [response.text for response in responses]
 
 
 def test_member_cannot_add_project_members(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,10 +245,13 @@ def test_member_cannot_add_project_members(monkeypatch: pytest.MonkeyPatch) -> N
 
     with TestClient(test_app) as client:
         _login(client, "plain-member", USER_PASSWORD)
-        response = client.post(
-            f"/api/projects/{project['id']}/members", json={"user_id": another_user["id"]}
-        )
-    assert response.status_code == 403, response.text
+        responses = [
+            client.get(f"/api/projects/{project['id']}/members/addable"),
+            client.post(
+                f"/api/projects/{project['id']}/members", json={"user_id": another_user["id"]}
+            ),
+        ]
+    assert all(response.status_code == 403 for response in responses), [response.text for response in responses]
 
 
 def test_admin_can_manage_members_of_any_project_without_being_a_member(monkeypatch: pytest.MonkeyPatch) -> None:

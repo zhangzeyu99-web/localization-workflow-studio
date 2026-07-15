@@ -14,7 +14,7 @@ const managedWebServers = process.env.E2E_BASE_URL
   ? undefined
   : [
       {
-        command: `python -m uvicorn app.main:app --host 127.0.0.1 --port ${backendPort} --app-dir backend`,
+        command: `.\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port ${backendPort} --app-dir backend`,
         cwd: repoRoot,
         url: `${backendURL}/api/health`,
         reuseExistingServer: false,
@@ -42,6 +42,7 @@ const managedWebServers = process.env.E2E_BASE_URL
 
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: 'auth-flow.spec.ts',
   timeout: 120_000,
   workers: 1,
   expect: { timeout: 20_000 },

@@ -6,7 +6,7 @@
 > 统一挂载，`route_capabilities.assert_full_route_coverage(app)` 在应用构建时做 fail-closed 校验：
 > 任何 `/api/` 路由若不在下表（或豁免表）中登记，启动即报错。
 >
-> 本文档与源码表逐条对应（113 条路由，含新增的项目成员管理 3 条）；如两者出现差异，以源码表为准，
+> 本文档与源码表逐条对应（114 条路由，含项目成员管理 4 条）；如两者出现差异，以源码表为准，
 > 应同步更新本文档。
 
 ## 能力定义
@@ -96,6 +96,7 @@ member = `{project:read, task:run}`。
 | 方法 | 路径 | 能力 | 依据 |
 |---|---|---|---|
 | GET | `/api/projects/{project_id}/members` | `project:read` | 成员列表对该项目成员可见 |
+| GET | `/api/projects/{project_id}/members/addable` | `project:manage` | 返回可添加的 active 非成员账号；ops 只能查询自己所在的成员项目 |
 | POST | `/api/projects/{project_id}/members` | `project:manage` | 添加成员；ops 只能管理自己所在的成员项目（由项目归属校验兜底） |
 | DELETE | `/api/projects/{project_id}/members/{user_id}` | `project:manage` | 移除成员；同上 |
 
@@ -230,10 +231,10 @@ member = `{project:read, task:run}`。
 | `task:run` | 41 |
 | `project:read` | 37 |
 | `assets:curate` | 20 |
-| `project:manage` | 3 |
+| `project:manage` | 4 |
 | `admin:*` | 2 |
 | 豁免（EXEMPT） | 10 |
-| **合计** | **113** |
+| **合计** | **114** |
 
 ## 拿不准、按更严归类的路由
 

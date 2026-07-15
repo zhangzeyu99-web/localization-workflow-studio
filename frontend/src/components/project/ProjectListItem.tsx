@@ -4,11 +4,12 @@ import type { Project } from '../../types'
 import { projectActiveTaskCount, visibleAnnouncementTaskCount } from '../../domain/projectActivity'
 
 function ProjectListItemImpl({
-  project, isActive, isDeleteHold, onPointerDown, onPointerUp, onPointerLeave, onPointerCancel, onSelect
+  project, isActive, isDeleteHold, canDelete, onPointerDown, onPointerUp, onPointerLeave, onPointerCancel, onSelect
 }: {
   project: Project,
   isActive: boolean,
   isDeleteHold: boolean,
+  canDelete: boolean,
   onPointerDown: (project: Project, event: React.PointerEvent<HTMLButtonElement>) => void,
   onPointerUp: () => void,
   onPointerLeave: () => void,
@@ -18,11 +19,11 @@ function ProjectListItemImpl({
   return (
     <button
       className={`project-item ${isActive ? 'active' : ''} ${isDeleteHold ? 'delete-hold' : ''}`}
-      title="点击切换项目；长按删除项目"
-      onPointerDown={(event) => onPointerDown(project, event)}
-      onPointerUp={onPointerUp}
-      onPointerLeave={onPointerLeave}
-      onPointerCancel={onPointerCancel}
+      title={canDelete ? '点击切换项目；长按删除项目' : '点击切换项目'}
+      onPointerDown={canDelete ? (event) => onPointerDown(project, event) : undefined}
+      onPointerUp={canDelete ? onPointerUp : undefined}
+      onPointerLeave={canDelete ? onPointerLeave : undefined}
+      onPointerCancel={canDelete ? onPointerCancel : undefined}
       onContextMenu={(event) => event.preventDefault()}
       onClick={(event) => onSelect(project, event)}
     >

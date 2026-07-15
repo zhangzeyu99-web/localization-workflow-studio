@@ -47,6 +47,27 @@ def list_members(project_id: str) -> list[dict[str, Any]]:
     return [_public_member(row) for row in db.list_project_members(project_id)]
 
 
+@router.get("/api/projects/{project_id}/members/addable")
+def list_addable_members(project_id: str) -> list[dict[str, Any]]:
+    try:
+        db.get_project(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    existing_ids = {row["user_id"] for row in db.list_project_members(project_id)}
+    return [
+        {
+            "id": user["id"],
+            "username": user["username"],
+            "display_name": user.get("display_name") or "",
+            "role": user["role"],
+        }
+        for user in db.list_users()
+        if user["id"] not in existing_ids
+        and user.get("status") == "active"
+        and user.get("role") != "admin"
+    ]
+
+
 @router.post("/api/projects/{project_id}/members")
 def add_member(project_id: str, payload: ProjectMemberAddRequest) -> dict[str, Any]:
     try:

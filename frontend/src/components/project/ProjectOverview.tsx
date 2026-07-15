@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Archive, BookOpenText, FileText, FolderKanban, Languages, Megaphone, PackageCheck, WandSparkles, Wrench, Zap } from 'lucide-react'
+import { Archive, BookOpenText, FileText, FolderKanban, Languages, Megaphone, PackageCheck, Users, WandSparkles, Wrench, Zap } from 'lucide-react'
+import { PROJECT_MANAGE, useAuth } from '../../auth'
 import type { LanguageCode } from '../../languages'
 import { HISTORY_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import { glossaryWideRows, translationWideRows } from '../../domain/projectAssets'
@@ -7,6 +8,7 @@ import { projectActivityRuns, projectRunStatusText, projectRunTitle, visibleAnno
 import { AnnouncementProjectPanel } from '../announcement/AnnouncementProjectPanel'
 import { GlossaryTab, TranslationArchiveTab, WideTablePager } from '../assets/ProjectAssetTabs'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
+import { ProjectMembersModal } from '../modals/ProjectMembersModal'
 import { DeliveryTab, TranslationTab } from '../translationWizard/ProjectTabs'
 import { StepQA } from '../translationWizard/steps/StepQA'
 import { MetaTab } from './ProjectMeta'
@@ -149,6 +151,8 @@ function ProjectOverviewImpl({
   toggleSelectedLanguage,
   confirm
 }: ProjectOverviewProps) {
+  const { authEnabled, can } = useAuth()
+  const [membersOpen, setMembersOpen] = useState(false)
   const glossaryRows = glossaryWideRows(project)
   const archiveRows = translationWideRows(project)
   const languageTaskCount = project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))
@@ -178,6 +182,7 @@ function ProjectOverviewImpl({
           <div><h2>{project.name}</h2><div className="desc">项目总览与当前任务入口</div></div>
         </div>
         <div className="row-actions">
+          {authEnabled && can(PROJECT_MANAGE) ? <button className="btn btn-ghost" data-testid="open-project-members" onClick={() => setMembersOpen(true)}><Users size={16} aria-hidden="true" />成员</button> : null}
           <button className="btn btn-primary" onClick={onStartTask}><WandSparkles size={16} aria-hidden="true" />新翻译任务</button>
           <button className="btn btn-ghost" onClick={onStartAnnouncement}><Megaphone size={16} aria-hidden="true" />公告翻译</button>
           <button className="btn btn-ghost" data-testid="overview-quick-task" onClick={onStartQuickTask}><Zap size={16} aria-hidden="true" />快速任务</button>
@@ -354,6 +359,7 @@ function ProjectOverviewImpl({
           onGoArchive={() => setTab('archive')}
         />
       ) : null}
+      {membersOpen ? <ProjectMembersModal projectId={project.id} projectName={project.name} onClose={() => setMembersOpen(false)} /> : null}
     </>
   )
 }

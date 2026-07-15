@@ -1,10 +1,10 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { FolderKanban, Languages, LogOut, Plus, Settings, WandSparkles, Zap } from 'lucide-react'
+import { FolderKanban, Languages, LogOut, Plus, Settings, UserCog, WandSparkles, Zap } from 'lucide-react'
 import './styles.css'
 import './styles/workbench.css'
 import { API } from './apiClient'
-import { AuthGate, AuthProvider, PROJECT_MANAGE, useAuth } from './auth'
+import { ADMIN, AuthGate, AuthProvider, PROJECT_MANAGE, useAuth } from './auth'
 import { roleBadgeLabel } from './auth/roleText'
 import { refreshLanguageOptions, languageSpec, normalizeLanguageCode, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
@@ -12,6 +12,7 @@ import { useConfirmDialog } from './components/modals/ConfirmModal'
 import { DeleteProjectModal } from './components/modals/DeleteProjectModal'
 import { CancelAnnouncementTaskModal } from './components/modals/CancelAnnouncementTaskModal'
 import { NewProjectModal } from './components/modals/NewProjectModal'
+import { UserManagementModal } from './components/modals/UserManagementModal'
 import { FrequencyModal } from './components/modals/FrequencyModal'
 import { EmptyState } from './components/project/EmptyState'
 import { ProjectOverview } from './components/project/ProjectOverview'
@@ -67,6 +68,7 @@ function App() {
   const longPressTriggeredAnnouncementTaskId = useRef('')
   const [announcementFocusTaskId, setAnnouncementFocusTaskId] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [userManagementOpen, setUserManagementOpen] = useState(false)
   const [runtimeVersion, setRuntimeVersion] = useState<AppRuntimeVersion | null>(null)
   const [freqOpen, setFreqOpen] = useState(false)
   const [activeJobsPanelOpen, setActiveJobsPanelOpen] = useState(false)
@@ -463,6 +465,7 @@ function App() {
               {versionMismatch ? `v${bundleVersion} / 后端 v${backendVersion} 版本不一致` : `v${bundleVersion}`}
             </span>
             {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}><Settings size={16} aria-hidden="true" />设置</button> : null}
+            {authEnabled && can(ADMIN) ? <button className="btn btn-ghost" data-testid="open-user-management" onClick={() => setUserManagementOpen(true)}><UserCog size={16} aria-hidden="true" />用户管理</button> : null}
             {authEnabled && user ? (
               <div className="current-user-chip" data-testid="current-user-chip">
                 <span className="current-user-name">{user.display_name || user.username}</span>
@@ -483,6 +486,7 @@ function App() {
                   project={project}
                   isActive={project.id === currentId}
                   isDeleteHold={deleteHoldProjectId === project.id}
+                  canDelete={can(PROJECT_MANAGE)}
                   onPointerDown={handleProjectPointerDown}
                   onPointerUp={cancelProjectDeleteHold}
                   onPointerLeave={cancelProjectDeleteHold}
@@ -721,6 +725,7 @@ function App() {
       {deleteProjectTarget ? <DeleteProjectModal project={deleteProjectTarget} busy={busy} onClose={() => { longPressTriggeredProjectId.current = ''; setDeleteProjectTarget(null) }} onDelete={deleteProject} /> : null}
       {announcementCancelTarget ? <CancelAnnouncementTaskModal task={announcementCancelTarget} busy={busy} onClose={() => { longPressTriggeredAnnouncementTaskId.current = ''; setAnnouncementCancelTarget(null) }} onCancelTask={cancelAnnouncementTask} /> : null}
       {settingsOpen ? <SettingsModal onClose={() => { setSettingsOpen(false); refreshSettings() }} /> : null}
+      {userManagementOpen && user ? <UserManagementModal currentUserId={user.id} onClose={() => setUserManagementOpen(false)} /> : null}
       {freqOpen ? <FrequencyModal onClose={() => setFreqOpen(false)} /> : null}
       {confirmDialog}
     </div>

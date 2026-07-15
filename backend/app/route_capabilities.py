@@ -112,6 +112,7 @@ CAPABILITY_BY_ROUTE: dict[RouteKey, str] = {
     ("POST", "/api/projects/{project_id}/improvements"): ASSETS_CURATE,
     # -- project members (new in this batch) --
     ("GET", "/api/projects/{project_id}/members"): PROJECT_READ,
+    ("GET", "/api/projects/{project_id}/members/addable"): PROJECT_MANAGE,
     ("POST", "/api/projects/{project_id}/members"): PROJECT_MANAGE,
     ("DELETE", "/api/projects/{project_id}/members/{user_id}"): PROJECT_MANAGE,
     # -- announcement (legacy docx entry points are deprecated=True but still live) --
