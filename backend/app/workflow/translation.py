@@ -38,7 +38,7 @@ from .prompt_snapshots import (
     create_quick_reference_snapshot,
 )
 from .line_proofread import run_line_proofread
-from .qa import run_localization_qa
+from .qa import _is_quick_task_run, run_localization_qa
 from .reference_lookup import attach_reference_hits_with_snapshot
 from .subprocess_runner import (
     UserFacingWorkflowError,
@@ -499,7 +499,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
             input_artifacts["translation_workbook"] = qa_result["qa_final_artifact"]["id"]
         archive_result = None
-        if status == "passed" and qa_result.get("qa_final_artifact"):
+        if status == "passed" and qa_result.get("qa_final_artifact") and not _is_quick_task_run(run):
             archive_result = archive_translation_artifact(
                 project["id"],
                 qa_result["qa_final_artifact"]["id"],

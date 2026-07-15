@@ -31,6 +31,27 @@ WORKBOOK_ID_HEADER_ALIASES = ["id", "key", "编号", "序号"]
 WORKBOOK_TARGET_HEADER_ALIASES = ["en", "translation", "target", "译文", "英文"]
 
 
+def _is_quick_task_run(run: dict[str, Any], seen: set[str] | None = None) -> bool:
+    metadata = run.get("metadata") or {}
+    if metadata.get("task_origin") == "quick_task":
+        return True
+    seen = seen or set()
+    run_id = str(run.get("id") or "")
+    if run_id in seen:
+        return False
+    seen.add(run_id)
+    for key in ("source_run_id", "manual_fix_source_run_id", "model_fix_source_run_id"):
+        source_run_id = str(metadata.get(key) or "").strip()
+        if not source_run_id or source_run_id in seen:
+            continue
+        try:
+            if _is_quick_task_run(db.get_run(source_run_id), seen):
+                return True
+        except KeyError:
+            continue
+    return False
+
+
 def _harness_summary(harness: dict[str, Any]) -> dict[str, Any]:
     return {
         "source": "project_harness",
@@ -461,7 +482,7 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None, cancel_even
         input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
     status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
     archive_result = None
-    if status == "passed" and qa_result.get("qa_final_artifact"):
+    if status == "passed" and qa_result.get("qa_final_artifact") and not _is_quick_task_run(run):
         from .asset_import_export import archive_translation_artifact
 
         archive_result = archive_translation_artifact(

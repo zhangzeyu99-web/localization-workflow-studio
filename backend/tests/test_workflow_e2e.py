@@ -1351,9 +1351,7 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         delivered = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526"})
         assert delivered.status_code == 200, delivered.text
         archived = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
-        archived_notice = next(entry for entry in archived if entry["source"] == rows[0]["source"])
-        assert archived_notice["target"] == "히어로 각성 2026/5/20"
-        assert archived_notice["source_type"] == "qa_passed"
+        assert [(entry["source"], entry["target"]) for entry in archived] == [("英雄", "히어로")]
         package = next(artifact for artifact in delivered.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         package_path = Path(package["path"])
         assert package_path.exists()
@@ -1382,6 +1380,7 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         assert forced.status_code == 200, forced.text
         forced_package = next(artifact for artifact in forced.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         assert forced_package["id"] != package["id"]
+        assert [(entry["source"], entry["target"]) for entry in client.get(f"/api/projects/{project['id']}/translations?language=ko").json()] == [("英雄", "히어로")]
         superseded_package = db.get_artifact(package["id"])
         assert superseded_package["metadata"]["superseded"] is True
         assert superseded_package["metadata"]["superseded_by"] == forced_package["id"]
@@ -3522,6 +3521,41 @@ def test_quick_task_can_translate_txt_and_deliver_same_format(tmp_path: Path) ->
         assert package["files"][0]["filename"].endswith("_final.txt")
 
 
+def test_quick_task_workbook_translation_and_delivery_do_not_archive(tmp_path: Path) -> None:
+    workbook = tmp_path / "quick-language.xlsx"
+    _sample_workbook(workbook)
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Quick Workbook", "type": "quick-task"}).json()
+        with workbook.open("rb") as fh:
+            quick_input = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_input",
+                files={"file": ("quick-language.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "translation",
+                "language": "en",
+                "input_artifact_id": quick_input["id"],
+                "task_origin": "quick_task",
+                "batch_size": 3,
+            },
+        ).json()
+        result = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake"}).json()
+        assert result["run"]["status"] == "passed"
+        assert any(artifact["kind"] == "qa_final_workbook" and Path(artifact["path"]).exists() for artifact in result["artifacts"])
+        assert result["run"]["metadata"]["translation_archive"] is None
+        assert client.get(f"/api/projects/{project['id']}/translations").json() == []
+
+        package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}").json()
+        assert package["archive"] is None
+        assert any(Path(item["path"]).exists() for item in package["files"] if item["kind"] == "final")
+        assert client.get(f"/api/projects/{project['id']}/translations").json() == []
+
+
 def test_quick_txt_translation_workpack_uses_terms_and_project_archive(tmp_path: Path) -> None:
     source = tmp_path / "quick-context.txt"
     source.write_text("战机升级\n领取奖励\n暗影钥匙\n跨项目短语\n", encoding="utf-8")
@@ -3632,7 +3666,7 @@ def test_quick_task_qa_creates_reference_snapshot(tmp_path: Path) -> None:
                 f"/api/projects/{project['id']}/files?kind=quick_reference",
                 files={"file": ("style.txt", fh, "text/plain")},
             ).json()
-        run = client.post(
+        quick_source_run = client.post(
             "/api/runs",
             json={
                 "project_id": project["id"],
@@ -3644,14 +3678,33 @@ def test_quick_task_qa_creates_reference_snapshot(tmp_path: Path) -> None:
                 "task_code": "QA",
             },
         ).json()
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "qa",
+                "language": "en",
+                "input_artifact_id": quick_input["id"],
+                "reference_artifact_ids": [quick_reference["id"]],
+                "task_origin": "translation_continuation",
+                "source_run_id": quick_source_run["id"],
+                "task_code": "QA",
+            },
+        ).json()
         qa_response = client.post(f"/api/runs/{run['id']}/qa")
         assert qa_response.status_code == 200, qa_response.text
         result = qa_response.json()
-        assert result["run"]["metadata"]["task_origin"] == "quick_task"
+        assert result["run"]["metadata"]["task_origin"] == "translation_continuation"
+        assert result["run"]["metadata"]["translation_archive"] is None
+        assert client.get(f"/api/projects/{project['id']}/translations").json() == []
         snapshot_id = result["run"]["metadata"]["input_artifacts"]["quick_reference_snapshot"]
         snapshot = client.get(f"/api/artifacts/{snapshot_id}/download")
         assert snapshot.status_code == 200
         assert "quick_task_reference" in snapshot.text
+
+        package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}").json()
+        assert package["archive"] is None
+        assert client.get(f"/api/projects/{project['id']}/translations").json() == []
 
 
 def test_translation_archive_import_edit_and_export(tmp_path: Path) -> None:

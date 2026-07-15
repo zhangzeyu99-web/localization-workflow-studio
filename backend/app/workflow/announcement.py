@@ -821,51 +821,6 @@ def fix_announcement_hard_blockers(task_id: str, request: Any) -> dict[str, Any]
         }
 
 
-def _archive_announcement_translations(
-    task: dict[str, Any],
-    metadata: dict[str, Any],
-    languages: list[str],
-    *,
-    hard_blockers: int,
-) -> dict[str, Any]:
-    workbook_artifact_id = str(metadata.get("translation_workbook_artifact_id") or "").strip()
-    if not workbook_artifact_id:
-        return {"project_id": task["project_id"], "artifact_id": "", "imported_count": 0, "languages": languages}
-
-    workbook_artifact = db.get_artifact(workbook_artifact_id)
-    rows = _read_announcement_translation_workbook(Path(workbook_artifact["path"]), languages)
-    source_type = DELIVERED_WITH_ISSUES_SOURCE_TYPE if hard_blockers > 0 else "qa_passed"
-    payloads: list[dict[str, Any]] = []
-    for row_number, (segment_id, row) in enumerate(rows.items(), start=2):
-        source = str(row.get("source") or "").strip()
-        for language in languages:
-            target = str((row.get("translations") or {}).get(language) or "").strip()
-            if not source or not target:
-                continue
-            payloads.append(
-                {
-                    "entry_key": f"{task['id']}:{segment_id}",
-                    "source": source,
-                    "target": target,
-                    "target_alt": "",
-                    "language": language,
-                    "sheet": "Translations",
-                    "row_number": row_number,
-                    "note": f"公告任务：{task.get('title') or _announcement_task_source_stem(task)}",
-                    "source_type": source_type,
-                    "source_artifact_id": workbook_artifact_id,
-                }
-            )
-    imported = db.upsert_translation_entries_bulk(task["project_id"], payloads)
-    return {
-        "project_id": task["project_id"],
-        "artifact_id": workbook_artifact_id,
-        "imported_count": len(imported),
-        "languages": languages,
-        "source_type": source_type,
-    }
-
-
 def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
     metadata = _announcement_task_metadata(task)
@@ -884,13 +839,12 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
                 existing_run = None
         existing_languages = _normalize_announcement_languages((existing_artifact.get("metadata") or {}).get("languages") or [], fallback=languages)
         metadata["delivery_artifact_id"] = existing_artifact["id"]
-        archive_result = _archive_announcement_translations(task, metadata, existing_languages or languages, hard_blockers=hard_blockers)
-        metadata["translation_archive"] = archive_result
+        metadata["translation_archive"] = None
         task = db.update_announcement_task(task_id, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
         return {
             "task": _hydrate_announcement_task(task),
             "run": existing_run,
-            "summary": {"languages": existing_languages or languages, "delivery_artifact_id": existing_artifact["id"], "reused": True, "date_stamp": stamp, "translation_archive": archive_result},
+            "summary": {"languages": existing_languages or languages, "delivery_artifact_id": existing_artifact["id"], "reused": True, "date_stamp": stamp, "translation_archive": None},
             "artifacts": [existing_artifact],
         }
     superseded_artifacts = _matching_announcement_delivery_artifacts(task, languages, stamp) if force else []
@@ -926,14 +880,13 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
             continue
         db.update_artifact(old_artifact["id"], {"metadata": {**(old_artifact.get("metadata") or {}), "superseded": True, "superseded_by": artifact["id"], "superseded_at": datetime.now().isoformat(timespec="seconds")}})
     metadata["delivery_artifact_id"] = artifact["id"]
-    archive_result = _archive_announcement_translations(task, metadata, languages, hard_blockers=hard_blockers)
-    metadata["translation_archive"] = archive_result
+    metadata["translation_archive"] = None
     task = db.update_announcement_task(task_id, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"], metadata=metadata)
     for language in languages:
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"])
     db.merge_run_metadata(run["id"], {"delivery_artifact_id": artifact["id"], "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers})
     db.update_run(run["id"], status="passed")
-    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"], "date_stamp": stamp, "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers, "translation_archive": archive_result}, "artifacts": [artifact]}
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"], "date_stamp": stamp, "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers, "translation_archive": None}, "artifacts": [artifact]}
 
 
 def _announcement_hard_blocker_count(task: dict[str, Any], metadata: dict[str, Any]) -> int:

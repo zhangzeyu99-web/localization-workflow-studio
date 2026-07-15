@@ -18,7 +18,7 @@ from .announcement_segments import _normalize_announcement_languages
 from .asset_import_export import archive_translation_artifact
 from .common import project_dir
 from .large_text import readback_gate_files, render_large_text_retro
-from .qa import _first_col, _row_cell, write_qa_changes_report
+from .qa import _first_col, _is_quick_task_run, _row_cell, write_qa_changes_report
 from .subprocess_runner import user_facing_error
 
 DELIVERED_WITH_ISSUES_SOURCE_TYPE = "delivered_with_issues"
@@ -294,7 +294,9 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     }
     if not qa_passed:
         summary["files"]["qa_summary"] = _delivery_file("qa_summary", qa_summary_path)
-    archive_result = _archive_delivery_translation(project_id, run, final_source)
+    archive_result = None
+    if not _is_quick_task_run(run):
+        archive_result = _archive_delivery_translation(project_id, run, final_source)
     return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values()), "archive": archive_result}
 
 
