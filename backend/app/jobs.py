@@ -157,6 +157,14 @@ def cancel_singleton_job(project_id: str, job_id: str) -> bool:
 
 
 def active_job_for_project(project_id: str) -> dict[str, Any] | None:
+    try:
+        from . import job_queue
+
+        queued = job_queue.active_job_for_project(project_id)
+        if queued is not None:
+            return queued
+    except Exception:
+        pass
     lease_name = lease_name_for_project(project_id)
     with _LOCK:
         job = _ACTIVE_JOBS.get(lease_name)
@@ -187,12 +195,28 @@ def active_job_id_for_project(project_id: str) -> str | None:
 
 
 def active_jobs() -> list[dict[str, Any]]:
-    """Return all currently running jobs, cross-referencing the in-process
-    registry with persisted ``job_leases`` rows so a lease that survives a
-    restart (or a lease driven by an in-memory job not yet flushed to disk)
-    is still reported.
+    """Return active persistent-queue jobs, with legacy lease fallback.
+
+    Queue rows are authoritative once present. The lease registry remains as
+    a compatibility source until the existing routers enqueue through the new
+    core.
     """
     from . import db
+
+    try:
+        from . import job_queue
+
+        queued = job_queue.list_jobs(status="running")
+        if queued:
+            return [
+                {
+                    **row,
+                    "lease_name": lease_name_for_project(str(row["project_id"])),
+                }
+                for row in queued
+            ]
+    except Exception:
+        pass
 
     with _LOCK:
         in_memory = {

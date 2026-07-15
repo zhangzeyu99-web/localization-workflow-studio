@@ -251,6 +251,22 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS job_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL UNIQUE,
+                lane TEXT NOT NULL CHECK(lane IN ('language_table', 'quick_announcement')),
+                job_kind TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                target_id TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                operator_name TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                canceled_by TEXT NOT NULL DEFAULT '',
+                queued_at TEXT NOT NULL,
+                started_at TEXT,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         _ensure_column(conn, "artifacts", "role", "TEXT NOT NULL DEFAULT ''")
@@ -303,6 +319,13 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
           ON events(run_id);
         CREATE INDEX IF NOT EXISTS idx_announcement_tasks_project_status
           ON announcement_tasks(project_id, status);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_lane_status_fifo
+          ON job_queue(lane, status, queued_at, id);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_project_lane_status
+          ON job_queue(project_id, lane, status);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_job_queue_one_running_per_lane
+          ON job_queue(lane)
+          WHERE status = 'running';
         """
     )
 
