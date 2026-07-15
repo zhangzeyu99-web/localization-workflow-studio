@@ -19,7 +19,6 @@ from ..schemas import (
 )
 from ..workflow import (
     apply_announcement_task,
-    cancel_announcement_task,
     create_announcement_task,
     deliver_announcement_task,
     extract_announcement_terms,
@@ -161,7 +160,7 @@ def get_announcement_task_ai_input_summary(task_id: str) -> dict[str, Any]:
 @router.post("/api/announcement-tasks/{task_id}/cancel")
 def cancel_project_announcement_task(task_id: str) -> dict[str, Any]:
     try:
-        return cancel_announcement_task(task_id)
+        return background_jobs.cancel_announcement_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc
 

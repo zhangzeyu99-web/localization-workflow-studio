@@ -9,6 +9,7 @@ from .schemas import AnnouncementTaskTranslateRequest, ModelFixRequest, Multilin
 
 
 RUN_TERMINAL_STATUSES = {"passed", "failed", "needs_input", "canceled"}
+_SUBMISSION_LOCK = threading.RLock()
 
 
 def lane_for_run(run: dict[str, Any], job_kind: str) -> str:
@@ -48,6 +49,14 @@ def start_announcement(
     task_id: str,
     request: AnnouncementTaskTranslateRequest | dict[str, Any],
 ) -> dict[str, Any]:
+    with _SUBMISSION_LOCK:
+        return _start_announcement(task_id, request)
+
+
+def _start_announcement(
+    task_id: str,
+    request: AnnouncementTaskTranslateRequest | dict[str, Any],
+) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
     payload = request if isinstance(request, AnnouncementTaskTranslateRequest) else AnnouncementTaskTranslateRequest.model_validate(request)
     operator_name = operator_context.require_operator_for_cloud()
@@ -60,15 +69,31 @@ def start_announcement(
         payload=payload.model_dump(exclude_none=True),
         operator_name=operator_name,
         autostart=False,
+        staged=True,
     )
-    if queued["status"] == "queued":
-        db.merge_announcement_task_metadata(task_id, {"queued_at": queued["queued_at"]})
-        db.update_announcement_task(task_id, status="queued", current_step=7)
-        job_queue.dispatch_lane("quick_announcement")
+    if queued.get("stage_owned"):
+        try:
+            db.merge_announcement_task_metadata(task_id, {"queued_at": queued["queued_at"]})
+            db.update_announcement_task(task_id, status="queued", current_step=7)
+        except Exception:
+            job_queue.abandon_staged_job(queued["job_id"])
+            raise
+        job_queue.activate_job(queued["job_id"])
     return db.get_announcement_task(task_id)
 
 
 def start_multilingual(
+    job_kind: str,
+    project_id: str,
+    input_artifact_id: str,
+    request: MultilingualQueueRequest,
+    child_run_ids: list[str],
+) -> dict[str, Any]:
+    with _SUBMISSION_LOCK:
+        return _start_multilingual(job_kind, project_id, input_artifact_id, request, child_run_ids)
+
+
+def _start_multilingual(
     job_kind: str,
     project_id: str,
     input_artifact_id: str,
@@ -85,18 +110,28 @@ def start_multilingual(
         payload={"request": request.model_dump(exclude_none=True), "child_run_ids": child_run_ids},
         operator_name=operator_context.require_operator_for_cloud(),
         autostart=False,
+        staged=True,
     )
-    if queued["status"] == "queued":
-        for run_id in child_run_ids:
-            run = db.get_run(run_id)
-            if run.get("status") in {"created", "failed", "needs_input", "canceled"}:
-                db.merge_run_metadata(run_id, {"queued_at": queued["queued_at"]})
-                db.update_run(run_id, status="queued")
-        job_queue.dispatch_lane("language_table")
+    if queued.get("stage_owned"):
+        try:
+            for run_id in child_run_ids:
+                run = db.get_run(run_id)
+                if run.get("status") in {"created", "failed", "needs_input", "canceled"}:
+                    db.merge_run_metadata(run_id, {"queued_at": queued["queued_at"]})
+                    db.update_run(run_id, status="queued")
+        except Exception:
+            job_queue.abandon_staged_job(queued["job_id"])
+            raise
+        return job_queue.activate_job(queued["job_id"])
     return queued
 
 
 def cancel(job_id: str) -> dict[str, Any] | None:
+    with _SUBMISSION_LOCK:
+        return _cancel(job_id)
+
+
+def _cancel(job_id: str) -> dict[str, Any] | None:
     existing = job_queue.get_job(job_id)
     if existing is None or existing.get("status") not in job_queue.ACTIVE_STATUSES:
         return None
@@ -104,7 +139,7 @@ def cancel(job_id: str) -> dict[str, Any] | None:
     queue_job = job_queue.cancel_job(job_id, canceled_by=canceled_by)
     if queue_job is None:
         return None
-    queued_cancel = existing["status"] == "queued"
+    queued_cancel = queue_job["status"] == "canceled"
     audit = {
         "canceled_by": canceled_by,
         "cancel_requested_at": queue_job.get("cancel_requested_at"),
@@ -160,7 +195,20 @@ def cancel(job_id: str) -> dict[str, Any] | None:
     return {"queue_job": queue_job, "business_target": business_target}
 
 
+def cancel_announcement_task(task_id: str) -> dict[str, Any]:
+    with _SUBMISSION_LOCK:
+        _cancel(f"announcement:{task_id}")
+        from . import workflow
+
+        return workflow.cancel_announcement_task(task_id)
+
+
 def _enqueue_run(run_id: str, job_kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    with _SUBMISSION_LOCK:
+        return _enqueue_run_locked(run_id, job_kind, payload)
+
+
+def _enqueue_run_locked(run_id: str, job_kind: str, payload: dict[str, Any]) -> dict[str, Any]:
     run = db.get_run(run_id)
     operator_name = operator_context.require_operator_for_cloud()
     prefixes = {"translation": "run", "qa": "qa", "model_fix": "model-fix"}
@@ -175,8 +223,9 @@ def _enqueue_run(run_id: str, job_kind: str, payload: dict[str, Any]) -> dict[st
         payload=payload,
         operator_name=operator_name,
         autostart=False,
+        staged=True,
     )
-    if queued["status"] == "queued":
+    if queued.get("stage_owned"):
         metadata_patch: dict[str, Any] = {"queued_at": queued["queued_at"]}
         if job_kind == "model_fix":
             metadata_patch.update(
@@ -186,10 +235,14 @@ def _enqueue_run(run_id: str, job_kind: str, payload: dict[str, Any]) -> dict[st
                     "model_fix_rerun_qa": payload.get("rerun_qa"),
                 }
             )
-        db.merge_run_metadata(run_id, metadata_patch)
-        db.update_run(run_id, status="queued")
-        db.add_event(run_id, operator_context.prefixed_message(f"{job_kind} background job queued"))
-        job_queue.dispatch_lane(lane)
+        try:
+            db.merge_run_metadata(run_id, metadata_patch)
+            db.update_run(run_id, status="queued")
+            db.add_event(run_id, operator_context.prefixed_message(f"{job_kind} background job queued"))
+        except Exception:
+            job_queue.abandon_staged_job(queued["job_id"])
+            raise
+        job_queue.activate_job(queued["job_id"])
     return db.get_run(run_id)
 
 
@@ -206,14 +259,15 @@ def _translation_handler(record: dict[str, Any], cancel_event: threading.Event) 
     def execute() -> None:
         from . import workflow
 
-        request = TranslateRequest.model_validate(record.get("payload") or {})
         try:
+            request = TranslateRequest.model_validate(record.get("payload") or {})
             workflow.run_translate_sync(record["target_id"], request, cancel_event=cancel_event)
         except Exception as exc:
             current = db.get_run(record["target_id"])
             if current.get("status") not in RUN_TERMINAL_STATUSES:
                 db.merge_run_metadata(record["target_id"], {"error": workflow.user_facing_error(exc)})
                 db.update_run(record["target_id"], status="failed")
+            raise
 
     _run_as_submitted_operator(record, execute)
 
@@ -233,6 +287,7 @@ def _qa_handler(record: dict[str, Any], cancel_event: threading.Event) -> None:
             db.merge_run_metadata(record["target_id"], {"error": friendly})
             db.update_run(record["target_id"], status="failed")
             db.add_event(record["target_id"], f"qa failed: {friendly}", level="error")
+            raise
 
     _run_as_submitted_operator(record, execute)
 
@@ -241,10 +296,10 @@ def _model_fix_handler(record: dict[str, Any], cancel_event: threading.Event) ->
     def execute() -> None:
         from . import workflow
 
-        request = ModelFixRequest.model_validate(record.get("payload") or {})
         run_id = record["target_id"]
-        settings = load_settings()
         try:
+            request = ModelFixRequest.model_validate(record.get("payload") or {})
+            settings = load_settings()
             db.merge_run_metadata(
                 run_id,
                 {
@@ -287,6 +342,7 @@ def _model_fix_handler(record: dict[str, Any], cancel_event: threading.Event) ->
             )
             db.update_run(run_id, status="failed")
             db.add_event(run_id, f"model fixes failed: {friendly}", level="error")
+            raise
 
     _run_as_submitted_operator(record, execute)
 
@@ -295,21 +351,29 @@ def _announcement_handler(record: dict[str, Any], cancel_event: threading.Event)
     def execute() -> None:
         from . import workflow
 
-        request = AnnouncementTaskTranslateRequest.model_validate(record.get("payload") or {})
         try:
+            request = AnnouncementTaskTranslateRequest.model_validate(record.get("payload") or {})
             workflow.translate_announcement_task(record["target_id"], request, cancel_event=cancel_event)
         except Exception as exc:
             if cancel_event.is_set():
-                workflow.cancel_announcement_translation_task(record["target_id"])
+                current = db.get_announcement_task(record["target_id"])
+                if (current.get("metadata") or {}).get("canceled_at"):
+                    workflow.cancel_announcement_task(record["target_id"])
+                elif current.get("status") != "canceled":
+                    workflow.cancel_announcement_translation_task(record["target_id"])
                 return
             current = db.get_announcement_task(record["target_id"])
             if current.get("status") not in {"translated", "canceled", "needs_input", "awaiting_ai_response", "prepared"}:
                 db.merge_announcement_task_metadata(record["target_id"], {"error": workflow.user_facing_error(exc)})
                 db.update_announcement_task(record["target_id"], status="failed", current_step=7)
+            raise
         else:
             current = db.get_announcement_task(record["target_id"])
-            if cancel_event.is_set() and current.get("status") not in {"translated", "prepared"}:
-                workflow.cancel_announcement_translation_task(record["target_id"])
+            if cancel_event.is_set():
+                if (current.get("metadata") or {}).get("canceled_at"):
+                    workflow.cancel_announcement_task(record["target_id"])
+                elif current.get("status") not in {"translated", "prepared", "canceled"}:
+                    workflow.cancel_announcement_translation_task(record["target_id"])
 
     _run_as_submitted_operator(record, execute)
 
@@ -318,7 +382,11 @@ def _multilingual_translation_handler(record: dict[str, Any], cancel_event: thre
     def execute() -> None:
         from .workflow import multilingual
 
-        multilingual.execute_multilingual_translation_job(record, cancel_event)
+        try:
+            multilingual.execute_multilingual_translation_job(record, cancel_event)
+        except Exception as exc:
+            _fail_multilingual_children(record, exc)
+            raise
 
     _run_as_submitted_operator(record, execute)
 
@@ -327,9 +395,29 @@ def _multilingual_qa_handler(record: dict[str, Any], cancel_event: threading.Eve
     def execute() -> None:
         from .workflow import multilingual
 
-        multilingual.execute_multilingual_qa_job(record, cancel_event)
+        try:
+            multilingual.execute_multilingual_qa_job(record, cancel_event)
+        except Exception as exc:
+            _fail_multilingual_children(record, exc)
+            raise
 
     _run_as_submitted_operator(record, execute)
+
+
+def _fail_multilingual_children(record: dict[str, Any], exc: Exception) -> None:
+    from . import workflow
+
+    friendly = workflow.user_facing_error(exc)
+    for run_id in _record_run_ids(record):
+        try:
+            run = db.get_run(run_id)
+        except KeyError:
+            continue
+        if run.get("status") in RUN_TERMINAL_STATUSES:
+            continue
+        db.merge_run_metadata(run_id, {"error": friendly})
+        db.update_run(run_id, status="failed")
+        db.add_event(run_id, f"multilingual job failed: {friendly}", level="error")
 
 
 def reconcile_startup(interrupted_jobs: list[dict[str, Any]]) -> dict[str, int]:

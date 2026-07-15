@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 LANES = ("language_table", "quick_announcement")
 ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("completed", "failed", "canceled", "interrupted")
+STAGING_STATUS = "staged"
 
 JobRecord = dict[str, Any]
 JobHandler = Callable[[JobRecord, threading.Event], None]
@@ -55,20 +56,22 @@ def enqueue_job(
     payload: dict[str, Any] | None = None,
     operator_name: str = "",
     autostart: bool = True,
+    staged: bool = False,
 ) -> JobRecord:
     """Persist a job exactly once and dispatch it when its handler is ready."""
     _validate_lane(lane)
     payload_json = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"))
     timestamp = db.now_iso()
+    initial_status = STAGING_STATUS if staged else "queued"
     with db.connect() as conn:
-        conn.execute(
+        changed = conn.execute(
             """
             INSERT INTO job_queue (
                 job_id, lane, job_kind, project_id, target_id, payload_json,
                 operator_name, status, cancel_requested, canceled_by,
                 cancel_requested_at, canceled_at, queued_at, started_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, '', NULL, NULL, ?, NULL, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', NULL, NULL, ?, NULL, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 lane = excluded.lane,
                 job_kind = excluded.job_kind,
@@ -76,7 +79,7 @@ def enqueue_job(
                 target_id = excluded.target_id,
                 payload_json = excluded.payload_json,
                 operator_name = excluded.operator_name,
-                status = 'queued',
+                status = excluded.status,
                 cancel_requested = 0,
                 canceled_by = '',
                 cancel_requested_at = NULL,
@@ -94,6 +97,7 @@ def enqueue_job(
                 target_id,
                 payload_json,
                 operator_name,
+                initial_status,
                 timestamp,
                 timestamp,
             ),
@@ -102,11 +106,42 @@ def enqueue_job(
     if row is None:
         raise RuntimeError(f"failed to persist queued job {job_id}")
     result = _record(row)
+    if staged:
+        result["stage_owned"] = changed.rowcount == 1
     with _RUNTIME_LOCK:
         handler_ready = result["job_kind"] in _HANDLERS
     if autostart and result["status"] == "queued" and handler_ready:
         dispatch_lane(result["lane"])
     return result
+
+
+def activate_job(job_id: str, *, autostart: bool = True) -> JobRecord:
+    """Make a fully prepared staged row visible to FIFO claimers."""
+    timestamp = db.now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE job_queue SET status = 'queued', updated_at = ? WHERE job_id = ? AND status = ?",
+            (timestamp, job_id, STAGING_STATUS),
+        )
+        row = conn.execute("SELECT * FROM job_queue WHERE job_id = ?", (job_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"job not found: {job_id}")
+    result = _record(row)
+    if autostart and result["status"] == "queued":
+        dispatch_lane(result["lane"])
+    return result
+
+
+def abandon_staged_job(job_id: str) -> JobRecord | None:
+    timestamp = db.now_iso()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE job_queue SET status = 'failed', updated_at = ? WHERE job_id = ? AND status = ?",
+            (timestamp, job_id, STAGING_STATUS),
+        )
+        row = conn.execute("SELECT * FROM job_queue WHERE job_id = ?", (job_id,)).fetchone()
+    return _record(row) if row is not None else None
 
 
 def get_job(job_id: str) -> JobRecord | None:
@@ -375,6 +410,10 @@ def recover_interrupted_jobs() -> list[JobRecord]:
         conn.execute(
             "UPDATE job_queue SET status = 'interrupted', updated_at = ? WHERE status = 'running'",
             (timestamp,),
+        )
+        conn.execute(
+            "UPDATE job_queue SET status = 'queued', updated_at = ? WHERE status = ?",
+            (timestamp, STAGING_STATUS),
         )
     interrupted = []
     for row in rows:

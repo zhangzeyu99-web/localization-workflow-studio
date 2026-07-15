@@ -62,6 +62,7 @@ def _enqueue(
     target_id: str | None = None,
     payload: dict[str, Any] | None = None,
     autostart: bool = True,
+    staged: bool = False,
 ):
     return _queue().enqueue_job(
         job_id=job_id,
@@ -72,6 +73,7 @@ def _enqueue(
         payload=payload or {},
         operator_name="Alice",
         autostart=autostart,
+        staged=staged,
     )
 
 
@@ -430,6 +432,16 @@ def test_enqueue_can_persist_without_autostart_until_explicit_dispatch() -> None
     assert handled == ["persist-first"]
 
 
+def test_staged_enqueue_has_exactly_one_owner_for_an_active_job_id() -> None:
+    first = _enqueue("stage-owner", autostart=False, staged=True)
+    second = _enqueue("stage-owner", autostart=False, staged=True)
+
+    assert first["status"] == "staged"
+    assert first["stage_owned"] is True
+    assert second["status"] == "staged"
+    assert second["stage_owned"] is False
+
+
 def test_two_lanes_run_in_parallel() -> None:
     queue = _queue()
     both_started = threading.Event()
@@ -601,6 +613,32 @@ def test_test_cleanup_stops_lane_before_forcing_cancel_so_next_job_does_not_spaw
     assert queue.get_job("cleanup-second")["status"] == "queued"
 
 
+def test_test_cleanup_fails_without_resetting_dispatcher_while_thread_is_alive() -> None:
+    from conftest import wait_for_background_jobs
+
+    queue = _queue()
+    started = threading.Event()
+    release = threading.Event()
+
+    def handler(record: dict[str, Any], cancel_event: threading.Event) -> None:
+        _ = record, cancel_event
+        started.set()
+        release.wait(2.0)
+
+    queue.register_handler("translate", handler)
+    _enqueue("cleanup-stubborn")
+    assert started.wait(2.0)
+
+    try:
+        with pytest.raises(RuntimeError, match="queue worker threads did not stop"):
+            wait_for_background_jobs(timeout=0.02)
+        assert queue._STOPPING is True
+    finally:
+        release.set()
+        queue.shutdown_dispatchers(timeout=2.0, cancel_running=True)
+        queue.reset_dispatcher_state()
+
+
 def test_recovery_interrupts_old_running_and_requires_explicit_resume() -> None:
     queue = _queue()
     _enqueue("old-running", project_id="project-old")
@@ -621,6 +659,45 @@ def test_recovery_interrupts_old_running_and_requires_explicit_resume() -> None:
     assert queue.resume_dispatchers() == ["language_table"]
     _wait_until(lambda: queue.get_job("survives-restart")["status"] == "completed")
     assert handled == ["survives-restart"]
+
+
+def test_recovery_activates_staged_run_and_announcement_after_business_state_was_queued() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    queue = _queue()
+    project = db.insert_project("staged crash recovery", "QA", "")
+    run = db.insert_run(project["id"], "translation", "en", metadata={"task_origin": "translation_run"})
+    db.update_run(run["id"], status="queued")
+    task = db.insert_announcement_task(
+        project["id"],
+        {"title": "staged announcement", "selected_languages": ["en"], "status": "queued", "current_step": 7},
+    )
+    queue.enqueue_job(
+        job_id=f"run:{run['id']}",
+        lane="language_table",
+        job_kind="translation",
+        project_id=project["id"],
+        target_id=run["id"],
+        staged=True,
+        autostart=False,
+    )
+    queue.enqueue_job(
+        job_id=f"announcement:{task['id']}",
+        lane="quick_announcement",
+        job_kind="announcement",
+        project_id=project["id"],
+        target_id=task["id"],
+        staged=True,
+        autostart=False,
+    )
+
+    interrupted = queue.recover_interrupted_jobs()
+    background_jobs.reconcile_startup(interrupted)
+
+    assert interrupted == []
+    assert queue.get_job(f"run:{run['id']}")["status"] == "queued"
+    assert queue.get_job(f"announcement:{task['id']}")["status"] == "queued"
+    assert db.get_run(run["id"])["status"] == "queued"
+    assert db.get_announcement_task(task["id"])["status"] == "queued"
 
 
 def test_interrupted_job_id_can_be_reenqueued_for_explicit_retry() -> None:

@@ -146,6 +146,113 @@ def test_multilingual_translation_uses_persistent_controller_and_duplicate_start
         wait_for_background_jobs()
 
 
+def test_multilingual_translation_executes_only_the_persisted_child_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("multi persisted child", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source-persisted-child.xlsx", ["EN"])
+    formal = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"input_artifact_id": artifact["id"], "task_origin": "translation_run"},
+    )
+    quick = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"input_artifact_id": artifact["id"], "task_origin": "quick_task"},
+    )
+    executed: list[str] = []
+
+    def fake_translate(run_id: str, request: object, cancel_event: object | None = None) -> dict:
+        _ = request, cancel_event
+        executed.append(run_id)
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id), "artifacts": []}
+
+    monkeypatch.setattr(multilingual, "run_translate_sync", fake_translate)
+    multilingual.execute_multilingual_translation_job(
+        {
+            "job_id": "multilingual:translate:persisted-child",
+            "project_id": project["id"],
+            "payload": {
+                "request": {"input_artifact_id": artifact["id"], "languages": ["en"]},
+                "child_run_ids": [formal["id"]],
+            },
+        },
+        threading.Event(),
+    )
+
+    assert executed == [formal["id"]]
+    assert db.get_run(quick["id"])["status"] == "created"
+
+
+def test_concurrent_multilingual_starts_create_only_one_child_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("multi concurrent start", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source-concurrent.xlsx", ["EN"])
+    first_insert_entered = threading.Event()
+    second_insert_entered = threading.Event()
+    release_first_insert = threading.Event()
+    insert_lock = threading.Lock()
+    insert_count = 0
+    original_insert_run = db.insert_run
+
+    def controlled_insert_run(*args: object, **kwargs: object) -> dict:
+        nonlocal insert_count
+        with insert_lock:
+            insert_count += 1
+            call_number = insert_count
+        if call_number == 1:
+            first_insert_entered.set()
+            release_first_insert.wait(2.0)
+        elif call_number == 2:
+            second_insert_entered.set()
+        return original_insert_run(*args, **kwargs)
+
+    monkeypatch.setattr(db, "insert_run", controlled_insert_run)
+    monkeypatch.setattr(job_queue, "dispatch_lane", lambda lane: False)
+    results: list[dict] = []
+    errors: list[BaseException] = []
+
+    def start() -> None:
+        try:
+            results.append(
+                multilingual.start_multilingual_translation_queue(
+                    project["id"],
+                    multilingual.MultilingualQueueRequest(
+                        input_artifact_id=artifact["id"],
+                        languages=["en"],
+                    ),
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=start)
+    second = threading.Thread(target=start)
+    first.start()
+    assert first_insert_entered.wait(2.0)
+    second.start()
+    inserted_concurrently = second_insert_entered.wait(0.5)
+    release_first_insert.set()
+    first.join(2.0)
+    second.join(2.0)
+
+    assert inserted_concurrently is False
+    assert errors == []
+    assert len(results) == 2
+    runs = db.list_runs(project["id"])
+    assert len(runs) == 1
+    controller = job_queue.get_job(f"multilingual:translate:{project['id']}:{artifact['id']}")
+    assert controller is not None
+    assert controller["payload"]["child_run_ids"] == [runs[0]["id"]]
+
+
 def test_multilingual_enqueue_failure_keeps_new_children_created(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

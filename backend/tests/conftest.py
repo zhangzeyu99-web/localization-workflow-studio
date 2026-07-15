@@ -75,6 +75,10 @@ def wait_for_background_jobs(timeout: float = 15.0) -> None:
             break
         for thread in queue_threads:
             thread.join(min(0.1, max(0.0, deadline - time.monotonic())))
+    with job_queue._RUNTIME_LOCK:  # type: ignore[attr-defined]
+        queue_threads = [thread for thread in job_queue._THREADS if thread.is_alive()]  # type: ignore[attr-defined]
+    if queue_threads:
+        raise RuntimeError("queue worker threads did not stop before test cleanup")
     job_queue.reset_dispatcher_state()
 
 

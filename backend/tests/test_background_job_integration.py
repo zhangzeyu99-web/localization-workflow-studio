@@ -8,6 +8,7 @@ from typing import Any, Callable
 import pytest
 from fastapi.testclient import TestClient
 
+import app.background_jobs as background_jobs
 import app.db as db
 import app.job_queue as job_queue
 import app.workflow as workflow
@@ -56,6 +57,286 @@ def test_run_create_api_returns_created_and_allows_same_kind_fifo_candidates() -
     assert second.status_code == 200, second.text
     assert first.json()["status"] == "created"
     assert second.json()["status"] == "created"
+
+
+def test_business_state_is_not_rewritten_after_a_preceding_job_claims_the_new_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocker_release = threading.Event()
+    blocker_started = threading.Event()
+
+    def blocker(record: dict[str, Any], cancel_event: threading.Event) -> None:
+        _ = record, cancel_event
+        blocker_started.set()
+        blocker_release.wait(2.0)
+
+    def fake_translate(run_id: str, request: object, cancel_event: threading.Event) -> dict[str, Any]:
+        _ = request, cancel_event
+        db.update_run(run_id, status="running")
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id)}
+
+    background_jobs.register_handlers()
+    job_queue.register_handler("blocker", blocker)
+    job_queue.enqueue_job(
+        job_id="preceding-job",
+        lane="language_table",
+        job_kind="blocker",
+        project_id="project-blocker",
+        target_id="",
+    )
+    assert blocker_started.wait(2.0)
+    project = db.insert_project("activation race", "QA", "")
+    run = _translation_run(project["id"], origin="translation_run")
+    original_enqueue = job_queue.enqueue_job
+
+    def release_preceding_after_persist(**kwargs: Any) -> dict[str, Any]:
+        row = original_enqueue(**kwargs)
+        blocker_release.set()
+        _wait_until(lambda: job_queue.get_job("preceding-job")["status"] == "completed")
+        return row
+
+    monkeypatch.setattr(workflow, "run_translate_sync", fake_translate)
+    monkeypatch.setattr(background_jobs.job_queue, "enqueue_job", release_preceding_after_persist)
+
+    background_jobs.start_translation(run["id"], {})
+    _wait_until(lambda: job_queue.get_job(f"run:{run['id']}")["status"] == "completed")
+
+    assert db.get_run(run["id"])["status"] == "passed"
+
+
+def test_cancel_uses_the_atomic_queue_result_when_a_queued_job_is_claimed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("cancel claim race", "QA", "")
+    run = _translation_run(project["id"], origin="translation_run")
+    job_id = f"run:{run['id']}"
+    job_queue.enqueue_job(
+        job_id=job_id,
+        lane="language_table",
+        job_kind="translation",
+        project_id=project["id"],
+        target_id=run["id"],
+        autostart=False,
+    )
+    db.update_run(run["id"], status="queued")
+    original_get_job = job_queue.get_job
+    first_read = True
+
+    def claim_after_first_read(requested_job_id: str) -> dict[str, Any] | None:
+        nonlocal first_read
+        snapshot = original_get_job(requested_job_id)
+        if first_read:
+            first_read = False
+            claimed = job_queue.claim_next_job("language_table")
+            assert claimed and claimed["job_id"] == job_id
+        return snapshot
+
+    monkeypatch.setattr(background_jobs.job_queue, "get_job", claim_after_first_read)
+    result = background_jobs.cancel(job_id)
+
+    assert result is not None
+    assert result["queue_job"]["status"] == "running"
+    assert result["queue_job"]["cancel_requested"] is True
+    assert db.get_run(run["id"])["status"] == "queued"
+    assert db.get_run(run["id"])["metadata"]["cancel_requested_by"] == result["queue_job"]["canceled_by"]
+
+
+def test_run_cancel_waits_for_staged_submission_and_cancels_the_activated_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("run staged cancel", "QA", "")
+    run = _translation_run(project["id"], origin="translation_run")
+    staged = threading.Event()
+    release_stage = threading.Event()
+    cancel_finished = threading.Event()
+    original_enqueue = job_queue.enqueue_job
+    errors: list[BaseException] = []
+    cancel_results: list[dict[str, Any] | None] = []
+
+    def pause_staged_owner(**kwargs: Any) -> dict[str, Any]:
+        row = original_enqueue(**kwargs)
+        if row.get("stage_owned"):
+            staged.set()
+            release_stage.wait(2.0)
+        return row
+
+    def start() -> None:
+        try:
+            background_jobs.start_translation(run["id"], {})
+        except BaseException as exc:
+            errors.append(exc)
+
+    def cancel() -> None:
+        try:
+            cancel_results.append(background_jobs.cancel(f"run:{run['id']}"))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            cancel_finished.set()
+
+    monkeypatch.setattr(background_jobs.job_queue, "enqueue_job", pause_staged_owner)
+    start_thread = threading.Thread(target=start)
+    cancel_thread = threading.Thread(target=cancel)
+    start_thread.start()
+    assert staged.wait(2.0)
+    cancel_thread.start()
+    assert cancel_finished.wait(0.1) is False
+    release_stage.set()
+    start_thread.join(2.0)
+    cancel_thread.join(2.0)
+
+    assert errors == []
+    assert cancel_results[0] is not None
+    assert cancel_results[0]["queue_job"]["status"] == "canceled"
+    assert db.get_run(run["id"])["status"] == "canceled"
+
+
+def test_task_level_announcement_cancel_waits_for_staged_submission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("announcement staged cancel", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {"title": "staged whole-task cancel", "selected_languages": ["en"], "status": "prepared", "current_step": 6},
+    )
+    staged = threading.Event()
+    release_stage = threading.Event()
+    cancel_finished = threading.Event()
+    original_enqueue = job_queue.enqueue_job
+    errors: list[BaseException] = []
+    cancel_results: list[dict[str, Any]] = []
+
+    def pause_staged_owner(**kwargs: Any) -> dict[str, Any]:
+        row = original_enqueue(**kwargs)
+        if row.get("stage_owned"):
+            staged.set()
+            release_stage.wait(2.0)
+        return row
+
+    def start() -> None:
+        try:
+            background_jobs.start_announcement(task["id"], {"languages": ["en"]})
+        except BaseException as exc:
+            errors.append(exc)
+
+    def cancel() -> None:
+        try:
+            cancel_results.append(background_jobs.cancel_announcement_task(task["id"]))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            cancel_finished.set()
+
+    monkeypatch.setattr(background_jobs.job_queue, "enqueue_job", pause_staged_owner)
+    start_thread = threading.Thread(target=start)
+    cancel_thread = threading.Thread(target=cancel)
+    start_thread.start()
+    assert staged.wait(2.0)
+    cancel_thread.start()
+    assert cancel_finished.wait(0.1) is False
+    release_stage.set()
+    start_thread.join(2.0)
+    cancel_thread.join(2.0)
+
+    assert errors == []
+    assert cancel_results[0]["task"]["status"] == "canceled"
+    assert job_queue.get_job(f"announcement:{task['id']}")["status"] == "canceled"
+    assert db.get_announcement_task(task["id"])["status"] == "canceled"
+
+
+def test_app_lifespan_stops_queue_dispatchers_without_canceling_running_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    original_shutdown = job_queue.shutdown_dispatchers
+
+    def record_shutdown(*args: Any, **kwargs: Any) -> None:
+        calls.append(kwargs)
+        original_shutdown(*args, **kwargs)
+
+    monkeypatch.setattr(job_queue, "shutdown_dispatchers", record_shutdown)
+    with TestClient(app):
+        pass
+
+    assert calls
+    assert calls[-1].get("cancel_running") is False
+
+
+@pytest.mark.parametrize(
+    ("job_kind", "payload"),
+    [
+        ("translation", {"batch_size": {"invalid": True}}),
+        ("model_fix", {"max_issues": {"invalid": True}}),
+    ],
+)
+def test_invalid_persisted_run_payload_marks_business_run_failed(job_kind: str, payload: dict[str, Any]) -> None:
+    background_jobs.register_handlers()
+    project = db.insert_project(f"invalid {job_kind} payload", "QA", "")
+    run = _translation_run(project["id"], origin="translation_run")
+    db.update_run(run["id"], status="queued")
+    prefixes = {"translation": "run", "model_fix": "model-fix"}
+    job_id = f"{prefixes[job_kind]}:{run['id']}"
+    job_queue.enqueue_job(
+        job_id=job_id,
+        lane="language_table",
+        job_kind=job_kind,
+        project_id=project["id"],
+        target_id=run["id"],
+        payload=payload,
+    )
+
+    _wait_until(lambda: job_queue.get_job(job_id)["status"] == "failed")
+
+    stored = db.get_run(run["id"])
+    assert stored["status"] == "failed"
+    assert stored["metadata"]["error"]
+
+
+def test_invalid_persisted_announcement_payload_marks_business_task_failed() -> None:
+    background_jobs.register_handlers()
+    project = db.insert_project("invalid announcement payload", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {"title": "invalid payload", "selected_languages": ["en"], "status": "queued", "current_step": 7},
+    )
+    job_id = f"announcement:{task['id']}"
+    job_queue.enqueue_job(
+        job_id=job_id,
+        lane="quick_announcement",
+        job_kind="announcement",
+        project_id=project["id"],
+        target_id=task["id"],
+        payload={"languages": {"invalid": True}},
+    )
+
+    _wait_until(lambda: job_queue.get_job(job_id)["status"] == "failed")
+
+    stored = db.get_announcement_task(task["id"])
+    assert stored["status"] == "failed"
+    assert stored["metadata"]["error"]
+
+
+def test_invalid_persisted_multilingual_payload_marks_children_failed() -> None:
+    background_jobs.register_handlers()
+    project = db.insert_project("invalid multilingual payload", "QA", "")
+    child = _translation_run(project["id"], origin="translation_run")
+    db.update_run(child["id"], status="queued")
+    job_id = f"multilingual:translate:{project['id']}:source"
+    job_queue.enqueue_job(
+        job_id=job_id,
+        lane="language_table",
+        job_kind="multilingual_translate",
+        project_id=project["id"],
+        target_id="source",
+        payload={"request": {"languages": ["en"]}, "child_run_ids": ["missing-child", child["id"]]},
+    )
+
+    _wait_until(lambda: job_queue.get_job(job_id)["status"] == "failed")
+
+    stored = db.get_run(child["id"])
+    assert stored["status"] == "failed"
+    assert stored["metadata"]["error"]
 
 
 def test_same_project_formal_and_quick_runs_execute_on_two_lanes(
@@ -363,6 +644,49 @@ def test_running_announcement_cancel_returns_task_to_prepared(
     assert stored["metadata"]["canceled_by"] == "Bob"
 
 
+def test_task_level_announcement_cancel_signals_running_queue_and_stays_canceled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Event()
+    saw_cancel = threading.Event()
+
+    def fake_announcement(task_id: str, payload: object, *, cancel_event: threading.Event) -> dict[str, Any]:
+        _ = payload
+        db.update_announcement_task(task_id, status="running", current_step=7)
+        entered.set()
+        assert cancel_event.wait(2.0)
+        saw_cancel.set()
+        raise RuntimeError("announcement task canceled")
+
+    monkeypatch.setattr(workflow, "translate_announcement_task", fake_announcement)
+    project = db.insert_project("task-level announcement cancel", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {"title": "cancel whole task", "selected_languages": ["en"], "status": "prepared", "current_step": 6},
+    )
+
+    with TestClient(app) as client:
+        started = client.post(
+            f"/api/announcement-tasks/{task['id']}/translate/start",
+            json={"languages": ["en"]},
+            headers={"X-Operator": "Alice"},
+        )
+        assert started.status_code == 200, started.text
+        assert entered.wait(2.0)
+        canceled = client.post(
+            f"/api/announcement-tasks/{task['id']}/cancel",
+            headers={"X-Operator": "Bob"},
+        )
+        assert canceled.status_code == 200, canceled.text
+        assert saw_cancel.wait(2.0)
+        _wait_until(lambda: job_queue.get_job(f"announcement:{task['id']}")["status"] == "canceled")
+
+    stored = db.get_announcement_task(task["id"])
+    assert stored["status"] == "canceled"
+    assert stored["metadata"]["canceled_by"] == "Bob"
+    assert stored["metadata"]["cancel_requested_at"]
+
+
 def test_queued_announcement_cancel_returns_task_to_prepared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -398,6 +722,45 @@ def test_queued_announcement_cancel_returns_task_to_prepared(
         assert canceled.status_code == 200, canceled.text
         assert canceled.json()["task"]["status"] == "prepared"
         assert job_queue.get_job(f"announcement:{task['id']}")["status"] == "canceled"
+        assert db.get_announcement_task(task["id"])["metadata"]["canceled_by"] == "Bob"
+        release.set()
+
+
+def test_queued_task_level_announcement_cancel_stays_canceled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+    entered = threading.Event()
+
+    def fake_translate(run_id: str, request: object, cancel_event: threading.Event) -> dict[str, Any]:
+        _ = request, cancel_event
+        db.update_run(run_id, status="running")
+        entered.set()
+        release.wait(2.0)
+        db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id)}
+
+    monkeypatch.setattr(workflow, "run_translate_sync", fake_translate)
+    project = db.insert_project("queued task-level announcement cancel", "QA", "")
+    blocker = _translation_run(project["id"], origin="quick_task")
+    task = db.insert_announcement_task(
+        project["id"],
+        {"title": "queued whole-task cancel", "selected_languages": ["en"], "status": "prepared", "current_step": 6},
+    )
+
+    with TestClient(app) as client:
+        assert client.post(f"/api/runs/{blocker['id']}/translate/start", json={}).status_code == 200
+        assert entered.wait(2.0)
+        assert client.post(f"/api/announcement-tasks/{task['id']}/translate/start", json={"languages": ["en"]}).status_code == 200
+        assert job_queue.get_job(f"announcement:{task['id']}")["status"] == "queued"
+        canceled = client.post(
+            f"/api/announcement-tasks/{task['id']}/cancel",
+            headers={"X-Operator": "Bob"},
+        )
+        assert canceled.status_code == 200, canceled.text
+        assert canceled.json()["task"]["status"] == "canceled"
+        assert job_queue.get_job(f"announcement:{task['id']}")["status"] == "canceled"
+        assert db.get_announcement_task(task["id"])["status"] == "canceled"
         assert db.get_announcement_task(task["id"])["metadata"]["canceled_by"] == "Bob"
         release.set()
 

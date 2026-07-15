@@ -31,7 +31,10 @@ async def lifespan(app: FastAPI):
     interrupted = job_queue.recover_interrupted_jobs()
     background_jobs.reconcile_startup(interrupted)
     job_queue.resume_dispatchers()
-    yield
+    try:
+        yield
+    finally:
+        job_queue.shutdown_dispatchers(cancel_running=False)
 
 
 def _cors_origins() -> list[str]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from .. import background_jobs, db, job_queue, operator_context
@@ -14,6 +15,7 @@ from .translation_readiness import inspect_translation_readiness
 
 TERMINAL_STATUSES = {"passed", "failed", "needs_input", "canceled"}
 ACTIVE_STATUSES = {"queued", "running"}
+_MULTILINGUAL_START_LOCK = threading.Lock()
 
 
 def normalize_language_list(languages: list[str] | str) -> list[str]:
@@ -55,6 +57,11 @@ def multilingual_status(project_id: str, input_artifact_id: str, languages: list
 
 
 def start_multilingual_translation_queue(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
+    with _MULTILINGUAL_START_LOCK:
+        return _start_multilingual_translation_queue(project_id, payload)
+
+
+def _start_multilingual_translation_queue(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
     source = _require_project_artifact(project_id, payload.input_artifact_id)
     operator_context.require_operator_for_cloud()
     selected = normalize_language_list(payload.languages)
@@ -105,6 +112,11 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
 
 
 def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
+    with _MULTILINGUAL_START_LOCK:
+        return _start_multilingual_qa_queue(project_id, payload)
+
+
+def _start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueRequest) -> dict[str, Any]:
     _require_project_artifact(project_id, payload.input_artifact_id)
     operator_context.require_operator_for_cloud()
     selected = normalize_language_list(payload.languages)
@@ -161,10 +173,11 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
 def execute_multilingual_translation_job(record: dict[str, Any], cancel_event: Any) -> None:
     payload = MultilingualQueueRequest.model_validate((record.get("payload") or {}).get("request") or {})
     selected = normalize_language_list(payload.languages)
+    child_runs = _persisted_child_runs(record, payload.input_artifact_id, "translation", selected)
     for language in selected:
         if cancel_event.is_set():
             break
-        run = _find_translation_run(record["project_id"], payload.input_artifact_id, language)
+        run = child_runs.get(language)
         if not run or run.get("status") == "passed":
             continue
         try:
@@ -188,11 +201,12 @@ def execute_multilingual_translation_job(record: dict[str, Any], cancel_event: A
 def execute_multilingual_qa_job(record: dict[str, Any], cancel_event: Any) -> None:
     payload = MultilingualQueueRequest.model_validate((record.get("payload") or {}).get("request") or {})
     selected = normalize_language_list(payload.languages)
+    child_runs = _persisted_child_runs(record, payload.input_artifact_id, "qa", selected)
     job_settings = load_settings()
     for language in selected:
         if cancel_event.is_set():
             break
-        run = _find_qa_run(record["project_id"], payload.input_artifact_id, language)
+        run = child_runs.get(language)
         if not run or run.get("status") == "passed":
             continue
         try:
@@ -222,6 +236,40 @@ def _cancel_unstarted_children(record: dict[str, Any]) -> None:
         if run.get("status") == "queued":
             db.merge_run_metadata(str(run_id), audit)
             db.update_run(str(run_id), status="canceled")
+
+
+def _persisted_child_runs(
+    record: dict[str, Any],
+    input_artifact_id: str,
+    kind: str,
+    selected_languages: list[str],
+) -> dict[str, dict[str, Any]]:
+    project_id = str(record.get("project_id") or "")
+    selected = set(selected_languages)
+    runs: dict[str, dict[str, Any]] = {}
+    for raw_run_id in (record.get("payload") or {}).get("child_run_ids") or []:
+        run_id = str(raw_run_id or "")
+        try:
+            run = db.get_run(run_id)
+        except KeyError as exc:
+            raise ValueError(f"持久化子任务不存在：{run_id}") from exc
+        language = require_supported_language(run.get("language") or "en")
+        metadata = run.get("metadata") or {}
+        source_ids = {
+            str(metadata.get("input_artifact_id") or ""),
+            str(metadata.get("parent_input_artifact_id") or ""),
+            str(metadata.get("multilingual_source_artifact_id") or ""),
+        }
+        if (
+            run.get("project_id") != project_id
+            or run.get("kind") != kind
+            or language not in selected
+            or input_artifact_id not in source_ids
+            or language in runs
+        ):
+            raise ValueError(f"持久化子任务与多语言队列不匹配：{run_id}")
+        runs[language] = run
+    return runs
 
 
 def _language_status(project_id: str, input_artifact_id: str, language: str) -> dict[str, Any]:
