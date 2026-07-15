@@ -265,3 +265,22 @@ member = `{project:read, task:run}`。
   枚举），但下载本身仍是同步 `FileResponse` 直出文件、无签名 URL/短时效 token/流式代理，批 4 如果要
   改造成签名 URL 或流式代理，可以在现有能力表基础上直接替换 handler 实现，不需要动
   `route_capabilities.py` 的表结构。
+
+## 下载直链复核结论（A2 批 4）
+
+已复核 `backend/app/download_urls.py`、artifact/delivery 下载 handler、`backend/app/main.py` 以及前端
+`apiClient.ts`、`domain/artifacts.ts` 和各下载链接调用点：
+
+- 后端生成的 artifact 与 delivery 下载地址全部以 `/api/` 开头，分别落到
+  `/api/projects/{project_id}/artifacts/{artifact_id}/download` 和
+  `/api/projects/{project_id}/delivery/{filename}`；前端自行拼接的回退地址也只使用这两类 `/api/`
+  路径。保留的裸 artifact 地址 `/api/artifacts/{artifact_id}/download` 仍在集中网关内，并通过
+  `db.get_artifact` 反查项目后执行成员校验。
+- `main.py` 未挂载 `StaticFiles`，仓库内也没有把 `DATA_ROOT`、项目目录或 delivery 目录暴露为静态目录
+  的代码；文件只能经已登记在 `CAPABILITY_BY_ROUTE` 的 `FileResponse` handler 返回。
+- 权限回归已固定：非成员使用裸 `artifact_id` 下载返回 404；非成员按 delivery 文件名下载返回 404；
+  未登录访问两类下载入口均返回 401。
+
+结论：未发现绕过 `/api/` 集中认证/能力/项目成员网关的用户文件直链，无需修改下载实现。同步
+`FileResponse` 在当前单实例 SQLite 部署中不是授权漏洞；若未来改为对象存储/CDN，再单独设计短时效签名
+URL，不能直接公开持久对象地址。
