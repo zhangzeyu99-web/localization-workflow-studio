@@ -441,18 +441,24 @@ def reconcile_startup(interrupted_jobs: list[dict[str, Any]]) -> dict[str, int]:
             task = db.get_announcement_task(record["target_id"])
             if _announcement_is_terminal(task):
                 job_queue.set_job_status(record["job_id"], "completed")
+                summary["terminal_queue_rows_cleaned"] += 1
                 continue
             _interrupt_announcement(task)
             summary["interrupted_announcements"] += 1
             continue
         run_ids = _record_run_ids(record)
+        terminal = bool(run_ids)
         for run_id in run_ids:
             run = db.get_run(run_id)
             handled_run_ids.add(run_id)
             if run.get("status") in RUN_TERMINAL_STATUSES:
                 continue
+            terminal = False
             _interrupt_run(run_id)
             summary["interrupted_runs"] += 1
+        if terminal:
+            job_queue.set_job_status(record["job_id"], "completed")
+            summary["terminal_queue_rows_cleaned"] += 1
 
     for record in job_queue.list_jobs(status="queued"):
         kind = str(record.get("job_kind") or "")

@@ -769,6 +769,28 @@ def test_business_reconcile_preserves_terminal_run_and_cleans_queued_residual() 
     assert handled == []
 
 
+def test_business_reconcile_cleans_interrupted_queue_row_when_run_finished_during_shutdown() -> None:
+    background_jobs = importlib.import_module("app.background_jobs")
+    queue = _queue()
+    project = db.insert_project("shutdown terminal", "QA", "")
+    run = db.insert_run(project["id"], "translation", "en", metadata={"delivery_artifact_id": "art_keep"})
+    db.update_run(run["id"], status="passed")
+    _enqueue(
+        f"run:{run['id']}",
+        job_kind="translation",
+        project_id=project["id"],
+        target_id=run["id"],
+        autostart=False,
+    )
+    assert queue.claim_next_job("language_table")["job_id"] == f"run:{run['id']}"
+
+    summary = background_jobs.reconcile_startup(queue.recover_interrupted_jobs())
+
+    assert summary["terminal_queue_rows_cleaned"] == 1
+    assert db.get_run(run["id"])["status"] == "passed"
+    assert queue.get_job(f"run:{run['id']}")["status"] == "completed"
+
+
 def test_business_reconcile_cancels_orphaned_queued_qa_and_interrupts_legacy_running() -> None:
     background_jobs = importlib.import_module("app.background_jobs")
     project = db.insert_project("legacy cleanup", "QA", "")
