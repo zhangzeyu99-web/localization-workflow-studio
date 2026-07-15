@@ -47,6 +47,26 @@ test('glossary scan events do not expose backend diagnostics', async ({ page }) 
   ])
 })
 
+test('line proofread events are shown as actionable Chinese', async ({ page }) => {
+  await page.goto(baseURL)
+  const messages = await page.evaluate(async () => {
+    const { humanBackendEvent } = await import('/src/appText.ts')
+    return [
+      humanBackendEvent('line proofread requested: reviewing QA workbook line by line'),
+      humanBackendEvent('line proofread: reviewing batch 3/5 (50 rows)'),
+      humanBackendEvent('line proofread finished: reviewed=250, suggested=12, rejected=3, applied=9'),
+      humanBackendEvent('line proofread applied fixes; re-running machine QA on proofread workbook'),
+    ]
+  })
+
+  expect(messages).toEqual([
+    '正在开始逐行校对 QA 工作簿。',
+    '逐行校对中：第 3/5 批，本批 50 行。',
+    '逐行校对完成：已检查 250 行，建议 12 项，拒绝 3 项，已应用 9 项。',
+    '已应用逐行校对修改，正在对校对后的工作簿重新运行 QA。',
+  ])
+})
+
 test('quick task preflight events do not expose backend diagnostics', async ({ page }) => {
   await page.goto(baseURL)
   const message = await page.evaluate(async () => {

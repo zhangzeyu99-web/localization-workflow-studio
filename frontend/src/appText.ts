@@ -91,6 +91,12 @@ export function humanBackendEvent(message: unknown): string {
   match = text.match(/^ai glossary supplement added (\d+) candidates,\s*skipped (\d+)/i)
   if (match) return `AI 已补充 ${match[1]} 个候选，跳过 ${match[2]} 个。`
   if (/^quick TXT translation preflight:/i.test(text)) return '正在检查快速任务输入。'
+  if (/^line proofread requested: reviewing QA workbook line by line$/i.test(text)) return '正在开始逐行校对 QA 工作簿。'
+  match = text.match(/^line proofread: reviewing batch (\d+)\/(\d+) \((\d+) rows\)$/i)
+  if (match) return `逐行校对中：第 ${match[1]}/${match[2]} 批，本批 ${match[3]} 行。`
+  match = text.match(/^line proofread finished: reviewed=(\d+), suggested=(\d+), rejected=(\d+), applied=(\d+)$/i)
+  if (match) return `逐行校对完成：已检查 ${match[1]} 行，建议 ${match[2]} 项，拒绝 ${match[3]} 项，已应用 ${match[4]} 项。`
+  if (/^line proofread applied fixes; re-running machine QA on proofread workbook$/i.test(text)) return '已应用逐行校对修改，正在对校对后的工作簿重新运行 QA。'
   const sanitized = sanitizeUserFacingError(text, '')
   if (sanitized && sanitized !== text) return sanitized
   match = text.match(/^translating batch (\d+)\/(\d+): rows=(\d+), attempt=(\d+)\/(\d+)/i)
