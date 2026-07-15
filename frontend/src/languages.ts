@@ -1,4 +1,4 @@
-export type LanguageCode = 'en' | 'ko' | 'ja' | 'fr' | 'de' | 'ru' | 'it' | 'es' | 'pt' | 'tr' | 'idn' | 'th' | 'ar'
+export type LanguageCode = 'en' | 'ko' | 'ja' | 'fr' | 'de' | 'ru' | 'it' | 'es' | 'pt' | 'tr' | 'idn' | 'th' | 'vn' | 'ar'
 
 export type LanguageOption = {
   code: LanguageCode
@@ -29,6 +29,7 @@ const defaultLanguages: LanguageOption[] = [
   { code: 'tr', label: 'TR 土耳其语', short: 'TR', targetHeader: 'TR', altHeader: '' },
   { code: 'idn', label: 'ID 印尼语', short: 'ID', targetHeader: 'IDN', altHeader: '' },
   { code: 'th', label: 'TH 泰语', short: 'TH', targetHeader: 'TH', altHeader: '' },
+  { code: 'vn', label: 'VN 越南语', short: 'VN', targetHeader: 'VI', altHeader: '' },
   { code: 'ar', label: 'AR 阿拉伯语', short: 'AR', targetHeader: 'AR', altHeader: '' }
 ]
 
@@ -86,7 +87,7 @@ export function normalizeLanguageCode(value: unknown): LanguageCode | null {
   const raw = String(value || '').trim().toLowerCase().replace('_', '-')
   const compact = raw.replace(/[\s-]/g, '')
   const aliases: Record<string, LanguageCode> = {
-    kr: 'ko', jp: 'ja', fre: 'fr', ger: 'de', rus: 'ru', ita: 'it', spa: 'es', por: 'pt', ptbr: 'pt', 'pt-br': 'pt', tk: 'tr', tur: 'tr', id: 'idn', ind: 'idn', tha: 'th', ara: 'ar'
+    kr: 'ko', jp: 'ja', fre: 'fr', ger: 'de', rus: 'ru', ita: 'it', spa: 'es', por: 'pt', ptbr: 'pt', 'pt-br': 'pt', tk: 'tr', tur: 'tr', id: 'idn', ind: 'idn', tha: 'th', vi: 'vn', vie: 'vn', ara: 'ar'
   }
   const code = aliases[raw] || aliases[compact] || raw
   return isLanguageCode(code) ? code : null

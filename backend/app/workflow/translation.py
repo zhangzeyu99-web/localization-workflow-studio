@@ -9,7 +9,7 @@ from typing import Any
 from .. import db
 from ..config import LOCALIZATION_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name, test_provider_enabled
 from ..jobs import lease_name_for_project
-from ..languages import require_supported_language
+from ..languages import require_supported_language, workflow_language_code
 from ..translation_batches import (
     load_or_create_batch_manifest as _load_or_create_batch_manifest,
     manage_project_prompt_context as _manage_project_prompt_context,
@@ -218,6 +218,7 @@ def _pause_for_unconfirmed_terms(run_id: str, metadata: dict[str, Any], term_aud
 async def translate_run(run_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
     run = db.get_run(run_id)
     language = require_supported_language(run.get("language") or "en")
+    workflow_language = workflow_language_code(language)
     project = db.get_project(run["project_id"])
     metadata = run.get("metadata", {})
     input_artifact = db.get_artifact(metadata["input_artifact_id"])
@@ -285,7 +286,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         "--input",
         input_artifact["path"],
         "--lang",
-        language,
+        workflow_language,
         "--output-dir",
         str(work_dir),
         "--style-hint-file",
@@ -410,7 +411,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             "--input",
             input_artifact["path"],
             "--lang",
-            language,
+            workflow_language,
             "--output-dir",
             str(work_dir),
             "--response",

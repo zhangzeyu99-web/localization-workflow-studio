@@ -700,7 +700,14 @@ def test_quality_dedupes_generated_confirmation_sheet_duplicates() -> None:
     assert normalized[0]["sheet"] == "Sheet1"
 
 
-def test_language_api_uses_visible_kr_jp_and_aliases() -> None:
+def test_language_api_uses_visible_codes_and_aliases() -> None:
+    from app.languages import normalize_language, visible_language_code
+
+    assert normalize_language("vn") == "vn"
+    assert normalize_language("vi") == "vn"
+    assert normalize_language("vie") == "vn"
+    assert visible_language_code("vn") == "VI"
+
     with TestClient(app) as client:
         response = client.get("/api/languages")
         assert response.status_code == 200
@@ -712,6 +719,20 @@ def test_language_api_uses_visible_kr_jp_and_aliases() -> None:
         assert languages["en"]["alt_header"] == ""
         assert "en2" in languages["en"]["alt_aliases"]
         assert languages["ko"]["alt_header"] == ""
+        assert languages["vn"]["label"] == "VN 越南语"
+        assert languages["vn"]["visible_code"] == "VN"
+        assert languages["vn"]["target_header"] == "VI"
+        assert {"vi", "vie", "vietnamese", "越南语", "越南文"}.issubset(
+            set(languages["vn"]["target_aliases"])
+        )
+
+
+def test_workflow_language_code_maps_vietnamese_aliases() -> None:
+    import app.languages as languages
+
+    assert languages.workflow_language_code("vn") == "vi"
+    assert languages.workflow_language_code("vi") == "vi"
+    assert languages.visible_language_code("vn") == "VI"
 
 
 def test_sqlite_pragmas_and_unique_indexes_block_duplicate_entry_keys() -> None:

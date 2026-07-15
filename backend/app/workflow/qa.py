@@ -11,7 +11,7 @@ from openpyxl import Workbook, load_workbook
 
 from .. import db
 from ..config import LOCALIZATION_ROOT, load_settings
-from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
+from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases, workflow_language_code
 from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
 from .common import (
     GLOBAL_HARNESS_CONTRACT,
@@ -29,7 +29,6 @@ from .translation_tasks import translation_task_continuation_metadata
 
 
 WORKBOOK_ID_HEADER_ALIASES = ["id", "key", "编号", "序号"]
-WORKBOOK_TARGET_HEADER_ALIASES = ["en", "translation", "target", "译文", "英文"]
 
 
 def _harness_summary(harness: dict[str, Any]) -> dict[str, Any]:
@@ -292,7 +291,7 @@ def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
     fixed_path = output_dir / f"{source_path.stem}_manual_fixed.xlsx"
     shutil.copy2(source_path, fixed_path)
 
-    applied = _apply_workbook_fixes(fixed_path, fixes, run_id)
+    applied = _apply_workbook_fixes(fixed_path, fixes, run_id, language=run.get("language") or "en")
     fixed_artifact = db.add_artifact(
         project_id,
         "Manual fixed workbook",
@@ -503,6 +502,7 @@ def run_localization_qa(
     cancel_event: Any | None = None,
 ) -> dict[str, Any]:
     language = require_supported_language(language)
+    workflow_language = workflow_language_code(language)
     output_dir.mkdir(parents=True, exist_ok=True)
     machine_dir = output_dir / "machine_review"
     machine_dir.mkdir(parents=True, exist_ok=True)
@@ -512,7 +512,7 @@ def run_localization_qa(
         "--input",
         str(workbook_path),
         "--lang",
-        language,
+        workflow_language,
         "--output-dir",
         str(machine_dir),
         "--auto-fix",
@@ -520,8 +520,8 @@ def run_localization_qa(
         glossary_snapshot["path"],
     ]
     run_subprocess(review_args, LOCALIZATION_ROOT, run_id)
-    qa_workbook = machine_dir / f"result_{language}.xlsx"
-    qa_report = machine_dir / f"report_{language}.xlsx"
+    qa_workbook = machine_dir / f"result_{workflow_language}.xlsx"
+    qa_report = machine_dir / f"report_{workflow_language}.xlsx"
     _normalize_review_workbook_sheet_names(qa_workbook, workbook_path)
     _check_qa_cancel(cancel_event)
     quality_args = [
@@ -532,7 +532,7 @@ def run_localization_qa(
         "--term-base",
         glossary_snapshot["path"],
         "--lang",
-        language,
+        workflow_language,
         "--json",
     ]
     if language == "en":
@@ -569,7 +569,7 @@ def run_localization_qa(
         summary["sources"]["model_fix_source_run"] = metadata["model_fix_source_run_id"]
     summary_path = output_dir / "quality_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    auto_fixes = _collect_workbook_translation_changes(workbook_path, qa_workbook)
+    auto_fixes = _collect_workbook_translation_changes(workbook_path, qa_workbook, language=language)
     changes_path = write_qa_changes_report(output_dir, manual_fixes or [], auto_fixes)
     artifacts = [
         db.add_artifact(
@@ -737,9 +737,14 @@ def _hard_error_count(quality: dict[str, Any]) -> int:
     return 1 if not quality.get("issues") and not quality.get("failures") else 0
 
 
-def _collect_workbook_translation_changes(before_path: Path, after_path: Path) -> list[dict[str, Any]]:
+def _collect_workbook_translation_changes(
+    before_path: Path,
+    after_path: Path,
+    language: str = "en",
+) -> list[dict[str, Any]]:
     if not before_path.exists() or not after_path.exists():
         return []
+    target_headers = target_aliases(require_supported_language(language))
     before_wb = load_workbook(before_path, read_only=True, data_only=True)
     after_wb = load_workbook(after_path, read_only=True, data_only=True)
     changes: list[dict[str, Any]] = []
@@ -750,8 +755,8 @@ def _collect_workbook_translation_changes(before_path: Path, after_path: Path) -
         after_headers = _header_map(after_ws)
         before_id_col = _first_col(before_headers, WORKBOOK_ID_HEADER_ALIASES)
         after_id_col = _first_col(after_headers, WORKBOOK_ID_HEADER_ALIASES)
-        before_target_col = _first_col(before_headers, WORKBOOK_TARGET_HEADER_ALIASES)
-        after_target_col = _first_col(after_headers, WORKBOOK_TARGET_HEADER_ALIASES)
+        before_target_col = _first_col(before_headers, target_headers)
+        after_target_col = _first_col(after_headers, target_headers)
         if before_id_col is None or after_id_col is None or before_target_col is None or after_target_col is None:
             return []
         after_by_id: dict[str, tuple[int, str]] = {}
@@ -906,14 +911,16 @@ def _workbook_artifact_for_quality_run(run: dict[str, Any]) -> dict[str, Any]:
     raise KeyError("translation workbook artifact not found")
 
 
-def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
+def _model_fix_row_context(path: Path, issue: dict[str, Any], language: str = "en") -> dict[str, Any]:
+    language = require_supported_language(language)
+    target_headers = target_aliases(language)
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         sheet_name = str(issue.get("sheet") or wb.sheetnames[0])
         requested_ws = wb[sheet_name] if sheet_name in wb.sheetnames else None
         issue_record_id = issue.get("id") or issue.get("record_id") or ""
         row_index = int(issue.get("row") or 0)
-        resolved = _resolve_workbook_row_for_issue(wb, requested_ws, row_index, issue_record_id)
+        resolved = _resolve_workbook_row_for_issue(wb, requested_ws, row_index, issue_record_id, language=language)
         ws, row_index = resolved if resolved else (requested_ws or wb[wb.sheetnames[0]], row_index)
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
         headers = {
@@ -922,7 +929,7 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
             if value is not None and str(value).strip()
         }
         source_col = _first_col(headers, list(SOURCE_HEADER_ALIASES))
-        target_col = _first_col(headers, WORKBOOK_TARGET_HEADER_ALIASES)
+        target_col = _first_col(headers, target_headers)
         id_col = _first_col(headers, WORKBOOK_ID_HEADER_ALIASES)
         row_values = next(ws.iter_rows(min_row=row_index, max_row=row_index, values_only=True), ())
         return {
@@ -941,24 +948,31 @@ def _model_fix_row_context(path: Path, issue: dict[str, Any]) -> dict[str, Any]:
         wb.close()
 
 
-def _resolve_workbook_row_for_issue(wb: Any, requested_ws: Any | None, row_index: int, record_id: Any) -> tuple[Any, int] | None:
+def _resolve_workbook_row_for_issue(
+    wb: Any,
+    requested_ws: Any | None,
+    row_index: int,
+    record_id: Any,
+    language: str = "en",
+) -> tuple[Any, int] | None:
+    target_headers = target_aliases(require_supported_language(language))
     normalized_record_id = _normalize_translation_id(record_id)
     if requested_ws is not None and row_index >= 2:
         headers = _header_map(requested_ws)
         id_col = _first_col(headers, WORKBOOK_ID_HEADER_ALIASES)
-        has_target_col = _first_col(headers, WORKBOOK_TARGET_HEADER_ALIASES) is not None
+        has_target_col = _first_col(headers, target_headers) is not None
         if has_target_col and (id_col is None or normalized_record_id is None):
             return requested_ws, row_index
         current_id = _normalize_translation_id(requested_ws.cell(row_index, id_col).value) if id_col is not None else None
         if has_target_col and current_id == normalized_record_id:
             return requested_ws, row_index
     if normalized_record_id is None:
-        if requested_ws is not None and row_index >= 2 and _first_col(_header_map(requested_ws), WORKBOOK_TARGET_HEADER_ALIASES) is not None:
+        if requested_ws is not None and row_index >= 2 and _first_col(_header_map(requested_ws), target_headers) is not None:
             return requested_ws, row_index
         return None
     for ws in wb.worksheets:
         headers = _header_map(ws)
-        if _first_col(headers, WORKBOOK_TARGET_HEADER_ALIASES) is None:
+        if _first_col(headers, target_headers) is None:
             continue
         id_col = _first_col(headers, WORKBOOK_ID_HEADER_ALIASES)
         if id_col is None:
@@ -966,7 +980,7 @@ def _resolve_workbook_row_for_issue(wb: Any, requested_ws: Any | None, row_index
         for candidate_row in range(2, ws.max_row + 1):
             if _normalize_translation_id(ws.cell(candidate_row, id_col).value) == normalized_record_id:
                 return ws, candidate_row
-    if requested_ws is not None and row_index >= 2 and _first_col(_header_map(requested_ws), WORKBOOK_TARGET_HEADER_ALIASES) is not None:
+    if requested_ws is not None and row_index >= 2 and _first_col(_header_map(requested_ws), target_headers) is not None:
         return requested_ws, row_index
     return None
 
@@ -1025,7 +1039,14 @@ def _normalize_model_fixes(payload: dict[str, Any], rows: list[dict[str, Any]]) 
     return fixes
 
 
-def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id: str) -> list[dict[str, Any]]:
+def _apply_workbook_fixes(
+    path: Path,
+    fixes: list[dict[str, Any]],
+    source_run_id: str,
+    language: str = "en",
+) -> list[dict[str, Any]]:
+    language = require_supported_language(language)
+    target_headers = target_aliases(language)
     wb = load_workbook(path)
     applied: list[dict[str, Any]] = []
     try:
@@ -1035,18 +1056,18 @@ def _apply_workbook_fixes(path: Path, fixes: list[dict[str, Any]], source_run_id
                 raise ValueError(f"invalid workbook row: {row_index}")
             sheet_name = str(fix.get("sheet") or wb.sheetnames[0]).strip()
             if sheet_name not in wb.sheetnames:
-                resolved = _resolve_workbook_row_for_issue(wb, None, row_index, fix.get("record_id"))
+                resolved = _resolve_workbook_row_for_issue(wb, None, row_index, fix.get("record_id"), language=language)
                 if not resolved:
                     raise KeyError(f"sheet not found: {sheet_name}")
                 ws, row_index = resolved
                 sheet_name = ws.title
             else:
                 ws = wb[sheet_name]
-                resolved = _resolve_workbook_row_for_issue(wb, ws, row_index, fix.get("record_id"))
+                resolved = _resolve_workbook_row_for_issue(wb, ws, row_index, fix.get("record_id"), language=language)
                 if resolved:
                     ws, row_index = resolved
                     sheet_name = ws.title
-            target_col = _first_col(_header_map(ws), WORKBOOK_TARGET_HEADER_ALIASES)
+            target_col = _first_col(_header_map(ws), target_headers)
             if target_col is None:
                 # Generated QA confirmation sheets are evidence only. Keep the
                 # issue in the rerun summary, but do not let it abort fixes for

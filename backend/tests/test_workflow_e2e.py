@@ -243,9 +243,9 @@ def _announcement_existing_terms_workbook(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH"])
-    ws.append(["alliance_txt_21", "公告", "Notice", "Annonce", "Ankündigung", "Объявление", "Annuncio", "Anuncio", "Anúncio", "Duyuru", "Pengumuman", "ประกาศ"])
-    ws.append(["time_zone_2", "服务器时间", "Server Time", "Heure du serveur", "Serverzeit", "Время сервера", "Orario server", "Hora del servidor", "Horário de servidor", "Sunucu Saati", "Waktu Server", "เวลาเซิร์ฟเวอร์"])
+    ws.append(["ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TK", "ID", "TH", "VI"])
+    ws.append(["alliance_txt_21", "公告", "Notice", "Annonce", "Ankündigung", "Объявление", "Annuncio", "Anuncio", "Anúncio", "Duyuru", "Pengumuman", "ประกาศ", "Thông báo"])
+    ws.append(["time_zone_2", "服务器时间", "Server Time", "Heure du serveur", "Serverzeit", "Время сервера", "Orario server", "Hora del servidor", "Horário de servidor", "Sunucu Saati", "Waktu Server", "เวลาเซิร์ฟเวอร์", "Giờ máy chủ"])
     wb.save(path)
     wb.close()
 
@@ -642,6 +642,84 @@ def test_announcement_force_delivery_with_hard_blockers_generates_package(tmp_pa
             assert qa_summary["hard_blockers"] > 0
             assert qa_summary["outputs"] == 1
             qa_wb.close()
+
+
+def test_vietnamese_announcement_uses_vn_in_studio_and_vi_in_delivery(tmp_path: Path) -> None:
+    source_path = tmp_path / "notice_vn.txt"
+    terms_path = tmp_path / "notice_terms_vn.xlsx"
+    source_path.write_text("\u82f1\u96c4\u5956\u52b1 {0}\n", encoding="utf-8")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Terms"
+    ws.append(["ID", "CN", "VI"])
+    ws.append(["term_hero", "\u82f1\u96c4", "Anh hùng"])
+    wb.save(terms_path)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Vietnamese announcement", "type": "RPG"}).json()
+        with source_path.open("rb") as fh:
+            source_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("notice_vn.txt", fh, "text/plain")},
+            ).json()
+        with terms_path.open("rb") as fh:
+            terms_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": ("notice_terms_vn.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={"source_artifact_id": source_artifact["id"], "language_table_artifact_ids": [terms_artifact["id"]], "languages": ["vi"]},
+        ).json()
+        assert task["selected_languages"] == ["vn"]
+        task_id = task["id"]
+        for endpoint in ("inspect-constraints", "extract-terms", "lookup-translations"):
+            response = client.post(
+                f"/api/announcement-tasks/{task_id}/{endpoint}",
+                json={"language_table_artifact_ids": [terms_artifact["id"]], "languages": ["vn"], "include_project_archive": True},
+            )
+            assert response.status_code == 200, response.text
+        prepared = client.post(f"/api/announcement-tasks/{task_id}/prepare", json={"languages": ["vn"]}).json()
+        workpack = next(artifact for artifact in prepared["artifacts"] if artifact["kind"] == "announcement_workpack")
+        rows = [json.loads(line) for line in Path(workpack["path"]).read_text(encoding="utf-8").splitlines()]
+        response_path = tmp_path / "ai_response_vn.jsonl"
+        response_path.write_text(
+            "\n".join(
+                json.dumps({"para_id": row["para_id"], "translation": "Phần thưởng Anh hùng {0}"}, ensure_ascii=False)
+                for row in rows
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        with response_path.open("rb") as fh:
+            response_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": ("ai_response_vn.jsonl", fh, "application/jsonl")},
+            ).json()
+        imported = client.post(
+            f"/api/announcement-tasks/{task_id}/import-ai",
+            json={"languages": ["vn"], "response_artifact_ids": [response_artifact["id"]]},
+        )
+        assert imported.status_code == 200, imported.text
+        applied = client.post(f"/api/announcement-tasks/{task_id}/apply", json={"languages": ["vn"]})
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["summary"]["hard_blockers"] == 0
+        output = next(artifact for artifact in applied.json()["artifacts"] if artifact["kind"] == "announcement_output_file")
+        assert output["metadata"]["language"] == "vn"
+        assert Path(output["path"]).name == "notice_vn_VI.txt"
+        assert Path(output["path"]).read_text(encoding="utf-8") == "Phần thưởng Anh hùng {0}\n"
+
+        delivered = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["vn"], "date_stamp": "20260715"})
+        assert delivered.status_code == 200, delivered.text
+        assert delivered.json()["summary"]["forced"] is False
+        package = next(artifact for artifact in delivered.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
+        with zipfile.ZipFile(package["path"]) as archive:
+            assert sorted(archive.namelist()) == ["QA\u6458\u8981.xlsx", "VI/notice_vn_VI.txt"]
+        archived = client.get(f"/api/projects/{project['id']}/translations?language=vi").json()
+        archived_notice = next(entry for entry in archived if entry["source"] == rows[0]["source"])
+        assert archived_notice["language"] == "vn"
+        assert archived_notice["target"] == "Phần thưởng Anh hùng {0}"
 
 
 def test_announcement_fix_hard_blockers_repairs_missing_token_and_applies(tmp_path: Path) -> None:
@@ -1152,7 +1230,7 @@ def test_announcement_task_can_import_edit_and_export_existing_terms(tmp_path: P
         assert imported.status_code == 200, imported.text
         imported_task = imported.json()["task"]
         assert imported_task["metadata"]["terms_summary"]["terms"] == 2
-        assert imported_task["selected_languages"] == ["en", "fr", "de", "ru", "it", "es", "pt", "tr", "idn", "th"]
+        assert imported_task["selected_languages"] == ["en", "fr", "de", "ru", "it", "es", "pt", "tr", "idn", "th", "vn"]
 
         terms = imported_task["metadata"]["terms"]
         terms[0]["translations"]["en"] = "Edited Notice"
@@ -1169,9 +1247,10 @@ def test_announcement_task_can_import_edit_and_export_existing_terms(tmp_path: P
             rows = list(wb["Glossary"].iter_rows(values_only=True))
         finally:
             wb.close()
-        assert rows[0] == ("ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TR", "IDN", "TH", "命中次数", "来源", "备注")
+        assert rows[0] == ("ID", "CN", "EN", "FR", "DE", "RU", "IT", "ES", "PT", "TR", "IDN", "TH", "VI", "命中次数", "来源", "备注")
         assert rows[1][1] == "公告标题"
         assert rows[1][2] == "Edited Notice"
+        assert rows[1][12] == "Thông báo"
 
 
 def test_announcement_terms_import_does_not_treat_identifier_id_as_indonesian(tmp_path: Path) -> None:
@@ -3525,6 +3604,49 @@ def test_quick_task_can_translate_txt_and_deliver_same_format(tmp_path: Path) ->
         assert package["files"][0]["filename"].endswith("_final.txt")
 
 
+def test_quick_task_vietnamese_uses_vn_and_vi_filename(tmp_path: Path) -> None:
+    source = tmp_path / "quick_vn.txt"
+    source.write_text("\u5f00\u59cb\u6e38\u620f\n\n\u4fdd\u5b58 {0}\n", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Quick Vietnamese TXT", "type": "quick-task"}).json()
+        with source.open("rb") as fh:
+            quick_input = client.post(
+                f"/api/projects/{project['id']}/files?kind=quick_input",
+                files={"file": ("quick_vn.txt", fh, "text/plain")},
+            ).json()
+
+        readiness = client.get(f"/api/artifacts/{quick_input['id']}/translation-readiness?language=vi&batch_size=1").json()
+        assert readiness["source_rows"] == 2
+        assert readiness["needs_translation"] is True
+        run = client.post(
+            "/api/runs",
+            json={
+                "project_id": project["id"],
+                "kind": "translation",
+                "language": "vi",
+                "input_artifact_id": quick_input["id"],
+                "task_origin": "quick_task",
+                "batch_size": 1,
+            },
+        ).json()
+        result = client.post(f"/api/runs/{run['id']}/translate", json={"provider": "test-fake", "batch_size": 1}).json()
+
+        assert result["run"]["status"] == "passed"
+        assert result["run"]["language"] == "vn"
+        final_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "final_text")
+        assert Path(final_artifact["path"]).name == "quick_vn_VI.txt"
+        final_text = Path(final_artifact["path"]).read_text(encoding="utf-8")
+        assert "TestFake" in final_text
+        assert "{0}" in final_text
+        manifest_artifact = next(artifact for artifact in result["artifacts"] if artifact["kind"] == "translation_manifest")
+        assert json.loads(Path(manifest_artifact["path"]).read_text(encoding="utf-8"))["language"] == "vn"
+
+        package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}").json()
+        assert len(package["files"]) == 1
+        assert package["files"][0]["filename"].endswith("_final.txt")
+
+
 def test_quick_txt_translation_workpack_uses_terms_and_project_archive(tmp_path: Path) -> None:
     source = tmp_path / "quick-context.txt"
     source.write_text("战机升级\n领取奖励\n暗影钥匙\n跨项目短语\n", encoding="utf-8")
@@ -4244,9 +4366,9 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "FR", "DE", "ID", "TH", "AR", "分类", "备注"])
-    ws.append(["T-1", "战机", "Warplane", "Fighter", "전투기", "戦闘機", "Avion de chasse", "Kampfflugzeug", "Pesawat Tempur", "เครื่องบินรบ", "طائرة مقاتلة", "unit", "core term"])
-    ws.append(["T-2", "钻石", "Diamonds", "", "다이아몬드", "", "Diamants", "", "", "", "", "currency", ""])
+    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "FR", "DE", "ID", "TH", "VI", "AR", "分类", "备注"])
+    ws.append(["T-1", "战机", "Warplane", "Fighter", "전투기", "戦闘機", "Avion de chasse", "Kampfflugzeug", "Pesawat Tempur", "เครื่องบินรบ", "Máy bay chiến đấu", "طائرة مقاتلة", "unit", "core term"])
+    ws.append(["T-2", "钻石", "Diamonds", "", "다이아몬드", "", "Diamants", "", "", "", "Kim cương", "", "currency", ""])
     wb.save(glossary_path)
     wb.close()
 
@@ -4254,8 +4376,8 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Translations"
-    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "FR", "DE", "ID", "TH", "AR", "备注"])
-    ws.append(["A-1", "领取奖励", "Claim Rewards", "Claim", "보상 받기", "報酬を受け取る", "Recevoir les récompenses", "Belohnung abholen", "Klaim Hadiah", "รับรางวัล", "استلام المكافآت", "button"])
+    ws.append(["ID", "CN", "EN", "EN2", "KO", "JA", "FR", "DE", "ID", "TH", "VI", "AR", "备注"])
+    ws.append(["A-1", "领取奖励", "Claim Rewards", "Claim", "보상 받기", "報酬を受け取る", "Recevoir les récompenses", "Belohnung abholen", "Klaim Hadiah", "รับรางวัล", "Nhận thưởng", "استلام المكافآت", "button"])
     wb.save(archive_path)
     wb.close()
 
@@ -4268,13 +4390,13 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
             ).json()
         glossary_import = client.post(f"/api/projects/{project['id']}/glossary/import", json={"artifact_id": glossary_artifact["id"]})
         assert glossary_import.status_code == 200, glossary_import.text
-        assert glossary_import.json()["imported_count"] == 11
+        assert glossary_import.json()["imported_count"] == 13
 
         ko_terms = client.get(f"/api/projects/{project['id']}/glossary?language=ko").json()
         assert {term["source"]: term["target"] for term in ko_terms} == {"战机": "전투기", "钻石": "다이아몬드"}
         assert all(term["target_alt"] == "" for term in ko_terms)
         glossary_wide = client.get(f"/api/projects/{project['id']}/glossary/wide").json()
-        assert glossary_wide["languages"] == ["en", "ko", "ja", "fr", "de", "idn", "th", "ar"]
+        assert glossary_wide["languages"] == ["en", "ko", "ja", "fr", "de", "idn", "th", "vn", "ar"]
         row = next(item for item in glossary_wide["rows"] if item["source"] == "战机")
         assert row["translations"]["en"]["target_alt"] == "Fighter"
         assert row["translations"]["ko"]["target"] == "전투기"
@@ -4283,6 +4405,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         assert row["translations"]["de"]["target"] == "Kampfflugzeug"
         assert row["translations"]["idn"]["target"] == "Pesawat Tempur"
         assert row["translations"]["th"]["target"] == "เครื่องบินรบ"
+        assert row["translations"]["vn"]["target"] == "Máy bay chiến đấu"
         assert row["translations"]["ar"]["target"] == "طائرة مقاتلة"
 
         with archive_path.open("rb") as fh:
@@ -4292,9 +4415,9 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
             ).json()
         archive_import = client.post(f"/api/projects/{project['id']}/translations/import", json={"artifact_id": archive_artifact["id"]})
         assert archive_import.status_code == 200, archive_import.text
-        assert archive_import.json()["imported_count"] == 8
+        assert archive_import.json()["imported_count"] == 9
         archive_wide = client.get(f"/api/projects/{project['id']}/translations/wide").json()
-        assert archive_wide["languages"] == ["en", "ko", "ja", "fr", "de", "idn", "th", "ar"]
+        assert archive_wide["languages"] == ["en", "ko", "ja", "fr", "de", "idn", "th", "vn", "ar"]
         archive_row = archive_wide["rows"][0]
         assert archive_row["translations"]["en"]["target_alt"] == "Claim"
         assert archive_row["translations"]["ko"].get("target_alt", "") == ""
@@ -4303,6 +4426,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         assert archive_row["translations"]["de"]["target"] == "Belohnung abholen"
         assert archive_row["translations"]["idn"]["target"] == "Klaim Hadiah"
         assert archive_row["translations"]["th"]["target"] == "รับรางวัล"
+        assert archive_row["translations"]["vn"]["target"] == "Nhận thưởng"
         assert archive_row["translations"]["ar"]["target"] == "استلام المكافآت"
         glossary_export = workflow.export_glossary(project["id"], "xlsx")
         assert isinstance(glossary_export, Path)
@@ -4310,7 +4434,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         wb = load_workbook(glossary_export, read_only=True, data_only=True)
         try:
             headers = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "AR", "分类", "备注"]
+            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "VI", "AR", "分类", "备注"]
             values = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=2, max_row=2))]
             assert "Warplane" in values
             assert "Fighter" not in values
@@ -4318,7 +4442,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
             wb.close()
         glossary_csv = workflow.export_glossary(project["id"], "csv")
         assert isinstance(glossary_csv, Path)
-        assert glossary_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,AR,分类,备注"
+        assert glossary_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,VI,AR,分类,备注"
 
         ko_glossary_export = workflow.export_glossary(project["id"], "xlsx", language="ko")
         assert isinstance(ko_glossary_export, Path)
@@ -4336,7 +4460,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         wb = load_workbook(archive_export, read_only=True, data_only=True)
         try:
             headers = [cell.value for cell in next(wb["Translations"].iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "AR", "备注"]
+            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "VI", "AR", "备注"]
             values = [cell.value for cell in next(wb["Translations"].iter_rows(min_row=2, max_row=2))]
             assert "Claim Rewards" in values
             assert "Claim" not in values
@@ -4344,7 +4468,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
             wb.close()
         archive_csv = workflow.export_translation_archive(project["id"], "csv")
         assert isinstance(archive_csv, Path)
-        assert archive_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,AR,备注"
+        assert archive_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,VI,AR,备注"
 
 
 def test_announcement_lookup_uses_glossary_and_qa_passed_archive(tmp_path: Path) -> None:

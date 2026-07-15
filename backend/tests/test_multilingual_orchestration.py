@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -66,6 +67,29 @@ def test_multilingual_status_maps_existing_child_runs(tmp_path: Path) -> None:
     assert [item["language"] for item in payload["languages"]] == ["en", "ko"]
     assert payload["languages"][0]["translation_run_id"] == en_run["id"]
     assert payload["languages"][1]["translation_run_id"] is None
+
+
+def test_multilingual_status_uses_vn_canonical_and_ui_code(tmp_path: Path) -> None:
+    project = db.insert_project("Vietnamese status", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source-vn.xlsx", ["EN", "VI"])
+    run = db.insert_run(
+        project["id"],
+        "translation",
+        "vi",
+        metadata={"input_artifact_id": artifact["id"], "task_origin": "translation_run"},
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/projects/{project['id']}/multilingual/status",
+            params={"input_artifact_id": artifact["id"], "languages": "vi"},
+        )
+
+    assert response.status_code == 200
+    item = response.json()["languages"][0]
+    assert item["language"] == "vn"
+    assert item["visible_language"] == "VN"
+    assert item["translation_run_id"] == run["id"]
 
 
 def test_start_multilingual_translation_creates_missing_child_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,6 +246,78 @@ def test_italian_translation_writes_it_column_in_multilingual_workbook(tmp_path:
         assert str(sheet.cell(2, 4).value).startswith("TestFake")
     finally:
         workbook.close()
+
+
+def test_vietnamese_translation_keeps_vn_in_studio_and_vi_in_workflow(tmp_path: Path) -> None:
+    project = db.insert_project("Vietnamese target column", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / "source-vn.xlsx", ["EN", "VI"])
+    save_settings({**DEFAULT_SETTINGS, "provider": "test-fake", "model": "test-fake-localization", "batch_size": 10})
+    translation_task_id = "task-vietnamese"
+
+    with TestClient(app) as client:
+        started = client.post(
+            f"/api/projects/{project['id']}/multilingual/translate/start",
+            json={
+                "input_artifact_id": artifact["id"],
+                "languages": ["en", "vi"],
+                "batch_size": 10,
+                "task_code": "VN",
+                "translation_task_id": translation_task_id,
+            },
+        )
+        assert started.status_code == 200, started.text
+        assert {item["language"] for item in started.json()["languages"]} == {"en", "vn"}
+        wait_for_background_jobs()
+        status = client.get(
+            f"/api/projects/{project['id']}/multilingual/status",
+            params={
+                "input_artifact_id": artifact["id"],
+                "languages": "en,vi",
+                "translation_task_id": translation_task_id,
+            },
+        ).json()
+        delivered = client.post(
+            f"/api/projects/{project['id']}/delivery-package/merged",
+            json={
+                "input_artifact_id": artifact["id"],
+                "languages": ["en", "vi"],
+                "translation_task_id": translation_task_id,
+            },
+        )
+
+    assert status["overall_status"] == "passed"
+    vn_status = next(item for item in status["languages"] if item["language"] == "vn")
+    assert vn_status["visible_language"] == "VN"
+    run = db.get_run(vn_status["translation_run_id"])
+    assert run["language"] == "vn"
+    assert run["metadata"]["translation_task_id"] == translation_task_id
+    artifacts = db.list_artifacts(run_id=run["id"])
+    translation_manifest = next(item for item in artifacts if item["kind"] == "translation_manifest")
+    assert json.loads(Path(translation_manifest["path"]).read_text(encoding="utf-8"))["language"] == "vi"
+    final_artifact = next(item for item in artifacts if item["kind"] == "qa_final_workbook")
+    assert Path(final_artifact["path"]).name == "result_vi.xlsx"
+    assert final_artifact["metadata"]["language"] == "vn"
+    workbook = load_workbook(final_artifact["path"], read_only=True, data_only=False)
+    try:
+        sheet = workbook.active
+        assert sheet.cell(2, 3).value in {None, ""}
+        assert str(sheet.cell(2, 4).value).startswith("TestFake")
+    finally:
+        workbook.close()
+    assert delivered.status_code == 200, delivered.text
+    merged_file = next(item for item in delivered.json()["files"] if item["kind"] == "merged_final")
+    merged_workbook = load_workbook(merged_file["path"], read_only=True, data_only=False)
+    try:
+        sheet = merged_workbook.active
+        assert [cell.value for cell in sheet[1]][:4] == ["ID", "CN", "EN", "VI"]
+        assert str(sheet.cell(2, 3).value).startswith("TestFake")
+        assert str(sheet.cell(2, 4).value).startswith("TestFake")
+    finally:
+        merged_workbook.close()
+    assert delivered.json()["merged_languages"] == ["EN", "VI"]
+    archived = db.list_translation_entries(project["id"], language="vi")
+    assert archived
+    assert {item["language"] for item in archived} == {"vn"}
 
 
 def test_multilingual_status_rejects_cross_project_artifact(tmp_path: Path) -> None:

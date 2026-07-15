@@ -41,6 +41,7 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
     """
     run = db.get_run(run_id)
     project = db.get_project(run["project_id"])
+    language = run.get("language") or "en"
     if settings is not None:
         provider = normalize_provider_name(settings.get("provider"))
         if provider not in REAL_PROVIDERS or not settings.get("api_key"):
@@ -62,7 +63,7 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
     source_path = Path(source_artifact["path"])
     if not source_path.exists():
         raise FileNotFoundError(str(source_path))
-    rows = [_model_fix_row_context(source_path, issue) for issue in issues]
+    rows = [_model_fix_row_context(source_path, issue, language=language) for issue in issues]
     prompt = _model_fix_prompt(project, run, rows, settings)
     text = _call_semantic_provider(settings, prompt)
     payload = _parse_semantic_qa_payload(text)
@@ -74,7 +75,7 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
     output_dir.mkdir(parents=True, exist_ok=True)
     fixed_path = output_dir / f"{source_path.stem}_model_fixed.xlsx"
     shutil.copy2(source_path, fixed_path)
-    applied = _apply_workbook_fixes(fixed_path, fixes, run_id)
+    applied = _apply_workbook_fixes(fixed_path, fixes, run_id, language=language)
     fixed_artifact = db.add_artifact(
         project["id"],
         "Model fixed workbook",

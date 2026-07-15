@@ -5,7 +5,7 @@ from typing import Any
 from .. import db
 from ..config import load_settings
 from ..jobs import active_job_id_for_project, start_singleton_job
-from ..languages import require_supported_language, visible_language_code
+from ..languages import require_supported_language, ui_language_code
 from ..schemas import MultilingualQueueRequest, TranslateRequest
 from .qa import QaCanceled, run_qa_sync
 from .subprocess_runner import user_facing_error
@@ -101,7 +101,7 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
             if run.get("status") in ACTIVE_STATUSES and active_job_id_for_project(project_id) != job_id:
                 continue
             try:
-                db.add_event(run["id"], f"multilingual queue translating {visible_language_code(language)}")
+                db.add_event(run["id"], f"multilingual queue translating {ui_language_code(language)}")
                 request = TranslateRequest(
                     batch_size=payload.batch_size,
                     confirm_api_budget=payload.confirm_api_budget,
@@ -186,7 +186,7 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
             if run.get("status") in ACTIVE_STATUSES and active_job_id_for_project(project_id) != job_id:
                 continue
             try:
-                db.add_event(run["id"], f"multilingual queue running QA {visible_language_code(language)}")
+                db.add_event(run["id"], f"multilingual queue running QA {ui_language_code(language)}")
                 run_qa_sync(run["id"], settings=job_settings, cancel_event=cancel_event)
             except QaCanceled:
                 try:
@@ -231,7 +231,7 @@ def _language_status(
     large_text = ((run_for_status or {}).get("metadata") or {}).get("large_text") or {}
     return {
         "language": language,
-        "visible_language": visible_language_code(language),
+        "visible_language": ui_language_code(language),
         "run_id": run_for_status.get("id") if run_for_status else None,
         "translation_run_id": translation_run.get("id") if translation_run else None,
         "qa_run_id": qa_run.get("id") if qa_run else None,

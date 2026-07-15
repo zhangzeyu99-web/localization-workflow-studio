@@ -257,7 +257,7 @@ def run_line_proofread(
     if accepted_fixes:
         proofread_workbook = output_dir / f"{qa_workbook_path.stem}_line_proofread.xlsx"
         shutil.copy2(qa_workbook_path, proofread_workbook)
-        applied_fixes = _apply_workbook_fixes(proofread_workbook, accepted_fixes, run_id)
+        applied_fixes = _apply_workbook_fixes(proofread_workbook, accepted_fixes, run_id, language=language)
 
     rejected = sum(1 for record in audit_records if str(record.get("audit", "")).startswith("rejected:"))
     state = {

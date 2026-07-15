@@ -10,6 +10,7 @@ class LanguageSpec:
     label: str
     prompt_name: str
     target_header: str
+    visible_code: str
     alt_header: str
     target_aliases: tuple[str, ...]
     alt_aliases: tuple[str, ...]
@@ -22,10 +23,11 @@ def _spec(
     target_header: str,
     aliases: tuple[str, ...],
     *,
+    visible_code: str | None = None,
     alt_header: str = "",
     alt_aliases: tuple[str, ...] = (),
 ) -> LanguageSpec:
-    return LanguageSpec(code, label, prompt_name, target_header, alt_header, aliases, alt_aliases)
+    return LanguageSpec(code, label, prompt_name, target_header, visible_code or target_header, alt_header, aliases, alt_aliases)
 
 
 LANGUAGE_SPECS: dict[str, LanguageSpec] = {
@@ -62,10 +64,18 @@ LANGUAGE_SPECS: dict[str, LanguageSpec] = {
     "tr": _spec("tr", "TR 土耳其语", "Turkish", "TR", ("tr", "tk", "tur", "turkish", "土耳其语", "türkçe", "turkce")),
     "idn": _spec("idn", "ID 印尼语", "Indonesian", "IDN", ("idn", "id", "ind", "indonesian", "印尼语", "印度尼西亚语", "bahasa", "bahasa indonesia")),
     "th": _spec("th", "TH 泰语", "Thai", "TH", ("th", "tha", "thai", "泰语", "ภาษาไทย")),
+    "vn": _spec(
+        "vn",
+        "VN 越南语",
+        "Vietnamese",
+        "VI",
+        ("vi", "vie", "vietnamese", "越南语", "越南文"),
+        visible_code="VN",
+    ),
     "ar": _spec("ar", "AR 阿拉伯语", "Arabic", "AR", ("ar", "ara", "arabic", "阿语", "阿拉伯语", "العربية")),
 }
 
-PROJECT_LANGUAGE_ORDER = ("en", "ko", "ja", "fr", "de", "ru", "it", "es", "pt", "tr", "idn", "th", "ar")
+PROJECT_LANGUAGE_ORDER = ("en", "ko", "ja", "fr", "de", "ru", "it", "es", "pt", "tr", "idn", "th", "vn", "ar")
 ANNOUNCEMENT_LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
 SUPPORTED_LANGUAGES = frozenset(LANGUAGE_SPECS)
 
@@ -104,6 +114,8 @@ _LANGUAGE_ALIASES = {
     "id": "idn",
     "ind": "idn",
     "tha": "th",
+    "vi": "vn",
+    "vie": "vn",
     "ara": "ar",
 }
 
@@ -122,6 +134,11 @@ def require_supported_language(value: Any, *, default: str = "en") -> str:
     return code
 
 
+def workflow_language_code(value: Any, *, default: str = "en") -> str:
+    code = require_supported_language(value, default=default)
+    return "vi" if code == "vn" else code
+
+
 def canonical_language(value: Any, *, default: str = "en") -> str:
     return require_supported_language(value, default=default)
 
@@ -132,6 +149,10 @@ def language_spec(value: Any) -> LanguageSpec:
 
 def visible_language_code(value: Any) -> str:
     return language_spec(value).target_header
+
+
+def ui_language_code(value: Any) -> str:
+    return language_spec(value).visible_code
 
 
 def target_aliases(value: Any) -> list[str]:
@@ -149,7 +170,7 @@ def language_payload() -> dict[str, Any]:
         "languages": [
             {
                 "code": code,
-                "visible_code": spec.target_header,
+                "visible_code": ui_language_code(code),
                 "label": spec.label,
                 "prompt_name": spec.prompt_name,
                 "target_header": spec.target_header,

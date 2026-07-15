@@ -1051,13 +1051,80 @@ test('translation workflow keeps preparation steps available and gates processin
 
 test('new translation task exposes the full supported language set', async ({ page, request }) => {
   const projectName = `E2E Full Languages ${Date.now()}`
-  await request.post(`${baseURL}/api/projects`, {
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lws-full-languages-'))
+  const sourceWorkbookWithVietnamese = path.join(fixtureDir, 'full-languages-source.xlsx')
+  execFileSync('python', ['-c', `
+from openpyxl import Workbook
+import sys
+wb = Workbook()
+ws = wb.active
+ws.title = "Language"
+ws.append(["ID", "CN", "EN", "VI"])
+ws.append([1, "\\u9886\\u53d6\\u5956\\u52b1", "", ""])
+wb.save(sys.argv[1])
+wb.close()
+`, sourceWorkbookWithVietnamese])
+  const project = await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'language-ui', description: 'Full language selector smoke.' },
+  }).then((response) => response.json())
+  const source = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbookWithVietnamese),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbookWithVietnamese),
+      },
+    },
+  }).then((response) => response.json())
+  await request.patch(`${baseURL}/api/settings`, {
+    data: {
+      provider: 'test-fake',
+      protocol: 'chat-completions',
+      api_key: '',
+      model: 'test-fake-localization',
+      batch_size: 24,
+    },
   })
 
+  const expectedManualLanguages = ['en', 'ko', 'ja', 'vn']
+  let queuePayload: Record<string, unknown> | null = null
+  await page.route(`**/api/projects/${project.id}/multilingual/translate/start`, async (route) => {
+    queuePayload = route.request().postDataJSON()
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        project_id: project.id,
+        input_artifact_id: source.id,
+        overall_status: 'pending',
+        active_job_id: null,
+        languages: expectedManualLanguages.map((language) => ({ language, visible_language: language === 'vn' ? 'VN' : language.toUpperCase(), run_id: null, translation_run_id: null, qa_run_id: null, status: 'pending', step: 'pending', can_continue: false, error: '', progress: {}, quality_summary: {}, large_text: {} })),
+        created_run_ids: [],
+        queue_started: true,
+      }),
+    })
+  })
+
+  const languageRefresh = page.waitForResponse((response) => response.url().endsWith('/api/languages') && response.ok())
+  const settingsRefresh = page.waitForResponse((response) => response.url().endsWith('/api/settings') && response.ok())
   await page.goto(baseURL)
+  await Promise.all([languageRefresh, settingsRefresh])
+  const normalizedVietnameseCodes = await page.evaluate(async () => {
+    const { normalizeLanguageCode } = await import('/src/languages.ts')
+    return {
+      vn: normalizeLanguageCode('vn'),
+      vi: normalizeLanguageCode('vi'),
+      vie: normalizeLanguageCode('vie'),
+    }
+  })
+  expect(normalizedVietnameseCodes).toEqual({ vn: 'vn', vi: 'vn', vie: 'vn' })
   await page.getByRole('button', { name: projectName }).click()
   await page.getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await selectWizardStep(page, 4)
+  const targetsResponse = page.waitForResponse((response) => response.url().includes(`/artifacts/${source.id}/translation-targets`) && response.ok())
+  const readinessResponse = page.waitForResponse((response) => response.url().includes(`/artifacts/${source.id}/translation-readiness`) && response.ok())
+  await page.locator('.step-panel.active label.asset-select select').selectOption(source.id)
+  await Promise.all([targetsResponse, readinessResponse])
   await selectWizardStep(page, 6)
 
   for (const label of [
@@ -1073,6 +1140,7 @@ test('new translation task exposes the full supported language set', async ({ pa
     'TR 土耳其语',
     'ID 印尼语',
     'TH 泰语',
+    'VN 越南语',
   ]) {
     await expect(page.getByRole('button', { name: label })).toBeVisible()
   }
@@ -1081,13 +1149,30 @@ test('new translation task exposes the full supported language set', async ({ pa
   const enButton = page.getByRole('button', { name: /EN 英语/ })
   const krButton = page.getByRole('button', { name: /KR 韩语/ })
   const jpButton = page.getByRole('button', { name: /JP 日语/ })
+  const vnButton = page.getByRole('button', { name: /VN 越南语/ })
+  await expect(vnButton).toHaveClass(/selected/)
   await krButton.click()
   await jpButton.click()
-  await page.waitForTimeout(750)
+  await vnButton.click()
+  await expect(vnButton).not.toHaveClass(/selected/)
+  const vnReadiness = page.waitForResponse((response) => response.url().includes(`/artifacts/${source.id}/translation-readiness`) && response.url().includes('language=vn') && response.ok())
+  await vnButton.click()
+  await vnReadiness
   await expect(enButton).toHaveClass(/selected/)
   await expect(krButton).toHaveClass(/selected/)
   await expect(jpButton).toHaveClass(/selected/)
-  await expect(jpButton).toHaveClass(/current/)
+  await expect(vnButton).toHaveClass(/selected/)
+  await expect(vnButton).toHaveClass(/current/)
+  await selectWizardStep(page, 7)
+  const startTranslation = page.getByTestId('multilingual-translate')
+  await expect(startTranslation).toBeEnabled()
+  await startTranslation.click()
+  await expect.poll(() => queuePayload).not.toBeNull()
+  expect(queuePayload).toMatchObject({ input_artifact_id: source.id, languages: expectedManualLanguages })
+  const submittedLanguages = (queuePayload as { languages: string[] }).languages
+  expect(submittedLanguages).toContain('vn')
+  expect(submittedLanguages).not.toContain('vi')
+  expect(submittedLanguages).not.toContain('vie')
 })
 
 test('EN glossary candidate review exposes one translation column', async ({ page, request }) => {
@@ -1176,8 +1261,8 @@ import sys
 wb = Workbook()
 ws = wb.active
 ws.title = "Sheet1"
-ws.append(["ID", "CN", "EN", "IDN", "DE", "FR", "ES", "PT", "RU", "IT", "TR", "TH"])
-ws.append([1, "领取奖励", "", "", "", "", "", "", "", "", "", ""])
+ws.append(["ID", "CN", "EN", "IDN", "DE", "FR", "ES", "PT", "RU", "IT", "TR", "TH", "VI"])
+ws.append([1, "领取奖励", "", "", "", "", "", "", "", "", "", "", ""])
 wb.save(sys.argv[1])
 wb.close()
 `, workbook])
@@ -1197,9 +1282,9 @@ wb.close()
   await selectWizardStep(page, 4)
   await page.locator('.step-panel.active label.asset-select select').selectOption(artifact.id)
   await selectWizardStep(page, 6)
-  await expect(page.locator('.step-panel.active .lang-chip.selected')).toHaveCount(10)
+  await expect(page.locator('.step-panel.active .lang-chip.selected')).toHaveCount(11)
 
-  const expectedLanguages = ['en', 'fr', 'de', 'ru', 'it', 'es', 'pt', 'tr', 'idn', 'th']
+  const expectedLanguages = ['en', 'fr', 'de', 'ru', 'it', 'es', 'pt', 'tr', 'idn', 'th', 'vn']
   let queuePayload: Record<string, unknown> | null = null
   await page.route(`**/api/projects/${project.id}/multilingual/translate/start`, async (route) => {
     queuePayload = route.request().postDataJSON()
@@ -2113,7 +2198,7 @@ wb.close()
   await expect(page.locator('.panel-title', { hasText: '\u76ee\u6807\u8bed\u8a00' })).toBeVisible({ timeout: 20000 })
   await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
   await expect(page.locator('.announcement-panel .announcement-lang-card')).toHaveCount(0)
-  await expect(page.locator('.announcement-panel .announcement-language-chip')).toHaveCount(12)
+  await expect(page.locator('.announcement-panel .announcement-language-chip')).toHaveCount(13)
   await expect(page.locator('.announcement-panel')).not.toContainText('\u517c\u5bb9')
   await expect(page.locator('.announcement-panel')).not.toContainText('KO')
   await expect(page.locator('.announcement-panel')).not.toContainText('JA')
