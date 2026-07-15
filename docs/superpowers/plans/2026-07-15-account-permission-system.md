@@ -15,6 +15,8 @@
 - [x] A3 前端（2026-07-15，commit 0270c1a 批1+2、399729b 批3+4）：登录页 + apiClient 统一 401 跳登录 + `credentials: include`、能力驱动的 UI 显隐（隐藏删项目/术语归档编辑/项目资料维护入口）、管理员用户管理面板、项目成员管理面板、`X-Operator` 昵称设置在认证开启时隐藏、认证专用 e2e 套件（`npm run e2e:auth`）覆盖三档角色主路径与越权拒绝。
 - [x] A4 部署收尾（2026-07-15，本批）：`check.py`/`scripts/deployment_check.py`、`scripts/stability_check.py` 加 `--auth-user/--auth-password` 登录支持（`scripts/deployment_auth.py` 公共函数）与 `auth_fail_closed` 未登录 401 自检项；`operator_audit.log` 补 `login`/`logout` 事件（登录失败不记）；`docs/CLOUD_DEPLOYMENT.md`/`docs/STABILITY_TEST_LIST.md`/`README.md` 更新；版本联动 1.3.1 → 1.4.0。
 
+- [x] 完整验收（2026-07-15，fable5 主线程，commit ae3d81d）：全量 `pytest -q backend/tests` 328 passed；`npm run build` 零错误；全量 e2e（认证关闭）60 passed；`npm run e2e:auth` 5 passed；对 `LWS_AUTH_MODE=required` 真实后端跑 21 项跨角色越权冒烟全过（未登录 401、member 越权 403、非成员 404、停用即失效、admin 直通）；`check.py --auth-user` 全链路 exit=0。验收期间发现并修复一处 e2e 竞态：studio-ui-flow 提示词保存后未等 PATCH 完成就读回断言（基线偶发、本分支因时序变化转为稳定失败，非产品代码回归），已改为 `waitForResponse` 等待保存完成。
+
 A1 遗留（进 A2/A4 待办）：conftest 缺少对 `importlib.reload(main_module)` 全局状态泄漏的通用防护（现只在 test_users_admin.py 局部处理）；create_admin.py CLI 路径不写审计；密码策略仅长度下限；防爆破为进程内存态（单实例部署下可接受）。
 
 ---
