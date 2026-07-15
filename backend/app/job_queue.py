@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import db
 
+
+logger = logging.getLogger(__name__)
 
 LANES = ("language_table", "quick_announcement")
 ACTIVE_STATUSES = ("queued", "running")
@@ -27,6 +30,7 @@ _RUNTIME_LOCK = threading.RLock()
 _HANDLERS: dict[str, JobHandler] = {}
 _RUNNING: dict[str, _RunningJob] = {}
 _THREADS: set[threading.Thread] = set()
+_STOPPING = False
 
 
 def _validate_lane(lane: str) -> None:
@@ -62,9 +66,9 @@ def enqueue_job(
             INSERT INTO job_queue (
                 job_id, lane, job_kind, project_id, target_id, payload_json,
                 operator_name, status, cancel_requested, canceled_by,
-                queued_at, started_at, updated_at
+                cancel_requested_at, canceled_at, queued_at, started_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, '', ?, NULL, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, '', NULL, NULL, ?, NULL, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 lane = excluded.lane,
                 job_kind = excluded.job_kind,
@@ -75,6 +79,8 @@ def enqueue_job(
                 status = 'queued',
                 cancel_requested = 0,
                 canceled_by = '',
+                cancel_requested_at = NULL,
+                canceled_at = NULL,
                 queued_at = excluded.queued_at,
                 started_at = NULL,
                 updated_at = excluded.updated_at
@@ -211,14 +217,20 @@ def _requeue_unhandled(job_id: str) -> None:
 
 
 def _finish_job(job_id: str, status: str) -> None:
+    timestamp = db.now_iso()
     with db.connect() as conn:
         conn.execute(
             """
             UPDATE job_queue
-            SET status = ?, updated_at = ?
+            SET status = ?,
+                canceled_at = CASE
+                    WHEN ? = 'canceled' THEN COALESCE(canceled_at, ?)
+                    ELSE canceled_at
+                END,
+                updated_at = ?
             WHERE job_id = ? AND status = 'running'
             """,
-            (status, db.now_iso(), job_id),
+            (status, status, timestamp, timestamp, job_id),
         )
 
 
@@ -240,6 +252,8 @@ def clear_handlers() -> None:
 def dispatch_lane(lane: str) -> bool:
     _validate_lane(lane)
     with _RUNTIME_LOCK:
+        if _STOPPING:
+            return False
         running = _RUNNING.get(lane)
         if running is not None and running.thread.is_alive():
             return False
@@ -257,17 +271,22 @@ def dispatch_lane(lane: str) -> bool:
             try:
                 handler(claimed, cancel_event)
             except Exception:
+                logger.exception("job handler failed: %s", claimed["job_id"])
                 failed = True
             finally:
-                current = get_job(claimed["job_id"])
-                canceled = cancel_event.is_set() or bool((current or {}).get("cancel_requested"))
-                _finish_job(claimed["job_id"], "canceled" if canceled else ("failed" if failed else "completed"))
+                with _RUNTIME_LOCK:
+                    stopping = _STOPPING
+                if not stopping:
+                    current = get_job(claimed["job_id"])
+                    canceled = cancel_event.is_set() or bool((current or {}).get("cancel_requested"))
+                    _finish_job(claimed["job_id"], "canceled" if canceled else ("failed" if failed else "completed"))
                 with _RUNTIME_LOCK:
                     active = _RUNNING.get(lane)
                     if active is not None and active.job_id == claimed["job_id"]:
                         _RUNNING.pop(lane, None)
                 try:
-                    dispatch_lane(lane)
+                    if not stopping:
+                        dispatch_lane(lane)
                 finally:
                     with _RUNTIME_LOCK:
                         _THREADS.discard(threading.current_thread())
@@ -281,7 +300,17 @@ def dispatch_lane(lane: str) -> bool:
 
 def resume_dispatchers() -> list[str]:
     """Explicitly resume persisted queued work after startup recovery."""
+    global _STOPPING
+    with _RUNTIME_LOCK:
+        _STOPPING = False
     return [lane for lane in LANES if dispatch_lane(lane)]
+
+
+def reset_dispatcher_state() -> None:
+    """Reset the process-local stopping guard after test/runtime teardown."""
+    global _STOPPING
+    with _RUNTIME_LOCK:
+        _STOPPING = False
 
 
 def cancel_job(job_id: str, *, canceled_by: str = "") -> JobRecord | None:
@@ -295,19 +324,23 @@ def cancel_job(job_id: str, *, canceled_by: str = "") -> JobRecord | None:
             conn.execute(
                 """
                 UPDATE job_queue
-                SET status = 'canceled', cancel_requested = 1, canceled_by = ?, updated_at = ?
+                SET status = 'canceled', cancel_requested = 1, canceled_by = ?,
+                    cancel_requested_at = ?, canceled_at = ?, updated_at = ?
                 WHERE job_id = ? AND status = 'queued'
                 """,
-                (canceled_by, timestamp, job_id),
+                (canceled_by, timestamp, timestamp, timestamp, job_id),
             )
         else:
             conn.execute(
                 """
                 UPDATE job_queue
-                SET cancel_requested = 1, canceled_by = ?, updated_at = ?
+                SET cancel_requested = 1,
+                    canceled_by = CASE WHEN cancel_requested_at IS NULL THEN ? ELSE canceled_by END,
+                    cancel_requested_at = COALESCE(cancel_requested_at, ?),
+                    updated_at = ?
                 WHERE job_id = ? AND status = 'running'
                 """,
-                (canceled_by, timestamp, job_id),
+                (canceled_by, timestamp, timestamp, job_id),
             )
         updated = conn.execute("SELECT * FROM job_queue WHERE job_id = ?", (job_id,)).fetchone()
     if row["status"] == "running":
@@ -339,13 +372,16 @@ def recover_interrupted_jobs() -> list[JobRecord]:
     return interrupted
 
 
-def shutdown_dispatchers(*, timeout: float = 5.0) -> None:
+def shutdown_dispatchers(*, timeout: float = 5.0, cancel_running: bool = False) -> None:
+    global _STOPPING
     with _RUNTIME_LOCK:
+        _STOPPING = True
         _HANDLERS.clear()
         running = list(_RUNNING.values())
         threads = list(_THREADS)
-    for job in running:
-        job.cancel_event.set()
+    if cancel_running:
+        for job in running:
+            job.cancel_event.set()
     for thread in threads:
         if thread is not threading.current_thread():
             thread.join(timeout)

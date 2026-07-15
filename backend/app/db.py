@@ -263,6 +263,8 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'queued',
                 cancel_requested INTEGER NOT NULL DEFAULT 0,
                 canceled_by TEXT NOT NULL DEFAULT '',
+                cancel_requested_at TEXT,
+                canceled_at TEXT,
                 queued_at TEXT NOT NULL,
                 started_at TEXT,
                 updated_at TEXT NOT NULL
@@ -285,6 +287,8 @@ def init_db() -> None:
         _ensure_column(conn, "translation_entries", "language", "TEXT NOT NULL DEFAULT 'en'")
         _ensure_column(conn, "translation_entries", "source_artifact_id", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "job_leases", "operator_name", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "job_queue", "cancel_requested_at", "TEXT")
+        _ensure_column(conn, "job_queue", "canceled_at", "TEXT")
         _dedupe_unique_index_rows(conn)
         _ensure_indexes(conn)
 

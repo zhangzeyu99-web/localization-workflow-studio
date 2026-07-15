@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -34,8 +35,9 @@ def isolated_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     except ModuleNotFoundError:
         queue = None
     if queue is not None:
-        queue.shutdown_dispatchers(timeout=2.0)
+        queue.shutdown_dispatchers(timeout=2.0, cancel_running=True)
         queue.clear_handlers()
+        queue.reset_dispatcher_state()
 
     database = tmp_path / "job-queue.sqlite3"
     monkeypatch.setattr(db, "DB_PATH", database)
@@ -46,8 +48,9 @@ def isolated_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         queue = _queue()
     except ModuleNotFoundError:
         return
-    queue.shutdown_dispatchers(timeout=2.0)
+    queue.shutdown_dispatchers(timeout=2.0, cancel_running=True)
     queue.clear_handlers()
+    queue.reset_dispatcher_state()
 
 
 def _enqueue(
@@ -132,6 +135,41 @@ def test_database_rejects_two_running_rows_in_one_lane() -> None:
                 """,
                 ("running-2", timestamp, timestamp, timestamp),
             )
+
+
+def test_init_db_migrates_job_queue_cancel_audit_columns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_db = tmp_path / "job-queue-before-cancel-audit.sqlite3"
+    with sqlite3.connect(legacy_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE job_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL UNIQUE,
+                lane TEXT NOT NULL,
+                job_kind TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                target_id TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                operator_name TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                canceled_by TEXT NOT NULL DEFAULT '',
+                queued_at TEXT NOT NULL,
+                started_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    monkeypatch.setattr(db, "DB_PATH", legacy_db)
+    db.init_db()
+
+    with sqlite3.connect(legacy_db) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(job_queue)")}
+    assert {"cancel_requested_at", "canceled_at"}.issubset(columns)
 
 
 def test_same_lane_is_fifo_and_completion_dispatches_next() -> None:
@@ -225,10 +263,15 @@ def test_cancel_queued_job_removes_it_from_active_queue() -> None:
     assert canceled is not None
     assert canceled["status"] == "canceled"
     assert canceled["canceled_by"] == "Bob"
+    assert canceled["cancel_requested_at"]
+    assert canceled["canceled_at"] == canceled["cancel_requested_at"]
     assert queue.active_job_for_project("project-b", lane="language_table") is None
     release.set()
     _wait_until(lambda: queue.get_job("blocking")["status"] == "completed")
     assert started == ["blocking"]
+    retried = _enqueue("cancel-queued", project_id="project-b", autostart=False)
+    assert retried["cancel_requested_at"] is None
+    assert retried["canceled_at"] is None
 
 
 def test_cancel_running_job_sets_event_and_persists_request() -> None:
@@ -252,13 +295,19 @@ def test_cancel_running_job_sets_event_and_persists_request() -> None:
     assert requested is not None
     assert requested["cancel_requested"] is True
     assert requested["canceled_by"] == "Bob"
+    assert requested["cancel_requested_at"]
+    assert requested["canceled_at"] is None
     assert observed_cancel.wait(2.0)
     _wait_until(lambda: queue.get_job("cancel-running")["status"] == "canceled")
+    canceled = queue.get_job("cancel-running")
+    assert canceled["cancel_requested_at"] == requested["cancel_requested_at"]
+    assert canceled["canceled_at"]
+    assert canceled["updated_at"] != requested["updated_at"]
     _wait_until(lambda: queue.get_job("after-cancel")["status"] == "completed")
     assert handled == ["cancel-running", "after-cancel"]
 
 
-def test_handler_exception_releases_lane_and_dispatches_next() -> None:
+def test_handler_exception_releases_lane_and_dispatches_next(caplog: pytest.LogCaptureFixture) -> None:
     queue = _queue()
     handled: list[str] = []
 
@@ -268,44 +317,52 @@ def test_handler_exception_releases_lane_and_dispatches_next() -> None:
             raise RuntimeError("test failure")
 
     queue.register_handler("translate", handler)
-    _enqueue("fails")
-    _enqueue("after-failure")
+    with caplog.at_level(logging.ERROR, logger="app.job_queue"):
+        _enqueue("fails")
+        _enqueue("after-failure")
 
-    _wait_until(lambda: queue.get_job("fails")["status"] == "failed")
-    _wait_until(lambda: queue.get_job("after-failure")["status"] == "completed")
+        _wait_until(lambda: queue.get_job("fails")["status"] == "failed")
+        _wait_until(lambda: queue.get_job("after-failure")["status"] == "completed")
     assert handled == ["fails", "after-failure"]
+    assert any(record.exc_info and "job handler failed" in record.message for record in caplog.records)
 
 
-def test_shutdown_waits_for_finishing_dispatcher_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_shutdown_preserves_running_for_restart_and_stops_lane() -> None:
     queue = _queue()
-    finishing = threading.Event()
-    allow_finish = threading.Event()
-    shutdown_returned = threading.Event()
-    original_dispatch = queue.dispatch_lane
+    current_started = threading.Event()
+    release_current = threading.Event()
+    current_cancel_event: list[threading.Event] = []
+    handled: list[str] = []
 
-    def delayed_follow_up_dispatch(lane: str) -> bool:
-        if threading.current_thread().name.startswith("lws-queue-"):
-            finishing.set()
-            allow_finish.wait(2.0)
-            return False
-        return original_dispatch(lane)
+    def handler(record: dict[str, Any], cancel_event: threading.Event) -> None:
+        handled.append(record["job_id"])
+        if record["job_id"] == "shutdown-running":
+            current_cancel_event.append(cancel_event)
+            current_started.set()
+            release_current.wait(2.0)
 
-    monkeypatch.setattr(queue, "dispatch_lane", delayed_follow_up_dispatch)
-    queue.register_handler("translate", lambda record, cancel_event: None)
-    _enqueue("cleanup-race")
-    assert finishing.wait(2.0)
+    queue.register_handler("translate", handler)
+    _enqueue("shutdown-running")
+    assert current_started.wait(2.0)
+    _enqueue("shutdown-queued")
 
-    shutdown_thread = threading.Thread(
-        target=lambda: (queue.shutdown_dispatchers(timeout=2.0), shutdown_returned.set())
-    )
-    shutdown_thread.start()
     try:
-        time.sleep(0.05)
-        assert not shutdown_returned.is_set()
+        queue.shutdown_dispatchers(timeout=0.05)
+        assert current_cancel_event and not current_cancel_event[0].is_set()
     finally:
-        allow_finish.set()
-        shutdown_thread.join(2.0)
-    assert shutdown_returned.is_set()
+        release_current.set()
+        queue.shutdown_dispatchers(timeout=2.0)
+
+    assert queue.get_job("shutdown-running")["status"] == "running"
+    assert queue.get_job("shutdown-queued")["status"] == "queued"
+    assert handled == ["shutdown-running"]
+
+    interrupted = queue.recover_interrupted_jobs()
+    assert [row["job_id"] for row in interrupted] == ["shutdown-running"]
+    queue.register_handler("translate", handler)
+    assert queue.resume_dispatchers() == ["language_table"]
+    _wait_until(lambda: queue.get_job("shutdown-queued")["status"] == "completed")
+    assert handled == ["shutdown-running", "shutdown-queued"]
 
 
 def test_recovery_interrupts_old_running_and_requires_explicit_resume() -> None:
