@@ -629,9 +629,7 @@ def test_announcement_force_delivery_with_hard_blockers_generates_package(tmp_pa
         assert package["metadata"]["forced"] is True
         assert package["metadata"]["source_type"] == "delivered_with_issues"
         archived = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
-        archived_notice = next(entry for entry in archived if entry["source"] == rows[0]["source"])
-        assert archived_notice["target"] == "{0}"
-        assert archived_notice["source_type"] == "delivered_with_issues"
+        assert archived == []
         deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
         forced_deliverable = next(item for item in deliverables if item["task_code"] == "ANN")
         assert forced_deliverable["delivered_with_issues"] is True

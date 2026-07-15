@@ -197,6 +197,10 @@ def _cancel(job_id: str) -> dict[str, Any] | None:
 
 def cancel_announcement_task(task_id: str) -> dict[str, Any]:
     with _SUBMISSION_LOCK:
+        db.merge_announcement_task_metadata(
+            task_id,
+            {"cancel_scope": "task", "task_cancel_requested_at": db.now_iso()},
+        )
         _cancel(f"announcement:{task_id}")
         from . import workflow
 
@@ -357,7 +361,8 @@ def _announcement_handler(record: dict[str, Any], cancel_event: threading.Event)
         except Exception as exc:
             if cancel_event.is_set():
                 current = db.get_announcement_task(record["target_id"])
-                if (current.get("metadata") or {}).get("canceled_at"):
+                current_metadata = current.get("metadata") or {}
+                if current_metadata.get("cancel_scope") == "task" or current_metadata.get("canceled_at"):
                     workflow.cancel_announcement_task(record["target_id"])
                 elif current.get("status") != "canceled":
                     workflow.cancel_announcement_translation_task(record["target_id"])
@@ -370,7 +375,8 @@ def _announcement_handler(record: dict[str, Any], cancel_event: threading.Event)
         else:
             current = db.get_announcement_task(record["target_id"])
             if cancel_event.is_set():
-                if (current.get("metadata") or {}).get("canceled_at"):
+                current_metadata = current.get("metadata") or {}
+                if current_metadata.get("cancel_scope") == "task" or current_metadata.get("canceled_at"):
                     workflow.cancel_announcement_task(record["target_id"])
                 elif current.get("status") not in {"translated", "prepared", "canceled"}:
                     workflow.cancel_announcement_translation_task(record["target_id"])
