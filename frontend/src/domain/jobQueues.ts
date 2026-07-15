@@ -84,6 +84,28 @@ export function formalWorkflowQueueJob(
   return null
 }
 
+export function quickWorkflowQueueJob(
+  queues: JobQueues | null | undefined,
+  project: Project,
+  startedRun?: Run | null,
+): JobQueueEntry | null {
+  const quickLane = queueLanes(queues).find((lane) => lane.lane === 'quick_announcement')
+  const jobs = [...(quickLane?.running ? [quickLane.running] : []), ...(quickLane?.queued || [])]
+    .filter((job) => job.project_id === project.id && ['translation', 'qa'].includes(job.job_kind))
+  const candidates = [startedRun, ...(project.runs || [])]
+    .filter((run): run is Run => Boolean(
+      run
+      && run.project_id === project.id
+      && run.metadata?.task_origin === 'quick_task'
+    ))
+    .filter((run, index, items) => items.findIndex((candidate) => candidate.id === run.id) === index)
+  for (const run of candidates) {
+    const job = jobs.find((candidate) => candidate.target_id === run.id)
+    if (job) return job
+  }
+  return null
+}
+
 export function queueJobKindLabel(jobKind?: string): string {
   const labels: Record<string, string> = {
     translation: '翻译',

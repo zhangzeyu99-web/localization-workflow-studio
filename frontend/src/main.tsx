@@ -640,7 +640,6 @@ function App() {
                     status={status}
                     jobQueues={jobQueues}
                     settings={settings}
-                    latestRun={scopedLatestRun}
                     onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
                     onUploadFile={upload}
                     onInspectTargets={inspectTranslationTargets}

@@ -2131,6 +2131,52 @@ test('formal and quick task pages do not leak each others queue status', async (
   await expect(inlineStatus(page, 'Formal Alice')).toHaveCount(0)
 })
 
+test('quick page re-entry finds its queued run when a newer formal run exists', async ({ page, request }) => {
+  const projectName = `E2E Quick Reentry Queue ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'quick-reentry', description: 'Quick queue survives a newer formal run.' },
+  }).then((response) => response.json())
+  const artifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const quickRun = await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: artifact.id, task_origin: 'quick_task' },
+  }).then((response) => response.json())
+  await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: artifact.id, task_origin: 'translation_run' },
+  })
+
+  await page.route('**/api/system/job-queues', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ lanes: [
+        { lane: 'language_table', label: '语言表', running: null, queued: [] },
+        {
+          lane: 'quick_announcement', label: '快速/公告', running: null,
+          queued: [{
+            job_id: 'quick-reentry-job', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: project.id, project_name: projectName, target_id: quickRun.id,
+            operator_name: 'Quick Reentry Bob', status: 'queued', position: 3, ahead: 2,
+            queued_at: new Date().toISOString(), started_at: null,
+          }],
+        },
+      ] }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await expect(inlineStatus(page, '排队第 3 位、前方 2 个 · 操作人 Quick Reentry Bob')).toBeVisible({ timeout: 15000 })
+})
+
 test('quick task local run and input reset when project polling switches the current project', async ({ page, request }) => {
   await request.patch(`${baseURL}/api/settings`, {
     data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 1 },
