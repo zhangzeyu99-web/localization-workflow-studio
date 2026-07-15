@@ -250,6 +250,26 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                external_id TEXT DEFAULT '',
+                must_change_password INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_login_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
             """
         )
         _ensure_column(conn, "artifacts", "role", "TEXT NOT NULL DEFAULT ''")
@@ -301,6 +321,10 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
           ON events(run_id);
         CREATE INDEX IF NOT EXISTS idx_announcement_tasks_project_status
           ON announcement_tasks(project_id, status);
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_id
+          ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
+          ON sessions(expires_at);
         """
     )
 
@@ -1847,3 +1871,122 @@ def _translation_entry_rank(entry: dict[str, Any]) -> tuple[int, int, str, str]:
 
 def _translation_source_key(value: Any) -> str:
     return "".join(str(value or "").split()).casefold()
+
+
+def user_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(row)
+    payload["must_change_password"] = bool(payload["must_change_password"])
+    return payload
+
+
+def create_user(
+    username: str,
+    password_hash: str,
+    role: str,
+    display_name: str = "",
+    status: str = "active",
+    external_id: str = "",
+    must_change_password: bool = False,
+) -> dict[str, Any]:
+    user_id = new_id("user")
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO users
+              (id, username, display_name, password_hash, role, status, external_id, must_change_password, created_at, last_login_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                user_id,
+                username,
+                display_name,
+                password_hash,
+                role,
+                status,
+                external_id,
+                1 if must_change_password else 0,
+                ts,
+            ),
+        )
+        return get_user(user_id, conn=conn)
+
+
+def get_user(user_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        row = active.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None:
+            raise KeyError(user_id)
+        return user_row_to_dict(row)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def get_user_by_username(username: str, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        row = active.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return user_row_to_dict(row) if row is not None else None
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def update_user(user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"display_name", "password_hash", "role", "status", "external_id", "must_change_password", "last_login_at"}
+    fields: list[str] = []
+    values: list[Any] = []
+    for key, value in updates.items():
+        if key not in allowed:
+            continue
+        fields.append(f"{key} = ?")
+        values.append((1 if value else 0) if key == "must_change_password" else value)
+    if not fields:
+        return get_user(user_id)
+    values.append(user_id)
+    with connect() as conn:
+        conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values)
+        return get_user(user_id, conn=conn)
+
+
+def create_session(user_id: str, token_hash: str, expires_at: str) -> dict[str, Any]:
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (token_hash, user_id, ts, expires_at, ts),
+        )
+        row = conn.execute("SELECT * FROM sessions WHERE token_hash = ?", (token_hash,)).fetchone()
+        return dict(row)
+
+
+def get_session_by_token_hash(token_hash: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM sessions WHERE token_hash = ?", (token_hash,)).fetchone()
+        if row is None:
+            return None
+        session = dict(row)
+        if session["expires_at"] <= now_iso():
+            conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+            return None
+        return session
+
+
+def delete_session(token_hash: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+
+def purge_expired_sessions() -> int:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now_iso(),))
+        return cur.rowcount

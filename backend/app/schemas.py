@@ -318,6 +318,11 @@ class MultilingualQueueRequest(BaseModel):
     enable_line_proofread: bool = False
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class SettingsUpdate(BaseModel):
     provider: str | None = None
     preset: str | None = None
