@@ -11,8 +11,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import auth, db
+from ..config import deployment_mode
 from ..schemas import LoginRequest
-from .system import _deployment_mode
 
 router = APIRouter()
 
@@ -29,7 +29,7 @@ def _set_session_cookie(response: Response, token: str) -> None:
         value=token,
         httponly=True,
         samesite="lax",
-        secure=_deployment_mode() == "cloud",
+        secure=deployment_mode() == "cloud",
         path="/",
         max_age=auth.SESSION_TTL_DAYS * 24 * 3600,
     )

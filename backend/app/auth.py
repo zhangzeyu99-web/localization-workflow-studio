@@ -7,7 +7,9 @@ route -- it is only consumed by the new ``/api/auth/*`` router.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
+import os
 import secrets
 import threading
 import time
@@ -18,6 +20,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 from . import db
+from .config import deployment_mode
 
 SESSION_COOKIE_NAME = "lws_session"
 SESSION_TTL_DAYS = 14
@@ -27,6 +30,67 @@ LOGIN_WINDOW_SECONDS = 600.0
 LOGIN_LOCKOUT_SECONDS = 600.0
 
 _password_hasher = PasswordHasher()
+_current_user_var: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "lws_current_user",
+    default=None,
+)
+
+LOCAL_ADMIN_USER: dict[str, Any] = {
+    "id": "local-admin",
+    "username": "local-admin",
+    "display_name": "local-admin",
+    "role": "admin",
+    "status": "active",
+    "external_id": "",
+    "must_change_password": False,
+}
+
+
+def auth_required() -> bool:
+    """Resolve the authentication switch on every call so tests and operators
+    can select it before application startup.
+
+    An invalid explicit value is a configuration error rather than silently
+    falling back to unauthenticated local mode.
+    """
+    raw_mode = os.environ.get("LWS_AUTH_MODE")
+    if raw_mode is not None:
+        mode = raw_mode.strip().lower()
+        if mode == "required":
+            return True
+        if mode == "off":
+            return False
+        raise RuntimeError("LWS_AUTH_MODE 必须设置为 required 或 off")
+    return deployment_mode() == "cloud"
+
+
+def set_current_user(user: dict[str, Any] | None) -> None:
+    _current_user_var.set(user)
+
+
+def current_user() -> dict[str, Any] | None:
+    return _current_user_var.get()
+
+
+def bootstrap_initial_admin(*, required: bool | None = None) -> dict[str, Any] | None:
+    """Create the first administrator in required mode, or fail closed."""
+    enforcement_enabled = auth_required() if required is None else required
+    if not enforcement_enabled or db.count_users() > 0:
+        return None
+    username = os.environ.get("LWS_ADMIN_USER", "").strip()
+    password = os.environ.get("LWS_ADMIN_PASSWORD", "")
+    if not username or not password:
+        raise RuntimeError(
+            "认证已开启但 users 表为空；请同时设置 LWS_ADMIN_USER 和 "
+            "LWS_ADMIN_PASSWORD，或先运行 scripts/create_admin.py。"
+        )
+    return db.create_user(
+        username,
+        hash_password(password),
+        "admin",
+        display_name=username,
+        must_change_password=True,
+    )
 
 
 def hash_password(password: str) -> str:

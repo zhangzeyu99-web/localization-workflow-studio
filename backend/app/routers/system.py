@@ -10,6 +10,7 @@ from .. import db
 from .. import jobs
 from ..config import (
     DATA_ROOT,
+    deployment_mode,
     load_settings,
     public_settings,
     save_settings,
@@ -37,11 +38,8 @@ APP_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _deployment_mode() -> str:
-    raw_mode = os.environ.get("LWS_DEPLOYMENT_MODE")
-    if raw_mode is None and (str(DATA_ROOT).replace("\\", "/").startswith("/data/web/") or str(APP_ROOT).replace("\\", "/").startswith("/data/web/")):
-        raw_mode = "cloud"
-    mode = (raw_mode or "local").strip().lower()
-    return mode if mode in {"local", "cloud"} else "local"
+    """Compatibility wrapper retained for tests and existing router callers."""
+    return deployment_mode(data_root=DATA_ROOT, app_root=APP_ROOT)
 
 
 def _is_writable(path: Path) -> bool:

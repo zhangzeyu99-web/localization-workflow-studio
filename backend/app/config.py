@@ -16,6 +16,21 @@ SETTINGS_EXAMPLE_PATH = REPO_ROOT / "settings.example.json"
 DB_PATH = DATA_ROOT / "studio.sqlite3"
 
 
+def deployment_mode(
+    *,
+    data_root: Path = DATA_ROOT,
+    app_root: Path = REPO_ROOT,
+) -> str:
+    raw_mode = os.environ.get("LWS_DEPLOYMENT_MODE")
+    if raw_mode is None and (
+        str(data_root).replace("\\", "/").startswith("/data/web/")
+        or str(app_root).replace("\\", "/").startswith("/data/web/")
+    ):
+        raw_mode = "cloud"
+    mode = (raw_mode or "local").strip().lower()
+    return mode if mode in {"local", "cloud"} else "local"
+
+
 REAL_PROVIDERS = {"openai", "openai-chat", "anthropic"}
 TEST_FAKE_PROVIDER = "test-fake"
 LEGACY_TEST_PROVIDER_NAMES = {TEST_FAKE_PROVIDER}

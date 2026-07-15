@@ -1912,6 +1912,12 @@ def create_user(
         return get_user(user_id, conn=conn)
 
 
+def count_users() -> int:
+    with connect() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+        return int(row[0])
+
+
 def get_user(user_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     own = conn is None
     ctx = connect() if own else None
