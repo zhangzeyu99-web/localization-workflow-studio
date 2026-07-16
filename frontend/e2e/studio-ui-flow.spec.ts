@@ -469,6 +469,55 @@ test('project list refreshes after an external project is created', async ({ pag
   await expect(page.getByRole('heading', { name: firstProjectName })).toBeVisible()
 })
 
+test('an older project-list refresh cannot replace a newly created project selection', async ({ page, request }) => {
+  const firstProjectName = `E2E Create Race Base ${Date.now()}`
+  await request.post(`${baseURL}/api/projects`, {
+    data: { name: firstProjectName, type: 'create-race', description: 'Selected before creating another project.' },
+  })
+
+  let holdNextListRefresh = false
+  let markHeldRefreshStarted!: () => void
+  let releaseHeldRefresh!: () => void
+  const heldRefreshStarted = new Promise<void>((resolve) => { markHeldRefreshStarted = resolve })
+  const heldRefreshGate = new Promise<void>((resolve) => { releaseHeldRefresh = resolve })
+  await page.route('**/api/projects', async (route) => {
+    const request = route.request()
+    const isProjectList = request.method() === 'GET' && new URL(request.url()).pathname === '/api/projects'
+    if (isProjectList && holdNextListRefresh) {
+      holdNextListRefresh = false
+      markHeldRefreshStarted()
+      await heldRefreshGate
+    }
+    await route.continue()
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: firstProjectName }).click()
+  await expect(page.getByRole('heading', { name: firstProjectName })).toBeVisible()
+
+  holdNextListRefresh = true
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await heldRefreshStarted
+
+  const createdProjectName = `E2E Create Race New ${Date.now()}`
+  await page.locator('.new-project-btn').click()
+  await page.locator('input[name="name"]').fill(createdProjectName)
+  await page.getByRole('button', { name: '创建' }).click()
+  await expect(page.getByRole('heading', { name: createdProjectName })).toBeVisible()
+
+  const heldRefreshResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/projects'
+  ))
+  releaseHeldRefresh()
+  await heldRefreshResponse
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
+
+  await expect(page.getByRole('heading', { name: createdProjectName })).toBeVisible()
+})
+
 test('project switches keep each workflow location and scope new translation after handling activity', async ({ page, request }) => {
   const firstName = `E2E Scope First ${Date.now()}`
   const secondName = `E2E Scope Second ${Date.now()}`

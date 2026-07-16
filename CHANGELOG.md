@@ -2,6 +2,13 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.5.1 - 2026-07-16
+
+Project-selection race fix release.
+
+- Prevented an older project-list refresh from overriding the project selected by a newer refresh, including immediately after creating a project.
+- Added deterministic browser regression coverage for the overlapping polling/create response order.
+
 ## 1.5.0 - 2026-07-16
 
 Account permissions and combined workbench lifecycle release.

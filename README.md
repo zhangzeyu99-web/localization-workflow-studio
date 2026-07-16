@@ -428,12 +428,13 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 - [v1.1.0 正式版说明](docs/releases/v1.1.0.md)
 - [v1.4.0 正式版说明](docs/releases/v1.4.0.md)
 - [v1.5.0 正式版说明](docs/releases/v1.5.0.md)
+- [v1.5.1 正式版说明](docs/releases/v1.5.1.md)
 - [许可证](LICENSE)
 
 ## 版本
 
 
-当前版本：`1.5.0`
+当前版本：`1.5.1`
 
 - `VERSION`
 - `backend/app/main.py`

@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from '../apiClient'
 import { errorText } from '../appText'
@@ -90,6 +90,7 @@ export function useProjectActions(params: UseProjectActionsParams) {
     confirm,
     runGlossaryExtract
   } = params
+  const projectListRefreshRequestRef = useRef(0)
 
   const cancelProjectDeleteHold = useCallback(() => {
     if (deleteHoldTimer.current !== null) {
@@ -112,7 +113,9 @@ export function useProjectActions(params: UseProjectActionsParams) {
   }, [busy, cancelProjectDeleteHold, deleteHoldTimer, longPressTriggeredProjectId, setDeleteHoldProjectId, setDeleteProjectTarget])
 
   const refreshProjects = useCallback(async (selectId?: string, signal?: AbortSignal) => {
+    const requestId = ++projectListRefreshRequestRef.current
     const loaded = await api<Project[]>('/api/projects', signal ? { signal } : undefined)
+    if (requestId !== projectListRefreshRequestRef.current) return
     const preferred = selectId && loaded.some((item) => item.id === selectId)
       ? selectId
       : (loaded.some((item) => item.id === currentIdRef.current) ? currentIdRef.current : '')
