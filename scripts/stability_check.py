@@ -18,7 +18,10 @@ class StabilityCheck:
     def __init__(self, base_url: str, keep_project: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
         self.keep_project = keep_project
-        self.session = httpx.Client(follow_redirects=True)
+        self.session = httpx.Client(
+            follow_redirects=True,
+            headers={"X-Operator": "stability-check"},
+        )
         self.results: list[dict[str, Any]] = []
         self.project_id = ""
         self.project_name = f"STABILITY-{time.strftime('%Y%m%d%H%M%S')}"

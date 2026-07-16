@@ -1,17 +1,29 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+from types import ModuleType
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from app import config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_stability_check() -> ModuleType:
+    script_path = REPO_ROOT / "scripts" / "stability_check.py"
+    spec = importlib.util.spec_from_file_location("stability_check_contract_test", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_cloud_data_root_is_required_and_absolute() -> None:
@@ -131,3 +143,31 @@ def test_cloud_acceptance_checks_git_sha_and_exact_frontend_assets() -> None:
     assert "公网 HTML 引用" in guide
     assert "`/api/version` 清单" in guide
     assert "本地 `frontend/dist`" in guide
+
+
+def test_stability_check_sends_an_operator_for_ai_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_stability_check()
+    monkeypatch.setattr(module, "OUT_DIR", tmp_path)
+    check = module.StabilityCheck("https://example.test")
+    headers = dict(check.session.headers)
+    check.session.close()
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["operator"] = request.headers.get("X-Operator")
+        return httpx.Response(200, json={"ok": True})
+
+    check.session = httpx.Client(
+        follow_redirects=True,
+        headers=headers,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        check.post("/api/test")
+    finally:
+        check.session.close()
+
+    assert seen["operator"] == "stability-check"
