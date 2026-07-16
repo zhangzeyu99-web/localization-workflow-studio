@@ -1,14 +1,16 @@
-"""Multi-project concurrency smoke test for the M2/M3 per-project job lease model.
+"""Persistent dual-lane queue smoke test.
 
-Exercises the model described in docs/superpowers/plans/2026-07-08-multiuser-concurrency.md:
+Exercises the current global queue contract:
 
-- two temporary projects translate in parallel under independent
-  ``long_text:{project_id}`` leases and both reach a usable, delivered state;
-- ``GET /api/system/active-jobs`` reports both jobs running at the same time;
-- no SQLite ``database is locked`` error surfaces in either run's events or in
-  the backend's own log (when this script manages the backend process);
-- a third project is rejected with the "capacity" 409 once the global
-  ``max_concurrent_ai_jobs`` cap (default 2) is already saturated.
+- formal language-table jobs are accepted into one FIFO lane, including a
+  third job that would previously have received a capacity 409;
+- quick tasks and announcements share a second FIFO lane;
+- one formal job and one quick/announcement job can run in parallel;
+- a queued job can be canceled without blocking the next FIFO item;
+- when this script manages the backend, a restart interrupts the running job
+  and resumes the queued job from persistent storage;
+- no SQLite ``database is locked`` error surfaces in run events or the managed
+  backend log.
 
 Output mirrors scripts/deployment_check.py's quiet style: one JSON line per
 step on stdout, plus a final summary line, and a process exit code of 0/1.
@@ -18,12 +20,12 @@ Usage:
     # Self-start an isolated backend on 127.0.0.1:18800 and run the smoke test.
     python scripts/concurrency_smoke.py
 
-    # Point at an already-running (isolated!) backend instead.
+    # Point at an already-running (isolated!) backend instead. This mode skips
+    # the process-restart check because the script does not own that process.
     python scripts/concurrency_smoke.py --base-url http://127.0.0.1:18800
 
 Never point this at a production backend: it patches global settings
-(provider/preset/max_concurrent_ai_jobs) and creates + deletes temporary
-projects.
+(provider/preset) and creates + deletes temporary projects.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -59,7 +62,14 @@ class ManagedBackend:
         self.process: subprocess.Popen | None = None
         self._log_fh = None
 
-    def start(self) -> None:
+    def _port_is_open(self) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            return probe.connect_ex(("127.0.0.1", self.port)) == 0
+
+    def start(self, *, append_log: bool = False) -> None:
+        if self._port_is_open():
+            raise RuntimeError(f"port {self.port} is already in use; choose an isolated port")
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ)
@@ -68,11 +78,12 @@ class ManagedBackend:
                 "LWS_DATA_ROOT": str(self.data_root),
                 "LWS_ENABLE_TEST_PROVIDER": "1",
                 "LWS_DEPLOYMENT_MODE": "local",
+                "LWS_AUTH_MODE": "off",
                 "PYTHONUTF8": "1",
                 "PYTHONIOENCODING": "utf-8",
             }
         )
-        self._log_fh = self.log_path.open("w", encoding="utf-8")
+        self._log_fh = self.log_path.open("a" if append_log else "w", encoding="utf-8")
         self.process = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", str(self.port)],
             cwd=str(ROOT),
@@ -93,7 +104,18 @@ class ManagedBackend:
                 try:
                     resp = client.get(f"{self.base_url}/api/health")
                     if resp.status_code == 200:
-                        return
+                        payload = resp.json()
+                        reported_root = Path(str(payload.get("data_root") or "")).resolve(strict=False)
+                        expected_root = self.data_root.resolve(strict=False)
+                        if (
+                            self.process is not None
+                            and self.process.poll() is None
+                            and reported_root == expected_root
+                        ):
+                            return
+                        last_exc = RuntimeError(
+                            f"health endpoint belongs to data_root={reported_root}, expected {expected_root}"
+                        )
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
                 time.sleep(0.3)
@@ -112,6 +134,14 @@ class ManagedBackend:
         finally:
             if self._log_fh:
                 self._log_fh.close()
+
+    def restart(self) -> None:
+        self.stop()
+        deadline = time.time() + 5.0
+        while self._port_is_open() and time.time() < deadline:
+            time.sleep(0.05)
+        self.start(append_log=True)
+        self.wait_healthy()
 
     def log_text(self) -> str:
         try:
@@ -132,8 +162,10 @@ class ConcurrencySmoke:
         managed_backend: ManagedBackend | None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.rows = rows
-        self.batch_size = batch_size
+        self.batch_size = max(1, batch_size)
+        # The queue assertions need enough batches to observe running/queued
+        # states reliably even on a fast local machine.
+        self.rows = max(24, rows, self.batch_size * 8)
         self.poll_timeout = poll_timeout
         self.keep_projects = keep_projects
         self.managed_backend = managed_backend
@@ -161,13 +193,13 @@ class ConcurrencySmoke:
     def _delete(self, path: str, **kwargs: Any) -> httpx.Response:
         return self.client.delete(f"{self.base_url}{path}", **kwargs)
 
-    def make_language_table(self, name: str) -> Path:
+    def make_language_table(self, name: str, *, rows: int | None = None) -> Path:
         path = self.tmp_dir / f"{name}.xlsx"
         wb = Workbook()
         ws = wb.active
         ws.title = "Language"
         ws.append(["ID", "cn", "en"])
-        for index in range(1, self.rows + 1):
+        for index in range(1, (rows or self.rows) + 1):
             ws.append([index, f"\u6309\u94ae {index}", ""])
         wb.save(path)
         wb.close()
@@ -198,7 +230,14 @@ class ConcurrencySmoke:
         self.project_ids.append(project["id"])
         return project
 
-    def create_translation_run(self, project_id: str, artifact_id: str) -> dict[str, Any]:
+    def create_translation_run(
+        self,
+        project_id: str,
+        artifact_id: str,
+        *,
+        task_origin: str = "translation_run",
+        translation_task_id: str | None = None,
+    ) -> dict[str, Any]:
         resp = self._post(
             "/api/runs",
             {
@@ -207,11 +246,50 @@ class ConcurrencySmoke:
                 "language": "en",
                 "input_artifact_id": artifact_id,
                 "batch_size": self.batch_size,
-                "task_origin": "concurrency_smoke",
+                "task_origin": task_origin,
+                "translation_task_id": translation_task_id,
             },
         )
         resp.raise_for_status()
         return resp.json()
+
+    def prepare_announcement_task(self, project_id: str) -> dict[str, Any]:
+        created = self._post(
+            f"/api/projects/{project_id}/announcement-tasks",
+            {
+                "title": f"QueueSmoke-{self.stamp}",
+                "text": "\u6d3b\u52a8\u5c06\u4e8e 10:00 \u5f00\u542f\uff0c\u8bf7\u53ca\u65f6\u9886\u53d6\u5956\u52b1\u3002",
+                "languages": ["en"],
+                "include_project_archive": False,
+            },
+        )
+        created.raise_for_status()
+        task = created.json()
+        task_id = task["id"]
+        actions = [
+            (
+                "extract-terms",
+                {
+                    "languages": ["en"],
+                    "include_project_archive": False,
+                    "ai_supplement": False,
+                },
+            ),
+            (
+                "lookup-translations",
+                {
+                    "languages": ["en"],
+                    "include_project_archive": False,
+                },
+            ),
+            ("prepare", {"languages": ["en"]}),
+        ]
+        for action, payload in actions:
+            response = self._post(f"/api/announcement-tasks/{task_id}/{action}", payload, timeout=180)
+            response.raise_for_status()
+        prepared = self._get(f"/api/announcement-tasks/{task_id}")
+        prepared.raise_for_status()
+        return prepared.json()
 
     def start_translation(self, run_id: str) -> httpx.Response:
         return self._post(
@@ -228,17 +306,49 @@ class ConcurrencySmoke:
             results = {rid: self._get(f"/api/runs/{rid}").json() for rid in run_ids}
         return results
 
-    def poll_active_jobs_concurrent(self, project_ids: set[str], timeout: float = 5.0) -> tuple[bool, list[dict[str, Any]]]:
+    def poll_announcement_task(self, task_id: str) -> dict[str, Any]:
+        deadline = time.time() + self.poll_timeout
+        task = self._get(f"/api/announcement-tasks/{task_id}").json()
+        while task.get("status") in {"queued", "running"} and time.time() < deadline:
+            time.sleep(0.3)
+            task = self._get(f"/api/announcement-tasks/{task_id}").json()
+        return task
+
+    def poll_queue_layout(
+        self,
+        *,
+        expected_running: dict[str, str],
+        expected_queued: dict[str, list[str]],
+        timeout: float = 8.0,
+    ) -> tuple[bool, dict[str, Any]]:
+        deadline = time.time() + timeout
+        last_snapshot: dict[str, Any] = {}
+        while time.time() < deadline:
+            resp = self._get("/api/system/job-queues")
+            if resp.status_code == 200:
+                last_snapshot = resp.json()
+                lanes = {item.get("lane"): item for item in last_snapshot.get("lanes") or []}
+                matches = True
+                for lane, job_id in expected_running.items():
+                    running = (lanes.get(lane) or {}).get("running") or {}
+                    matches = matches and running.get("job_id") == job_id
+                for lane, job_ids in expected_queued.items():
+                    queued = (lanes.get(lane) or {}).get("queued") or []
+                    matches = matches and [item.get("job_id") for item in queued] == job_ids
+                if matches:
+                    return True, last_snapshot
+            time.sleep(0.05)
+        return False, last_snapshot
+
+    def poll_active_jobs(self, expected_job_ids: set[str], timeout: float = 8.0) -> tuple[bool, list[dict[str, Any]]]:
         deadline = time.time() + timeout
         last_snapshot: list[dict[str, Any]] = []
         while time.time() < deadline:
             resp = self._get("/api/system/active-jobs")
             if resp.status_code == 200:
-                active = resp.json()
-                last_snapshot = active
-                seen_ids = {item.get("project_id") for item in active}
-                if project_ids.issubset(seen_ids):
-                    return True, active
+                last_snapshot = resp.json()
+                if {item.get("job_id") for item in last_snapshot} == expected_job_ids:
+                    return True, last_snapshot
             time.sleep(0.05)
         return False, last_snapshot
 
@@ -268,6 +378,7 @@ class ConcurrencySmoke:
     def execute(self) -> int:
         failed = False
         db_locked_hits: list[str] = []
+        observed_run_ids: list[str] = []
 
         health_resp = self._get("/api/health")
         health = health_resp.json() if health_resp.status_code == 200 else {}
@@ -279,18 +390,18 @@ class ConcurrencySmoke:
             failed = True
             return self._finish(failed, db_locked_hits)
 
-        settings_payload = {"provider": "test-fake", "preset": "fast", "max_concurrent_ai_jobs": 2}
+        settings_payload = {"provider": "test-fake", "preset": "fast"}
         patch_resp = self._patch("/api/settings", settings_payload)
         settings_after = patch_resp.json() if patch_resp.status_code == 200 else {}
         settings_ok = (
             patch_resp.status_code == 200
             and settings_after.get("provider") == "test-fake"
-            and int(settings_after.get("max_concurrent_ai_jobs") or 0) == 2
+            and settings_after.get("preset") == "fast"
         )
         self._step("01_settings_test_fake", settings_ok, {
             "status_code": patch_resp.status_code,
             "provider": settings_after.get("provider"),
-            "max_concurrent_ai_jobs": settings_after.get("max_concurrent_ai_jobs"),
+            "preset": settings_after.get("preset"),
         })
         if not settings_ok:
             failed = True
@@ -302,108 +413,332 @@ class ConcurrencySmoke:
             return self._finish(failed, db_locked_hits)
 
         try:
-            project_a = self.create_project(f"ConcurrencySmoke-A-{self.stamp}")
-            project_b = self.create_project(f"ConcurrencySmoke-B-{self.stamp}")
-            project_c = self.create_project(f"ConcurrencySmoke-C-{self.stamp}")
-            self._step("02_create_projects", True, {
-                "project_a": project_a["id"],
-                "project_b": project_b["id"],
-                "project_c": project_c["id"],
-            })
+            projects = {
+                name: self.create_project(f"QueueSmoke-{name}-{self.stamp}")
+                for name in ("formal-a", "formal-b", "formal-c", "quick", "announcement")
+            }
+            self._step("02_create_projects", True, {name: project["id"] for name, project in projects.items()})
 
-            artifact_a = self.upload_language_table(project_a["id"], self.make_language_table("table-a"))
-            artifact_b = self.upload_language_table(project_b["id"], self.make_language_table("table-b"))
-            artifact_c = self.upload_language_table(project_c["id"], self.make_language_table("table-c"))
-            self._step("03_upload_language_tables", True, {
-                "artifact_a": artifact_a["id"],
-                "artifact_b": artifact_b["id"],
-                "artifact_c": artifact_c["id"],
-            })
-
-            run_a = self.create_translation_run(project_a["id"], artifact_a["id"])
-            run_b = self.create_translation_run(project_b["id"], artifact_b["id"])
-            run_c = self.create_translation_run(project_c["id"], artifact_c["id"])
-            self._step("04_create_runs", True, {"run_a": run_a["id"], "run_b": run_b["id"], "run_c": run_c["id"]})
-
-            started_a = self.start_translation(run_a["id"])
-            started_b = self.start_translation(run_b["id"])
-            start_ab_ok = started_a.status_code == 200 and started_b.status_code == 200
-            self._step("05_start_two_projects_in_parallel", start_ab_ok, {
-                "run_a_status": started_a.status_code,
-                "run_b_status": started_b.status_code,
-            })
-            if not start_ab_ok:
-                failed = True
-
-            # Fired immediately after A/B are admitted, while their per-project
-            # leases should still be held: this is the "capacity" rejection check
-            # (default max_concurrent_ai_jobs=2, so a third concurrent project
-            # must be rejected).
-            started_c = self.start_translation(run_c["id"])
-            detail_c = ""
-            if started_c.status_code == 409:
-                try:
-                    detail_c = str(started_c.json().get("detail") or "")
-                except Exception:  # noqa: BLE001
-                    detail_c = started_c.text
-            capacity_ok = (
-                started_c.status_code == 409
-                and "\u5de5\u4f5c\u53f0\u5df2\u6709" in detail_c
-                and "\u4e0a\u9650 2" in detail_c
+            artifacts = {
+                name: self.upload_language_table(
+                    projects[name]["id"],
+                    self.make_language_table(f"table-{name}"),
+                )
+                for name in ("formal-a", "formal-b", "formal-c", "quick")
+            }
+            announcement_task = self.prepare_announcement_task(projects["announcement"]["id"])
+            self._step(
+                "03_prepare_inputs",
+                announcement_task.get("status") == "prepared",
+                {
+                    "artifacts": {name: artifact["id"] for name, artifact in artifacts.items()},
+                    "announcement_task": announcement_task["id"],
+                    "announcement_status": announcement_task.get("status"),
+                },
             )
-            self._step("06_third_project_rejected_capacity", capacity_ok, {
-                "status_code": started_c.status_code,
-                "detail": detail_c or (started_c.text if started_c.status_code != 200 else "(started unexpectedly)"),
-            })
-            if not capacity_ok:
+            if announcement_task.get("status") != "prepared":
                 failed = True
 
-            concurrent_ok, active_snapshot = self.poll_active_jobs_concurrent({project_a["id"], project_b["id"]}, timeout=8.0)
-            self._step("07_active_jobs_shows_both_projects_concurrently", concurrent_ok, {
-                "observed": concurrent_ok,
-                "last_snapshot": active_snapshot,
-            })
-            if not concurrent_ok:
-                failed = True
-
-            terminal = self.poll_runs([run_a["id"], run_b["id"]])
-            terminal_a = terminal[run_a["id"]]
-            terminal_b = terminal[run_b["id"]]
-            progress_a = (terminal_a.get("metadata") or {}).get("translation_progress") or {}
-            progress_b = (terminal_b.get("metadata") or {}).get("translation_progress") or {}
-            both_passed = terminal_a.get("status") == "passed" and terminal_b.get("status") == "passed"
-            rows_delivered_ok = (
-                int(progress_a.get("completed_rows") or 0) == self.rows
-                and int(progress_b.get("completed_rows") or 0) == self.rows
+            formal_runs = {
+                name: self.create_translation_run(
+                    projects[name]["id"],
+                    artifacts[name]["id"],
+                    translation_task_id=f"formal-smoke-{self.stamp}-{name}",
+                )
+                for name in ("formal-a", "formal-b", "formal-c")
+            }
+            quick_run = self.create_translation_run(
+                projects["quick"]["id"],
+                artifacts["quick"]["id"],
+                task_origin="quick_task",
+                translation_task_id=f"quick-task-smoke-{self.stamp}",
             )
-            self._step("08_both_runs_passed_and_deliverable", both_passed and rows_delivered_ok, {
-                "run_a_status": terminal_a.get("status"),
-                "run_b_status": terminal_b.get("status"),
-                "run_a_completed_rows": progress_a.get("completed_rows"),
-                "run_b_completed_rows": progress_b.get("completed_rows"),
-                "expected_rows": self.rows,
-            })
-            if not (both_passed and rows_delivered_ok):
+            observed_run_ids.extend([run["id"] for run in formal_runs.values()])
+            observed_run_ids.append(quick_run["id"])
+            self._step(
+                "04_create_runs",
+                True,
+                {
+                    "formal": {name: run["id"] for name, run in formal_runs.items()},
+                    "quick": quick_run["id"],
+                },
+            )
+
+            formal_starts = {
+                name: self.start_translation(formal_runs[name]["id"])
+                for name in ("formal-a", "formal-b", "formal-c")
+            }
+            formal_job_ids = {
+                name: f"run:{formal_runs[name]['id']}"
+                for name in ("formal-a", "formal-b", "formal-c")
+            }
+            formal_fifo_observed, formal_snapshot = self.poll_queue_layout(
+                expected_running={"language_table": formal_job_ids["formal-a"]},
+                expected_queued={
+                    "language_table": [
+                        formal_job_ids["formal-b"],
+                        formal_job_ids["formal-c"],
+                    ],
+                    "quick_announcement": [],
+                },
+            )
+            formal_fifo_ok = (
+                all(response.status_code == 200 for response in formal_starts.values())
+                and formal_fifo_observed
+            )
+            self._step(
+                "05_formal_lane_accepts_third_and_is_fifo",
+                formal_fifo_ok,
+                {
+                    "start_statuses": {
+                        name: response.status_code
+                        for name, response in formal_starts.items()
+                    },
+                    "queue_snapshot": formal_snapshot,
+                },
+            )
+            if not formal_fifo_ok:
                 failed = True
 
-            events_text = "\n".join(
-                [
-                    self.run_events_text(run_a["id"]),
-                    self.run_events_text(run_b["id"]),
-                    self.run_events_text(run_c["id"]),
-                ]
+            canceled_response = self._post(
+                f"/api/system/job-queues/{formal_job_ids['formal-b']}/cancel"
             )
+            canceled_payload = (
+                canceled_response.json()
+                if canceled_response.headers.get("content-type", "").startswith("application/json")
+                else {}
+            )
+            canceled_job = canceled_payload.get("queue_job") or {}
+            canceled_run = canceled_payload.get("business_target") or {}
+            cancel_ok = (
+                canceled_response.status_code == 200
+                and canceled_job.get("status") == "canceled"
+                and canceled_run.get("status") == "canceled"
+            )
+            self._step(
+                "06_cancel_queued_formal_job",
+                cancel_ok,
+                {
+                    "status_code": canceled_response.status_code,
+                    "queue_status": canceled_job.get("status"),
+                    "run_status": canceled_run.get("status"),
+                },
+            )
+            if not cancel_ok:
+                failed = True
+
+            quick_started = self.start_translation(quick_run["id"])
+            announcement_started = self._post(
+                f"/api/announcement-tasks/{announcement_task['id']}/translate/start",
+                {"languages": ["en"], "provider": "test-fake", "batch_size": self.batch_size},
+                timeout=30,
+            )
+            quick_job_id = f"run:{quick_run['id']}"
+            announcement_job_id = f"announcement:{announcement_task['id']}"
+            dual_layout_ok, dual_snapshot = self.poll_queue_layout(
+                expected_running={
+                    "language_table": formal_job_ids["formal-a"],
+                    "quick_announcement": quick_job_id,
+                },
+                expected_queued={
+                    "language_table": [formal_job_ids["formal-c"]],
+                    "quick_announcement": [announcement_job_id],
+                },
+            )
+            active_ok, active_snapshot = self.poll_active_jobs(
+                {formal_job_ids["formal-a"], quick_job_id}
+            )
+            dual_lane_ok = (
+                quick_started.status_code == 200
+                and announcement_started.status_code == 200
+                and dual_layout_ok
+                and active_ok
+            )
+            self._step(
+                "07_two_lanes_run_in_parallel_and_short_lane_is_fifo",
+                dual_lane_ok,
+                {
+                    "quick_start_status": quick_started.status_code,
+                    "announcement_start_status": announcement_started.status_code,
+                    "queue_snapshot": dual_snapshot,
+                    "active_jobs": active_snapshot,
+                },
+            )
+            if not dual_lane_ok:
+                failed = True
+
+            running_cancel_responses = {
+                "formal": self._post(
+                    f"/api/system/job-queues/{formal_job_ids['formal-a']}/cancel"
+                ),
+                "quick": self._post(
+                    f"/api/system/job-queues/{quick_job_id}/cancel"
+                ),
+            }
+            running_cancel_payloads = {
+                name: (
+                    response.json()
+                    if response.headers.get("content-type", "").startswith("application/json")
+                    else {}
+                )
+                for name, response in running_cancel_responses.items()
+            }
+            running_cancel_ok = all(
+                response.status_code == 200
+                and bool((running_cancel_payloads[name].get("queue_job") or {}).get("cancel_requested"))
+                for name, response in running_cancel_responses.items()
+            )
+            self._step(
+                "08_cancel_running_lane_heads",
+                running_cancel_ok,
+                {
+                    name: {
+                        "status_code": response.status_code,
+                        "queue_status": (
+                            running_cancel_payloads[name].get("queue_job") or {}
+                        ).get("status"),
+                        "cancel_requested": (
+                            running_cancel_payloads[name].get("queue_job") or {}
+                        ).get("cancel_requested"),
+                    }
+                    for name, response in running_cancel_responses.items()
+                },
+            )
+            if not running_cancel_ok:
+                failed = True
+
+            terminal_runs = self.poll_runs(observed_run_ids)
+            terminal_announcement = self.poll_announcement_task(announcement_task["id"])
+            expected_statuses = {
+                formal_runs["formal-a"]["id"]: "canceled",
+                formal_runs["formal-b"]["id"]: "canceled",
+                formal_runs["formal-c"]["id"]: "passed",
+                quick_run["id"]: "canceled",
+            }
+            statuses_ok = all(
+                terminal_runs[run_id].get("status") == expected
+                for run_id, expected in expected_statuses.items()
+            )
+            completed_rows = {
+                run_id: ((terminal_runs[run_id].get("metadata") or {}).get("translation_progress") or {}).get("completed_rows")
+                for run_id, expected in expected_statuses.items()
+                if expected == "passed"
+            }
+            rows_ok = all(int(value or 0) == self.rows for value in completed_rows.values())
+            announcement_ok = terminal_announcement.get("status") == "translated"
+            terminal_ok = statuses_ok and rows_ok and announcement_ok
+            self._step(
+                "09_fifo_jobs_reach_expected_terminal_states",
+                terminal_ok,
+                {
+                    "run_statuses": {
+                        run_id: terminal_runs[run_id].get("status")
+                        for run_id in expected_statuses
+                    },
+                    "completed_rows": completed_rows,
+                    "expected_rows": self.rows,
+                    "announcement_status": terminal_announcement.get("status"),
+                },
+            )
+            if not terminal_ok:
+                failed = True
+
+            if self.managed_backend is not None:
+                restart_rows = max(80, self.batch_size * 20)
+                restart_row_counts = {"running": restart_rows, "queued": 1}
+                restart_projects = {
+                    name: self.create_project(f"QueueSmoke-restart-{name}-{self.stamp}")
+                    for name in ("running", "queued")
+                }
+                restart_artifacts = {
+                    name: self.upload_language_table(
+                        restart_projects[name]["id"],
+                        self.make_language_table(
+                            f"restart-{name}",
+                            rows=restart_row_counts[name],
+                        ),
+                    )
+                    for name in ("running", "queued")
+                }
+                restart_runs = {
+                    name: self.create_translation_run(
+                        restart_projects[name]["id"],
+                        restart_artifacts[name]["id"],
+                        translation_task_id=f"formal-smoke-restart-{self.stamp}-{name}",
+                    )
+                    for name in ("running", "queued")
+                }
+                observed_run_ids.extend(run["id"] for run in restart_runs.values())
+                restart_job_ids = {
+                    name: f"run:{restart_runs[name]['id']}"
+                    for name in ("running", "queued")
+                }
+                restart_start_responses = {
+                    name: self.start_translation(restart_runs[name]["id"])
+                    for name in ("running", "queued")
+                }
+                restart_layout_ok, restart_snapshot = self.poll_queue_layout(
+                    expected_running={"language_table": restart_job_ids["running"]},
+                    expected_queued={
+                        "language_table": [restart_job_ids["queued"]],
+                        "quick_announcement": [],
+                    },
+                )
+                recovery_result: dict[str, dict[str, Any]] = {}
+                if restart_layout_ok:
+                    self.managed_backend.restart()
+                    recovery_result = self.poll_runs(
+                        [restart_runs["running"]["id"], restart_runs["queued"]["id"]]
+                    )
+                recovery_ok = (
+                    all(response.status_code == 200 for response in restart_start_responses.values())
+                    and restart_layout_ok
+                    and recovery_result.get(restart_runs["running"]["id"], {}).get("status") == "needs_input"
+                    and recovery_result.get(restart_runs["queued"]["id"], {}).get("status") == "passed"
+                    and int(
+                        (
+                            recovery_result.get(restart_runs["queued"]["id"], {}).get("metadata") or {}
+                        ).get("translation_progress", {}).get("completed_rows") or 0
+                    )
+                    == restart_row_counts["queued"]
+                )
+                self._step(
+                    "10_restart_interrupts_running_and_resumes_queued",
+                    recovery_ok,
+                    {
+                        "start_statuses": {
+                            name: response.status_code
+                            for name, response in restart_start_responses.items()
+                        },
+                        "before_restart": restart_snapshot,
+                        "after_restart": {
+                            name: recovery_result.get(run["id"], {}).get("status")
+                            for name, run in restart_runs.items()
+                        },
+                        "restart_rows": restart_row_counts,
+                    },
+                )
+                if not recovery_ok:
+                    failed = True
+            else:
+                self._step(
+                    "10_restart_recovery_skipped",
+                    True,
+                    "external --base-url mode does not own the backend process; run without --base-url to exercise restart recovery",
+                )
+
+            events_text = "\n".join(self.run_events_text(run_id) for run_id in observed_run_ids)
             if "database is locked" in events_text.lower():
                 db_locked_hits.append("run_events")
             if self.managed_backend is not None and "database is locked" in self.managed_backend.log_text().lower():
                 db_locked_hits.append("backend_log")
-            self._step("09_no_database_is_locked", not db_locked_hits, {"hits": db_locked_hits})
+            self._step("11_no_database_is_locked", not db_locked_hits, {"hits": db_locked_hits})
             if db_locked_hits:
                 failed = True
 
             cleanup_results = self.cleanup_projects()
             cleanup_ok = self.keep_projects or all(str(v) in {"200"} for v in cleanup_results.values())
-            self._step("10_cleanup_temporary_projects", cleanup_ok, cleanup_results)
+            self._step("12_cleanup_temporary_projects", cleanup_ok, cleanup_results)
             if not cleanup_ok:
                 failed = True
 
@@ -436,11 +771,16 @@ class ConcurrencySmoke:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Multi-project concurrency smoke test.")
+    parser = argparse.ArgumentParser(description="Persistent dual-lane queue smoke test.")
     parser.add_argument("--base-url", default=None, help="Existing isolated backend URL. Omit to self-start one.")
     parser.add_argument("--port", type=int, default=18800, help="Port to self-start the backend on (default 18800).")
     parser.add_argument("--data-root", default=None, help="LWS_DATA_ROOT for the self-started backend.")
-    parser.add_argument("--rows", type=int, default=12, help="Rows per language table (default 12).")
+    parser.add_argument(
+        "--rows",
+        type=int,
+        default=24,
+        help="Rows per language table; raised to at least 24 and eight batches so queue states remain observable.",
+    )
     parser.add_argument("--batch-size", type=int, default=2, help="Translation batch size (default 2).")
     parser.add_argument("--poll-timeout", type=int, default=120, help="Seconds to wait for runs to reach a terminal state.")
     parser.add_argument("--keep-projects", action="store_true", help="Do not delete the temporary projects (debugging).")
@@ -457,14 +797,30 @@ def main() -> int:
         temp_root = Path(args.data_root) if args.data_root else Path(tempfile.mkdtemp(prefix=f"lws-concurrency-smoke-data-{stamp}-"))
         log_path = ROOT / ".tmp" / "concurrency-smoke" / stamp / "backend.log"
         managed_backend = ManagedBackend(port=args.port, data_root=temp_root, log_path=log_path)
-        print(json.dumps({"step": "start_backend", "ok": True, "result": {"port": args.port, "data_root": str(temp_root), "log": str(log_path)}}, ensure_ascii=False))
-        managed_backend.start()
+        startup_result = {"port": args.port, "data_root": str(temp_root), "log": str(log_path)}
         try:
+            managed_backend.start()
             managed_backend.wait_healthy()
         except Exception as exc:  # noqa: BLE001
-            print(json.dumps({"step": "start_backend", "ok": False, "result": str(exc)}, ensure_ascii=False))
+            startup_entry = {
+                "step": "start_backend",
+                "ok": False,
+                "result": {**startup_result, "error": str(exc)},
+            }
+            print(json.dumps(startup_entry, ensure_ascii=False))
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                json.dumps(
+                    {"base_url": managed_backend.base_url, "steps": [startup_entry]},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            print(f"report={report_path}")
             managed_backend.stop()
             return 1
+        print(json.dumps({"step": "start_backend", "ok": True, "result": startup_result}, ensure_ascii=False))
         base_url = managed_backend.base_url
 
     smoke = ConcurrencySmoke(

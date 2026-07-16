@@ -29,6 +29,8 @@ def _write_required_tree(root: Path) -> None:
         "deploy/lws.env.example": "LWS_DATA_ROOT=/var/lib/lws\n",
         "start-lws.sh": "#!/usr/bin/env bash\n",
         "backend/app/main.py": "app = object()\n",
+        "scripts/create_admin.py": "def main():\n    return 0\n",
+        "scripts/deployment_auth.py": "def login(*args, **kwargs):\n    return {}\n",
         "settings.example.json": "{}\n",
     }
     for name, content in required.items():
@@ -236,6 +238,14 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert "$LWS_DATA_ROOT/settings.local.json" in readme
     assert "/srv/lwstudio/current" in readme
     assert "/srv/lwstudio/data" in readme
+    assert "scripts/create_admin.py" in readme
+    assert "LWS_ADMIN_USER" in readme
+    assert "LWS_ADMIN_PASSWORD" in readme
+    assert "auth_fail_closed" in readme
+    assert "--auth-user" in readme
+    assert "--auth-password" in readme
+    assert "scripts/create_admin.py" in files
+    assert "scripts/deployment_auth.py" in files
     assert "/opt/lwstudio" not in readme
     assert "/var/lib/lwstudio" not in readme
 

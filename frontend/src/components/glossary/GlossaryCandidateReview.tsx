@@ -11,6 +11,7 @@ export type GlossaryCandidateReviewProps = {
   language: LanguageCode
   busy: boolean
   status?: string
+  canCurate?: boolean
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => boolean | void | Promise<boolean | void>
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: ResolveAction) => void | Promise<void>
   onTranslateMissingCandidates: (batchId: string) => void | Promise<void>
@@ -22,6 +23,7 @@ export function GlossaryCandidateReview({
   language,
   busy,
   status = '',
+  canCurate = true,
   onUpdateCandidate,
   onResolveCandidates,
   onTranslateMissingCandidates,
@@ -44,7 +46,7 @@ export function GlossaryCandidateReview({
       <div className="confirm-panel">
         <div className="confirm-head">
           <h4 id="glossary-candidate-review-title">确认候选</h4>
-          <div className="confirm-actions">
+          {canCurate ? <div className="confirm-actions">
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -72,7 +74,7 @@ export function GlossaryCandidateReview({
             >
               确认可用候选
             </button>
-          </div>
+          </div> : null}
         </div>
         <div role="status" aria-label="候选操作状态" aria-live="polite" className="archive-import-live">
           {status || `待确认 ${pendingCandidates.length} 条候选。`}
@@ -88,6 +90,7 @@ export function GlossaryCandidateReview({
                     candidate={candidate}
                     batchId={batch?.id || ''}
                     busy={busy}
+                    canCurate={canCurate}
                     onUpdateCandidate={onUpdateCandidate}
                     onResolveCandidates={onResolveCandidates}
                   />
@@ -115,12 +118,14 @@ function GlossaryCandidateReviewRow({
   candidate,
   batchId,
   busy,
+  canCurate,
   onUpdateCandidate,
   onResolveCandidates,
 }: {
   candidate: GlossaryCandidate
   batchId: string
   busy: boolean
+  canCurate: boolean
   onUpdateCandidate: GlossaryCandidateReviewProps['onUpdateCandidate']
   onResolveCandidates: GlossaryCandidateReviewProps['onResolveCandidates']
 }) {
@@ -167,7 +172,7 @@ function GlossaryCandidateReviewRow({
       <td>{cell('note')}</td>
       <td>
         <div className="term-review-actions">
-          {editing ? (
+          {!canCurate ? null : editing ? (
             <>
               <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => void save(false)}>保存</button>
               <button type="button" className="btn btn-sm" disabled={busy || !batchId || !draft.target.trim()} onClick={() => void save(true)}>保存并加入</button>

@@ -6,9 +6,11 @@ import json
 import subprocess
 from pathlib import Path
 
-from .. import background_jobs, db, job_queue
+from .. import auth, background_jobs, db, job_queue
+from ..authz import require_project_access
 from ..config import (
     DATA_ROOT,
+    deployment_mode,
     load_settings,
     public_settings,
     save_settings,
@@ -36,11 +38,8 @@ APP_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _deployment_mode() -> str:
-    raw_mode = os.environ.get("LWS_DEPLOYMENT_MODE")
-    if raw_mode is None and (str(DATA_ROOT).replace("\\", "/").startswith("/data/web/") or str(APP_ROOT).replace("\\", "/").startswith("/data/web/")):
-        raw_mode = "cloud"
-    mode = (raw_mode or "local").strip().lower()
-    return mode if mode in {"local", "cloud"} else "local"
+    """Compatibility wrapper retained for tests and existing router callers."""
+    return deployment_mode(data_root=DATA_ROOT, app_root=APP_ROOT)
 
 
 def _is_writable(path: Path) -> bool:
@@ -188,7 +187,18 @@ def get_settings() -> dict[str, Any]:
 
 @router.get("/api/system/active-jobs")
 def get_active_jobs() -> list[dict[str, Any]]:
-    return [_queue_entry(entry) for entry in job_queue.list_jobs(status="running")]
+    return [
+        _queue_entry(entry)
+        for entry in job_queue.list_jobs(status="running")
+        if _job_visible_to_current_user(entry)
+    ]
+
+
+def _job_visible_to_current_user(entry: dict[str, Any]) -> bool:
+    user = auth.current_user()
+    if user is None or user.get("role") == "admin":
+        return True
+    return db.is_project_member(str(entry.get("project_id") or ""), str(user["id"]))
 
 
 def _queue_translation_task_id(entry: dict[str, Any]) -> str:
@@ -237,7 +247,11 @@ def get_job_queues() -> dict[str, Any]:
         rows = job_queue.list_active_jobs(lane=lane)
         running_row = next((row for row in rows if row["status"] == "running"), None)
         waiting_rows = [row for row in rows if row["status"] == "queued"]
-        running = _queue_entry(running_row) if running_row else None
+        running = (
+            _queue_entry(running_row)
+            if running_row and _job_visible_to_current_user(running_row)
+            else None
+        )
         queued = [
             _queue_entry(
                 row,
@@ -245,6 +259,7 @@ def get_job_queues() -> dict[str, Any]:
                 ahead=(1 if running_row else 0) + index - 1,
             )
             for index, row in enumerate(waiting_rows, start=1)
+            if _job_visible_to_current_user(row)
         ]
         lanes.append({"lane": lane, "label": labels[lane], "running": running, "queued": queued})
     return {"lanes": lanes}
@@ -252,6 +267,10 @@ def get_job_queues() -> dict[str, Any]:
 
 @router.post("/api/system/job-queues/{job_id}/cancel")
 def cancel_queued_job(job_id: str) -> dict[str, Any]:
+    existing = job_queue.get_job(job_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    require_project_access(str(existing.get("project_id") or ""))
     result = background_jobs.cancel(job_id)
     if result is None:
         raise HTTPException(status_code=404, detail="job not found")

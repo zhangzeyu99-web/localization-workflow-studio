@@ -2,6 +2,17 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.5.0 - 2026-07-16
+
+Account permissions and combined workbench lifecycle release.
+
+- Added server-side login sessions, argon2id password hashing, forced first-login password changes, login abuse protection, and fail-closed cloud authentication.
+- Added global `admin` / `ops` / `member` roles, per-project membership, centrally declared route capabilities, admin user management, project member management, and permission-aware frontend controls.
+- Consolidated formal translation, quick task, and announcement lifecycles so completed work starts from a clean task while running work resumes the exact task; historical deliveries remain view-only.
+- Hardened glossary and translation-archive imports with preview/commit semantics, deterministic replacement rules, rollback support, and preserved archive lookup as a soft reference for quick tasks and announcements without writing those results back.
+- Integrated Vietnamese as internal language code `VN`, removed the obsolete `EN2` input, and fixed quick-task result isolation across tasks and languages.
+- Kept the persistent dual-lane queue, restart recovery, queue visibility, Git/static-asset deployment checks, and release archive verification while extending deployment checks and stability smoke tests to authenticated cloud installations.
+
 ## 1.4.0 - 2026-07-15
 
 Persistent dual-lane queue and shared-workbench reliability release.

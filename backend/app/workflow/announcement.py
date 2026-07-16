@@ -694,6 +694,8 @@ def apply_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     if not workbook_artifact_id:
         raise ValueError("translation workbook is required")
     workbook_artifact = db.get_artifact(workbook_artifact_id)
+    if workbook_artifact["project_id"] != task["project_id"]:
+        raise KeyError(workbook_artifact_id)
     segments = metadata.get("segments") or _announcement_task_segments(task)
     workbook_path = Path(workbook_artifact["path"])
     rows = _read_announcement_translation_workbook(workbook_path, languages)
@@ -759,6 +761,8 @@ def fix_announcement_hard_blockers(task_id: str, request: Any) -> dict[str, Any]
     if not workbook_artifact_id:
         raise ValueError("translation workbook is missing; prepare/import translations before fixing")
     source_artifact = db.get_artifact(workbook_artifact_id)
+    if source_artifact["project_id"] != task["project_id"]:
+        raise KeyError(workbook_artifact_id)
     source_path = Path(source_artifact["path"])
     if not source_path.exists():
         raise FileNotFoundError(str(source_path))
@@ -981,8 +985,11 @@ def generate_announcement_terms_package(project_id: str, request: Any) -> dict[s
     material_ids = list(getattr(request, "material_artifact_ids", []) or [])
     if not text.strip() and not material_ids:
         raise ValueError("announcement terms requires text or material_artifact_ids")
+    material_artifacts = [db.get_artifact(artifact_id) for artifact_id in material_ids]
+    if any(artifact["project_id"] != project_id for artifact in material_artifacts):
+        raise KeyError("material_artifact_ids")
     if material_ids:
-        text = "\n".join([text, *[_read_lookup_material_text(Path(db.get_artifact(artifact_id)["path"])) for artifact_id in material_ids]]).strip()
+        text = "\n".join([text, *[_read_lookup_material_text(Path(artifact["path"])) for artifact in material_artifacts]]).strip()
     if not text.strip():
         raise ValueError("announcement text is empty")
     languages = _normalize_announcement_languages(getattr(request, "languages", []) or [], fallback=["en"])
@@ -997,9 +1004,9 @@ def generate_announcement_terms_package(project_id: str, request: Any) -> dict[s
     output = run_dir(run["id"]) / "announcement_terms"
     output.mkdir(parents=True, exist_ok=True)
     base = "announcement"
-    if material_ids:
+    if material_artifacts:
         try:
-            base = _artifact_source_stem(db.get_artifact(material_ids[0]))
+            base = _artifact_source_stem(material_artifacts[0])
         except KeyError:
             base = "announcement"
     stamp = _today_stamp()
@@ -1080,18 +1087,27 @@ def legacy_prepare_announcement_docx(project_id: str, request: Any) -> dict[str,
     return {**prepared, "run": db.get_run(run["id"]), "artifacts": artifacts}
 
 
-def legacy_import_announcement_docx_ai(project_id: str, request: Any) -> dict[str, Any]:
-    run = db.get_run(getattr(request, "prepare_run_id"))
+def _legacy_announcement_task_id(project_id: str, prepare_run_id: str) -> str:
+    run = db.get_run(prepare_run_id)
+    if run["project_id"] != project_id:
+        raise KeyError(prepare_run_id)
     task_id = str((run.get("metadata") or {}).get("task_id") or "")
     if not task_id:
         raise KeyError("task_id")
+    task = db.get_announcement_task(task_id)
+    if task["project_id"] != project_id:
+        raise KeyError(task_id)
+    return task_id
+
+
+def legacy_import_announcement_docx_ai(project_id: str, request: Any) -> dict[str, Any]:
+    task_id = _legacy_announcement_task_id(project_id, getattr(request, "prepare_run_id"))
     result = import_announcement_ai_response(task_id, request)
     return {"summary": result["summary"], "task": result["task"], "artifacts": result["artifacts"]}
 
 
 def legacy_apply_announcement_docx(project_id: str, request: Any) -> dict[str, Any]:
-    run = db.get_run(getattr(request, "prepare_run_id"))
-    task_id = str((run.get("metadata") or {}).get("task_id") or "")
+    task_id = _legacy_announcement_task_id(project_id, getattr(request, "prepare_run_id"))
     result = apply_announcement_task(task_id, request)
     legacy_artifacts = []
     for artifact in result["artifacts"]:
@@ -1105,8 +1121,7 @@ def legacy_apply_announcement_docx(project_id: str, request: Any) -> dict[str, A
 
 
 def legacy_deliver_announcement_docx(project_id: str, request: Any) -> dict[str, Any]:
-    run = db.get_run(getattr(request, "prepare_run_id"))
-    task_id = str((run.get("metadata") or {}).get("task_id") or "")
+    task_id = _legacy_announcement_task_id(project_id, getattr(request, "prepare_run_id"))
     result = deliver_announcement_task(task_id, request)
     for artifact in result["artifacts"]:
         if artifact["kind"] == "announcement_delivery_package":

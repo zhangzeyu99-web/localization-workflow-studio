@@ -126,12 +126,31 @@ def test_environment_example_uses_external_data_root_and_contains_no_secret() ->
     )
 
     assert values["LWS_DEPLOYMENT_MODE"] == "cloud"
+    assert values["LWS_AUTH_MODE"] == "required"
     assert values["LWS_DATA_ROOT"] == "/srv/lwstudio/data"
     assert values["LWS_GIT_SHA"] == "replace-with-release-git-sha"
+    assert values["LWS_ADMIN_USER"] == "admin"
+    assert values["LWS_ADMIN_PASSWORD"] == "replace-with-strong-bootstrap-password"
     assert PurePosixPath(values["LWS_DATA_ROOT"]).is_absolute()
     assert "/releases/" not in values["LWS_DATA_ROOT"]
     assert "API_KEY" not in env_text.upper()
     assert "SECRET" not in env_text.upper()
+
+
+def test_backend_requirements_include_argon2_password_hashing() -> None:
+    requirements = (REPO_ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8")
+
+    assert "argon2-cffi>=23.1.0" in requirements
+
+
+def test_public_release_docs_match_repository_version() -> None:
+    version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    github_guide = (REPO_ROOT / "docs" / "GITHUB_MANAGEMENT.md").read_text(encoding="utf-8")
+    pages_index = (REPO_ROOT / "docs" / "index.html").read_text(encoding="utf-8")
+
+    assert f"当前正式版本：`{version}`" in github_guide
+    assert f"正式版 v{version}" in pages_index
+    assert f"<strong>{version}</strong><span>当前正式版本</span>" in pages_index
 
 
 def test_cloud_acceptance_checks_git_sha_and_exact_frontend_assets() -> None:

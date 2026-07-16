@@ -31,6 +31,7 @@ export function StepFreqV2({
   glossaryCandidates,
   busy,
   status,
+  canCurate = true,
   onUpdateCandidate,
   onResolveCandidates,
   onTranslateMissingCandidates,
@@ -49,6 +50,7 @@ export function StepFreqV2({
   busy: boolean
   status: string
   onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<boolean | void>
+  canCurate?: boolean
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
   onTranslateMissingCandidates: (batchId: string) => void
   selectedLanguage: LanguageCode
@@ -57,6 +59,7 @@ export function StepFreqV2({
 }) {
   const activeBatch = glossaryBatches[0] || null
   const reviewState = glossaryReviewState(latestRun, glossaryBatches, glossaryCandidates)
+  const needsTranslation = glossaryCandidates.filter((candidate) => candidate.status === 'pending' && !candidate.target?.trim())
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id ? translationReadiness : null
   const inputMode = translationInputMode(readiness)
   const blocked = !sourceArtifact || inputMode === 'ready_for_qa' || inputMode === 'invalid'
@@ -83,13 +86,15 @@ export function StepFreqV2({
       ) : null}
       <div className="row-actions action-card">
         <span className="asset-meta">语言表：{sourceArtifact?.label || '未选择'}</span>
-        <button className="btn btn-primary" disabled={blocked || busy || reviewState.extractionActive} onClick={() => onGlossaryExtract(sourceArtifact)}>扫描候选</button>
+        {canCurate ? <button className="btn btn-primary" disabled={blocked || busy || reviewState.extractionActive} onClick={() => onGlossaryExtract(sourceArtifact)}>扫描候选</button> : null}
       </div>
+      {!canCurate ? <div className="info-line compact">术语候选由项目运营维护；如无待确认候选，可直接进入下一步。</div> : null}
       {reviewState.extractionActive ? <div className="info-line compact">正在整理术语候选，请完成后再继续。</div> : null}
       <details className="manual-maintenance compact-maintenance">
         <summary>更多设置</summary>
         <div className="language-inline-select">
           <span>候选补译与扫描规则。</span>
+          {canCurate ? <button className="btn btn-ghost" disabled={!activeBatch || !needsTranslation.length || busy} onClick={() => activeBatch && onTranslateMissingCandidates(activeBatch.id)}>补译空候选</button> : null}
           <button className="btn btn-ghost" onClick={onFreq}>查看扫描规则</button>
         </div>
       </details>
@@ -100,6 +105,7 @@ export function StepFreqV2({
           language={selectedLanguage}
           busy={busy}
           status={status}
+          canCurate={canCurate}
           onUpdateCandidate={onUpdateCandidate}
           onResolveCandidates={onResolveCandidates}
           onTranslateMissingCandidates={onTranslateMissingCandidates}

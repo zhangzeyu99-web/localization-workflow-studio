@@ -7,18 +7,27 @@
 ```powershell
 python scripts\deployment_check.py --base-url http://127.0.0.1:5174 --expect-version (Get-Content VERSION)
 python scripts\stability_check.py --base-url http://127.0.0.1:5174
-python scripts\concurrency_smoke.py --base-url http://127.0.0.1:5174
+python scripts\concurrency_smoke.py
 ```
+
+`concurrency_smoke.py` 默认自建临时数据目录和独立 18800 端口，并实际重启该临时后端验证恢复。只有确认目标也是隔离实例时才使用 `--base-url`；该模式不接管进程，因此会跳过重启检查。
 
 ## Linux / 线上
 
 ```bash
 python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider --expect-version $(cat VERSION)
 python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
-python3.11 scripts/concurrency_smoke.py --base-url https://ai-lwstudio.example.com
 ```
 
-多人并发场景务必在隔离实例（临时数据目录、独立端口）上跑，不要对生产库跑。
+强制登录的部署（云端默认）需要额外带 `--auth-user/--auth-password`，见 `docs/CLOUD_DEPLOYMENT.md`「账号与认证」一节：
+
+```bash
+python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider \
+  --expect-version $(cat VERSION) --auth-user admin --auth-password '管理员密码'
+python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com --auth-user admin --auth-password '管理员密码'
+```
+
+双 lane 队列场景务必在隔离实例（临时数据目录、独立端口）上跑，不要对生产库跑。Linux 验收机可直接运行 `python3.11 scripts/concurrency_smoke.py --port 18800`。
 
 ## 必测项
 
@@ -37,15 +46,25 @@ python3.11 scripts/concurrency_smoke.py --base-url https://ai-lwstudio.example.c
 13. 验收结束后临时项目被删除，线上不残留测试数据。
 14. 大语言表/多语言包翻译 run 在 Step 7 显示 preflight 和 cache-lint 结果，交付时 readback gate 能阻断目标列缺失或空目标单元格的最终文件。
 
-## 多人并发测试项（M2-M5）
+## 双 lane 持久队列测试项
 
-15. 两个不同项目同时发起翻译 run，各自基于独立的 `long_text:{project_id}` lease 并行跑完、都交付成功，互不阻塞、互不踩坏对方的 metadata（`scripts/concurrency_smoke.py` 覆盖）。
-16. 同一项目内第二个任务（翻译/QA/公告/模型修复）在第一个任务运行期间发起，被拒绝且提示"该项目正在执行任务（{任务描述}），请等它完成或先取消"（`project_busy`）。
-17. 工作台整体活跃任务数达到 `max_concurrent_ai_jobs`（默认 2）上限时，新任务被拒绝且提示"工作台已有 {N} 个任务在跑（上限 {M}），请稍后再试"（`capacity`）；上限释放后新任务能正常起跑。
-18. 前端头部活跃任务面板能显示 `GET /api/system/active-jobs` 返回的全部活跃任务（项目名、任务类型、开始时间），且 409 排队提示能区分"项目忙"与"容量满"两种场景。
-19. 后端重启后，重启前所有残留的 `long_text:*` lease 被统一清理，对应的 run 标记为 `needs_input`，不会有任务因残留 lease 被永久卡住。
-20. 一个任务运行期间，另一处修改全局 `settings.local.json`（provider/preset 等）不影响已经在跑的任务——已启动任务使用启动时的 settings 快照，运行结果不受运行中途配置变更影响。
-21. 项目存在活跃任务时尝试删除该项目，被拒绝且提示"该项目正在执行任务（{任务描述}），请先取消或等待任务完成再删除"；任务结束后删除能正常成功。
+15. 全局固定两条 lane：正式翻译、正式 QA/修复和多语言编排进入 `language_table`；快速任务全链路与公告翻译进入 `quick_announcement`。每条 lane 同时最多一个 `running`，两条 lane 可各运行一个任务。
+16. 三个不同项目连续发起正式翻译时都返回成功：第一项 `running`，第二、三项按提交顺序 `queued`，完成或取消队首后依次推进；不再期待跨项目正式任务同时运行，也不再期待第三项返回 `capacity` 409（`scripts/concurrency_smoke.py` 覆盖）。
+17. 快速任务与公告共享 `quick_announcement` lane 并严格 FIFO：先启动的快速任务运行时，后提交的公告显示为排队；不得出现该 lane 内两项同时 `running`（`scripts/concurrency_smoke.py` 覆盖）。
+18. `GET /api/system/active-jobs` 只返回两条 lane 当前真正运行的任务；`GET /api/system/job-queues` 同时返回各 lane 的 running、queued、position 和 ahead，前端面板与项目状态必须一致。
+19. 取消排队项后，该项立即变为 `canceled` 且永不执行，后续项仍保持原 FIFO 顺序；取消运行项时先持久化 `cancel_requested`，在阶段边界结束后自动调度下一项（`scripts/concurrency_smoke.py` 覆盖排队与运行取消）。
+20. 后端重启时，原 `running` 队列记录转为 `interrupted`（已请求取消的转为 `canceled`），业务 run 恢复为可继续状态；原 `queued` 记录保留并在 handler 注册完成后自动继续，不能重复执行或永久卡住。默认自管模式的 `scripts/concurrency_smoke.py` 覆盖真实进程重启。
+21. 一个任务运行期间，另一处修改全局 `settings.local.json`（provider/preset 等）不影响已经在跑的任务——任务在真正 dispatch 时读取一次 settings 快照，运行结果不受中途配置变更影响。
+22. 项目存在 `staged/queued/running` 队列项时尝试删除该项目必须被拒绝；任务完成或取消后删除能正常成功，队列记录和业务数据一并清理。
+
+## 账号与权限测试项（A1-A4）
+
+23. 云端/强制登录部署下，未登录访问 `GET /api/projects`（或任意业务 API）返回 401；`check.py` 的 `auth_fail_closed` 步骤覆盖这一项，`--require-cloud` 时是硬失败。
+24. `member` 角色账号能跑正式翻译、快速任务和公告任务；正式翻译按既有规则写归档，快速任务与公告不回写归档。手动 `DELETE`/`PATCH` 术语、归档、项目资料，以及删除项目、管理项目成员，全部返回 403。
+25. `member`/`ops` 账号访问自己不是成员的项目：列表中不出现该项目，直接按 id 访问返回 404（不是 403，防止项目存在性被枚举）。
+26. 管理员停用一个用户后，该用户所有已签发 session 立即失效（下一次任意 `/api/*` 请求 401），不需要等 cookie 过期。
+27. 首次登录（管理员引导账号或新建账号）在完成 `POST /api/auth/change-password` 之前，除 `GET /api/auth/me`、`POST /api/auth/logout`、`POST /api/auth/change-password` 外的所有 `/api/*` 请求返回 403 `首次登录请先修改密码`。
+28. `operator_audit.log` 能看到 `login`（登录成功）、`logout` 事件，且操作者字段是真实登录用户名/显示名，不是 `X-Operator` 请求头里的昵称；登录失败不产生 `login` 记录（防止爆破刷日志）。
 
 ## 失败即阻断
 
@@ -56,3 +75,6 @@ python3.11 scripts/concurrency_smoke.py --base-url https://ai-lwstudio.example.c
 - provider 未配置但尝试跑正式 AI 翻译。
 - 下载最终交付文件返回 Not Found。
 - 测试项目删除失败。
+- 同一 lane 出现两个 `running`，或第三个正式任务仍因旧容量模型返回 409。
+- 重启后 queued 任务丢失/重复执行，或 canceled 任务仍被 worker 执行。
+- 云端/强制登录部署下，未登录访问业务 API 不是 401（fail-closed 失效）。

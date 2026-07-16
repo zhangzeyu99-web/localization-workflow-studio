@@ -130,6 +130,16 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: grayscale(.6); }
 .header h1 { font-size: var(--fs-3xl); letter-spacing: 0; }
 .header p { opacity: 0.9; font-size: var(--fs-base); margin-top: 4px; }
 .header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.current-user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-inset-4);
+}
+.current-user-name { font-size: var(--fs-sm); color: var(--c-white); font-weight: 600; }
+.current-user-role { flex-shrink: 0; }
 .status {
   min-width: 180px;
   max-width: 420px;
@@ -3096,6 +3106,35 @@ input:focus, textarea:focus, select:focus { border-color: var(--c-purple-500); }
   font-size: var(--fs-sm);
   line-height: 1.5;
 }
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.auth-card {
+  width: min(400px, calc(100vw - 36px));
+  padding: var(--space-5);
+  border-radius: var(--radius-2xl);
+  background: var(--surface-bg-3);
+  border: 1px solid var(--surface-border-soft);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 30px 80px rgba(0,0,0,.45);
+  display: flex;
+  flex-direction: column;
+}
+.auth-brand {
+  justify-content: center;
+  margin-bottom: var(--space-4);
+  text-align: center;
+}
+.auth-brand > div { text-align: left; }
+.auth-card input { margin-bottom: 4px; }
+.auth-submit {
+  margin-top: var(--space-4);
+  justify-content: center;
+}
 .settings-modal {
   width: min(520px, calc(100vw - 36px));
   padding: var(--space-5);
@@ -3143,6 +3182,71 @@ input:focus, textarea:focus, select:focus { border-color: var(--c-purple-500); }
   padding: 12px var(--space-4);
   font-weight: 600;
 }
+.management-modal {
+  width: min(1100px, calc(100vw - 36px));
+  background: var(--c-surface-modal-alt);
+}
+.members-modal { width: min(760px, calc(100vw - 36px)); }
+.management-create-form {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--surface-border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--surface-inset-2);
+}
+.management-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.management-form-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--c-neutral-300);
+  font-size: var(--fs-sm);
+}
+.management-form-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--c-neutral-400);
+  font-size: var(--fs-sm);
+}
+.management-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+.management-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) auto auto minmax(100px, auto) auto auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--surface-border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--surface-inset-2);
+}
+.management-user-main { display: grid; gap: 3px; min-width: 0; }
+.management-user-main strong { overflow-wrap: anywhere; }
+.management-user-main span, .management-self { color: var(--c-neutral-400); font-size: var(--fs-xs); }
+.management-row .badge.danger { color: var(--c-red-200); background: var(--tint-red-bg); }
+.management-reset-form, .member-add-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-inset-2);
+}
+.management-reset-form strong { margin-right: auto; }
+.management-reset-form input, .member-add-row select { flex: 1; min-width: 0; }
+.member-row { grid-template-columns: minmax(190px, 1fr) auto auto; }
+.management-empty { padding: 14px; }
 .field-label { display: block; color: var(--c-neutral-300); font-size: var(--fs-sm); margin: 10px 0 6px; }
 .preset-note div {
   display: flex;
@@ -3171,6 +3275,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--c-purple-500); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 980px) {
+  .management-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .management-row { grid-template-columns: minmax(150px, 1fr) auto auto; }
+  .management-self { display: none; }
   .layout { flex-direction: column; }
   .sidebar { width: auto; border-right: 0; border-bottom: 1px solid var(--surface-border); }
   .steps-nav { grid-template-columns: repeat(3, 1fr); }

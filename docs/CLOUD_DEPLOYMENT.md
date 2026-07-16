@@ -10,8 +10,8 @@
 /srv/lwstudio/
 ├── releases/
 │   ├── 20260714-af3ab0b/
-│   └── 20260715-<git-sha>/
-├── current -> /srv/lwstudio/releases/20260715-<git-sha>
+│   └── 20260716-<git-sha>/
+├── current -> /srv/lwstudio/releases/20260716-<git-sha>
 └── data/
     ├── settings.local.json
     ├── studio.sqlite3
@@ -100,12 +100,51 @@ sudo systemctl restart lws.service
 
 如果域名前还有 CDN、WAF 或其他边缘代理，必须配置为：不缓存 `/api/*`；不覆盖源站的 `no-store`/`no-cache`；发布后主动刷新 `/` 和 `/index.html`。不能只看源站 Nginx 配置，必须从公网域名检查最终响应头。
 
-公网部署还必须在边缘层完成身份认证和访问控制。当前应用的 `X-Operator` 只用于留痕，不验证身份，也不构成权限系统；不要把未加认证的工作台直接暴露到公网。
+公网部署由应用自身强制登录并按账号、角色和项目成员关系鉴权。`X-Operator` 仍用于任务操作人留痕，但不代替登录身份。
+
+## 账号与认证
+
+认证开关语义：
+
+```text
+cloud 模式（LWS_DEPLOYMENT_MODE=cloud，未显式设置 LWS_AUTH_MODE）→ 强制登录
+local 模式（默认）                                              → 免登录，按内置管理员运行
+任意模式 + LWS_AUTH_MODE=required                               → 强制登录
+任意模式 + LWS_AUTH_MODE=off                                    → 关闭登录
+```
+
+`LWS_AUTH_MODE` 只接受 `required` 或 `off`；其它值会让后端启动失败，不会静默降级。
+
+### 首次管理员
+
+首次以强制登录模式启动且用户表为空时，必须在 `/etc/lwstudio/lws.env` 中提供：
+
+```bash
+LWS_ADMIN_USER=admin
+LWS_ADMIN_PASSWORD=replace-with-a-strong-bootstrap-password
+```
+
+两者缺一时服务会 fail-closed。也可在启动前直接创建或重置管理员：
+
+```bash
+LWS_DATA_ROOT=/srv/lwstudio/data \
+LWS_ADMIN_PASSWORD='replace-with-a-strong-bootstrap-password' \
+python3.11 scripts/create_admin.py --username admin
+```
+
+初始管理员必须在首次登录后修改密码。完成引导后，从环境文件移除 `LWS_ADMIN_PASSWORD`，重启服务并确认现有账号仍可登录。
+
+### Cookie、HTTPS 与权限
+
+- 会话保存在服务端，浏览器使用 `HttpOnly` cookie；cloud 模式带 `Secure`，因此公网入口必须是 HTTPS。
+- Nginx/CDN 必须原样转发请求 `Cookie` 和响应 `Set-Cookie`，并禁止缓存带 `Set-Cookie` 或 `Cache-Control: no-store` 的响应。
+- 全局角色为 `admin`、`ops`、`member`；非管理员只能看到自己所属项目。管理员管理用户，管理员或有权限的运营人员管理项目成员。
+- 完整路由能力表见 `docs/ROUTE_CAPABILITIES.md`。
 
 ## 发布
 
 ```bash
-release=/srv/lwstudio/releases/20260715-<git-sha>
+release=/srv/lwstudio/releases/20260716-<git-sha>
 sudo ln -sfn "$release" /srv/lwstudio/current
 sudo systemctl restart lws.service
 sudo nginx -t && sudo systemctl reload nginx
@@ -125,10 +164,23 @@ python3.11 scripts/deployment_check.py \
   --require-provider \
   --expect-version "$(cat VERSION)" \
   --expect-git-sha "$PACKAGE_GIT_SHA" \
-  --check-frontend-assets frontend/dist/assets
+  --check-frontend-assets frontend/dist/assets \
+  --auth-user admin \
+  --auth-password '管理员密码'
 ```
 
-验收时必须确认三方静态资源完全一致：公网 HTML 引用的哈希资源、`/api/version` 清单和本地 `frontend/dist` 来自同一发布包；`git_sha` 必须等于 `PACKAGE_MANIFEST.json` 中的本次发布提交。还需确认 API 最终响应头包含 `no-store`、HTML 最终响应头包含 `no-cache`、健康检查中的数据目录/上传目录/数据库均可用，并实际完成一次上传、任务和产物下载。
+验收时必须确认三方静态资源完全一致：公网 HTML 引用的哈希资源、`/api/version` 清单和本地 `frontend/dist` 来自同一发布包；`git_sha` 必须等于 `PACKAGE_MANIFEST.json` 中的本次发布提交。`auth_fail_closed` 必须确认未登录访问核心业务 API 返回 401，管理员登录后上传可读性探针必须通过。还需确认 API 最终响应头包含 `no-store`、HTML 最终响应头包含 `no-cache`、健康检查中的数据目录/上传目录/数据库均可用。
+
+完整业务冒烟测试：
+
+```bash
+python3.11 scripts/stability_check.py \
+  --base-url https://ai-lwstudio.example.com \
+  --auth-user admin \
+  --auth-password '管理员密码'
+```
+
+该脚本会保留 `X-Operator: stability-check` 留痕，并用同一登录会话创建临时项目，覆盖上传、分析、术语导入、翻译、QA、归档和公告准备，结束后删除测试项目。
 
 ## 备份与恢复
 

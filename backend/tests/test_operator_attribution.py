@@ -66,6 +66,7 @@ def test_cloud_translation_start_requires_operator_before_status_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
+    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     workbook = tmp_path / "untranslated.xlsx"
     _untranslated_workbook(workbook)
 
@@ -121,6 +122,7 @@ def test_cloud_qa_entry_points_require_operator_without_mutating_run(
     payload: dict[str, object] | None,
 ) -> None:
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
+    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     workbook = tmp_path / "translated.xlsx"
     _translated_workbook(workbook)
     project = db.insert_project("Cloud QA Operator", "QA", "")
@@ -156,6 +158,7 @@ def test_cloud_announcement_entry_points_require_operator_without_mutating_task(
     action: str,
 ) -> None:
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
+    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     project = db.insert_project("Cloud Announcement Operator", "QA", "")
     task = db.insert_announcement_task(
         project["id"],
@@ -189,6 +192,7 @@ def test_cloud_multilingual_entry_points_require_operator_without_creating_runs(
     workflow: str,
 ) -> None:
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
+    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     workbook = tmp_path / "multilingual.xlsx"
     _untranslated_workbook(workbook)
     project = db.insert_project("Cloud Multilingual Operator", "QA", "")
@@ -213,6 +217,7 @@ def test_cloud_multilingual_entry_points_require_operator_without_creating_runs(
 
 def test_cloud_manual_fix_rerun_preserves_operator_required_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
+    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     apply_called = False
 
     def fake_apply(*args: object, **kwargs: object) -> dict:

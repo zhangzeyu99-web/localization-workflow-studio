@@ -17,6 +17,56 @@ const selectWizardStep = async (page: any, step: number, scope?: string) => {
 
 test.use({ acceptDownloads: true })
 
+test('auth bootstrap network failure shows a recoverable error instead of loading forever', async ({ page }) => {
+  await page.route('**/api/auth/me', (route) => route.abort())
+  await page.goto(baseURL)
+
+  await expect(page.getByTestId('auth-bootstrap-error')).toBeVisible()
+  await expect(page.getByTestId('auth-loading')).toHaveCount(0)
+
+  await page.unroute('**/api/auth/me')
+  await page.getByTestId('auth-retry').click()
+  await expect(page.getByRole('heading', { name: '本地化工作台' })).toBeVisible()
+})
+
+test('glossary candidates stay readable while curation actions are hidden in read-only mode', async ({ page }) => {
+  await page.goto(baseURL)
+  await page.evaluate(async () => {
+    const React = await import('/@id/react')
+    const ReactDOMClient = await import('/@id/react-dom/client')
+    const { GlossaryCandidateReview } = await import('/src/components/glossary/GlossaryCandidateReview.tsx')
+    const createRoot = ReactDOMClient.createRoot || ReactDOMClient.default.createRoot
+    const createElement = React.createElement || React.default.createElement
+    const host = document.createElement('div')
+    document.body.replaceChildren(host)
+    createRoot(host).render(createElement(GlossaryCandidateReview, {
+      batch: { id: 'batch-readonly', counts: { accepted: 1, rejected: 0 } },
+      candidates: [{
+        id: 'candidate-readonly',
+        batch_id: 'batch-readonly',
+        term_key: 'T-1',
+        source: '战机',
+        target: 'Fighter',
+        target_alt: '',
+        category: 'unit',
+        note: '只读候选',
+        status: 'pending',
+      }],
+      language: 'en',
+      busy: false,
+      canCurate: false,
+      onUpdateCandidate: () => undefined,
+      onResolveCandidates: () => undefined,
+      onTranslateMissingCandidates: () => undefined,
+    }))
+  })
+
+  const review = page.getByTestId('glossary-candidate-review')
+  await expect(review).toContainText('战机')
+  await expect(review).toContainText('Fighter')
+  await expect(review.getByRole('button')).toHaveCount(0)
+})
+
 test('spreadsheet column errors are shown as actionable Chinese', async ({ page }) => {
   await page.goto(baseURL)
   const message = await page.evaluate(async () => {

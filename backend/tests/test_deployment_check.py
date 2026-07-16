@@ -223,6 +223,51 @@ def test_run_accepts_production_cache_contract_and_optional_matching_git_sha(
     assert steps["health"]["ok"] is True
 
 
+def test_run_combines_git_asset_and_authenticated_cloud_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    module = _load_deployment_check()
+    _install_client(
+        monkeypatch,
+        module,
+        html='<script src="/assets/index-built.js"></script>',
+        html_cache_control="no-cache",
+        api_cache_control="no-store",
+        git_sha="release-sha",
+    )
+    login_args: list[tuple[str, str]] = []
+
+    def fake_login(client: httpx.Client, base_url: str, username: str, password: str) -> dict[str, str]:
+        _ = client, base_url
+        login_args.append((username, password))
+        return {"username": username, "role": "admin"}
+
+    monkeypatch.setattr(module, "login", fake_login)
+    monkeypatch.setattr(module, "unauthenticated_probe_status", lambda *args, **kwargs: 401)
+
+    result = module.run(
+        "https://studio.example.test",
+        require_cloud=True,
+        expect_version="1.3.1",
+        expect_git_sha="release-sha",
+        frontend_assets_dir=_local_assets(tmp_path, "index-built.js"),
+        auth_user="release-admin",
+        auth_password="release-password",
+    )
+
+    assert result == 0
+    assert login_args == [("release-admin", "release-password")]
+    steps = _printed_steps(capsys)
+    assert steps["version"]["ok"] is True
+    assert steps["public_assets"]["ok"] is True
+    assert steps["frontend_assets"]["ok"] is True
+    assert steps["auth_fail_closed"]["ok"] is True
+    assert steps["auth_login"]["ok"] is True
+    assert steps["upload_readability"]["ok"] is True
+
+
 def test_run_rejects_public_html_asset_not_reported_by_version(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

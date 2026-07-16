@@ -62,6 +62,8 @@ REQUIRED_SOURCE_MEMBERS = {
     "deploy/lws.env.example",
     "start-lws.sh",
     "backend/app/main.py",
+    "scripts/create_admin.py",
+    "scripts/deployment_auth.py",
     "settings.example.json",
 }
 REQUIRED_MEMBERS = REQUIRED_SOURCE_MEMBERS | {
@@ -87,6 +89,8 @@ DEPLOY_RELEASE_FILES = {
     "deploy/nginx.conf",
 }
 SCRIPT_RELEASE_FILES = {
+    "scripts/create_admin.py",
+    "scripts/deployment_auth.py",
     "scripts/deployment_check.py",
     "scripts/stability_check.py",
 }
@@ -379,6 +383,8 @@ def _write_install_doc(target_root: Path, version: str, sha: str) -> None:
 - `deploy/lws.service`：systemd 服务模板。
 - `deploy/nginx.conf`：Nginx 反向代理与缓存策略模板。
 - `deploy/lws.env.example`：非敏感环境变量模板。
+- `scripts/create_admin.py`：首次上线创建或重置管理员的命令行入口。
+- `scripts/deployment_auth.py`：部署检查与稳定性检查共用的登录辅助模块。
 - `start-lws.sh`：后端启动入口。
 - `settings.example.json`：服务端 API 配置模板，不含密钥。
 - `PACKAGE_MANIFEST.json`：包来源与安全状态。
@@ -413,6 +419,28 @@ python3.11 -m venv .venv
 .venv/bin/python -m pip install -r workflow/localization/requirements.txt
 ```
 
+## 初始化管理员
+
+cloud 模式默认强制登录。首次启动且用户表为空时，在受限权限的
+`/etc/lwstudio/lws.env` 中临时配置：
+
+```bash
+LWS_AUTH_MODE=required
+LWS_ADMIN_USER=admin
+LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password
+```
+
+也可以在启动服务前直接创建或重置管理员：
+
+```bash
+LWS_DATA_ROOT=/srv/lwstudio/data \
+LWS_ADMIN_PASSWORD='replace-with-strong-bootstrap-password' \
+.venv/bin/python scripts/create_admin.py --username admin
+```
+
+初始管理员首次登录后必须修改密码。引导完成后，从环境文件移除
+`LWS_ADMIN_PASSWORD` 并重启服务。
+
 ## 启动与接入
 
 1. 按实际路径调整 `deploy/lws.env.example`，安装为 systemd 的 EnvironmentFile。
@@ -430,9 +458,17 @@ python3.11 check.py \
   --require-provider \
   --expect-version {version} \
   --expect-git-sha "$release_sha" \
-  --check-frontend-assets frontend/dist/assets
-python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.gz4399.com
+  --check-frontend-assets frontend/dist/assets \
+  --auth-user admin \
+  --auth-password '管理员密码'
+python3.11 scripts/stability_check.py \
+  --base-url https://ai-lwstudio.gz4399.com \
+  --auth-user admin \
+  --auth-password '管理员密码'
 ```
+
+部署检查中的 `auth_fail_closed` 必须为 `ok=true`，确认未登录访问核心
+业务 API 会返回 401；随后还必须用管理员会话通过上传可读性探针。
 """
     (target_root / "ONLINE_DEPLOY_README.zh-CN.md").write_text(text, encoding="utf-8")
 
@@ -464,6 +500,7 @@ def _write_manifest(
         "entrypoints": {
             "linux_backend": "start-lws.sh",
             "backend_app": "backend/app/main.py",
+            "create_admin": "scripts/create_admin.py",
             "deployment_check": "check.py",
             "stability_check": "scripts/stability_check.py",
         },

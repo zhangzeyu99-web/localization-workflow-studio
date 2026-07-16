@@ -298,6 +298,7 @@ def test_announcement_ai_input_summary_handles_missing_prepared_artifacts(tmp_pa
 
 def test_health_reports_cloud_storage_and_provider_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
+    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     with TestClient(app) as client:
         response = client.get("/api/health")
         assert response.status_code == 200

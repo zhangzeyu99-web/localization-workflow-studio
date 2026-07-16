@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Archive, BookOpenText, FileText, FolderKanban, Languages, Megaphone, PackageCheck, WandSparkles, Wrench, Zap } from 'lucide-react'
+import { Archive, BookOpenText, FileText, FolderKanban, Languages, Megaphone, PackageCheck, Users, WandSparkles, Wrench, Zap } from 'lucide-react'
+import { PROJECT_MANAGE, TASK_RUN, useAuth } from '../../auth'
 import type { LanguageCode } from '../../languages'
 import { HISTORY_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import type { ArchiveImportReadbackOptions } from '../../domain/archiveImport'
@@ -7,6 +8,7 @@ import { projectActivityRuns, projectRunStatusText, projectRunTitle, visibleAnno
 import { AnnouncementProjectPanel } from '../announcement/AnnouncementProjectPanel'
 import { GlossaryTab, TranslationArchiveTab, WideTablePager } from '../assets/ProjectAssetTabs'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
+import { ProjectMembersModal } from '../modals/ProjectMembersModal'
 import { DeliveryTab, TranslationTab } from '../translationWizard/ProjectTabs'
 import { StepQA } from '../translationWizard/steps/StepQA'
 import { MetaTab } from './ProjectMeta'
@@ -153,6 +155,9 @@ function ProjectOverviewImpl({
   toggleSelectedLanguage,
   confirm
 }: ProjectOverviewProps) {
+  const { authEnabled, can } = useAuth()
+  const [membersOpen, setMembersOpen] = useState(false)
+  const canRunTasks = can(TASK_RUN)
   const languageTaskCount = project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))
   const announcementTaskCount = visibleAnnouncementTaskCount(project)
   const fallbackDeliverableCount = (project.runs || []).filter((run) =>
@@ -180,16 +185,17 @@ function ProjectOverviewImpl({
           <div><h2>{project.name}</h2><div className="desc">项目总览与当前任务入口</div></div>
         </div>
         <div className="row-actions">
-          <button className="btn btn-primary" onClick={onStartTask}><WandSparkles size={16} aria-hidden="true" />新翻译任务</button>
-          <button className="btn btn-ghost" onClick={onStartAnnouncement}><Megaphone size={16} aria-hidden="true" />新公告任务</button>
-          <button className="btn btn-ghost" data-testid="overview-quick-task" onClick={onStartQuickTask}><Zap size={16} aria-hidden="true" />快速任务</button>
+          {authEnabled && can(PROJECT_MANAGE) ? <button className="btn btn-ghost" data-testid="open-project-members" onClick={() => setMembersOpen(true)}><Users size={16} aria-hidden="true" />成员</button> : null}
+          {canRunTasks ? <button className="btn btn-primary" onClick={onStartTask}><WandSparkles size={16} aria-hidden="true" />新翻译任务</button> : null}
+          {canRunTasks ? <button className="btn btn-ghost" onClick={onStartAnnouncement}><Megaphone size={16} aria-hidden="true" />新公告任务</button> : null}
+          {canRunTasks ? <button className="btn btn-ghost" data-testid="overview-quick-task" onClick={onStartQuickTask}><Zap size={16} aria-hidden="true" />快速任务</button> : null}
         </div>
       </div>
       <div className="stat-grid">
         <button type="button" className="stat-card stat-action" onClick={() => setTab('translation')} title="进入语言包翻译任务">
           <div className="num">{languageTaskCount}</div><div className="lbl">语言包任务</div><div className="stat-hint">进入翻译</div>
         </button>
-        <button type="button" className="stat-card stat-action" onClick={onStartAnnouncement} title="进入公告翻译任务">
+        <button type="button" className="stat-card stat-action" disabled={!canRunTasks} onClick={onStartAnnouncement} title="进入公告翻译任务">
           <div className="num">{announcementTaskCount}</div><div className="lbl">公告任务</div><div className="stat-hint">进入公告</div>
         </button>
         <button type="button" className="stat-card stat-action" onClick={() => setTab('delivery')} title="查看可交付文件">
@@ -359,6 +365,7 @@ function ProjectOverviewImpl({
           onGoArchive={() => setTab('archive')}
         />
       ) : null}
+      {membersOpen ? <ProjectMembersModal projectId={project.id} projectName={project.name} onClose={() => setMembersOpen(false)} /> : null}
     </>
   )
 }

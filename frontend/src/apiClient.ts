@@ -1,4 +1,7 @@
 import { getOperatorName } from './operator'
+import { broadcastMustChangePassword, broadcastUnauthorized } from './auth/authEvents'
+
+const MUST_CHANGE_PASSWORD_DETAIL = '首次登录请先修改密码'
 
 export const API = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -67,6 +70,8 @@ export function sanitizeUserFacingError(text: string, fallback?: string, operati
   if (/response\s+ids?\s+mismatch/i.test(raw)) {
     return 'AI 返回内容与原文行不匹配。请点击继续翻译重试当前批；如果重复出现，请检查 AI response 是否漏行、乱序或改了 ID。'
   }
+  if (/^权限不足$/.test(raw)) return '当前账号权限不足，无法执行此操作，请联系项目运营或管理员。'
+  if (raw === MUST_CHANGE_PASSWORD_DETAIL) return '首次登录需要先修改密码，请在改密页面完成后再继续。'
   if (/project not found/i.test(raw)) return '项目不存在或已被删除，列表已刷新后请重新选择项目。'
   if (/artifact file missing|delivery file missing|batch file not found/i.test(raw)) return '文件记录还在，但本地文件缺失。请重新生成交付文件或重新上传来源文件。'
   if (/artifact not found|input artifact not found/i.test(raw)) return '找不到所选文件，请重新上传或重新选择文件。'
@@ -122,12 +127,21 @@ function withOperatorHeader(init?: RequestInit): RequestInit | undefined {
 export async function api<T>(path: string, init?: RequestInit, operation?: string): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`${API}${path}`, withOperatorHeader(init))
+    response = await fetch(`${API}${path}`, { credentials: 'include', ...withOperatorHeader(init) })
   } catch (error) {
     throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error), undefined, operation))
   }
   if (!response.ok) {
     const text = await response.text()
+    // Session died mid-session (expired/revoked) -- the login endpoint's own
+    // 401 (wrong password) must not bounce the gate away from the login
+    // screen it is already showing, so it is excluded here.
+    if (response.status === 401 && path !== '/api/auth/login') {
+      broadcastUnauthorized()
+    }
+    if (response.status === 403 && text.includes(MUST_CHANGE_PASSWORD_DETAIL)) {
+      broadcastMustChangePassword()
+    }
     if (response.status >= 500) {
       const trimmed = text.trim()
       const contentType = response.headers.get('content-type') || ''

@@ -320,6 +320,35 @@ def init_db() -> None:
                 started_at TEXT,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                external_id TEXT DEFAULT '',
+                must_change_password INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_login_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS project_members (
+                project_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                added_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, user_id),
+                FOREIGN KEY(project_id) REFERENCES projects(id),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
             """
         )
         _ensure_column(conn, "artifacts", "role", "TEXT NOT NULL DEFAULT ''")
@@ -389,6 +418,10 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_job_queue_one_running_per_lane
           ON job_queue(lane)
           WHERE status = 'running';
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_id
+          ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
+          ON sessions(expires_at);
         """
     )
 
@@ -601,6 +634,7 @@ def delete_project(project_id: str) -> None:
         conn.execute("DELETE FROM glossary_terms WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM translation_entries WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM runs WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
@@ -2505,3 +2539,208 @@ def _translation_entry_rank(entry: dict[str, Any]) -> tuple[int, int, str, str]:
 
 def _translation_source_key(value: Any) -> str:
     return normalize_archive_source_key(value)
+
+
+def user_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(row)
+    payload["must_change_password"] = bool(payload["must_change_password"])
+    return payload
+
+
+def create_user(
+    username: str,
+    password_hash: str,
+    role: str,
+    display_name: str = "",
+    status: str = "active",
+    external_id: str = "",
+    must_change_password: bool = False,
+) -> dict[str, Any]:
+    user_id = new_id("user")
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO users
+              (id, username, display_name, password_hash, role, status, external_id, must_change_password, created_at, last_login_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                user_id,
+                username,
+                display_name,
+                password_hash,
+                role,
+                status,
+                external_id,
+                1 if must_change_password else 0,
+                ts,
+            ),
+        )
+        return get_user(user_id, conn=conn)
+
+
+def count_users() -> int:
+    with connect() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+        return int(row[0])
+
+
+def list_users() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM users ORDER BY created_at ASC").fetchall()
+        return [user_row_to_dict(row) for row in rows]
+
+
+def get_user(user_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        row = active.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None:
+            raise KeyError(user_id)
+        return user_row_to_dict(row)
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def get_user_by_username(username: str, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    own = conn is None
+    ctx = connect() if own else None
+    active = ctx.__enter__() if ctx else conn
+    try:
+        row = active.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return user_row_to_dict(row) if row is not None else None
+    finally:
+        if ctx:
+            ctx.__exit__(None, None, None)
+
+
+def update_user(user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"display_name", "password_hash", "role", "status", "external_id", "must_change_password", "last_login_at"}
+    fields: list[str] = []
+    values: list[Any] = []
+    for key, value in updates.items():
+        if key not in allowed:
+            continue
+        fields.append(f"{key} = ?")
+        values.append((1 if value else 0) if key == "must_change_password" else value)
+    if not fields:
+        return get_user(user_id)
+    values.append(user_id)
+    with connect() as conn:
+        conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values)
+        return get_user(user_id, conn=conn)
+
+
+def create_session(user_id: str, token_hash: str, expires_at: str) -> dict[str, Any]:
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (token_hash, user_id, ts, expires_at, ts),
+        )
+        row = conn.execute("SELECT * FROM sessions WHERE token_hash = ?", (token_hash,)).fetchone()
+        return dict(row)
+
+
+def get_session_by_token_hash(token_hash: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM sessions WHERE token_hash = ?", (token_hash,)).fetchone()
+        if row is None:
+            return None
+        session = dict(row)
+        if session["expires_at"] <= now_iso():
+            conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+            return None
+        return session
+
+
+def delete_session(token_hash: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+
+def purge_expired_sessions() -> int:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now_iso(),))
+        return cur.rowcount
+
+
+def delete_sessions_for_user(user_id: str) -> int:
+    """Revoke every session belonging to a user (disable/reset-password/change-password)."""
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        return cur.rowcount
+
+
+def add_project_member(project_id: str, user_id: str, added_by: str = "") -> dict[str, Any]:
+    """Insert-or-refresh a membership row (idempotent: re-adding an existing
+    member just leaves the original ``created_at``/``added_by`` untouched).
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM project_members WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        if row is not None:
+            return dict(row)
+        conn.execute(
+            """
+            INSERT INTO project_members (project_id, user_id, added_by, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (project_id, user_id, added_by, now_iso()),
+        )
+        row = conn.execute(
+            "SELECT * FROM project_members WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        return dict(row)
+
+
+def remove_project_member(project_id: str, user_id: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def list_project_members(project_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT project_members.*, users.username, users.display_name, users.role, users.status
+            FROM project_members
+            JOIN users ON users.id = project_members.user_id
+            WHERE project_members.project_id = ?
+            ORDER BY project_members.created_at ASC
+            """,
+            (project_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def list_member_project_ids(user_id: str) -> set[str]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT project_id FROM project_members WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        return {row["project_id"] for row in rows}
+
+
+def is_project_member(project_id: str, user_id: str) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        return row is not None

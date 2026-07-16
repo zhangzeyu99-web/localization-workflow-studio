@@ -5,7 +5,7 @@ import mimetypes
 import shutil
 import sqlite3
 from pathlib import Path
-from .. import db, operator_context
+from .. import auth, db, operator_context
 from ..ai_input_audit import project_ai_input_summary
 from ..config import (
     DATA_ROOT,
@@ -175,18 +175,55 @@ def _reject_unreadable_analysis_packet(material_packet: dict[str, Any], artifact
     raise HTTPException(status_code=400, detail=f"上传资料没有成功解析进 AI 分析：{detail}")
 
 
+def _visible_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Admins (real or the synthetic LOCAL_ADMIN_USER) see every project;
+    everyone else only sees projects they are a member of -- the same
+    "not-a-member is invisible, not merely forbidden" rule as
+    ``authz.require_project_access``, applied to a list instead of a single
+    lookup.
+    """
+    user = auth.current_user()
+    if user is None or user.get("role") == "admin":
+        return projects
+    member_ids = db.list_member_project_ids(user["id"])
+    return [project for project in projects if project["id"] in member_ids]
+
+
+def _auto_add_creator_as_member(project_id: str) -> None:
+    """Plan §1 decision 5: a non-admin creator (ops or member) automatically
+    becomes a member of the project they just created, so they can see and
+    keep working on it immediately without waiting on an admin/ops invite.
+    Real admins and the auth-off synthetic LOCAL_ADMIN_USER already see
+    every project regardless of membership, so no row is needed for them.
+    """
+    user = auth.current_user()
+    if user is None or user.get("role") == "admin":
+        return
+    db.add_project_member(project_id, user["id"], added_by=user["id"])
+
+
 @router.get("/api/projects")
 def get_projects() -> list[dict[str, Any]]:
-    return [_with_project_stats(project) for project in db.list_projects()]
+    return [_with_project_stats(project) for project in _visible_projects(db.list_projects())]
 
 
 @router.post("/api/projects")
 def create_project(payload: ProjectCreate) -> dict[str, Any]:
     existing = db.find_project_by_name(payload.name)
     if existing:
+        user = auth.current_user()
+        is_admin = user is None or user.get("role") == "admin"
+        is_member = is_admin or db.is_project_member(existing["id"], user["id"])
+        if not is_member:
+            # Don't leak an existing project's stats/profile to someone who
+            # isn't allowed to see it just because they typed its exact
+            # name -- and don't silently grant them membership either, that
+            # would turn "guess an existing name" into a backdoor invite.
+            raise HTTPException(status_code=409, detail="项目名称已存在")
         return {**_with_project_stats(existing), "duplicate": True}
     project = db.insert_project(payload.name, payload.type, payload.description, payload.icon)
     project_dir(project["id"])
+    _auto_add_creator_as_member(project["id"])
     return {**_with_project_stats(project), "duplicate": False}
 
 

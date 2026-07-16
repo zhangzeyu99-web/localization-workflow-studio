@@ -11,6 +11,10 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $frontendRoot = Join-Path $repoRoot "frontend"
 $runtimeDir = Join-Path $repoRoot ".tmp\runtime"
+$backendPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $backendPython)) {
+  $backendPython = (Get-Command python -ErrorAction Stop).Source
+}
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $fullPath = if ($userPath) { "$machinePath;$userPath" } else { $machinePath }
@@ -32,7 +36,16 @@ function Get-ListeningProcessId([int]$Port) {
 function Test-HttpOk([string]$Url) {
   try {
     $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
-    return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500)
+    return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400)
+  } catch {
+    return $false
+  }
+}
+
+function Test-ApiHealth([string]$Url) {
+  try {
+    $response = Invoke-RestMethod -Uri $Url -TimeoutSec 2
+    return ($null -ne $response -and $response.ok -eq $true)
   } catch {
     return $false
   }
@@ -42,6 +55,15 @@ function Wait-HttpOk([string]$Url, [int]$Seconds) {
   $deadline = (Get-Date).AddSeconds($Seconds)
   while ((Get-Date) -lt $deadline) {
     if (Test-HttpOk $Url) { return $true }
+    Start-Sleep -Milliseconds 500
+  }
+  return $false
+}
+
+function Wait-ApiHealth([string]$Url, [int]$Seconds) {
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-ApiHealth $Url) { return $true }
     Start-Sleep -Milliseconds 500
   }
   return $false
@@ -58,7 +80,7 @@ function Start-HiddenPowerShell([string]$Command) {
 
 function Start-Backend {
   $backendHealth = "http://127.0.0.1:$BackendPort/api/health"
-  if (Test-HttpOk $backendHealth) {
+  if (Test-ApiHealth $backendHealth) {
     Write-Host "Backend already healthy: $backendHealth"
     return
   }
@@ -73,11 +95,11 @@ function Start-Backend {
 `$env:Path = "$fullPath"
 Set-Location "$repoRoot"
 `$env:LWS_DATA_ROOT = "$DataRoot"
-python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port $BackendPort *> "$backendLog"
+& "$backendPython" -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port $BackendPort *> "$backendLog"
 "@
   Start-HiddenPowerShell $command
 
-  if (-not (Wait-HttpOk $backendHealth 45)) {
+  if (-not (Wait-ApiHealth $backendHealth 45)) {
     $tail = if (Test-Path $backendLog) { Get-Content $backendLog -Tail 80 | Out-String } else { "" }
     throw "Backend failed to start on $backendHealth.`n$tail"
   }
@@ -116,7 +138,7 @@ npx vite --host $HostName --port $FrontendPort *> "$frontendLog"
 
 function Test-ApiThroughFrontend {
   $url = if ($HostName -eq "0.0.0.0" -or $HostName -eq "::") { "http://127.0.0.1:$FrontendPort/api/health" } else { "http://${HostName}:$FrontendPort/api/health" }
-  if (-not (Wait-HttpOk $url 15)) {
+  if (-not (Wait-ApiHealth $url 15)) {
     throw "Frontend API proxy failed: $url. The page may open, but uploads/analyze/import will fail with 'Failed to fetch'."
   }
   Write-Host "API proxy healthy: $url"

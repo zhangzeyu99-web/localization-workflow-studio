@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from .. import background_jobs, db, operator_context
+from .. import auth, background_jobs, db, operator_context
 from ..ai_input_audit import run_ai_input_summary
+from ..authz import require_project_access
 from ..languages import require_supported_language
 from ..schemas import (
     MultilingualQueueRequest,
@@ -37,6 +38,12 @@ router = APIRouter()
 
 @router.post("/api/runs")
 def create_run(payload: RunCreate) -> dict[str, Any]:
+    # project_id only lives in the request body here (the path is the bare
+    # "/api/runs"), so the central route_capabilities gate -- which only
+    # inspects path params -- cannot enforce membership on it. Do it
+    # explicitly, the same way the /api/runs query-param case is handled in
+    # list_runs() above.
+    require_project_access(payload.project_id)
     try:
         db.get_project(payload.project_id)
     except KeyError as exc:
@@ -89,7 +96,18 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
 
 @router.get("/api/runs")
 def list_runs(project_id: str | None = None) -> list[dict[str, Any]]:
-    return db.list_runs(project_id)
+    # project_id is a query param here, not a path param, so the central
+    # route_capabilities gate (which only inspects path params) cannot
+    # enforce membership on it -- do the same "admin sees all, everyone else
+    # only their member projects" check this endpoint's own way.
+    if project_id:
+        require_project_access(project_id)
+        return db.list_runs(project_id)
+    user = auth.current_user()
+    if user is None or user.get("role") == "admin":
+        return db.list_runs(None)
+    member_ids = db.list_member_project_ids(user["id"])
+    return [run for run in db.list_runs(None) if run["project_id"] in member_ids]
 
 
 @router.post("/api/runs/{run_id}/abandon-translation-task")

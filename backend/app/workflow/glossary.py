@@ -103,6 +103,9 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
     spec = language_spec(language)
     material_artifact_ids = list(getattr(request, "project_material_artifact_ids", []) or [])
     announcement_material_artifact_ids = list(getattr(request, "announcement_material_artifact_ids", []) or [])
+    for material_artifact_id in [*material_artifact_ids, *announcement_material_artifact_ids]:
+        if db.get_artifact(material_artifact_id)["project_id"] != project_id:
+            raise KeyError(material_artifact_id)
     announcement_only = bool(getattr(request, "announcement_only", False))
     announcement_min_hit = max(1, int(getattr(request, "announcement_min_hit", 1) or 1))
     if announcement_only and not announcement_material_artifact_ids:

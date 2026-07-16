@@ -1,15 +1,18 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { FolderKanban, Languages, Plus, Settings, WandSparkles, Zap } from 'lucide-react'
+import { FolderKanban, Languages, LogOut, Plus, Settings, UserCog, WandSparkles, Zap } from 'lucide-react'
 import './styles.css'
 import './styles/workbench.css'
 import { API, api } from './apiClient'
+import { ADMIN, AuthGate, AuthProvider, PROJECT_MANAGE, PROJECT_READ, TASK_RUN, useAuth } from './auth'
+import { roleBadgeLabel } from './auth/roleText'
 import { refreshLanguageOptions, languageSpec, normalizeLanguageCode, type LanguageCode } from './languages'
 import { SettingsModal } from './SettingsModal'
 import { useConfirmDialog } from './components/modals/ConfirmModal'
 import { DeleteProjectModal } from './components/modals/DeleteProjectModal'
 import { CancelAnnouncementTaskModal } from './components/modals/CancelAnnouncementTaskModal'
 import { NewProjectModal } from './components/modals/NewProjectModal'
+import { UserManagementModal } from './components/modals/UserManagementModal'
 import { FrequencyModal } from './components/modals/FrequencyModal'
 import { EmptyState } from './components/project/EmptyState'
 import { ProjectOverview } from './components/project/ProjectOverview'
@@ -68,6 +71,7 @@ import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, App
 
 
 function App() {
+  const { user, authEnabled, can, logout } = useAuth()
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsReady, setProjectsReady] = useState(false)
   const [, setLanguageVersion] = useState(0)
@@ -95,6 +99,7 @@ function App() {
   const [quickTaskSession, setQuickTaskSession] = useState<QuickTaskSessionScope | null>(null)
   const [quickTaskInitialRun, setQuickTaskInitialRun] = useState<Run | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [userManagementOpen, setUserManagementOpen] = useState(false)
   const [runtimeVersion, setRuntimeVersion] = useState<AppRuntimeVersion | null>(null)
   const [freqOpen, setFreqOpen] = useState(false)
   const [activeJobsPanelOpen, setActiveJobsPanelOpen] = useState(false)
@@ -401,8 +406,8 @@ function App() {
     setTermArtifact(await upload(file, 'term_base'))
   }, [upload])
   const handleProjectPointerDown = useCallback((project: Project, event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.button === 0) beginProjectDeleteHold(project)
-  }, [beginProjectDeleteHold])
+    if (event.button === 0 && can(PROJECT_MANAGE)) beginProjectDeleteHold(project)
+  }, [beginProjectDeleteHold, can])
   const actionLatestRun = view === 'quick'
     ? null
     : view === 'wizard'
@@ -1223,7 +1228,7 @@ function App() {
   )
 
   const isCloudDeployment = runtimeVersion?.deployment_mode === 'cloud'
-  const showSettingsButton = !__HIDE_SETTINGS__ && runtimeVersion?.deployment_mode === 'local'
+  const showSettingsButton = !__HIDE_SETTINGS__ && runtimeVersion?.deployment_mode === 'local' && can(ADMIN)
   const bundleVersion = __APP_VERSION__
   const backendVersion = runtimeVersion?.version || ''
   const versionMismatch = Boolean(backendVersion) && backendVersion !== 'unknown' && backendVersion !== bundleVersion
@@ -1255,6 +1260,14 @@ function App() {
             </span>
             <OperatorIdentityControl />
             {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}><Settings size={16} aria-hidden="true" />设置</button> : null}
+            {authEnabled && can(ADMIN) ? <button className="btn btn-ghost" data-testid="open-user-management" onClick={() => setUserManagementOpen(true)}><UserCog size={16} aria-hidden="true" />用户管理</button> : null}
+            {authEnabled && user ? (
+              <div className="current-user-chip" data-testid="current-user-chip">
+                <span className="current-user-name">{user.display_name || user.username}</span>
+                <span className="badge current-user-role">{roleBadgeLabel(user.role)}</span>
+                <button className="btn btn-ghost btn-sm" onClick={() => { void logout() }}><LogOut size={14} aria-hidden="true" />退出</button>
+              </div>
+            ) : null}
           </div>
         </header>
 
@@ -1269,6 +1282,7 @@ function App() {
                   backgroundTaskCount={projectQueueJobCount(jobQueues, project.id)}
                   isActive={project.id === currentId}
                   isDeleteHold={deleteHoldProjectId === project.id}
+                  canDelete={can(PROJECT_MANAGE)}
                   onPointerDown={handleProjectPointerDown}
                   onPointerUp={cancelProjectDeleteHold}
                   onPointerLeave={cancelProjectDeleteHold}
@@ -1285,19 +1299,19 @@ function App() {
                 />
               ))}
             </div>
-            <button className="new-project-btn" onClick={() => setNewProjectOpen(true)}><Plus size={15} aria-hidden="true" />新建项目</button>
+            {can(PROJECT_READ) ? <button className="new-project-btn" onClick={() => setNewProjectOpen(true)}><Plus size={15} aria-hidden="true" />新建项目</button> : null}
             <div className="sidebar-title quick"><Zap size={15} aria-hidden="true" />快捷入口</div>
             <button className="project-item quick-entry" onClick={() => {
               if (!current) return
               void openNewTranslationTask()
-            }} disabled={!current || projectContextLoading}>
+            }} disabled={!current || projectContextLoading || !can(TASK_RUN)}>
               <span className="pname"><WandSparkles size={16} aria-hidden="true" />新翻译任务</span>
               <span className="pmeta">基于当前项目启动工作流</span>
             </button>
             <button className="project-item quick-entry" data-testid="quick-task-entry" onClick={() => {
               if (!current) return
               void openNewQuickTask()
-            }} disabled={!current || projectContextLoading}>
+            }} disabled={!current || projectContextLoading || !can(TASK_RUN)}>
               <span className="pname"><Zap size={16} aria-hidden="true" />快速任务</span>
               <span className="pmeta">三步完成翻译或校对</span>
             </button>
@@ -1525,10 +1539,11 @@ function App() {
         </div>
       </div>
 
-      {newProjectOpen ? <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreate={createProject} /> : null}
-      {deleteProjectTarget ? <DeleteProjectModal project={deleteProjectTarget} busy={busy} onClose={() => { longPressTriggeredProjectId.current = ''; setDeleteProjectTarget(null) }} onDelete={deleteProject} /> : null}
+      {newProjectOpen && can(PROJECT_READ) ? <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreate={createProject} /> : null}
+      {deleteProjectTarget && can(PROJECT_MANAGE) ? <DeleteProjectModal project={deleteProjectTarget} busy={busy} onClose={() => { longPressTriggeredProjectId.current = ''; setDeleteProjectTarget(null) }} onDelete={deleteProject} /> : null}
       {announcementCancelTarget ? <CancelAnnouncementTaskModal task={announcementCancelTarget} busy={busy} onClose={() => { longPressTriggeredAnnouncementTaskId.current = ''; setAnnouncementCancelTarget(null) }} onCancelTask={cancelAnnouncementTask} /> : null}
-      {settingsOpen ? <SettingsModal onClose={() => { setSettingsOpen(false); refreshSettings() }} /> : null}
+      {settingsOpen && can(ADMIN) ? <SettingsModal onClose={() => { setSettingsOpen(false); refreshSettings() }} /> : null}
+      {userManagementOpen && user && can(ADMIN) ? <UserManagementModal currentUserId={user.id} onClose={() => setUserManagementOpen(false)} /> : null}
       {freqOpen ? <FrequencyModal onClose={() => setFreqOpen(false)} /> : null}
       {confirmDialog}
     </div>
@@ -1540,4 +1555,10 @@ if (!rootElement) {
   throw new Error('Missing root element')
 }
 window.__lwsRoot = window.__lwsRoot ?? createRoot(rootElement)
-window.__lwsRoot.render(<App />)
+window.__lwsRoot.render(
+  <AuthProvider>
+    <AuthGate>
+      <App />
+    </AuthGate>
+  </AuthProvider>
+)

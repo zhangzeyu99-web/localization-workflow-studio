@@ -20,10 +20,10 @@ function Write-MonitorLog([string]$Message) {
   Add-Content -Path $MonitorLog -Value $line -Encoding UTF8
 }
 
-function Test-HttpOk([string]$Url) {
+function Test-ApiHealth([string]$Url) {
   try {
-    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
-    return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500)
+    $response = Invoke-RestMethod -Uri $Url -TimeoutSec 5
+    return ($null -ne $response -and $response.ok -eq $true)
   } catch {
     return $false
   }
@@ -69,7 +69,7 @@ function Get-WorkbenchPortRows {
         Pid = $connection.OwningProcess
         Process = if ($process) { $process.ProcessName } else { "unknown" }
         Url = $url
-        Health = if (Test-HttpOk $url) { "ok" } else { "unhealthy" }
+        Health = if (Test-ApiHealth $url) { "ok" } else { "unhealthy" }
       }
     }
   }
@@ -78,12 +78,12 @@ function Get-WorkbenchPortRows {
 function Invoke-StartScriptWithRecovery([string[]]$Arguments, [string]$HealthUrl, [string]$Label) {
   $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $StartScript @Arguments 2>&1
   $exitCode = $LASTEXITCODE
-  if ($exitCode -eq 0 -and (Test-HttpOk $HealthUrl)) {
+  if ($exitCode -eq 0 -and (Test-ApiHealth $HealthUrl)) {
     $output | ForEach-Object { Write-Host $_ }
     return
   }
   Start-Sleep -Seconds 3
-  if (Test-HttpOk $HealthUrl) {
+  if (Test-ApiHealth $HealthUrl) {
     Write-Host "$Label is healthy after retry: $HealthUrl"
     return
   }
@@ -98,21 +98,21 @@ function Invoke-WorkbenchEnsure {
 
   Ensure-LanFirewall
 
-  if (-not (Test-HttpOk "http://127.0.0.1:8000/api/health")) {
+  if (-not (Test-ApiHealth "http://127.0.0.1:8000/api/health")) {
     Write-Host "Starting backend on port 8000..."
     Invoke-StartScriptWithRecovery @("-NoOpen", "-FrontendPort", "5173") "http://127.0.0.1:8000/api/health" "Backend"
   } else {
     Write-Host "Backend already healthy: http://127.0.0.1:8000/api/health"
   }
 
-  if (-not (Test-HttpOk "http://127.0.0.1:5173/api/health")) {
+  if (-not (Test-ApiHealth "http://127.0.0.1:5173/api/health")) {
     Write-Host "Starting local frontend on port 5173..."
     Invoke-StartScriptWithRecovery @("-NoOpen") "http://127.0.0.1:5173/api/health" "Local frontend"
   } else {
     Write-Host "Local frontend already healthy: http://127.0.0.1:5173/"
   }
 
-  if (-not (Test-HttpOk "http://127.0.0.1:5174/api/health")) {
+  if (-not (Test-ApiHealth "http://127.0.0.1:5174/api/health")) {
     Write-Host "Starting LAN frontend on port 5174..."
     Invoke-StartScriptWithRecovery @("-HostName", "0.0.0.0", "-FrontendPort", "5174", "-NoOpen") "http://127.0.0.1:5174/api/health" "LAN frontend"
   } else {
@@ -138,7 +138,7 @@ function Test-WorkbenchHealthy {
     "http://127.0.0.1:5174/api/health"
   )
   foreach ($url in $urls) {
-    if (-not (Test-HttpOk $url)) {
+    if (-not (Test-ApiHealth $url)) {
       return $false
     }
   }
