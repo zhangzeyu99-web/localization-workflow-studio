@@ -31,6 +31,16 @@ import { artifactForProject, preferredTranslationResultArtifact, runForProject }
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
 import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
+import { announcementTaskStatusConflict, selectAnnouncementTaskLifecycle, type AnnouncementSessionScope } from './domain/announcementTaskLifecycle'
+import {
+  createQuickTaskId,
+  isQuickTaskRun,
+  quickTaskIdOfRun,
+  quickTaskIsTerminalState,
+  selectQuickTaskLifecycle,
+  type QuickTaskGroup,
+  type QuickTaskSessionScope,
+} from './domain/quickTaskLifecycle'
 import {
   createTranslationTaskId,
   findActiveFormalTask,
@@ -61,6 +71,8 @@ function App() {
   const [, setLanguageVersion] = useState(0)
   const [currentId, setCurrentId] = useState<string>('')
   const [view, setView] = useState<AppView>('overview')
+  const viewRef = useRef<AppView>('overview')
+  viewRef.current = view
   const [tab, setTab] = useState<ProjectTab>('meta')
   const [step, setStep] = useState(1)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
@@ -73,6 +85,13 @@ function App() {
   const announcementCancelHoldTimer = useRef<number | null>(null)
   const longPressTriggeredAnnouncementTaskId = useRef('')
   const [announcementFocusTaskId, setAnnouncementFocusTaskId] = useState('')
+  const announcementFocusTaskIdRef = useRef('')
+  const announcementSessionGenerationRef = useRef(0)
+  const [announcementSessionGeneration, setAnnouncementSessionGeneration] = useState(0)
+  const quickTaskSessionRef = useRef<QuickTaskSessionScope>({ projectId: '', taskId: '', generation: 0 })
+  const quickTaskDetailRef = useRef({ projectId: '', taskId: '', runId: '' })
+  const [quickTaskSession, setQuickTaskSession] = useState<QuickTaskSessionScope | null>(null)
+  const [quickTaskInitialRun, setQuickTaskInitialRun] = useState<Run | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [runtimeVersion, setRuntimeVersion] = useState<AppRuntimeVersion | null>(null)
   const [freqOpen, setFreqOpen] = useState(false)
@@ -175,6 +194,77 @@ function App() {
     return Boolean(projectId) && currentIdRef.current === projectId
   }, [])
 
+  const beginAnnouncementSession = useCallback((taskId: string) => {
+    const generation = announcementSessionGenerationRef.current + 1
+    announcementSessionGenerationRef.current = generation
+    announcementFocusTaskIdRef.current = taskId
+    setAnnouncementFocusTaskId(taskId)
+    setAnnouncementSessionGeneration(generation)
+  }, [])
+
+  const captureAnnouncementSession = useCallback((taskId = announcementFocusTaskIdRef.current): AnnouncementSessionScope => ({
+    projectId: currentIdRef.current,
+    taskId,
+    generation: announcementSessionGenerationRef.current,
+  }), [])
+
+  const isCurrentAnnouncementSession = useCallback((scope: AnnouncementSessionScope): boolean => (
+    isCurrentProject(scope.projectId)
+    && announcementFocusTaskIdRef.current === scope.taskId
+    && announcementSessionGenerationRef.current === scope.generation
+  ), [isCurrentProject])
+
+  const beginQuickTaskSession = useCallback((projectId: string, taskId: string, initialRun: Run | null = null) => {
+    const scope = {
+      projectId,
+      taskId,
+      generation: quickTaskSessionRef.current.generation + 1,
+    }
+    quickTaskSessionRef.current = scope
+    setQuickTaskSession(scope)
+    setQuickTaskInitialRun(initialRun)
+    return scope
+  }, [])
+
+  const beginQuickTaskEntryScope = useCallback((projectId: string): QuickTaskSessionScope => {
+    const scope = {
+      projectId,
+      taskId: `quick-entry-${createQuickTaskId()}`,
+      generation: quickTaskSessionRef.current.generation + 1,
+    }
+    quickTaskSessionRef.current = scope
+    quickTaskDetailRef.current = { projectId: '', taskId: '', runId: '' }
+    return scope
+  }, [])
+
+  const invalidateQuickTaskSession = useCallback((projectId: string) => {
+    const scope = {
+      projectId,
+      taskId: `quick-idle-${createQuickTaskId()}`,
+      generation: quickTaskSessionRef.current.generation + 1,
+    }
+    quickTaskSessionRef.current = scope
+    quickTaskDetailRef.current = { projectId: '', taskId: '', runId: '' }
+    return scope
+  }, [])
+
+  const isCurrentQuickTaskSession = useCallback((scope: QuickTaskSessionScope): boolean => (
+    isCurrentProject(scope.projectId)
+    && quickTaskSessionRef.current.projectId === scope.projectId
+    && quickTaskSessionRef.current.taskId === scope.taskId
+    && quickTaskSessionRef.current.generation === scope.generation
+    && (scope.taskId.startsWith('quick-entry-') || viewRef.current === 'quick')
+  ), [isCurrentProject])
+
+  const isCurrentQuickTaskAction = useCallback((run: Run): boolean => {
+    if (!isQuickTaskRun(run) || !isCurrentProject(run.project_id) || viewRef.current !== 'overview') return false
+    const focus = quickTaskDetailRef.current
+    if (focus.projectId !== run.project_id) return false
+    const taskId = quickTaskIdOfRun(run)
+    if (!taskId || quickTaskIsTerminalState(String(run.metadata?.translation_task_state || ''))) return false
+    return focus.taskId === taskId
+  }, [isCurrentProject])
+
   const activateTranslationTaskId = useCallback((taskId: string) => {
     translationTaskIdRef.current = taskId
     setTranslationTaskId(taskId)
@@ -189,9 +279,37 @@ function App() {
 
   const isCurrentRunScope = useCallback((run: Run): boolean => {
     if (!isCurrentProject(run.project_id)) return false
+    if (view === 'quick') {
+      const scope = quickTaskSessionRef.current
+      return isQuickTaskRun(run) && Boolean(scope.taskId) && scope.projectId === run.project_id && quickTaskIdOfRun(run) === scope.taskId
+    }
+    if (isQuickTaskRun(run)) return false
+    if (view === 'announcement') {
+      const taskId = String(run.metadata?.task_id || run.metadata?.announcement_task_id || '')
+      return Boolean(announcementFocusTaskIdRef.current) && taskId === announcementFocusTaskIdRef.current
+    }
     if (view !== 'wizard' || !translationTaskIdRef.current) return true
     return runMatchesTranslationTask(run, translationTaskIdRef.current)
-  }, [isCurrentProject, view])
+  }, [announcementSessionGeneration, quickTaskSession?.generation, isCurrentProject, view])
+
+  const isCurrentActionRunScope = useCallback((run: Run): boolean => (
+    isQuickTaskRun(run) ? isCurrentQuickTaskAction(run) : isCurrentRunScope(run)
+  ), [isCurrentQuickTaskAction, isCurrentRunScope])
+
+  const setActionLatestRun = useCallback((run: Run | null) => {
+    if (run && isQuickTaskRun(run)) {
+      const focus = quickTaskDetailRef.current
+      const taskId = quickTaskIdOfRun(run)
+      if (
+        viewRef.current === 'overview'
+        && focus.projectId === run.project_id
+        && ((focus.taskId && focus.taskId === taskId) || (!focus.taskId && focus.runId === run.id))
+      ) {
+        quickTaskDetailRef.current = { projectId: focus.projectId, taskId: focus.taskId || taskId, runId: run.id }
+      }
+    }
+    setLatestRun(run)
+  }, [])
 
   const setStatusForProject = useCallback((projectId: string, message: string) => {
     if (isCurrentProject(projectId)) setStatus(message)
@@ -263,7 +381,7 @@ function App() {
   const {
     cancelProjectDeleteHold, beginProjectDeleteHold, selectProject, deleteProject, refreshProjects,
     refreshCurrent, refreshProjectSnapshot, refreshRuntimeVersion, refreshSettings, saveProjectMeta,
-    loadQualityIssues, createProject, upload, runAnalysis, saveHarness, uploadAsset, uploadProjectMaterial
+    loadQualityIssues, createProject, upload, runAnalysis, saveHarness, uploadProjectMaterial
   } = useProjectActions({
     current, currentId, currentIdRef, intro, assetArtifacts: scopedAssetArtifacts, selectedLanguage, translationTaskId, currentLang, busy,
     deleteHoldTimer, longPressTriggeredProjectId, isCurrentProject, isCurrentTranslationTask,
@@ -278,7 +396,14 @@ function App() {
   const handleProjectPointerDown = useCallback((project: Project, event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button === 0) beginProjectDeleteHold(project)
   }, [beginProjectDeleteHold])
-  const actionLatestRun = view === 'wizard' ? wizardLatestRun : scopedLatestRun
+  const actionLatestRun = view === 'quick'
+    ? null
+    : view === 'wizard'
+      ? wizardLatestRun
+      : scopedLatestRun && isQuickTaskRun(scopedLatestRun)
+        ? (quickTaskDetailRef.current.projectId === current?.id && quickTaskDetailRef.current.runId === scopedLatestRun.id ? scopedLatestRun : null)
+        : scopedLatestRun
+  const pollingLatestRun = actionLatestRun && isQuickTaskRun(actionLatestRun) && !isCurrentQuickTaskAction(actionLatestRun) ? null : actionLatestRun
   const actionTranslationTaskId = view === 'wizard' ? translationTaskId : ''
   const {
     refreshTranslationReadiness, selectSourceArtifact, selectQaArtifact, syncLanguageFromArtifact,
@@ -292,9 +417,10 @@ function App() {
     sourceArtifact: scopedSourceArtifact, termArtifact: scopedTermArtifact, qaArtifact: scopedQaArtifact, archiveArtifact: scopedArchiveArtifact, latestRun: actionLatestRun,
     translationReadiness, glossaryCandidates, settings, translationBatchSize, tab, selectedLanguage,
     selectedLanguages, lineProofread, currentLang, isCurrentProject, isCurrentTranslationTask,
+    isCurrentQuickTaskAction,
     setSourceArtifact, setQaArtifact, setArchiveArtifact, setTranslationReadiness, setSourceInputNotice,
     setInvalidSourceArtifactIds, setStep, setBusy, setStatus, setStatusForProject, setBusyForProject,
-    setQualityIssues, setLatestRun, setDeliverables, setDeliverablesLoading, setDeliverablesError, setGeneratedDelivery, setTab, setView,
+    setQualityIssues, setLatestRun: setActionLatestRun, setDeliverables, setDeliverablesLoading, setDeliverablesError, setGeneratedDelivery, setTab, setView,
     setPrimaryLanguage, setPrimaryLanguages, confirm, refreshCurrent, loadQualityIssues, upload
   })
   const selectWizardSourceArtifact = useCallback((artifact: Artifact | null) => {
@@ -319,15 +445,199 @@ function App() {
   } = glossaryActions
   const {
     cancelAnnouncementCancelHold, beginAnnouncementCancelHold, openAnnouncementTask, cancelAnnouncementTask,
-    uploadAnnouncementResponse, uploadAnnouncementConstraint, uploadAnnouncementTermsFile, createAnnouncementTask,
+    uploadAnnouncementAsset, uploadAnnouncementResponse, uploadAnnouncementConstraint, uploadAnnouncementTermsFile, createAnnouncementTask,
     runAnnouncementTaskAction, runAnnouncementLookup
   } = useAnnouncementActions({
     current, currentLang, currentIdRef, selectedLanguage, busy, announcementFocusTaskId,
     announcementCancelHoldTimer, longPressTriggeredAnnouncementTaskId, isCurrentProject,
-    setAnnouncementCancelHoldTaskId, setAnnouncementCancelTarget, setAnnouncementFocusTaskId,
+    setAnnouncementCancelHoldTaskId, setAnnouncementCancelTarget,
     setAnnouncementLookupResult, setView, setBusy, setStatus, setStatusForProject, setBusyForProject,
-    setLatestRun, setAssetArtifacts, refreshCurrent, upload, alertDialog
+    setLatestRun, setAssetArtifacts, refreshCurrent, upload, alertDialog,
+    beginAnnouncementSession, captureAnnouncementSession, isCurrentAnnouncementSession
   })
+
+  const openNewAnnouncementTask = useCallback(async () => {
+    if (!current) return
+    const projectId = current.id
+    invalidateQuickTaskSession(projectId)
+    const session = captureAnnouncementSession()
+    const loaded = await refreshCurrent(projectId).catch(() => null)
+    if (!isCurrentAnnouncementSession(session)) return
+    let candidateProject = loaded || current
+    for (let decisionRound = 0; decisionRound < 3; decisionRound += 1) {
+      const lifecycle = selectAnnouncementTaskLifecycle(candidateProject.announcement_tasks || [])
+      if (lifecycle.activeTask) {
+        openAnnouncementTask(lifecycle.activeTask)
+        return
+      }
+      if (!lifecycle.stoppedTasks.length) {
+        openAnnouncementTask()
+        return
+      }
+      const discard = await confirm('当前项目还有未完成的公告任务。你可以继续当前任务，或放弃并从空白任务开始。', {
+        title: '已有未完成公告任务',
+        confirmLabel: '放弃并新建',
+        cancelLabel: '继续当前任务',
+        tone: 'warn',
+      })
+      if (!isCurrentAnnouncementSession(session)) return
+      if (!discard) {
+        openAnnouncementTask(lifecycle.stoppedTasks[0])
+        return
+      }
+      const latest = await refreshCurrent(projectId).catch(() => null)
+      if (!latest || !isCurrentAnnouncementSession(session)) return
+      const latestLifecycle = selectAnnouncementTaskLifecycle(latest.announcement_tasks || [])
+      if (latestLifecycle.activeTask) {
+        openAnnouncementTask(latestLifecycle.activeTask)
+        return
+      }
+      for (const task of latestLifecycle.stoppedTasks) {
+        try {
+          await api(`/api/announcement-tasks/${task.id}/cancel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_statuses: [task.status] }),
+          })
+          if (!isCurrentAnnouncementSession(session)) return
+        } catch (error) {
+          if (!isCurrentAnnouncementSession(session)) return
+          const conflict = announcementTaskStatusConflict(error)
+          if (conflict) {
+            const conflicted = await refreshCurrent(projectId).catch(() => null)
+            if (!conflicted || !isCurrentAnnouncementSession(session)) return
+            const conflictLifecycle = selectAnnouncementTaskLifecycle(conflicted.announcement_tasks || [])
+            const active = conflictLifecycle.activeTask
+              || (conflicted.announcement_tasks || []).find((item) => item.id === conflict.taskId && ['queued', 'running'].includes(item.status))
+              || null
+            if (active) {
+              openAnnouncementTask(active)
+              return
+            }
+          }
+          setStatusForProject(projectId, '放弃未完成公告任务失败，请重试。')
+          return
+        }
+      }
+      if (!isCurrentAnnouncementSession(session)) return
+      const refreshed = await refreshCurrent(projectId).catch(() => null)
+      if (!refreshed || !isCurrentAnnouncementSession(session)) return
+      const refreshedLifecycle = selectAnnouncementTaskLifecycle(refreshed.announcement_tasks || [])
+      if (refreshedLifecycle.activeTask) {
+        openAnnouncementTask(refreshedLifecycle.activeTask)
+        return
+      }
+      if (refreshedLifecycle.stoppedTasks.length) {
+        if (decisionRound >= 2) {
+          openAnnouncementTask(refreshedLifecycle.stoppedTasks[0], '检测到新的未完成公告任务，已打开继续。')
+          return
+        }
+        candidateProject = refreshed
+        continue
+      }
+      openAnnouncementTask()
+      return
+    }
+  }, [current, invalidateQuickTaskSession, captureAnnouncementSession, refreshCurrent, isCurrentAnnouncementSession, openAnnouncementTask, confirm, setStatusForProject])
+
+  const openQuickTaskGroup = useCallback((project: Project, group: QuickTaskGroup | null, message: string) => {
+    const taskId = group?.taskId || createQuickTaskId()
+    const selectedRun = group?.activeRun || group?.latestRun || null
+    const initialRun = selectedRun
+      ? { ...selectedRun, artifacts: runArtifacts(project, selectedRun.id) }
+      : null
+    beginQuickTaskSession(project.id, taskId, initialRun)
+    quickTaskDetailRef.current = { projectId: '', taskId: '', runId: '' }
+    setBusy(false)
+    setLatestRun(null)
+    setQualityIssues([])
+    setGeneratedDelivery(null)
+    setView('quick')
+    setStatusForProject(project.id, message)
+  }, [beginQuickTaskSession, setStatusForProject])
+
+  const openNewQuickTask = useCallback(async () => {
+    if (!current) return
+    const projectId = current.id
+    const entryScope = beginQuickTaskEntryScope(projectId)
+    const loaded = await refreshCurrent(projectId).catch(() => null)
+    if (!isCurrentQuickTaskSession(entryScope)) return
+    let project = loaded || current
+    for (let decisionRound = 0; decisionRound < 3; decisionRound += 1) {
+      const lifecycle = selectQuickTaskLifecycle(project.runs || [])
+      if (lifecycle.activeTask) {
+        openQuickTaskGroup(project, lifecycle.activeTask, '已有快速任务正在处理，已返回当前任务。')
+        return
+      }
+      if (!lifecycle.stoppedTasks.length) {
+        openQuickTaskGroup(project, null, '新的快速任务已就绪。')
+        return
+      }
+      const abandon = await confirm('当前项目还有未交付的快速任务。你可以继续原任务，或放弃并从空白任务开始。', {
+        title: '已有未完成快速任务',
+        confirmLabel: '放弃并新建',
+        cancelLabel: '继续当前任务',
+        tone: 'warn',
+      })
+      if (!isCurrentQuickTaskSession(entryScope)) return
+      if (!abandon) {
+        openQuickTaskGroup(project, lifecycle.stoppedTasks[0], '已继续当前未完成快速任务。')
+        return
+      }
+      const refreshed = await refreshCurrent(projectId).catch(() => null)
+      if (!refreshed || !isCurrentQuickTaskSession(entryScope)) return
+      project = refreshed
+      const latestLifecycle = selectQuickTaskLifecycle(project.runs || [])
+      if (latestLifecycle.activeTask) {
+        openQuickTaskGroup(project, latestLifecycle.activeTask, '检测到快速任务仍在处理，已返回当前任务。')
+        return
+      }
+      try {
+        for (const group of latestLifecycle.stoppedTasks) {
+          await api(`/api/projects/${projectId}/translation-tasks/${encodeURIComponent(group.taskId)}/abandon`, { method: 'POST' })
+          if (!isCurrentQuickTaskSession(entryScope)) return
+        }
+      } catch (error) {
+        const conflicted = await refreshCurrent(projectId).catch(() => null)
+        if (!conflicted || !isCurrentQuickTaskSession(entryScope)) {
+          if (isCurrentQuickTaskSession(entryScope)) setStatusForProject(projectId, `放弃快速任务失败：${String(error)}`)
+          return
+        }
+        project = conflicted
+        const conflictLifecycle = selectQuickTaskLifecycle(project.runs || [])
+        if (conflictLifecycle.activeTask) {
+          openQuickTaskGroup(project, conflictLifecycle.activeTask, '任务状态已变化，已返回当前运行中的快速任务。')
+          return
+        }
+        if (!conflictLifecycle.stoppedTasks.length) {
+          openQuickTaskGroup(project, null, '原快速任务已结束，新的快速任务已就绪。')
+          return
+        }
+        if (decisionRound >= 2) {
+          openQuickTaskGroup(project, conflictLifecycle.stoppedTasks[0], '任务状态持续变化，已打开最新未完成任务。')
+          return
+        }
+        continue
+      }
+      const afterAbandon = await refreshCurrent(projectId).catch(() => null)
+      if (!afterAbandon || !isCurrentQuickTaskSession(entryScope)) return
+      project = afterAbandon
+      const afterLifecycle = selectQuickTaskLifecycle(project.runs || [])
+      if (afterLifecycle.activeTask) {
+        openQuickTaskGroup(project, afterLifecycle.activeTask, '检测到新的快速任务正在处理，已返回当前任务。')
+        return
+      }
+      if (afterLifecycle.stoppedTasks.length) {
+        if (decisionRound >= 2) {
+          openQuickTaskGroup(project, afterLifecycle.stoppedTasks[0], '检测到新的未完成快速任务，已打开继续。')
+          return
+        }
+        continue
+      }
+      openQuickTaskGroup(project, null, '新的快速任务已就绪。')
+      return
+    }
+  }, [current, beginQuickTaskEntryScope, refreshCurrent, isCurrentQuickTaskSession, openQuickTaskGroup, confirm, setStatusForProject])
 
   const openFormalTaskInWizard = useCallback((project: Project, task: FormalTranslationTask, message: string) => {
     const replacingTask = translationTaskSessionsRef.current.get(project.id)?.id !== task.id
@@ -392,6 +702,7 @@ function App() {
   const openNewTranslationTask = useCallback(async () => {
     if (!current) return
     const projectId = current.id
+    invalidateQuickTaskSession(projectId)
     const loaded = await refreshCurrent(projectId).catch(() => null)
     if (!isCurrentProject(projectId)) return
     const project = loaded || current
@@ -434,7 +745,7 @@ function App() {
       }
     }
     beginFreshTranslationTask(project)
-  }, [current, refreshCurrent, isCurrentProject, openFormalTaskInWizard, beginFreshTranslationTask, confirm, restoreDraftSessionInWizard, abandonFormalTask, setStatusForProject])
+  }, [current, invalidateQuickTaskSession, refreshCurrent, isCurrentProject, openFormalTaskInWizard, beginFreshTranslationTask, confirm, restoreDraftSessionInWizard, abandonFormalTask, setStatusForProject])
 
   const finishCurrentTranslationTask = useCallback(async (): Promise<boolean> => {
     if (!current) return false
@@ -453,6 +764,30 @@ function App() {
     if (await finishCurrentTranslationTask()) beginFreshTranslationTask(project)
   }, [current, finishCurrentTranslationTask, beginFreshTranslationTask])
 
+  const openRunInOverview = useCallback((run: Run) => {
+    if (!current || run.project_id !== current.id) return
+    beginQuickTaskSession(current.id, `quick-idle-${createQuickTaskId()}`)
+    quickTaskDetailRef.current = isQuickTaskRun(run)
+      ? { projectId: current.id, taskId: quickTaskIdOfRun(run), runId: run.id }
+      : { projectId: '', taskId: '', runId: '' }
+    const artifacts = runArtifacts(current, run.id)
+    const hydratedRun = { ...run, artifacts }
+    setLatestRun(hydratedRun)
+    setQualityIssues([])
+    setBusy(false)
+    const language = normalizeLanguageCode(run.language)
+    if (language) setPrimaryLanguage(language)
+    if (run.kind === 'qa') {
+      const inputArtifactId = String(run.metadata?.input_artifact_id || '')
+      const inputArtifact = (current.artifacts || []).find((artifact) => artifact.id === inputArtifactId) || null
+      setQaArtifact(newestArtifact(artifacts, ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook']) || inputArtifact)
+      setTab('qa')
+    } else {
+      setTab('translation')
+    }
+    setView('overview')
+  }, [current, beginQuickTaskSession, setPrimaryLanguage])
+
   useEffect(() => {
     refreshProjects().catch(() => undefined).finally(() => setProjectsReady(true))
     refreshSettings()
@@ -469,6 +804,7 @@ function App() {
 
   useEffect(() => {
     currentIdRef.current = currentId
+    beginAnnouncementSession('')
     const session = translationTaskSessionsRef.current.get(currentId)
     activateTranslationTaskId(session && !session.id.startsWith('legacy:') ? session.id : '')
     resetProjectTransientState('准备就绪')
@@ -476,7 +812,7 @@ function App() {
       if (deleteHoldTimer.current !== null) window.clearTimeout(deleteHoldTimer.current)
       if (announcementCancelHoldTimer.current !== null) window.clearTimeout(announcementCancelHoldTimer.current)
     }
-  }, [currentId, activateTranslationTaskId, resetProjectTransientState])
+  }, [currentId, activateTranslationTaskId, beginAnnouncementSession, resetProjectTransientState])
 
   useEffect(() => {
     let canceled = false
@@ -506,7 +842,7 @@ function App() {
     })
   }, [currentId, hydratedProjectId, view, step, scopedSourceArtifact?.id, selectedLanguages.join('|')])
 
-  const activeRunPolling = Boolean(actionLatestRun && ['queued', 'running'].includes(actionLatestRun.status))
+  const activeRunPolling = Boolean(pollingLatestRun && ['queued', 'running'].includes(pollingLatestRun.status))
   const activeAnnouncementPolling = Boolean(current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status)))
   useProjectSnapshotPolling(currentId, currentIdRef, refreshProjectSnapshot, isCurrentProject, setLatestRun, setBusy, setStatus, activeRunPolling || activeAnnouncementPolling, isCurrentRunScope)
 
@@ -553,7 +889,29 @@ function App() {
     const fallbackArchive = artifactsByRole(current, 'translation_workbook')[0] || artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['final_workbook', 'language_table'])
     setArchiveArtifact(fallbackArchive)
     const session = translationTaskSessionsRef.current.get(current.id)
-    if (session) {
+    const detail = quickTaskDetailRef.current
+    const focusedQuickRun = view === 'overview' && detail.projectId === current.id
+      ? (current.runs || []).find((run) => isQuickTaskRun(run) && run.id === detail.runId)
+        || (!detail.runId
+          ? (current.runs || []).find((run) => isQuickTaskRun(run) && quickTaskIdOfRun(run) === detail.taskId)
+          : null)
+        || null
+      : null
+    if (view === 'announcement') {
+      const focusedTaskId = announcementFocusTaskIdRef.current
+      const latestAnnouncementRun = focusedTaskId
+        ? (current.runs || []).find((run) => String(run.metadata?.task_id || run.metadata?.announcement_task_id || '') === focusedTaskId) || null
+        : null
+      setLatestRun(latestAnnouncementRun ? { ...latestAnnouncementRun, artifacts: runArtifacts(current, latestAnnouncementRun.id) } : null)
+    } else if (view === 'quick') {
+      setLatestRun(null)
+    } else if (focusedQuickRun) {
+      const hydratedRun = { ...focusedQuickRun, artifacts: runArtifacts(current, focusedQuickRun.id) }
+      const inputArtifactId = String(focusedQuickRun.metadata?.input_artifact_id || '')
+      const inputArtifact = artifacts.find((artifact) => artifact.id === inputArtifactId) || null
+      setLatestRun(hydratedRun)
+      setQaArtifact(preferredTranslationResultArtifact(current, hydratedRun) || inputArtifact)
+    } else if (session) {
       const source = artifacts.find((artifact) => artifact.id === session.sourceArtifactId) || null
       const task = formalTranslationTasks(current).find((item) => item.id === session.id) || null
       const hydratedRun = task ? { ...task.latestRun, artifacts: runArtifacts(current, task.latestRun.id) } : null
@@ -563,7 +921,7 @@ function App() {
       setQaArtifact(hydratedRun ? preferredTranslationResultArtifact(current, hydratedRun) : null)
       setStep(session.step)
     } else {
-      const latestProjectRun = (current.runs || [])[0] || null
+      const latestProjectRun = (current.runs || []).find((run) => !isQuickTaskRun(run)) || null
       const hydratedRun = latestProjectRun ? { ...latestProjectRun, artifacts: runArtifacts(current, latestProjectRun.id) } : null
       const preferredQa = preferredTranslationResultArtifact(current, hydratedRun)
       setSourceArtifact(artifactsByRole(current, 'language_source')[0] || newestArtifact(artifacts, ['language_table']))
@@ -576,7 +934,7 @@ function App() {
     setDeliverablesError('')
     setSourceInputNotice(null)
     setInvalidSourceArtifactIds([])
-  }, [current?.id, current?.artifacts?.length, current?.runs?.length, setPrimaryLanguages])
+  }, [current?.id, current?.artifacts?.length, current?.runs?.length, view, announcementSessionGeneration, setPrimaryLanguages])
 
   useEffect(() => {
     if (!current?.id) return
@@ -662,20 +1020,20 @@ function App() {
   }, [busy, current?.id, current?.artifacts?.length, actionLatestRun?.id, actionLatestRun?.kind, actionLatestRun?.status, isCurrentRunScope])
 
   useEffect(() => {
-    if (!actionLatestRun || !['failed', 'needs_input'].includes(actionLatestRun.status) || !isCurrentRunScope(actionLatestRun)) {
+    if (!actionLatestRun || !['failed', 'needs_input'].includes(actionLatestRun.status) || !isCurrentActionRunScope(actionLatestRun)) {
       setQualityIssues([])
       return
     }
-    loadQualityIssues(actionLatestRun.id, actionLatestRun.project_id, () => isCurrentRunScope(actionLatestRun))
-  }, [actionLatestRun?.id, actionLatestRun?.status, isCurrentRunScope])
+    loadQualityIssues(actionLatestRun.id, actionLatestRun.project_id, () => isCurrentActionRunScope(actionLatestRun))
+  }, [actionLatestRun?.id, actionLatestRun?.status, isCurrentActionRunScope])
 
   useRunStatusPolling(
-    actionLatestRun,
+    pollingLatestRun,
     tab,
     selectedLanguage,
     isCurrentProject,
-    isCurrentRunScope,
-    setLatestRun,
+    isCurrentActionRunScope,
+    setActionLatestRun,
     setStep,
     setQualityIssues,
     setQaArtifact,
@@ -688,7 +1046,16 @@ function App() {
     () => refreshProjects(currentIdRef.current)
   )
 
-  useAnnouncementTaskPolling(current, refreshProjectSnapshot, isCurrentProject, setBusyForProject, setStatusForProject)
+  useAnnouncementTaskPolling(
+    current,
+    announcementFocusTaskId,
+    announcementSessionGeneration,
+    refreshProjectSnapshot,
+    isCurrentProject,
+    isCurrentAnnouncementSession,
+    setBusyForProject,
+    setStatusForProject,
+  )
 
   const isCloudDeployment = runtimeVersion?.deployment_mode === 'cloud'
   const showSettingsButton = !__HIDE_SETTINGS__ && runtimeVersion?.deployment_mode === 'local'
@@ -743,7 +1110,8 @@ function App() {
                     const saved = projectNavigationRef.current.get(project.id)
                     selectProject(project, event)
                     if (event.defaultPrevented || project.id === currentId) return
-                    setView(saved?.view || 'overview')
+                    invalidateQuickTaskSession(project.id)
+                    setView(saved?.view === 'quick' ? 'overview' : (saved?.view || 'overview'))
                     setTab(saved?.tab || 'meta')
                     setStep(saved?.step || 1)
                   }}
@@ -761,8 +1129,7 @@ function App() {
             </button>
             <button className="project-item quick-entry" data-testid="quick-task-entry" onClick={() => {
               if (!current) return
-              setStatusForProject(current.id, '\u5feb\u901f\u4efb\u52a1\u5df2\u5c31\u7eea\u3002')
-              setView('quick')
+              void openNewQuickTask()
             }} disabled={!current || projectContextLoading}>
               <span className="pname"><Zap size={16} aria-hidden="true" />快速任务</span>
               <span className="pmeta">三步完成翻译或校对</span>
@@ -786,6 +1153,13 @@ function App() {
                 qaArtifact={scopedQaArtifact}
                 archiveArtifact={scopedArchiveArtifact}
                 latestRun={scopedLatestRun}
+                focusedQuickRunId={quickTaskDetailRef.current.projectId === current.id ? quickTaskDetailRef.current.runId : undefined}
+                focusedQuickReadOnly={Boolean(
+                  quickTaskDetailRef.current.projectId === current.id
+                  && scopedLatestRun
+                  && isQuickTaskRun(scopedLatestRun)
+                  && (!quickTaskIdOfRun(scopedLatestRun) || quickTaskIsTerminalState(String(scopedLatestRun.metadata?.translation_task_state || '')))
+                )}
                 translationReadiness={translationReadiness}
                 qualityIssues={qualityIssues}
                 glossaryPreview={glossaryPreview}
@@ -826,23 +1200,10 @@ function App() {
                 onCreateDelivery={createDeliveryPackage}
                 onRefreshDelivery={refreshDeliverables}
                 onCreateMergedDelivery={createMergedDeliveryPackage}
-                onOpenActivityRun={(run) => {
-                  const artifacts = runArtifacts(current, run.id)
-                  setLatestRun({ ...run, artifacts })
-                  const language = normalizeLanguageCode(run.language)
-                  if (language) setPrimaryLanguage(language)
-                  if (run.kind === 'qa') {
-                    const inputArtifactId = String(run.metadata?.input_artifact_id || '')
-                    const inputArtifact = (current.artifacts || []).find((artifact) => artifact.id === inputArtifactId) || null
-                    setQaArtifact(newestArtifact(artifacts, ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook']) || inputArtifact)
-                    setTab('qa')
-                  } else {
-                    setTab('translation')
-                  }
-                }}
+                onOpenActivityRun={openRunInOverview}
                 onStartTask={() => { void openNewTranslationTask() }}
-                onStartAnnouncement={() => openAnnouncementTask()}
-                onStartQuickTask={() => { setStatusForProject(current.id, '快速任务已就绪。'); setView('quick') }}
+                onStartAnnouncement={() => { void openNewAnnouncementTask() }}
+                onStartQuickTask={() => { void openNewQuickTask() }}
                 onStartAnnouncementTask={openAnnouncementTask}
                 onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
                 onCancelAnnouncementHold={cancelAnnouncementCancelHold}
@@ -855,21 +1216,38 @@ function App() {
               />
             ) : (
               <Suspense fallback={<span className="loading" />}>
-                {view === 'quick' ? (
+                {view === 'quick' && quickTaskSession?.projectId === current.id ? (
                   <QuickTaskWizard
+                    key={`${quickTaskSession.projectId}:${quickTaskSession.generation}`}
                     project={current}
                     busy={busy}
                     status={status}
                     settings={settings}
-                    latestRun={scopedLatestRun}
-                    onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
-                    onUploadFile={upload}
-                    onInspectTargets={inspectTranslationTargets}
+                    scope={quickTaskSession}
+                    initialRun={quickTaskInitialRun}
+                    onBack={() => {
+                      beginQuickTaskSession(current.id, `quick-idle-${createQuickTaskId()}`)
+                      quickTaskDetailRef.current = { projectId: '', taskId: '', runId: '' }
+                      setBusy(false)
+                      setStatusForProject(current.id, '准备就绪')
+                      setView('overview')
+                    }}
+                    onStartNextTask={() => { void openNewQuickTask() }}
+                    onUploadFile={(file, kind, accept) => upload(file, kind, '', accept)}
                     onStartQuickTask={startQuickTask}
-                    onViewResult={(run) => { setView('overview'); setTab(run?.kind === 'qa' ? 'qa' : 'translation') }}
+                    onRefreshProject={async (scope) => {
+                      const loaded = await refreshCurrent(scope.projectId).catch(() => null)
+                      return isCurrentQuickTaskSession(scope) ? loaded : null
+                    }}
+                    onContinueTask={(group) => openQuickTaskGroup(current, group, '已继续选中的快速任务。')}
+                    onViewResult={(run) => { if (run) openRunInOverview(run) }}
+                    isCurrentScope={isCurrentQuickTaskSession}
                   />
+                ) : view === 'quick' ? (
+                  <span className="loading">正在恢复快速任务...</span>
                 ) : view === 'announcement' ? (
                   <AnnouncementWizard
+                    key={`${current.id}:${announcementSessionGeneration}`}
                     project={current}
                     busy={busy}
                     status={status}
@@ -879,13 +1257,14 @@ function App() {
                     announcementText={announcementText}
                     setAnnouncementText={setAnnouncementText}
                     lookupResult={announcementLookupResult}
-                    onUploadAsset={uploadAsset}
+                    onUploadAsset={uploadAnnouncementAsset}
                     onUploadConstraint={uploadAnnouncementConstraint}
                     onUploadTermsFile={uploadAnnouncementTermsFile}
                     onCreateTask={createAnnouncementTask}
                     onTaskAction={runAnnouncementTaskAction}
                     onLookup={runAnnouncementLookup}
                     onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
+                    onStartNext={() => { void openNewAnnouncementTask() }}
                     onUploadResponse={uploadAnnouncementResponse}
                     onBeginAnnouncementCancelHold={beginAnnouncementCancelHold}
                     onCancelAnnouncementHold={cancelAnnouncementCancelHold}

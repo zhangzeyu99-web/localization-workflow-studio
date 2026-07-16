@@ -25,7 +25,7 @@ from .common import (
 )
 from .semantic_qa import run_semantic_qa_report
 from .subprocess_runner import run_subprocess, run_subprocess_allow_failure
-from .translation_tasks import translation_task_continuation_metadata
+from .translation_tasks import ensure_task_run_open, is_quick_task_run, translation_task_continuation_metadata, update_task_run_status
 
 
 WORKBOOK_ID_HEADER_ALIASES = ["id", "key", "编号", "序号"]
@@ -276,6 +276,7 @@ def _compact_issue_text(value: Any) -> str:
 
 def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
     run = db.get_run(run_id)
+    ensure_task_run_open(run)
     project_id = run["project_id"]
     fixes = [fix.model_dump() if hasattr(fix, "model_dump") else dict(fix) for fix in getattr(request, "fixes", [])]
     if not fixes:
@@ -292,6 +293,7 @@ def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
     shutil.copy2(source_path, fixed_path)
 
     applied = _apply_workbook_fixes(fixed_path, fixes, run_id, language=run.get("language") or "en")
+    ensure_task_run_open(db.get_run(run_id))
     fixed_artifact = db.add_artifact(
         project_id,
         "Manual fixed workbook",
@@ -312,7 +314,9 @@ def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
             },
         }
 
+    ensure_task_run_open(db.get_run(run_id))
     update_project_harness(project_id, _merge_manual_fix_harness)
+    ensure_task_run_open(db.get_run(run_id))
     _append_improvement_items(
         project_id,
         [
@@ -332,6 +336,7 @@ def apply_manual_fixes(run_id: str, request: Any) -> dict[str, Any]:
         "qa_result": None,
     }
     if getattr(request, "rerun_qa", True):
+        ensure_task_run_open(db.get_run(run_id))
         qa_run = create_manual_fix_qa_run(run, fixed_artifact, source_artifact, applied)
         result["qa_result"] = run_qa_sync(qa_run["id"])
     return result
@@ -417,6 +422,7 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None, cancel_even
     """
     settings = settings if settings is not None else load_settings()
     run = db.get_run(run_id)
+    ensure_task_run_open(run)
     project = db.get_project(run["project_id"])
     metadata = run.get("metadata", {})
     workbook_artifact = _workbook_artifact_for_quality_run(run)
@@ -424,7 +430,7 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None, cancel_even
     if not workbook_path.exists():
         raise ValueError("译文表文件不存在，请重新上传或重新生成翻译结果后再运行 QA。")
     _check_qa_cancel(cancel_event)
-    db.update_run(run_id, status="running")
+    update_task_run_status(run_id, "running")
 
     output_dir = run_dir(run_id) / "qa"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -462,7 +468,7 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None, cancel_even
         input_artifacts["qa_final_workbook"] = qa_result["qa_final_artifact"]["id"]
     status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
     archive_result = None
-    if status == "passed" and qa_result.get("qa_final_artifact"):
+    if status == "passed" and qa_result.get("qa_final_artifact") and not is_quick_task_run(run):
         from .asset_import_export import archive_translation_artifact
 
         archive_result = archive_translation_artifact(
@@ -483,7 +489,7 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None, cancel_even
             "translation_archive": archive_result,
         },
     )
-    db.update_run(run_id, status=status)
+    update_task_run_status(run_id, status)
     return {"run": db.get_run(run_id), "artifacts": qa_result["artifacts"], "quality_summary": qa_result["quality_summary"]}
 
 

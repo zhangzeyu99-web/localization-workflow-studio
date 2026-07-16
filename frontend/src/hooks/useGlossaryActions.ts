@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react'
 import { api } from '../apiClient'
 import { errorText } from '../appText'
+import type { ArchiveImportReadbackOptions } from '../domain/archiveImport'
 import { translationInputMode, translationReadinessUserMessage } from '../domain/translationFlow'
 import { languageQuery, languageSpec, normalizeLanguageCode, type LanguageCode } from '../languages'
 import type {
@@ -167,7 +168,7 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
           source_only: false,
           id_column: 'ID',
           source_column: 'cn',
-          target_column: extractionLang.targetHeader,
+          ...(extractionLanguage === 'vn' ? {} : { target_column: extractionLang.targetHeader }),
           language: extractionLanguage,
           project_material_artifact_ids: assetArtifacts.map((artifact) => artifact.id),
           project_notes: [intro.trim() || current.description || `${current.name} ${current.type}`].filter(Boolean),
@@ -216,13 +217,19 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     }
   }, [current, termArtifact, translationTaskId, glossaryScopeStillCurrent, setBusy, setStatus, selectedLanguage, setGlossaryPreview])
 
-  const importGlossaryArtifact = useCallback(async () => {
-    if (!current || !termArtifact) return
+  const importGlossaryArtifact = useCallback(async (options?: ArchiveImportReadbackOptions): Promise<boolean> => {
+    if (!current) return false
     const projectId = current.id
+    if (options?.readbackOnly) {
+      const refreshed = await refreshProjectSnapshot(projectId)
+      if (!refreshed) throw new Error('当前项目术语归档读回失败。')
+      return true
+    }
+    if (!termArtifact) return false
     const artifactId = termArtifact.id
     const language = selectedLanguage
     const taskId = translationTaskId
-    if (!glossaryScopeStillCurrent(projectId, taskId)) return
+    if (!glossaryScopeStillCurrent(projectId, taskId)) return false
     setBusyForProject(projectId, true)
     setStatusForProject(projectId, '正在导入术语表...')
     try {
@@ -232,11 +239,13 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
         body: JSON.stringify({ artifact_id: artifactId, language })
       })
       await refreshProjectSnapshot(projectId)
-      if (!glossaryScopeStillCurrent(projectId, taskId)) return
+      if (!glossaryScopeStillCurrent(projectId, taskId)) return false
       const languageText = result.languages?.length ? `（${result.languages.map((item) => languageSpec(item).short).join('/')}）` : ''
       setStatusForProject(projectId, `术语表已导入：${result.imported_count} 条${languageText}`)
+      return true
     } catch (error) {
       if (glossaryScopeStillCurrent(projectId, taskId)) setStatusForProject(projectId, `术语表导入失败：${errorText(error)}`)
+      return false
     } finally {
       if (glossaryScopeStillCurrent(projectId, taskId)) setBusyForProject(projectId, false)
     }
@@ -253,7 +262,6 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
           term_key: form.get('term_key') || '',
           source: form.get('source'),
           target: form.get('target'),
-          target_alt: form.get('target_alt') || '',
           language: form.get('language') || selectedLanguage,
           category: form.get('category') || 'manual',
           note: form.get('note') || '',
@@ -285,23 +293,25 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
   }, [current, refreshProjectSnapshot, setStatusForProject])
 
   const updateGlossaryCandidate = useCallback(async (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => {
-    if (!current) return
+    if (!current) return false
     const projectId = current.id
     const taskId = translationTaskId
     const sourceArtifactId = sourceArtifact?.id
-    if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
+    if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return false
     try {
       await api(`/api/projects/${projectId}/glossary/candidates/${candidate.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       })
-      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
+      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return false
       await refreshGlossaryBatches(projectId, sourceArtifactId, selectedLanguage, taskId)
-      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return
+      if (!glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) return false
       setStatus('候选词条已保存')
+      return true
     } catch (error) {
       if (glossaryScopeStillCurrent(projectId, taskId, sourceArtifactId)) setStatus(`候选词条保存失败：${errorText(error)}`)
+      return false
     }
   }, [current, translationTaskId, sourceArtifact?.id, selectedLanguage, glossaryScopeStillCurrent, refreshGlossaryBatches, setStatus])
 
@@ -355,14 +365,21 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
   }, [current, translationTaskId, sourceArtifact?.id, selectedLanguage, glossaryScopeStillCurrent, setBusy, setStatusForProject, refreshProjectSnapshot, refreshGlossaryBatches, setBusyForProject])
 
   const deleteGlossaryTerm = useCallback(async (term: GlossaryTerm) => {
-    if (!current) return
+    if (!current) return false
     const projectId = current.id
     try {
       await api(`/api/projects/${projectId}/glossary/${term.id}`, { method: 'DELETE' })
       await refreshProjectSnapshot(projectId)
       setStatusForProject(projectId, '词条已删除')
+      return true
     } catch (error) {
+      try {
+        await refreshProjectSnapshot(projectId)
+      } catch {
+        // Keep the original delete failure as the actionable status.
+      }
       setStatusForProject(projectId, `词条删除失败：${errorText(error)}`)
+      return false
     }
   }, [current, refreshProjectSnapshot, setStatusForProject])
 

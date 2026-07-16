@@ -907,6 +907,17 @@ def test_error_responses_do_not_leak_traceback_or_server_paths(monkeypatch: pyte
         _assert_error_detail_is_safe(missing_download.json()["detail"])
 
         project = client.post("/api/projects", json={"name": "Leak Guard", "type": "QA"}).json()
+        source_upload = client.post(
+            f"/api/projects/{project['id']}/files?kind=language_table",
+            files={
+                "file": (
+                    "source-language-table.xlsx",
+                    _large_language_table_bytes(rows=1),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert source_upload.status_code == 200, source_upload.text
         rejected_upload = client.post(
             f"/api/projects/{project['id']}/files?kind=term_base",
             files={
@@ -922,7 +933,7 @@ def test_error_responses_do_not_leak_traceback_or_server_paths(monkeypatch: pyte
 
         crashed = client.post(
             f"/api/projects/{project['id']}/glossary/extract",
-            json={"input_artifact_id": "artifact-x", "language": "en"},
+            json={"input_artifact_id": source_upload.json()["id"], "language": "en"},
         )
         assert crashed.status_code == 500
         _assert_error_detail_is_safe(crashed.json()["detail"])

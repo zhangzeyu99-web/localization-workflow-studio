@@ -163,16 +163,16 @@ export function altColumnVisible(_lang: LanguageCode): boolean {
 }
 
 export function scopeProjectToLanguage(project: Project, code: LanguageCode): Project {
-  const glossary = (project.glossary || []).filter((term) => (term.language || 'en') === code)
-  const translations = (project.translations || []).filter((entry) => (entry.language || 'en') === code)
+  const glossary = project.glossary?.filter((term) => (term.language || 'en') === code)
+  const translations = project.translations?.filter((entry) => (entry.language || 'en') === code)
   return {
     ...project,
     glossary,
     translations,
     stats: {
       ...project.stats,
-      glossary: glossary.length,
-      archived_rows: translations.length,
+      glossary: glossary ? glossary.length : project.stats.glossary,
+      archived_rows: translations ? translations.length : project.stats.archived_rows,
       langs: project.stats.langs
     }
   }

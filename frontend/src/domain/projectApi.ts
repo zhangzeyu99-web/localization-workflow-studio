@@ -9,7 +9,8 @@ export async function uploadProjectFile(
   file: File,
   kind: string,
   purpose: string,
-  onProgress: (done: number, total: number) => void
+  onProgress: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<Artifact> {
   if (file.size <= CHUNKED_UPLOAD_THRESHOLD_BYTES) {
     const data = new FormData()
@@ -18,7 +19,8 @@ export async function uploadProjectFile(
     if (purpose) query.set('purpose', purpose)
     return api<Artifact>(`/api/projects/${projectId}/files?${query.toString()}`, {
       method: 'POST',
-      body: data
+      body: data,
+      signal,
     }, '上传')
   }
   const total = Math.ceil(file.size / UPLOAD_CHUNK_BYTES)
@@ -38,7 +40,8 @@ export async function uploadProjectFile(
     try {
       response = await fetch(`${API}/api/projects/${projectId}/files/chunk`, {
         method: 'POST',
-        body: data
+        body: data,
+        signal,
       })
     } catch (error) {
       throw new Error(sanitizeUserFacingError(error instanceof Error ? error.message : String(error), undefined, '上传'))

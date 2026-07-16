@@ -84,6 +84,7 @@ export function AnnouncementWizard({
   announcementCancelHoldTaskId,
   initialTaskId,
   onBack,
+  onStartNext,
   confirm
 }: {
   project: Project
@@ -108,6 +109,7 @@ export function AnnouncementWizard({
   announcementCancelHoldTaskId: string
   initialTaskId: string
   onBack: () => void
+  onStartNext: () => void
   confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
   const allTasks = activeAnnouncementTasks(project.announcement_tasks || [])
@@ -458,6 +460,8 @@ export function AnnouncementWizard({
               activeTask={activeTask}
               busy={busy}
               onDeliver={(force = false) => run('deliver', 9, { date_stamp: new Date().toISOString().slice(0, 10).replace(/-/g, ''), force })}
+              onBack={onBack}
+              onStartNext={onStartNext}
               confirm={confirm}
             />
           )}
@@ -721,8 +725,24 @@ export function announcementTermLanguages(task: AnnouncementTask | null, effecti
   return supportedLanguages.map((language) => language.code).filter((code) => found.has(code))
 }
 
-export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver, confirm }: { activeTask: AnnouncementTask | null; busy: boolean; onDeliver: (force?: boolean) => void; confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean> }) {
-  const deliveryArtifacts = (activeTask?.artifacts || []).filter((artifact) => ['announcement_delivery_package', 'announcement_docx_delivery_package'].includes(artifact.kind))
+export function AnnouncementDeliveryStep({
+  activeTask,
+  busy,
+  onDeliver,
+  onBack,
+  onStartNext,
+  confirm,
+}: {
+  activeTask: AnnouncementTask | null
+  busy: boolean
+  onDeliver: (force?: boolean) => void
+  onBack: () => void
+  onStartNext: () => void
+  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
+}) {
+  const deliveryArtifacts = pickerArtifacts((activeTask?.artifacts || [])
+    .filter((artifact) => ['announcement_delivery_package', 'announcement_docx_delivery_package'].includes(artifact.kind)))
+    .filter((artifact) => Boolean(artifact.id && artifactDownloadHref(artifact)))
   const delivered = Boolean(activeTask?.status === 'delivered' && deliveryArtifacts.length)
   const hardBlockers = announcementHardBlockerCount(activeTask)
   const qaSummaryArtifacts = pickerArtifacts((activeTask?.artifacts || []).filter((artifact) => ['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind)))
@@ -781,6 +801,12 @@ export function AnnouncementDeliveryStep({ activeTask, busy, onDeliver, confirm 
             重新生成交付总包
           </button>
         </details>
+      ) : null}
+      {delivered ? (
+        <div className="row-actions announcement-delivery-footer">
+          <button type="button" className="btn btn-ghost" onClick={onBack}>返回项目</button>
+          <button type="button" className="btn btn-primary" data-testid="start-next-announcement-task" onClick={onStartNext}>开始下一公告任务</button>
+        </div>
       ) : null}
     </>
   )

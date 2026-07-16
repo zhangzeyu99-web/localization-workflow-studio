@@ -2359,6 +2359,31 @@ input:focus, textarea:focus, select:focus { border-color: var(--c-purple-500); }
   margin-top: 14px;
   padding: 14px;
 }
+.quick-delivery-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.quick-delivery-files,
+.quick-delivery-footer {
+  min-width: 0;
+}
+.quick-delivery-files .btn {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.quick-history-card {
+  min-width: 0;
+}
+.quick-history-preview {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--surface-border);
+}
 .announcement-terms-summary div {
   padding: 10px 12px;
 }

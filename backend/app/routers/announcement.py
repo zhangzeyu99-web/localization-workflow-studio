@@ -15,6 +15,7 @@ from ..schemas import (
     AnnouncementLookupRequest,
     AnnouncementTaskActionRequest,
     AnnouncementTaskApplyRequest,
+    AnnouncementTaskCancelRequest,
     AnnouncementTaskCreateRequest,
     AnnouncementTaskDeliverRequest,
     AnnouncementTaskImportAiRequest,
@@ -140,6 +141,15 @@ def list_project_announcement_tasks(project_id: str) -> list[dict[str, Any]]:
 def create_project_announcement_task(project_id: str, payload: AnnouncementTaskCreateRequest) -> dict[str, Any]:
     try:
         return create_announcement_task(project_id, payload)
+    except db.UnfinishedAnnouncementTaskExistsError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "unfinished_announcement_task_exists",
+                "task_id": exc.task_id,
+                "status": exc.status,
+            },
+        ) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project or artifact not found") from exc
     except ValueError as exc:
@@ -165,9 +175,21 @@ def get_announcement_task_ai_input_summary(task_id: str) -> dict[str, Any]:
 
 
 @router.post("/api/announcement-tasks/{task_id}/cancel")
-def cancel_project_announcement_task(task_id: str) -> dict[str, Any]:
+def cancel_project_announcement_task(task_id: str, payload: AnnouncementTaskCancelRequest | None = None) -> dict[str, Any]:
     try:
-        return cancel_announcement_task(task_id)
+        task = get_announcement_task(task_id)
+        result = cancel_announcement_task(task_id, payload.expected_statuses if payload else None)
+        cancel_singleton_job(task["project_id"], f"announcement:{task_id}")
+        return result
+    except db.AnnouncementTaskStatusConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "announcement_task_status_conflict",
+                "task_id": exc.task_id,
+                "status": exc.status,
+            },
+        ) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="announcement task not found") from exc
 

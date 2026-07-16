@@ -2,6 +2,29 @@ import { getOperatorName } from './operator'
 
 export const API = import.meta.env.VITE_API_BASE_URL || ''
 
+export class ApiRequestError extends Error {
+  readonly status: number
+  readonly detail: unknown
+  readonly responseText: string
+
+  constructor(message: string, status: number, detail: unknown, responseText: string) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+    this.detail = detail
+    this.responseText = responseText
+  }
+}
+
+function structuredErrorDetail(text: string): unknown {
+  try {
+    const payload = JSON.parse(text) as { detail?: unknown; message?: unknown; error?: unknown }
+    return payload.detail ?? payload.message ?? payload.error ?? null
+  } catch {
+    return null
+  }
+}
+
 // Matches the two M2 per-project-lease/capacity 409 rejection texts (see the
 // sanitizeUserFacingError patterns below). Shared so the inline status
 // renderer can offer a "查看活跃任务" action without duplicating the regexes.
@@ -83,6 +106,9 @@ export function apiErrorText(text: string, fallback: string, operation?: string)
       if (flat.length) return `请求缺少必要信息：${Array.from(new Set(flat.filter((item) => item !== 'body'))).join(' / ')}`
     }
     if (typeof detail === 'string' && detail.trim()) return sanitizeUserFacingError(detail, undefined, operation)
+    if (detail && typeof detail === 'object' && typeof (detail as { message?: unknown }).message === 'string') {
+      return sanitizeUserFacingError(String((detail as { message: string }).message), undefined, operation)
+    }
   } catch {
     // Keep the original text when the backend returns plain text.
   }
@@ -118,7 +144,12 @@ export async function api<T>(path: string, init?: RequestInit, operation?: strin
         throw new Error('连接工作台后端失败。后端可能正在重启或未启动，请等几秒后重试；如果反复出现，请重启本地/局域网工作台。')
       }
     }
-    throw new Error(apiErrorText(text, response.statusText, operation))
+    throw new ApiRequestError(
+      apiErrorText(text, response.statusText, operation),
+      response.status,
+      structuredErrorDetail(text),
+      text,
+    )
   }
   return response.json()
 }

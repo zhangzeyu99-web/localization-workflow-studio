@@ -47,10 +47,14 @@ export function useRunStatusPolling(
       if (isStale()) return
       consecutiveFailuresRef.current = 0
       if (!isCurrentProject(runProjectId) || !isCurrentRunScope(updated)) return
-      setLatestRun(updated)
       const latestEvent = updated.events?.[updated.events.length - 1]
       const modelFixStatus = String(updated.metadata?.model_fix_status || '')
       const modelFixResultRunId = String(updated.metadata?.model_fix_result_run_id || '')
+      // Do not publish the model-fix source run's intermediate terminal state
+      // before resolving its result run. Changing running -> failed/passed
+      // tears down this poll effect and would mark the in-flight result read
+      // stale even though it belongs to the same task.
+      if (!modelFixResultRunId) setLatestRun(updated)
       if (modelFixStatus) {
         if (modelFixStatus === 'running' || updated.status === 'running') {
           setStatus('模型修复后台运行中：正在调用 AI 修复问题，完成后会自动重跑 QA。')

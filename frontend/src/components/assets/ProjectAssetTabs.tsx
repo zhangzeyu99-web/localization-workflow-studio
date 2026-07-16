@@ -1,11 +1,40 @@
-import React, { useEffect, useState } from 'react'
-import { WIDE_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
-import { artifactPickerLabel } from '../../domain/artifacts'
+import React, { useEffect, useRef, useState } from 'react'
+import { WIDE_TABLE_PAGE_SIZE } from '../../assetTableState'
+import { ApiRequestError, api } from '../../apiClient'
+import { errorText } from '../../appText'
+import { artifactExists, artifactFileName, artifactPickerLabel, artifactRole } from '../../domain/artifacts'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
-import { ActionStatus, AssetSelect, FileBox, FileBoxWithTemplate, GlossaryPreview, LanguageSelector } from '../shared/WorkflowPrimitives'
+import { useProjectAssetRows } from '../../hooks/useProjectAssetRows'
+import { useProjectGlossaryCandidates } from '../../hooks/useProjectGlossaryCandidates'
+import { GlossaryCandidateReview } from '../glossary/GlossaryCandidateReview'
+import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
+import { ActionStatus, GlossaryPreview, LanguageSelector } from '../shared/WorkflowPrimitives'
 import { ArchiveProvenanceBadge } from '../shared/StatusPrimitives'
-import { altColumnVisible, displayLanguagesForWideRows, glossaryWideRowMatches, glossaryWideRows, languageFromValue, normalizeGlossaryNote, rowRecords, translationWideRowMatches, translationWideRows, visibleLanguagesFromRows } from '../../domain/projectAssets'
+import { ArchiveImportFlow } from './ArchiveImportFlow'
+import type { ArchiveImportReadbackOptions } from '../../domain/archiveImport'
+import { languageFromValue, normalizeGlossaryNote, rowRecords } from '../../domain/projectAssets'
 import type { Artifact, GlossaryPreviewRow, GlossaryTerm, Project, TranslationEntry, WideGlossaryRow, WideTranslationRow } from '../../types'
+
+type GlossaryWideDraft = {
+  term_key: string
+  source: string
+  category: string
+  note: string
+  targets: Record<LanguageCode, string>
+}
+
+type TranslationWideDraft = {
+  entry_key: string
+  source: string
+  note: string
+  targets: Record<LanguageCode, string>
+}
+
+function isArchiveRevisionConflict(error: unknown): boolean {
+  return error instanceof ApiRequestError
+    && error.status === 409
+    && Boolean(error.detail && typeof error.detail === 'object' && (error.detail as { code?: unknown }).code === 'archive_revision_conflict')
+}
 
 export function WideTableSearchBar({
   testId,
@@ -59,6 +88,7 @@ export function WideTableLanguageControls({
             type="button"
             data-testid={`${testIdPrefix}-display-lang-${code}`}
             className={`lang-chip ${selected.has(code) ? 'selected' : ''}`}
+            aria-pressed={selected.has(code)}
             onClick={() => onToggle(code)}
           >
             {lang.short} {lang.label.replace(`${lang.short} `, '')}
@@ -116,7 +146,6 @@ export function WideTablePager({
 
 function GlossaryTabImpl({
   project,
-  sourceArtifact,
   termArtifact,
   setTermArtifact,
   glossaryPreview,
@@ -125,15 +154,14 @@ function GlossaryTabImpl({
   onUploadTerm,
   onGlossaryPreview,
   onGlossaryImport,
-  onGlossaryExtract,
   onAddTerm,
   onUpdateTerm,
   onDeleteTerm,
   selectedLanguage,
-  setSelectedLanguage
+  setSelectedLanguage,
+  confirm
 }: {
   project: Project
-  sourceArtifact: Artifact | null
   termArtifact: Artifact | null
   setTermArtifact: (artifact: Artifact | null) => void
   glossaryPreview: GlossaryPreviewRow[]
@@ -141,75 +169,182 @@ function GlossaryTabImpl({
   status: string
   onUploadTerm: (file: File) => void
   onGlossaryPreview: () => void
-  onGlossaryImport: () => void
-  onGlossaryExtract: () => void
+  onGlossaryImport: (options?: ArchiveImportReadbackOptions) => void | Promise<boolean>
   onAddTerm: (form: FormData) => void
   onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => Promise<void>
-  onDeleteTerm: (term: GlossaryTerm) => Promise<void>
+  onDeleteTerm: (term: GlossaryTerm) => Promise<boolean>
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
   const [toolsOpen, setToolsOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [displayLanguages, setDisplayLanguages] = useState<LanguageCode[]>([])
   const [page, setPage] = useState(1)
+  const [unfilteredTotal, setUnfilteredTotal] = useState(0)
+  const [mutationStatus, setMutationStatus] = useState('')
+  const [mutationError, setMutationError] = useState('')
   const lang = languageSpec(selectedLanguage)
-  const rows = glossaryWideRows(project)
-  const availableDisplayLanguages = visibleLanguagesFromRows(rows).filter((code) => code !== 'en')
-  const visibleLanguages = displayLanguagesForWideRows(rows, displayLanguages)
-  const filteredRows = rows.filter((row) => glossaryWideRowMatches(row, searchQuery))
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / WIDE_TABLE_PAGE_SIZE))
-  const currentPage = Math.min(page, totalPages)
-  const currentRows = pagedRows(filteredRows, currentPage)
-  const colSpan = 5 + visibleLanguages.reduce((total, code) => total + (altColumnVisible(code) ? 2 : 1), 0)
+  const requestedLanguages = supportedLanguages
+    .map((language) => language.code)
+    .filter((code) => code === 'en' || code === selectedLanguage || displayLanguages.includes(code))
+  const assetRows = useProjectAssetRows(
+    project.id,
+    'glossary',
+    true,
+    page,
+    WIDE_TABLE_PAGE_SIZE,
+    searchQuery,
+    requestedLanguages,
+  )
+  const rows = assetRows.rows as WideGlossaryRow[]
+  const availableDisplayLanguages = assetRows.recordLanguages.filter((code) => code !== 'en')
+  const visibleLanguages = supportedLanguages
+    .map((language) => language.code)
+    .filter((code) => code === 'en' || (availableDisplayLanguages.includes(code) && displayLanguages.includes(code)))
+  const colSpan = 5 + visibleLanguages.length
 
   useEffect(() => {
+    if (!searchQuery.trim() && !assetRows.loading) setUnfilteredTotal(assetRows.totalRows)
+  }, [assetRows.loading, assetRows.totalRows, searchQuery])
+
+  useEffect(() => {
+    setSearchQuery('')
+    setDisplayLanguages([])
     setPage(1)
-  }, [searchQuery, displayLanguages.join('|'), rows.length])
+    setUnfilteredTotal(0)
+    setMutationStatus('')
+    setMutationError('')
+  }, [project.id])
+
+  function refreshAssets() {
+    setMutationStatus('')
+    setPage(1)
+    assetRows.refresh()
+  }
 
   function toggleDisplayLanguage(code: LanguageCode) {
+    setPage(1)
     setDisplayLanguages((value) => value.includes(code) ? value.filter((item) => item !== code) : [...value, code])
+  }
+
+  async function deleteAllLanguages(row: WideGlossaryRow): Promise<boolean> {
+    setMutationError('')
+    const query = new URLSearchParams({ source_key: row.source_key })
+    try {
+      const summary = await api<{ count: number; languages: LanguageCode[]; revision: string }>(
+        `/api/projects/${project.id}/glossary/by-source-key?${query.toString()}`,
+        undefined,
+        '读取术语语言范围',
+      )
+      if (!summary.count) {
+        refreshAssets()
+        return false
+      }
+      const labels = summary.languages.map((language) => languageSpec(language).short)
+      const approved = await confirm(
+        `将删除当前术语的 ${labels.join('、')}，共 ${summary.count} 条语言记录。此操作不可撤销。`,
+        { title: '删除全部语言', confirmLabel: '删除全部', cancelLabel: '取消', tone: 'warn' },
+      )
+      if (!approved) return false
+      query.set('expected_revision', summary.revision)
+      const result = await api<{ deleted_count: number }>(
+        `/api/projects/${project.id}/glossary/by-source-key?${query.toString()}`,
+        { method: 'DELETE' },
+        '删除术语全部语言',
+      )
+      refreshAssets()
+      return result.deleted_count > 0
+    } catch (error) {
+      if (isArchiveRevisionConflict(error)) {
+        refreshAssets()
+        setMutationError('归档内容已变化，已刷新列表；请重新确认删除范围。')
+      } else {
+        setMutationError(`删除全部语言失败：${errorText(error)}`)
+      }
+      return false
+    }
+  }
+
+  async function saveWideRow(row: WideGlossaryRow, draft: GlossaryWideDraft, targetLanguages: LanguageCode[]): Promise<boolean> {
+    setMutationStatus('')
+    setMutationError('')
+    const targets = targetLanguages.reduce<Record<string, string>>((result, language) => {
+      if (row.translations[language]?.record) result[language] = draft.targets[language] || ''
+      return result
+    }, {})
+    try {
+      await api(
+        `/api/projects/${project.id}/glossary/by-source-key?${new URLSearchParams({ source_key: row.source_key }).toString()}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expected_revision: assetRows.revision,
+            shared: { term_key: draft.term_key, source: draft.source, category: draft.category, note: draft.note },
+            targets,
+          }),
+        },
+        '保存术语多语言行',
+      )
+      refreshAssets()
+      setMutationStatus('词条已保存')
+      return true
+    } catch (error) {
+      if (isArchiveRevisionConflict(error)) {
+        refreshAssets()
+        setMutationError('归档内容已变化，已刷新列表；请重新编辑后保存。')
+      } else {
+        setMutationError(`保存术语失败：${errorText(error)}`)
+      }
+      return false
+    }
   }
 
   return (
     <>
       <div className="card">
         <div className="card-title">
-          <div className="left">项目术语表（{rows.length} 个 CN 概念）</div>
+          <div className="left">项目术语表（{searchQuery.trim() ? assetRows.totalRows : unfilteredTotal} 个 CN 概念）</div>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 生成 / 导出'}</button>
         </div>
         <WideTableSearchBar
           testId="glossary-search"
           value={searchQuery}
-          onChange={setSearchQuery}
-          totalRows={rows.length}
-          filteredRows={filteredRows.length}
+          onChange={(value) => { setSearchQuery(value); setPage(1) }}
+          totalRows={unfilteredTotal}
+          filteredRows={assetRows.totalRows}
           placeholder="强匹配搜索 ID / CN / 译文 / 分类 / 备注"
         />
         {toolsOpen ? (
           <GlossaryToolsPanel
             project={project}
-            sourceArtifact={sourceArtifact}
             termArtifact={termArtifact}
             setTermArtifact={setTermArtifact}
             busy={busy}
             onUploadTerm={onUploadTerm}
             onGlossaryPreview={onGlossaryPreview}
             onGlossaryImport={onGlossaryImport}
-            onGlossaryExtract={onGlossaryExtract}
             selectedLanguage={selectedLanguage}
             setSelectedLanguage={setSelectedLanguage}
+            onAssetChanged={refreshAssets}
           />
         ) : null}
-        <ActionStatus status={status} busy={busy} />
+        <ActionStatus status={mutationStatus || status} busy={busy} />
+        {assetRows.loading ? <div className="muted-left" role="status">正在读取项目术语…</div> : null}
+        {assetRows.error ? <div className="info-line warn" role="alert">术语读取失败：{assetRows.error}</div> : null}
+        {mutationError ? <div className="info-line warn" role="alert">{mutationError}</div> : null}
         {toolsOpen && glossaryPreview.length ? <GlossaryPreview rows={glossaryPreview} selectedLanguage={selectedLanguage} /> : null}
         <details className="manual-maintenance" data-testid="manual-glossary-tools">
           <summary>手动新增 / 多语言维护</summary>
-          <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTerm(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
+          <form className="glossary-form" onSubmit={(event) => {
+            event.preventDefault()
+            const form = event.currentTarget
+            void Promise.resolve(onAddTerm(new FormData(form))).then(() => { form.reset(); refreshAssets() })
+          }}>
             <input name="term_key" placeholder="ID" />
             <input name="source" placeholder="CN" required />
             <input name="target" placeholder={lang.targetHeader} />
-            {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
             <input name="category" placeholder="分类" />
             <input name="note" placeholder="备注" />
             <input name="language" type="hidden" value={selectedLanguage} />
@@ -237,7 +372,6 @@ function GlossaryTabImpl({
                   return (
                     <React.Fragment key={code}>
                       <th>{spec.targetHeader}</th>
-                      {altColumnVisible(code) ? <th>{spec.altHeader}</th> : null}
                     </React.Fragment>
                   )
                 })}
@@ -247,15 +381,24 @@ function GlossaryTabImpl({
               </tr>
             </thead>
             <tbody>
-              {currentRows.map((row) => (
-                <WideGlossaryTermRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdateTerm={onUpdateTerm} onDeleteTerm={onDeleteTerm} />
+              {rows.map((row) => (
+                <WideGlossaryTermRow
+                  key={row.source_key}
+                  row={row}
+                  visibleLanguages={visibleLanguages}
+                  selectedLanguage={selectedLanguage}
+                  onSave={saveWideRow}
+                  onDeleteTerm={onDeleteTerm}
+                  onDeleteAll={deleteAllLanguages}
+                  onChanged={refreshAssets}
+                />
               ))}
-              {!rows.length ? <tr><td colSpan={colSpan} className="muted">暂无术语。可上传已有术语表、从语言表生成，或手工新增。</td></tr> : null}
-              {rows.length && !filteredRows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
+              {!assetRows.loading && !assetRows.totalRows && !searchQuery.trim() ? <tr><td colSpan={colSpan} className="muted">暂无术语。可上传已有术语表、从语言表生成，或手工新增。</td></tr> : null}
+              {!assetRows.loading && !rows.length && searchQuery.trim() ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
             </tbody>
           </table>
         </div>
-        <WideTablePager testIdPrefix="glossary" page={currentPage} totalRows={filteredRows.length} onPageChange={setPage} />
+        <WideTablePager testIdPrefix="glossary" page={page} totalRows={assetRows.totalRows} onPageChange={setPage} />
       </div>
     </>
   )
@@ -265,50 +408,141 @@ export const GlossaryTab = React.memo(GlossaryTabImpl)
 
 export function GlossaryToolsPanel({
   project,
-  sourceArtifact,
   termArtifact,
-  setTermArtifact,
   busy,
-  onUploadTerm,
-  onGlossaryPreview,
   onGlossaryImport,
-  onGlossaryExtract,
   selectedLanguage,
-  setSelectedLanguage
+  onAssetChanged,
 }: {
   project: Project
-  sourceArtifact: Artifact | null
   termArtifact: Artifact | null
   setTermArtifact: (artifact: Artifact | null) => void
   busy: boolean
   onUploadTerm: (file: File) => void
   onGlossaryPreview: () => void
-  onGlossaryImport: () => void
-  onGlossaryExtract: () => void
+  onGlossaryImport: (options?: ArchiveImportReadbackOptions) => void | Promise<boolean>
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  onAssetChanged: () => void
 }) {
-  const lang = languageSpec(selectedLanguage)
+  const [confirmedImportOpen, setConfirmedImportOpen] = useState(false)
+  const [candidateLanguage, setCandidateLanguage] = useState<LanguageCode>(selectedLanguage)
+  const confirmedImportTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const candidateFlow = useProjectGlossaryCandidates({
+    project,
+    language: candidateLanguage,
+    onReadback: async () => { await onGlossaryImport({ readbackOnly: true }); onAssetChanged() },
+  })
+  const storedCandidateSources = (project.artifacts || [])
+    .filter(artifactExists)
+    .filter((artifact) => artifactRole(artifact) === 'language_source')
+    .filter((artifact) => /\.xlsx$/i.test(artifactFileName(artifact)))
+  const candidateSources = candidateFlow.artifact && !storedCandidateSources.some((artifact) => artifact.id === candidateFlow.artifact?.id)
+    ? [candidateFlow.artifact, ...storedCandidateSources]
+    : storedCandidateSources
+
+  function openConfirmedImport(event: React.MouseEvent<HTMLButtonElement>) {
+    confirmedImportTriggerRef.current = event.currentTarget
+    setConfirmedImportOpen(true)
+  }
+
+  function closeConfirmedImport() {
+    setConfirmedImportOpen(false)
+    requestAnimationFrame(() => confirmedImportTriggerRef.current?.focus())
+  }
+
   return (
     <div className="glossary-tools-panel">
-      <div className="action-card">
-        <AssetSelect label="使用已有术语资产" project={project} role={['glossary_source', 'glossary_curated']} value={termArtifact} onChange={setTermArtifact} allowEmpty />
-        <FileBoxWithTemplate label="上传已确认术语表模板 xlsx/csv/json" onFile={onUploadTerm} templateKind="glossary" />
+      <div className="action-card archive-tool-block">
+        <div className="archive-tool-block-head">
+          <div>
+            <strong>导入已确认术语</strong>
+            <span>用于已经人工确认、可直接合并到项目术语库的 XLSX / CSV / JSON。</span>
+          </div>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={openConfirmedImport}>导入已确认术语</button>
+        </div>
+      </div>
+      <div className="action-card archive-tool-block">
+        <div className="archive-tool-block-head">
+          <div>
+            <strong>扫描术语候选</strong>
+            <span>完整语言表先生成候选，再逐条人工确认；不会直接写入项目术语库。</span>
+          </div>
+        </div>
+        <div className="inline-form">
+          <label>
+            <span>选择完整语言表</span>
+            <select
+              aria-label="选择完整语言表"
+              value={candidateFlow.artifact?.id || ''}
+              disabled={candidateFlow.busy}
+              onChange={(event) => candidateFlow.selectArtifact(candidateSources.find((artifact) => artifact.id === event.target.value) || null)}
+            >
+              <option value="">请选择项目内 XLSX</option>
+              {candidateSources.map((artifact) => <option key={artifact.id} value={artifact.id}>{artifactPickerLabel(artifact)}</option>)}
+            </select>
+          </label>
+          <label className={`btn btn-ghost ${candidateFlow.busy ? 'disabled' : ''}`}>
+            <span>上传完整语言表</span>
+            <input
+              aria-label="上传完整语言表"
+              type="file"
+              accept=".xlsx"
+              disabled={candidateFlow.busy}
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) void candidateFlow.uploadFile(file)
+                event.currentTarget.value = ''
+              }}
+            />
+          </label>
+        </div>
+        {candidateFlow.artifact ? <div className="asset-meta">已选择：<span>{artifactFileName(candidateFlow.artifact)}</span></div> : null}
         <div className="language-inline-select">
-          <span>从完整语言表扫描候选：</span>
-          <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
+          <span>候选目标语言：</span>
+          <LanguageSelector selectedLanguage={candidateLanguage} setSelectedLanguage={setCandidateLanguage} />
         </div>
         <div className="row-actions">
-          <button type="button" className="btn btn-ghost" disabled={!termArtifact || busy} onClick={onGlossaryPreview}>预览术语模板</button>
-          <button type="button" className="btn btn-primary" disabled={!termArtifact || busy} onClick={onGlossaryImport}>导入已确认术语</button>
-          <button type="button" className="btn btn-ghost" disabled={!sourceArtifact || busy} onClick={onGlossaryExtract}>从翻译语言表生成候选</button>
+          <button type="button" className="btn btn-primary" disabled={!candidateFlow.artifact || candidateFlow.busy} onClick={() => void candidateFlow.scan()}>扫描候选</button>
+        </div>
+        {!candidateFlow.batch ? (
+          <div role="status" aria-label="候选扫描状态" aria-live="polite" className="archive-import-live">{candidateFlow.status}</div>
+        ) : null}
+        {candidateFlow.batch ? (
+          <GlossaryCandidateReview
+            batch={candidateFlow.batch}
+            candidates={candidateFlow.candidates}
+            language={candidateLanguage}
+            busy={candidateFlow.busy}
+            status={candidateFlow.status}
+            onUpdateCandidate={candidateFlow.updateCandidate}
+            onResolveCandidates={candidateFlow.resolveCandidates}
+            onTranslateMissingCandidates={candidateFlow.translateMissing}
+          />
+        ) : null}
+        <div className="muted-left">完整语言表不会直接写入项目术语库；只能先生成候选，再人工确认加入。</div>
+      </div>
+      <div className="action-card archive-tool-block">
+        <div className="archive-tool-block-head">
+          <div><strong>导出术语</strong><span>按当前项目全部已确认术语导出。</span></div>
+        </div>
+        <div className="row-actions">
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=xlsx`}>导出全部 XLSX</a>
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=csv`}>导出全部 CSV</a>
           <a className="btn btn-ghost" href={`/api/projects/${project.id}/glossary/export?format=json`}>导出全部 JSON</a>
         </div>
-        {!sourceArtifact ? <div className="warn-line">需要从完整语言表生成术语时，先在“翻译”页上传语言表。</div> : null}
-        <div className="muted-left">完整语言表不会直接写入项目术语库；只能先生成候选，再人工确认加入。</div>
       </div>
+      {confirmedImportOpen ? (
+        <ArchiveImportFlow
+          project={project}
+          kind="glossary"
+          defaultLanguage={selectedLanguage}
+          initialArtifact={termArtifact}
+          onReadback={async () => { await onGlossaryImport({ readbackOnly: true }); onAssetChanged() }}
+          onClose={closeConfirmedImport}
+        />
+      ) : null}
     </div>
   )
 }
@@ -316,15 +550,22 @@ export function GlossaryToolsPanel({
 function WideGlossaryTermRowImpl({
   row,
   visibleLanguages,
-  onUpdateTerm,
-  onDeleteTerm
+  selectedLanguage,
+  onSave,
+  onDeleteTerm,
+  onDeleteAll,
+  onChanged,
 }: {
   row: WideGlossaryRow
   visibleLanguages: LanguageCode[]
-  onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => Promise<void>
-  onDeleteTerm: (term: GlossaryTerm) => Promise<void>
+  selectedLanguage: LanguageCode
+  onSave: (row: WideGlossaryRow, draft: GlossaryWideDraft, targetLanguages: LanguageCode[]) => Promise<boolean>
+  onDeleteTerm: (term: GlossaryTerm) => Promise<boolean>
+  onDeleteAll: (row: WideGlossaryRow) => Promise<boolean>
+  onChanged: () => void
 }) {
   const [editing, setEditing] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
   const [draft, setDraft] = useState({
     term_key: row.term_key || '',
     source: row.source || '',
@@ -333,8 +574,7 @@ function WideGlossaryTermRowImpl({
     targets: supportedLanguages.reduce((acc, lang) => {
       acc[lang.code] = row.translations[lang.code]?.target || ''
       return acc
-    }, {} as Record<LanguageCode, string>),
-    enAlt: row.translations.en?.target_alt || ''
+    }, {} as Record<LanguageCode, string>)
   })
 
   useEffect(() => {
@@ -346,31 +586,38 @@ function WideGlossaryTermRowImpl({
       targets: supportedLanguages.reduce((acc, lang) => {
         acc[lang.code] = row.translations[lang.code]?.target || ''
         return acc
-      }, {} as Record<LanguageCode, string>),
-      enAlt: row.translations.en?.target_alt || ''
+      }, {} as Record<LanguageCode, string>)
     })
     setEditing(false)
   }, [row.source_key, row.term_key, row.source, row.category, row.note, JSON.stringify(row.translations)])
 
   async function save() {
-    const records = rowRecords<GlossaryTerm>(row)
-    for (const record of records) {
-      const code = languageFromValue(record.language) || 'en'
-      await onUpdateTerm(record, {
-        term_key: draft.term_key,
-        source: draft.source,
-        target: draft.targets[code] || '',
-        target_alt: code === 'en' ? draft.enAlt : '',
-        category: draft.category,
-        note: draft.note
-      })
+    setActionBusy(true)
+    try {
+      if (await onSave(row, draft, visibleLanguages)) setEditing(false)
+    } finally {
+      setActionBusy(false)
     }
-    setEditing(false)
   }
 
-  async function remove() {
-    const records = rowRecords<GlossaryTerm>(row)
-    for (const record of records) await onDeleteTerm(record)
+  async function removeCurrentLanguage() {
+    const currentRecord = row.translations[selectedLanguage]?.record
+    if (!currentRecord) return
+    setActionBusy(true)
+    try {
+      if (await onDeleteTerm(currentRecord)) onChanged()
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
+  async function removeAllLanguages() {
+    setActionBusy(true)
+    try {
+      await onDeleteAll(row)
+    } finally {
+      setActionBusy(false)
+    }
   }
 
   function sharedCell(key: 'term_key' | 'source' | 'category' | 'note') {
@@ -380,12 +627,10 @@ function WideGlossaryTermRowImpl({
 
   function targetCell(code: LanguageCode) {
     if (!editing) return <span className="readonly-cell">{draft.targets[code] || '-'}</span>
+    if (!row.translations[code]?.record) {
+      return <input className="cell-input" value="" disabled aria-label={`${languageSpec(code).short} 无归档记录`} title="无该语言记录，请先手动新增" placeholder="无该语言记录" />
+    }
     return <input className="cell-input" value={draft.targets[code] || ''} onChange={(event) => setDraft((value) => ({ ...value, targets: { ...value.targets, [code]: event.target.value } }))} />
-  }
-
-  function enAltCell() {
-    if (!editing) return <span className="readonly-cell">{draft.enAlt || '-'}</span>
-    return <input className="cell-input" value={draft.enAlt} onChange={(event) => setDraft((value) => ({ ...value, enAlt: event.target.value }))} />
   }
 
   return (
@@ -395,7 +640,6 @@ function WideGlossaryTermRowImpl({
       {visibleLanguages.map((code) => (
         <React.Fragment key={code}>
           <td>{targetCell(code)}</td>
-          {altColumnVisible(code) ? <td>{enAltCell()}</td> : null}
         </React.Fragment>
       ))}
       <td>{sharedCell('category')}</td>
@@ -404,12 +648,30 @@ function WideGlossaryTermRowImpl({
         <div className="table-actions">
           {editing ? (
             <>
-              <button type="button" className="btn btn-primary btn-sm" onClick={save}>保存</button>
-              <button type="button" className="btn btn-sm btn-danger" onClick={remove}>删除</button>
+              <button type="button" className="btn btn-primary btn-sm" disabled={actionBusy} onClick={save}>保存</button>
+              <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={() => setEditing(false)}>取消</button>
             </>
           ) : (
-            <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>编辑</button>
+            <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={() => setEditing(true)}>编辑</button>
           )}
+          <button
+            type="button"
+            className="btn btn-sm"
+            aria-label={`删除当前语言（${languageSpec(selectedLanguage).short}）`}
+            disabled={actionBusy || !row.translations[selectedLanguage]?.record}
+            onClick={() => void removeCurrentLanguage()}
+          >
+            删 {languageSpec(selectedLanguage).short}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-danger"
+            aria-label="删除全部语言"
+            disabled={actionBusy}
+            onClick={() => void removeAllLanguages()}
+          >
+            删全部
+          </button>
         </div>
       </td>
     </tr>
@@ -430,7 +692,8 @@ function TranslationArchiveTabImpl({
   onDeleteTranslation,
   selectedLanguage,
   setSelectedLanguage,
-  onGoQA
+  onGoQA,
+  confirm
 }: {
   project: Project
   archiveArtifact: Artifact | null
@@ -438,85 +701,201 @@ function TranslationArchiveTabImpl({
   busy: boolean
   status: string
   onUploadArchive: (file: File) => Promise<Artifact | null>
-  onImportArchive: (artifact?: Artifact | null) => Promise<boolean>
+  onImportArchive: (artifact?: Artifact | null, options?: ArchiveImportReadbackOptions) => Promise<boolean>
   onAddTranslation: (form: FormData) => void
   onUpdateTranslation: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
-  onDeleteTranslation: (entry: TranslationEntry) => Promise<void>
+  onDeleteTranslation: (entry: TranslationEntry) => Promise<boolean>
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
   onGoQA?: () => void
+  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
   const [importOpen, setImportOpen] = useState(false)
+  const importTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportLanguage, setExportLanguage] = useState<LanguageCode | 'all'>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [displayLanguages, setDisplayLanguages] = useState<LanguageCode[]>([])
   const [page, setPage] = useState(1)
-  const rows = translationWideRows(project)
-  const availableDisplayLanguages = visibleLanguagesFromRows(rows).filter((code) => code !== 'en')
-  const visibleLanguages = displayLanguagesForWideRows(rows, displayLanguages)
-  const filteredRows = rows.filter((row) => translationWideRowMatches(row, searchQuery))
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / WIDE_TABLE_PAGE_SIZE))
-  const currentPage = Math.min(page, totalPages)
-  const currentRows = pagedRows(filteredRows, currentPage)
+  const [unfilteredTotal, setUnfilteredTotal] = useState(0)
+  const [mutationError, setMutationError] = useState('')
+  const requestedLanguages = supportedLanguages
+    .map((language) => language.code)
+    .filter((code) => code === 'en' || code === selectedLanguage || displayLanguages.includes(code))
+  const assetRows = useProjectAssetRows(
+    project.id,
+    'translations',
+    true,
+    page,
+    WIDE_TABLE_PAGE_SIZE,
+    searchQuery,
+    requestedLanguages,
+  )
+  const rows = assetRows.rows as WideTranslationRow[]
+  const availableDisplayLanguages = assetRows.recordLanguages.filter((code) => code !== 'en')
+  const visibleLanguages = supportedLanguages
+    .map((language) => language.code)
+    .filter((code) => code === 'en' || (availableDisplayLanguages.includes(code) && displayLanguages.includes(code)))
   const lang = languageSpec(selectedLanguage)
-  const colSpan = 5 + visibleLanguages.reduce((total, code) => total + (altColumnVisible(code) ? 2 : 1), 0)
+  const colSpan = 5 + visibleLanguages.length
 
   useEffect(() => {
+    if (!searchQuery.trim() && !assetRows.loading) setUnfilteredTotal(assetRows.totalRows)
+  }, [assetRows.loading, assetRows.totalRows, searchQuery])
+
+  useEffect(() => {
+    setSearchQuery('')
+    setDisplayLanguages([])
     setPage(1)
-  }, [searchQuery, displayLanguages.join('|'), rows.length])
+    setUnfilteredTotal(0)
+    setMutationError('')
+  }, [project.id])
+
+  function refreshAssets() {
+    setPage(1)
+    assetRows.refresh()
+  }
 
   function toggleDisplayLanguage(code: LanguageCode) {
+    setPage(1)
     setDisplayLanguages((value) => value.includes(code) ? value.filter((item) => item !== code) : [...value, code])
+  }
+
+  async function deleteAllLanguages(row: WideTranslationRow): Promise<boolean> {
+    setMutationError('')
+    const query = new URLSearchParams({ source_key: row.source_key })
+    try {
+      const summary = await api<{ count: number; languages: LanguageCode[]; revision: string }>(
+        `/api/projects/${project.id}/translations/by-source-key?${query.toString()}`,
+        undefined,
+        '读取译文语言范围',
+      )
+      if (!summary.count) {
+        refreshAssets()
+        return false
+      }
+      const labels = summary.languages.map((language) => languageSpec(language).short)
+      const approved = await confirm(
+        `将删除当前译文的 ${labels.join('、')}，共 ${summary.count} 条语言记录。此操作不可撤销。`,
+        { title: '删除全部语言', confirmLabel: '删除全部', cancelLabel: '取消', tone: 'warn' },
+      )
+      if (!approved) return false
+      query.set('expected_revision', summary.revision)
+      const result = await api<{ deleted_count: number }>(
+        `/api/projects/${project.id}/translations/by-source-key?${query.toString()}`,
+        { method: 'DELETE' },
+        '删除译文全部语言',
+      )
+      refreshAssets()
+      return result.deleted_count > 0
+    } catch (error) {
+      if (isArchiveRevisionConflict(error)) {
+        refreshAssets()
+        setMutationError('归档内容已变化，已刷新列表；请重新确认删除范围。')
+      } else {
+        setMutationError(`删除全部语言失败：${errorText(error)}`)
+      }
+      return false
+    }
+  }
+
+  async function saveWideRow(row: WideTranslationRow, draft: TranslationWideDraft, targetLanguages: LanguageCode[]): Promise<boolean> {
+    setMutationError('')
+    const targets = targetLanguages.reduce<Record<string, string>>((result, language) => {
+      if (row.translations[language]?.record) result[language] = draft.targets[language] || ''
+      return result
+    }, {})
+    try {
+      await api(
+        `/api/projects/${project.id}/translations/by-source-key?${new URLSearchParams({ source_key: row.source_key }).toString()}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expected_revision: assetRows.revision,
+            shared: { entry_key: draft.entry_key, source: draft.source, note: draft.note },
+            targets,
+          }),
+        },
+        '保存译文多语言行',
+      )
+      refreshAssets()
+      return true
+    } catch (error) {
+      if (isArchiveRevisionConflict(error)) {
+        refreshAssets()
+        setMutationError('归档内容已变化，已刷新列表；请重新编辑后保存。')
+      } else {
+        setMutationError(`保存译文失败：${errorText(error)}`)
+      }
+      return false
+    }
+  }
+
+  function openImport(event: React.MouseEvent<HTMLButtonElement>) {
+    importTriggerRef.current = event.currentTarget
+    setImportOpen(true)
+  }
+
+  function closeImport() {
+    setImportOpen(false)
+    requestAnimationFrame(() => importTriggerRef.current?.focus())
   }
 
   return (
     <div className="card">
       <div className="card-title">
-        <div className="left">项目译文归档（{rows.length} 个 CN 源文）</div>
+        <div className="left">项目译文归档（{searchQuery.trim() ? assetRows.totalRows : unfilteredTotal} 个 CN 源文）</div>
         <div className="card-actions">
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button>
+          <button type="button" className="btn btn-primary btn-sm" onClick={openImport}>导入译文</button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setExportOpen((value) => !value)}>{exportOpen ? '收起导出' : '导出'}</button>
         </div>
       </div>
       <WideTableSearchBar
         testId="archive-search"
         value={searchQuery}
-        onChange={setSearchQuery}
-        totalRows={rows.length}
-        filteredRows={filteredRows.length}
+        onChange={(value) => { setSearchQuery(value); setPage(1) }}
+        totalRows={unfilteredTotal}
+        filteredRows={assetRows.totalRows}
         placeholder="强匹配搜索 ID / CN / 译文 / 备注"
       />
       {exportOpen ? <TranslationArchiveExportPanel project={project} exportLanguage={exportLanguage} setExportLanguage={setExportLanguage} /> : null}
       <ActionStatus status={status} busy={busy} />
+      {assetRows.loading ? <div className="muted-left" role="status">正在读取译文归档…</div> : null}
+      {assetRows.error ? <div className="info-line warn" role="alert">译文归档读取失败：{assetRows.error}</div> : null}
+      {mutationError ? <div className="info-line warn" role="alert">{mutationError}</div> : null}
       {importOpen ? (
-        <TranslationArchiveImportModal
-          archiveArtifact={archiveArtifact}
-          busy={busy}
-          onClose={() => setImportOpen(false)}
-          onUploadArchive={onUploadArchive}
-          onImportArchive={onImportArchive}
+        <ArchiveImportFlow
+          project={project}
+          kind="translations"
+          defaultLanguage={selectedLanguage}
+          initialArtifact={archiveArtifact}
+          onReadback={async () => { await onImportArchive(null, { readbackOnly: true }); refreshAssets() }}
+          onClose={closeImport}
         />
       ) : null}
-      {!rows.length ? (
+      {!assetRows.loading && !assetRows.totalRows && !searchQuery.trim() ? (
         <div className="empty-action-card asset-empty-state" data-testid="archive-empty-state">
           <div>
             <strong>还没有译文归档</strong>
             <span>可导入已有译文表，或先运行 QA。标准交付会写入可信归档；带问题交付也会归档，并明确标记为“待复核”。</span>
           </div>
           <div className="row-actions compact-actions">
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => setImportOpen(true)}>导入译文</button>
+            <button type="button" className="btn btn-primary btn-sm" onClick={openImport}>导入译文</button>
             {onGoQA ? <button type="button" className="btn btn-ghost btn-sm" onClick={onGoQA}>去校对</button> : null}
           </div>
         </div>
       ) : null}
       <details className="manual-maintenance" data-testid="manual-archive-tools">
         <summary>手动维护归档</summary>
-        <form className="glossary-form" onSubmit={(event) => { event.preventDefault(); onAddTranslation(new FormData(event.currentTarget)); event.currentTarget.reset() }}>
+        <form className="glossary-form" onSubmit={(event) => {
+          event.preventDefault()
+          const form = event.currentTarget
+          void Promise.resolve(onAddTranslation(new FormData(form))).then(() => { form.reset(); refreshAssets() })
+        }}>
           <input name="entry_key" placeholder="ID" />
           <input name="source" placeholder="CN" required />
           <input name="target" placeholder={lang.targetHeader} />
-          {altColumnVisible(selectedLanguage) ? <input name="target_alt" placeholder={lang.altHeader} /> : <input name="target_alt" type="hidden" value="" />}
           <input name="note" placeholder="备注" />
           <input name="language" type="hidden" value={selectedLanguage} />
           <button className="btn btn-primary btn-sm">+ 新增 {lang.short}</button>
@@ -526,7 +905,7 @@ function TranslationArchiveTabImpl({
           <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
         </div>
       </details>
-      {rows.length ? (
+      {assetRows.totalRows || searchQuery.trim() ? (
         <>
           <WideTableLanguageControls
             testIdPrefix="archive"
@@ -545,7 +924,6 @@ function TranslationArchiveTabImpl({
                     return (
                       <React.Fragment key={code}>
                         <th>{spec.targetHeader}</th>
-                        {altColumnVisible(code) ? <th>{spec.altHeader}</th> : null}
                       </React.Fragment>
                     )
                   })}
@@ -555,14 +933,23 @@ function TranslationArchiveTabImpl({
                 </tr>
               </thead>
               <tbody>
-                {currentRows.map((row) => (
-                  <WideTranslationEntryRow key={row.source_key} row={row} visibleLanguages={visibleLanguages} onUpdate={onUpdateTranslation} onDelete={onDeleteTranslation} />
+                {rows.map((row) => (
+                  <WideTranslationEntryRow
+                    key={row.source_key}
+                    row={row}
+                    visibleLanguages={visibleLanguages}
+                    selectedLanguage={selectedLanguage}
+                    onSave={saveWideRow}
+                    onDelete={onDeleteTranslation}
+                    onDeleteAll={deleteAllLanguages}
+                    onChanged={refreshAssets}
+                  />
                 ))}
-                {!filteredRows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
+                {!assetRows.loading && !rows.length ? <tr><td colSpan={colSpan} className="muted">暂无匹配结果</td></tr> : null}
               </tbody>
             </table>
           </div>
-          <WideTablePager testIdPrefix="archive" page={currentPage} totalRows={filteredRows.length} onPageChange={setPage} />
+          <WideTablePager testIdPrefix="archive" page={page} totalRows={assetRows.totalRows} onPageChange={setPage} />
         </>
       ) : null}
     </div>
@@ -570,60 +957,6 @@ function TranslationArchiveTabImpl({
 }
 
 export const TranslationArchiveTab = React.memo(TranslationArchiveTabImpl)
-
-export function TranslationArchiveImportModal({
-  archiveArtifact,
-  busy,
-  onClose,
-  onUploadArchive,
-  onImportArchive
-}: {
-  archiveArtifact: Artifact | null
-  busy: boolean
-  onClose: () => void
-  onUploadArchive: (file: File) => Promise<Artifact | null>
-  onImportArchive: (artifact?: Artifact | null) => Promise<boolean>
-}) {
-  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(archiveArtifact)
-  const [message, setMessage] = useState('上传译文表后会立即自动导入多语言归档。')
-  const [importing, setImporting] = useState(false)
-
-  async function uploadAndImport(file: File) {
-    setImporting(true)
-    setMessage(`正在上传：${file.name}`)
-    try {
-      const artifact = await onUploadArchive(file)
-      if (!artifact) {
-        setMessage('上传失败，未执行导入。')
-        return
-      }
-      setSelectedArtifact(artifact)
-      setMessage('上传完成，正在自动导入多语言归档...')
-      const imported = await onImportArchive(artifact)
-      setMessage(imported ? '导入完成。' : '导入失败，具体原因见顶部状态。')
-    } finally {
-      setImporting(false)
-    }
-  }
-
-  return (
-    <div className="modal-mask show">
-      <div className="modal archive-import-modal">
-        <div className="settings-head">
-          <h3>导入译文归档</h3>
-          <button type="button" className="btn btn-ghost btn-sm" disabled={busy || importing} onClick={onClose}>关闭</button>
-        </div>
-        <p>上传已翻译表格（XLSX/CSV），系统自动识别语言列并写入归档。</p>
-        <FileBox label="上传译文表格 XLSX/CSV" onFile={uploadAndImport} />
-        <div className="archive-import-summary">
-          <span>当前文件</span>
-          <strong>{selectedArtifact ? artifactPickerLabel(selectedArtifact) : '未上传'}</strong>
-        </div>
-        <div className={importing ? 'inline-status busy' : 'inline-status'}>{message}</div>
-      </div>
-    </div>
-  )
-}
 
 export function TranslationArchiveExportPanel({
   project,
@@ -660,15 +993,22 @@ export function TranslationArchiveExportPanel({
 function WideTranslationEntryRowImpl({
   row,
   visibleLanguages,
-  onUpdate,
-  onDelete
+  selectedLanguage,
+  onSave,
+  onDelete,
+  onDeleteAll,
+  onChanged,
 }: {
   row: WideTranslationRow
   visibleLanguages: LanguageCode[]
-  onUpdate: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
-  onDelete: (entry: TranslationEntry) => Promise<void>
+  selectedLanguage: LanguageCode
+  onSave: (row: WideTranslationRow, draft: TranslationWideDraft, targetLanguages: LanguageCode[]) => Promise<boolean>
+  onDelete: (entry: TranslationEntry) => Promise<boolean>
+  onDeleteAll: (row: WideTranslationRow) => Promise<boolean>
+  onChanged: () => void
 }) {
   const [editing, setEditing] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
   const [draft, setDraft] = useState({
     entry_key: row.entry_key || '',
     source: row.source || '',
@@ -676,8 +1016,7 @@ function WideTranslationEntryRowImpl({
     targets: supportedLanguages.reduce((acc, lang) => {
       acc[lang.code] = row.translations[lang.code]?.target || ''
       return acc
-    }, {} as Record<LanguageCode, string>),
-    enAlt: row.translations.en?.target_alt || ''
+    }, {} as Record<LanguageCode, string>)
   })
 
   useEffect(() => {
@@ -688,30 +1027,38 @@ function WideTranslationEntryRowImpl({
       targets: supportedLanguages.reduce((acc, lang) => {
         acc[lang.code] = row.translations[lang.code]?.target || ''
         return acc
-      }, {} as Record<LanguageCode, string>),
-      enAlt: row.translations.en?.target_alt || ''
+      }, {} as Record<LanguageCode, string>)
     })
     setEditing(false)
   }, [row.source_key, row.entry_key, row.source, row.note, JSON.stringify(row.translations)])
 
   async function save() {
-    const records = rowRecords<TranslationEntry>(row)
-    for (const record of records) {
-      const code = languageFromValue(record.language) || 'en'
-      await onUpdate(record, {
-        entry_key: draft.entry_key,
-        source: draft.source,
-        target: draft.targets[code] || '',
-        target_alt: code === 'en' ? draft.enAlt : '',
-        note: draft.note
-      })
+    setActionBusy(true)
+    try {
+      if (await onSave(row, draft, visibleLanguages)) setEditing(false)
+    } finally {
+      setActionBusy(false)
     }
-    setEditing(false)
   }
 
-  async function remove() {
-    const records = rowRecords<TranslationEntry>(row)
-    for (const record of records) await onDelete(record)
+  async function removeCurrentLanguage() {
+    const currentRecord = row.translations[selectedLanguage]?.record
+    if (!currentRecord) return
+    setActionBusy(true)
+    try {
+      if (await onDelete(currentRecord)) onChanged()
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
+  async function removeAllLanguages() {
+    setActionBusy(true)
+    try {
+      await onDeleteAll(row)
+    } finally {
+      setActionBusy(false)
+    }
   }
 
   function sharedCell(key: 'entry_key' | 'source' | 'note') {
@@ -721,12 +1068,10 @@ function WideTranslationEntryRowImpl({
 
   function targetCell(code: LanguageCode) {
     if (!editing) return <span className="readonly-cell">{draft.targets[code] || '-'}</span>
+    if (!row.translations[code]?.record) {
+      return <input className="cell-input" value="" disabled aria-label={`${languageSpec(code).short} 无归档记录`} title="无该语言记录，请先手动新增" placeholder="无该语言记录" />
+    }
     return <input className="cell-input" value={draft.targets[code] || ''} onChange={(event) => setDraft((value) => ({ ...value, targets: { ...value.targets, [code]: event.target.value } }))} />
-  }
-
-  function enAltCell() {
-    if (!editing) return <span className="readonly-cell">{draft.enAlt || '-'}</span>
-    return <input className="cell-input" value={draft.enAlt} onChange={(event) => setDraft((value) => ({ ...value, enAlt: event.target.value }))} />
   }
 
   return (
@@ -736,7 +1081,6 @@ function WideTranslationEntryRowImpl({
       {visibleLanguages.map((code) => (
         <React.Fragment key={code}>
           <td>{targetCell(code)}</td>
-          {altColumnVisible(code) ? <td>{enAltCell()}</td> : null}
         </React.Fragment>
       ))}
       <td>
@@ -751,12 +1095,30 @@ function WideTranslationEntryRowImpl({
         <div className="table-actions">
           {editing ? (
             <>
-              <button type="button" className="btn btn-primary btn-sm" onClick={save}>保存</button>
-              <button type="button" className="btn btn-sm btn-danger" onClick={remove}>删除</button>
+              <button type="button" className="btn btn-primary btn-sm" disabled={actionBusy} onClick={save}>保存</button>
+              <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={() => setEditing(false)}>取消</button>
             </>
           ) : (
-            <button type="button" className="btn btn-sm" onClick={() => setEditing(true)}>编辑</button>
+            <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={() => setEditing(true)}>编辑</button>
           )}
+          <button
+            type="button"
+            className="btn btn-sm"
+            aria-label={`删除当前语言（${languageSpec(selectedLanguage).short}）`}
+            disabled={actionBusy || !row.translations[selectedLanguage]?.record}
+            onClick={() => void removeCurrentLanguage()}
+          >
+            删 {languageSpec(selectedLanguage).short}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-danger"
+            aria-label="删除全部语言"
+            disabled={actionBusy}
+            onClick={() => void removeAllLanguages()}
+          >
+            删全部
+          </button>
         </div>
       </td>
     </tr>

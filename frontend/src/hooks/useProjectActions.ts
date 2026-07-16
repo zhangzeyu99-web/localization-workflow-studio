@@ -4,7 +4,7 @@ import { api } from '../apiClient'
 import { errorText } from '../appText'
 import { artifactPickerLabel, uniqueArtifactsByContent } from '../domain/artifacts'
 import { uploadProjectFile } from '../domain/projectApi'
-import { mergeProjectListSummaries } from '../domain/projectState'
+import { mergeProjectListSummaries, mergeProjectSummary } from '../domain/projectState'
 import type { LanguageCode, LanguageOption } from '../languages'
 import type { ConfirmDialogOptions } from '../components/modals/ConfirmModal'
 import type { AppRuntimeVersion, AppSettings, AppView, Artifact, Project, ProjectAnalysisResponse, ProjectHarness, ProjectTab, QualityIssue } from '../types'
@@ -171,17 +171,17 @@ export function useProjectActions(params: UseProjectActionsParams) {
 
   const refreshCurrent = useCallback(async (projectId = currentIdRef.current): Promise<Project | null> => {
     if (!projectId) return null
-    const loaded = await api<Project>(`/api/projects/${projectId}`)
+    const loaded = await api<Project>(`/api/projects/${projectId}?include_archives=false`)
     if (!isCurrentProject(projectId)) return loaded
-    setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
+    setProjects((prev) => prev.map((p) => (p.id === loaded.id ? mergeProjectSummary(p, loaded) : p)))
     return loaded
   }, [currentIdRef, isCurrentProject, setProjects])
 
   const refreshProjectSnapshot = useCallback(async (projectId: string, signal?: AbortSignal): Promise<Project | null> => {
     if (!projectId) return null
     try {
-      const loaded = await api<Project>(`/api/projects/${projectId}`, signal ? { signal } : undefined)
-      setProjects((prev) => prev.map((p) => (p.id === loaded.id ? loaded : p)))
+      const loaded = await api<Project>(`/api/projects/${projectId}?include_archives=false`, signal ? { signal } : undefined)
+      setProjects((prev) => prev.map((p) => (p.id === loaded.id ? mergeProjectSummary(p, loaded) : p)))
       return loaded
     } catch (error) {
       if (/not found/i.test(errorText(error))) await refreshProjects()

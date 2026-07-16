@@ -34,6 +34,28 @@ _GENERATED_EN2_TEXT_REPLACEMENTS = {
 }
 
 
+def _detect_target_column(path: Path, requested: str | None, language: str, sheet: str | None = None) -> str:
+    explicit = str(requested or "").strip()
+    if explicit:
+        return explicit
+    spec = language_spec(language)
+    aliases = {str(alias).strip().casefold() for alias in (*spec.target_aliases, spec.target_header, spec.visible_code)}
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return spec.visible_code
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        worksheets = [workbook[sheet]] if sheet and sheet in workbook.sheetnames else workbook.worksheets
+        for worksheet in worksheets:
+            for row in worksheet.iter_rows(min_row=1, max_row=20, values_only=True):
+                for value in row:
+                    header = str(value or "").strip()
+                    if header.casefold() in aliases:
+                        return header
+    finally:
+        workbook.close()
+    return spec.visible_code
+
+
 def _normalize_new_english_glossary_artifact(path: Path) -> None:
     if not path.exists():
         return
@@ -110,6 +132,7 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
     output_dir = run_dir(run["id"]) / "glossary"
     output_dir.mkdir(parents=True, exist_ok=True)
     input_path = Path(artifact["path"])
+    target_column = _detect_target_column(input_path, request.target_column, language, request.sheet)
     detail_output = output_dir / f"{input_path.stem}_glossary_details.xlsx"
     final_suffix = f"{spec.target_header}_{spec.alt_header}" if spec.alt_header else spec.target_header
     final_output = output_dir / f"{input_path.stem}_ID_CN_{final_suffix}.xlsx"
@@ -129,7 +152,7 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
         "--source-column",
         request.source_column,
         "--target-column",
-        request.target_column,
+        target_column,
         "--curated-rules",
         str(project_dir(project_id) / "glossary" / "curated_terms.json"),
         "--observations-store",
@@ -230,7 +253,11 @@ def extract_glossary(project_id: str, request: Any) -> dict[str, Any]:
             artifacts.append(db.add_artifact(project_id, "公告 AI 补充包", ai_supplement_packet_output, "announcement_ai_supplement_packet", run_id=run["id"], mime="application/json"))
         if ai_supplement_report_output is not None and ai_supplement_report_output.exists():
             artifacts.append(db.add_artifact(project_id, "公告 AI 补充报告", ai_supplement_report_output, "announcement_ai_supplement_report", run_id=run["id"], mime="text/markdown"))
-        if not announcement_only and prompt_output.exists():
+        if (
+            not announcement_only
+            and prompt_output.exists()
+            and bool(getattr(request, "update_project_prompt", True))
+        ):
             prompt = prompt_output.read_text(encoding="utf-8")
             db.update_project(project_id, {"prompt_text": prompt})
         db.update_run(

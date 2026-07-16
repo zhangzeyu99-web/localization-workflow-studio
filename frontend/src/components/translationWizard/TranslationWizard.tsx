@@ -79,7 +79,7 @@ export function Wizard(props: {
   onStartNextTask: () => void
   onFreq: () => void
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
-  onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<void>
+  onUpdateCandidate: (candidate: GlossaryCandidate, updates: Partial<GlossaryCandidate>) => Promise<boolean | void>
   onResolveCandidates: (batchId: string, candidates: GlossaryCandidate[], action: 'accept' | 'reject') => void
   onTranslateMissingCandidates: (batchId: string) => void
   busy: boolean

@@ -57,7 +57,10 @@ _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 RowId = int | str
 LANGUAGE_ORDER = PROJECT_LANGUAGE_ORDER
 TERM_REFERENCE_RULE = "术语译法以随附术语表、行级 term_hits 和译文归档命中为准。"
-AUTO_LANGUAGE_TARGET_ALIASES = {code: tuple(target_aliases(code)) for code in LANGUAGE_ORDER}
+AUTO_LANGUAGE_TARGET_ALIASES = {
+    code: tuple(alias for alias in target_aliases(code) if alias.strip().lower() not in {"target", "translation", "译文"})
+    for code in LANGUAGE_ORDER
+}
 AUTO_LANGUAGE_ALT_ALIASES = {code: tuple(alt_aliases(code)) for code in LANGUAGE_ORDER}
 _GENERIC_TARGET_ALIASES = {"target", "translation", "译文"}
 _TARGET_DETECTION_ALIASES: dict[str, set[str]] = {

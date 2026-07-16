@@ -19,12 +19,13 @@ from .prompt_snapshots import (
 )
 from .reference_lookup import attach_reference_hits, lookup_terms as _lookup_terms
 from .translation_orchestrator import _translate_rows_with_orchestration
+from .translation_tasks import update_task_run_status
 
 
 def _quick_text_empty_result(run_id: str, metadata: dict[str, Any], readiness: dict[str, Any]) -> dict[str, Any]:
     reason = "TXT 文件没有检测到可翻译文本。"
     db.merge_run_metadata(run_id, {"reason": reason, "translation_readiness": readiness})
-    db.update_run(run_id, status="needs_input")
+    update_task_run_status(run_id, "needs_input")
     db.add_event(run_id, reason)
     return {"run": db.get_run(run_id), "artifacts": [], "quality": None, "translation_readiness": readiness}
 
@@ -200,9 +201,10 @@ def _finish_quick_text_run(
             "translated_rows": len(rows),
             "source_rows": len(rows),
             "output_format": input_path.suffix.lower().lstrip(".") or "txt",
+            "translation_archive": None,
         },
     )
-    db.update_run(run_id, status="passed")
+    update_task_run_status(run_id, "passed")
     db.add_event(run_id, f"quick TXT translation finished: rows={len(rows)}, output={artifacts['output_path'].name}")
     return {
         "run": db.get_run(run_id),
@@ -239,7 +241,7 @@ async def _translate_quick_text_run(
     if not rows:
         return _quick_text_empty_result(run_id, metadata, readiness)
 
-    db.update_run(run_id, status="running")
+    update_task_run_status(run_id, "running")
     db.add_event(run_id, f"quick TXT translation preflight: source_lines={len(rows)}, batch_size={batch_size}, estimated_batches={readiness.get('estimated_batches') or '-'}")
     work_dir = run_dir(run_id) / "quick_text_translation"
     work_dir.mkdir(parents=True, exist_ok=True)

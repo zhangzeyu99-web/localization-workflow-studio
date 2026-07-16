@@ -34,7 +34,14 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
     # The embedded glossary extractor keeps legacy output headers as EN/EN2 even
     # when the source target column is KR/JP/etc. Interpret those generated
     # columns as the current run language only in this controlled backfill path.
-    rows, _columns = _read_glossary_rows(final_output, limit=None, language=language, target_column="EN", target_alt_column="EN2")
+    rows, _columns = _read_glossary_rows(
+        final_output,
+        limit=None,
+        language=language,
+        target_column="EN",
+        include_empty=True,
+        allow_header_only=True,
+    )
     result["candidates"] = len(rows)
 
     existing: dict[str, dict[str, Any]] = {}
@@ -61,10 +68,17 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
         deduped_rows[source_key] = dict(row, source=source)
 
     result["unique_candidates"] = len(deduped_rows)
+    source_artifact_id = ""
+    if run_id:
+        try:
+            run = db.get_run(run_id)
+            source_artifact_id = str((run.get("metadata") or {}).get("input_artifact_id") or "")
+        except KeyError:
+            source_artifact_id = ""
     batch = db.create_glossary_batch(
         project_id,
         run_id=run_id,
-        source_artifact_id="",
+        source_artifact_id=source_artifact_id,
         label=f"Glossary scan {datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d%H%M')}",
         metadata={"strategy": "stage_candidates_then_accept", "source": str(final_output)},
         language=language,
@@ -113,4 +127,3 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
             f"conflicts={result['conflicts']}, empty={result['skipped_empty']}.",
         )
     return result
-

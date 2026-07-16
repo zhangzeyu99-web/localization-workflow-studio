@@ -19,7 +19,8 @@ def lookup_terms(text: str, terms: list[dict[str, Any]], *, min_length: int, lim
     rows: list[dict[str, Any]] = []
     for term in terms:
         source = str(term.get("source") or "").strip()
-        if len(source) < min_length or not (str(term.get("target") or "").strip() or str(term.get("target_alt") or "").strip()):
+        target = str(term.get("target") or "").strip()
+        if len(source) < min_length or not target:
             continue
         hit_count, first_position = _count_lookup_hits(text, source)
         if not hit_count:
@@ -29,8 +30,8 @@ def lookup_terms(text: str, terms: list[dict[str, Any]], *, min_length: int, lim
                 "id": term.get("id"),
                 "term_key": term.get("term_key", ""),
                 "source": source,
-                "target": term.get("target", ""),
-                "target_alt": term.get("target_alt", ""),
+                "target": target,
+                "target_alt": "",
                 "language": term.get("language", "en"),
                 "category": term.get("category", ""),
                 "note": term.get("note", ""),
@@ -46,7 +47,8 @@ def lookup_translation_entries(text: str, entries: list[dict[str, Any]], *, min_
     rows: list[dict[str, Any]] = []
     for entry in entries:
         source = str(entry.get("source") or "").strip()
-        if len(source) < min_length or not (str(entry.get("target") or "").strip() or str(entry.get("target_alt") or "").strip()):
+        target = str(entry.get("target") or "").strip()
+        if len(source) < min_length or not target:
             continue
         hit_count, first_position = _count_lookup_hits(text, source)
         if not hit_count:
@@ -56,8 +58,8 @@ def lookup_translation_entries(text: str, entries: list[dict[str, Any]], *, min_
                 "id": entry.get("id"),
                 "entry_key": entry.get("entry_key", ""),
                 "source": source,
-                "target": entry.get("target", ""),
-                "target_alt": entry.get("target_alt", ""),
+                "target": target,
+                "target_alt": "",
                 "language": entry.get("language", "en"),
                 "sheet": entry.get("sheet", ""),
                 "row_number": entry.get("row_number", 0),
@@ -80,7 +82,7 @@ def compact_reference_hit(hit: dict[str, Any]) -> dict[str, Any]:
     return {
         "source": hit.get("source", ""),
         "target": hit.get("target", ""),
-        "target_alt": hit.get("target_alt", ""),
+        "target_alt": "",
         "source_type": hit.get("source_type", ""),
         "sheet": hit.get("sheet", ""),
         "row_number": hit.get("row_number", 0),

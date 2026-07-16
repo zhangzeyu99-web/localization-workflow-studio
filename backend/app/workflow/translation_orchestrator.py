@@ -22,6 +22,7 @@ from .common import _looks_like_untranslated_seed
 from .jsonl_helpers import read_jsonl, write_jsonl
 from .qa import _normalize_translation_id
 from .subprocess_runner import user_facing_error
+from .translation_tasks import update_task_run_status
 
 def _completed_batch_rows(path: Path, batch: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     if not path.exists():
@@ -111,7 +112,7 @@ def _translation_progress(
 
 def _update_translation_progress(run_id: str, progress: dict[str, Any], status: str = "running") -> None:
     db.merge_run_metadata(run_id, {"translation_progress": progress})
-    db.update_run(run_id, status=status)
+    update_task_run_status(run_id, status)
 
 
 def _terminal_translation_progress(progress: Any, status: str) -> Any:
@@ -156,6 +157,34 @@ def _structural_tokens(text: str) -> list[str]:
     return hits
 
 
+_NON_LATIN_SCRIPT_RANGES_FOR_ENGLISH = (
+    ("Greek", 0x0370, 0x03FF),
+    ("Cyrillic", 0x0400, 0x052F),
+    ("Hebrew", 0x0590, 0x05FF),
+    ("Arabic", 0x0600, 0x06FF),
+    ("Devanagari", 0x0900, 0x097F),
+    ("Thai", 0x0E00, 0x0E7F),
+    ("Lao", 0x0E80, 0x0EFF),
+    ("Myanmar", 0x1000, 0x109F),
+    ("Georgian", 0x10A0, 0x10FF),
+    ("Hiragana/Katakana", 0x3040, 0x30FF),
+    ("Hangul", 0xAC00, 0xD7AF),
+)
+
+
+def _unexpected_scripts_for_english(text: str) -> list[str]:
+    if any(character.isascii() and character.isalpha() for character in text):
+        return []
+    counts: dict[str, int] = {}
+    for character in text:
+        codepoint = ord(character)
+        for name, start, end in _NON_LATIN_SCRIPT_RANGES_FOR_ENGLISH:
+            if start <= codepoint <= end:
+                counts[name] = counts.get(name, 0) + 1
+                break
+    return [name for name, count in counts.items() if count >= 2]
+
+
 def _validate_translated_batch(batch: list[dict[str, Any]], rows: list[dict[str, Any]], language: str) -> list[dict[str, Any]]:
     expected_ids = [_normalize_translation_id(row.get("id")) for row in batch]
     actual_ids = [_normalize_translation_id(row.get("id")) for row in rows if "id" in row]
@@ -178,6 +207,13 @@ def _validate_translated_batch(batch: list[dict[str, Any]], rows: list[dict[str,
             raise ValueError(f"row {source_row.get('id')} changed escaped newline count")
         if language in {"en", "ko"} and _looks_like_untranslated_seed(translation, language):
             raise ValueError(f"row {source_row.get('id')} still contains obvious Chinese text")
+        if language == "en":
+            unexpected_scripts = _unexpected_scripts_for_english(translation)
+            if unexpected_scripts:
+                raise ValueError(
+                    f"row {source_row.get('id')} target language mismatch: expected English, "
+                    f"detected {', '.join(unexpected_scripts)} script"
+                )
         validated.append({"id": _normalize_translation_id(row.get("id")), "translation": translation})
     return validated
 
@@ -305,7 +341,7 @@ async def _translate_rows_with_orchestration(
                 "translation_progress": _manifest_progress(manifest, batch_size=batch_size, started_at=time.monotonic(), run_id=run_id),
             },
         )
-        db.update_run(run_id, status="needs_input")
+        update_task_run_status(run_id, "needs_input")
         db.add_event(run_id, f"translation paused for API budget confirmation: estimated_input_tokens={estimated_total}, warning={budget_warning_tokens}", level="warning")
         return []
 

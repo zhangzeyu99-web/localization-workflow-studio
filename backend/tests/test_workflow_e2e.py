@@ -619,18 +619,19 @@ def test_announcement_force_delivery_with_hard_blockers_generates_package(tmp_pa
         assert applied.json()["summary"]["hard_blockers"] > 0
         assert applied.json()["summary"]["can_deliver"] is True
 
+        archive_before_delivery = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
         normal_delivery = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260608"})
         assert normal_delivery.status_code == 200, normal_delivery.text
         summary = normal_delivery.json()["summary"]
         assert summary["forced"] is True
         assert summary["hard_blockers"] > 0
+        assert summary["translation_archive"] is None
+        assert normal_delivery.json()["task"]["metadata"]["translation_archive"] is None
         package = next(artifact for artifact in normal_delivery.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         assert package["metadata"]["forced"] is True
         assert package["metadata"]["source_type"] == "delivered_with_issues"
-        archived = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
-        archived_notice = next(entry for entry in archived if entry["source"] == rows[0]["source"])
-        assert archived_notice["target"] == "{0}"
-        assert archived_notice["source_type"] == "delivered_with_issues"
+        archive_after_delivery = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
+        assert archive_after_delivery == archive_before_delivery
         deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
         forced_deliverable = next(item for item in deliverables if item["task_code"] == "ANN")
         assert forced_deliverable["delivered_with_issues"] is True
@@ -710,16 +711,17 @@ def test_vietnamese_announcement_uses_vn_in_studio_and_vi_in_delivery(tmp_path: 
         assert Path(output["path"]).name == "notice_vn_VI.txt"
         assert Path(output["path"]).read_text(encoding="utf-8") == "Phần thưởng Anh hùng {0}\n"
 
+        archive_before_delivery = client.get(f"/api/projects/{project['id']}/translations?language=vi").json()
         delivered = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["vn"], "date_stamp": "20260715"})
         assert delivered.status_code == 200, delivered.text
         assert delivered.json()["summary"]["forced"] is False
+        assert delivered.json()["summary"]["translation_archive"] is None
+        assert delivered.json()["task"]["metadata"]["translation_archive"] is None
         package = next(artifact for artifact in delivered.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         with zipfile.ZipFile(package["path"]) as archive:
             assert sorted(archive.namelist()) == ["QA\u6458\u8981.xlsx", "VI/notice_vn_VI.txt"]
-        archived = client.get(f"/api/projects/{project['id']}/translations?language=vi").json()
-        archived_notice = next(entry for entry in archived if entry["source"] == rows[0]["source"])
-        assert archived_notice["language"] == "vn"
-        assert archived_notice["target"] == "Phần thưởng Anh hùng {0}"
+        archive_after_delivery = client.get(f"/api/projects/{project['id']}/translations?language=vi").json()
+        assert archive_after_delivery == archive_before_delivery
 
 
 def test_announcement_fix_hard_blockers_repairs_missing_token_and_applies(tmp_path: Path) -> None:
@@ -730,6 +732,7 @@ def test_announcement_fix_hard_blockers_repairs_missing_token_and_applies(tmp_pa
 
     with TestClient(app) as client:
         project = client.post("/api/projects", json={"name": "\u516c\u544aHardBlock\u4fee\u590d", "type": "RPG"}).json()
+        archive_before_flow = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
         with source_path.open("rb") as fh:
             source_artifact = client.post(
                 f"/api/projects/{project['id']}/files?kind=asset",
@@ -773,6 +776,7 @@ def test_announcement_fix_hard_blockers_repairs_missing_token_and_applies(tmp_pa
         assert applied.status_code == 200, applied.text
         assert applied.json()["summary"]["auto_fixed"] == 1
         assert applied.json()["summary"]["hard_blockers"] == 0
+        assert client.get(f"/api/projects/{project['id']}/translations?language=ko").json() == archive_before_flow
 
         fixed = client.post(f"/api/announcement-tasks/{task_id}/fix-hard-blockers", json={"languages": ["ko"]})
         assert fixed.status_code == 200, fixed.text
@@ -780,6 +784,7 @@ def test_announcement_fix_hard_blockers_repairs_missing_token_and_applies(tmp_pa
         assert payload["summary"]["fixed"] == 0
         assert payload["summary"]["remaining_hard_blockers"] == 0
         assert payload["task"]["status"] == "applied"
+        assert client.get(f"/api/projects/{project['id']}/translations?language=ko").json() == archive_before_flow
         output_artifact = next(artifact for artifact in applied.json()["artifacts"] if artifact["kind"] == "announcement_output_file")
         assert "{0}" in Path(output_artifact["path"]).read_text(encoding="utf-8")
 
@@ -1378,6 +1383,7 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
                 "source_type": "qa_passed",
             },
         )
+        archive_before_flow = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
         with source_path.open("rb") as fh:
             source_artifact = client.post(
                 f"/api/projects/{project['id']}/files?kind=asset",
@@ -1427,12 +1433,13 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         assert imported.status_code == 200, imported.text
         applied = client.post(f"/api/announcement-tasks/{task_id}/apply", json={"languages": ["ko"]})
         assert applied.status_code == 200, applied.text
+        assert client.get(f"/api/projects/{project['id']}/translations?language=ko").json() == archive_before_flow
         delivered = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526"})
         assert delivered.status_code == 200, delivered.text
-        archived = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
-        archived_notice = next(entry for entry in archived if entry["source"] == rows[0]["source"])
-        assert archived_notice["target"] == "히어로 각성 2026/5/20"
-        assert archived_notice["source_type"] == "qa_passed"
+        archive_after_delivery = client.get(f"/api/projects/{project['id']}/translations?language=ko").json()
+        assert archive_after_delivery == archive_before_flow
+        assert delivered.json()["summary"]["translation_archive"] is None
+        assert delivered.json()["task"]["metadata"]["translation_archive"] is None
         package = next(artifact for artifact in delivered.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         package_path = Path(package["path"])
         assert package_path.exists()
@@ -1446,6 +1453,8 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         assert repeated.status_code == 200, repeated.text
         assert repeated.json()["summary"]["reused"] is True
         assert repeated.json()["summary"]["delivery_artifact_id"] == package["id"]
+        assert repeated.json()["summary"]["translation_archive"] is None
+        assert client.get(f"/api/projects/{project['id']}/translations?language=ko").json() == archive_before_flow
 
         deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
         announcement_deliverable = next(item for item in deliverables if item["task_code"] == "ANN")
@@ -1459,6 +1468,8 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
 
         forced = client.post(f"/api/announcement-tasks/{task_id}/deliver", json={"languages": ["ko"], "date_stamp": "20260526", "force": True})
         assert forced.status_code == 200, forced.text
+        assert forced.json()["summary"]["translation_archive"] is None
+        assert client.get(f"/api/projects/{project['id']}/translations?language=ko").json() == archive_before_flow
         forced_package = next(artifact for artifact in forced.json()["artifacts"] if artifact["kind"] == "announcement_delivery_package")
         assert forced_package["id"] != package["id"]
         superseded_package = db.get_artifact(package["id"])
@@ -2684,7 +2695,7 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         preview = preview_response.json()
         assert preview["rows"][0]["source"] == "最强指挥官"
         assert preview["rows"][0]["target"] == "Strongest Commander"
-        assert preview["rows"][0]["target_alt"] == "Top Commander"
+        assert preview["rows"][0]["target_alt"] == ""
         assert preview["rows"][0]["term_key"] == "1"
         assert preview["rows"][0]["category"] == "title"
 
@@ -2698,7 +2709,7 @@ def test_glossary_preview_import_and_export(tmp_path: Path) -> None:
         project_terms = client.get(f"/api/projects/{project['id']}/glossary").json()
         assert {term["source"] for term in project_terms} == {"最强指挥官", "联盟"}
         assert {term["source_type"] for term in project_terms} == {"imported"}
-        assert {term["target_alt"] for term in project_terms} == {"Top Commander", "Guild"}
+        assert {term["target_alt"] for term in project_terms} == {""}
         assert {term["category"] for term in project_terms} == {"title", "system"}
 
         manual_response = client.post(
@@ -2933,7 +2944,7 @@ def test_glossary_manual_add_upserts_existing_cn() -> None:
         terms = client.get(f"/api/projects/{project['id']}/glossary").json()
         assert len([term for term in terms if re.sub(r"\s+", "", term["source"]) == "钻石"]) == 1
         assert terms[0]["target"] == "Gems"
-        assert terms[0]["target_alt"] == "Diamonds"
+        assert terms[0]["target_alt"] == ""
         assert terms[0]["category"] == "货币"
 
 
@@ -3178,7 +3189,7 @@ def test_glossary_backfill_dedupes_generated_terms_by_cn(tmp_path: Path) -> None
         assert len(batches["candidates"]) == 1
         assert batches["candidates"][0]["source"] == "能量"
         assert batches["candidates"][0]["target"] == "Energy"
-        assert batches["candidates"][0]["target_alt"] == "Power"
+        assert batches["candidates"][0]["target_alt"] == ""
 
 
 def test_glossary_accept_blocks_candidates_without_en(tmp_path: Path) -> None:
@@ -3279,7 +3290,7 @@ def test_glossary_candidate_translate_missing_fills_only_blank_en(tmp_path: Path
         assert [row["source"] for row in seen_rows] == ["EMPTY_TERM"]
         candidates = {candidate["source"]: candidate for candidate in payload["candidates"]}
         assert candidates["FILLED_TERM"]["target"] == "Existing Translation"
-        assert candidates["FILLED_TERM"]["target_alt"] == "Existing Alt"
+        assert candidates["FILLED_TERM"]["target_alt"] == ""
         assert candidates["FILLED_TERM"]["translation_source"] == "language_table"
         assert candidates["EMPTY_TERM"]["target"] == "Translated EMPTY_TERM"
         assert candidates["EMPTY_TERM"]["target_alt"] == ""
@@ -4332,7 +4343,7 @@ def test_glossary_and_translation_wide_views_group_by_cn() -> None:
             json={"entry_key": "A-1", "source": "领取奖励", "target": "보상 받기", "language": "ko", "note": "button"},
         )
 
-        glossary_response = client.get(f"/api/projects/{project['id']}/glossary/wide")
+        glossary_response = client.get(f"/api/projects/{project['id']}/glossary/wide?languages=en,ko,ja")
         assert glossary_response.status_code == 200, glossary_response.text
         glossary = glossary_response.json()
         assert glossary["languages"] == ["en", "ko", "ja"]
@@ -4341,19 +4352,19 @@ def test_glossary_and_translation_wide_views_group_by_cn() -> None:
         row = glossary["rows"][0]
         assert row["source"] == "战机"
         assert row["translations"]["en"]["target"] == "Warplane"
-        assert row["translations"]["en"]["target_alt"] == "Fighter"
+        assert row["translations"]["en"]["target_alt"] == ""
         assert row["translations"]["ko"]["target"] == "전투기"
         assert row["translations"]["ko"].get("target_alt", "") == ""
         assert {item["field"] for item in row["conflicts"]} >= {"term_key", "category", "note"}
 
-        translations_response = client.get(f"/api/projects/{project['id']}/translations/wide")
+        translations_response = client.get(f"/api/projects/{project['id']}/translations/wide?languages=en,ko")
         assert translations_response.status_code == 200, translations_response.text
         translations = translations_response.json()
         assert translations["languages"] == ["en", "ko"]
         assert translations["coverage"] == {"en": 1, "ko": 1}
         translated = translations["rows"][0]
         assert translated["source"] == "领取奖励"
-        assert translated["translations"]["en"]["target_alt"] == "Claim"
+        assert translated["translations"]["en"]["target_alt"] == ""
         assert translated["translations"]["ko"].get("target_alt", "") == ""
 
         legacy_response = client.get(f"/api/projects/{project['id']}/glossary?language=ko")
@@ -4395,10 +4406,12 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         ko_terms = client.get(f"/api/projects/{project['id']}/glossary?language=ko").json()
         assert {term["source"]: term["target"] for term in ko_terms} == {"战机": "전투기", "钻石": "다이아몬드"}
         assert all(term["target_alt"] == "" for term in ko_terms)
-        glossary_wide = client.get(f"/api/projects/{project['id']}/glossary/wide").json()
+        glossary_wide = client.get(
+            f"/api/projects/{project['id']}/glossary/wide?languages=en,ko,ja,fr,de,idn,th,vn,ar"
+        ).json()
         assert glossary_wide["languages"] == ["en", "ko", "ja", "fr", "de", "idn", "th", "vn", "ar"]
         row = next(item for item in glossary_wide["rows"] if item["source"] == "战机")
-        assert row["translations"]["en"]["target_alt"] == "Fighter"
+        assert row["translations"]["en"]["target_alt"] == ""
         assert row["translations"]["ko"]["target"] == "전투기"
         assert row["translations"]["ja"]["target"] == "戦闘機"
         assert row["translations"]["fr"]["target"] == "Avion de chasse"
@@ -4416,10 +4429,12 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         archive_import = client.post(f"/api/projects/{project['id']}/translations/import", json={"artifact_id": archive_artifact["id"]})
         assert archive_import.status_code == 200, archive_import.text
         assert archive_import.json()["imported_count"] == 9
-        archive_wide = client.get(f"/api/projects/{project['id']}/translations/wide").json()
+        archive_wide = client.get(
+            f"/api/projects/{project['id']}/translations/wide?languages=en,ko,ja,fr,de,idn,th,vn,ar"
+        ).json()
         assert archive_wide["languages"] == ["en", "ko", "ja", "fr", "de", "idn", "th", "vn", "ar"]
         archive_row = archive_wide["rows"][0]
-        assert archive_row["translations"]["en"]["target_alt"] == "Claim"
+        assert archive_row["translations"]["en"]["target_alt"] == ""
         assert archive_row["translations"]["ko"].get("target_alt", "") == ""
         assert archive_row["translations"]["ja"]["target"] == "報酬を受け取る"
         assert archive_row["translations"]["fr"]["target"] == "Recevoir les récompenses"
@@ -4434,7 +4449,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         wb = load_workbook(glossary_export, read_only=True, data_only=True)
         try:
             headers = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "VI", "AR", "分类", "备注"]
+            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "VN", "AR", "分类", "备注"]
             values = [cell.value for cell in next(wb["Glossary"].iter_rows(min_row=2, max_row=2))]
             assert "Warplane" in values
             assert "Fighter" not in values
@@ -4442,7 +4457,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
             wb.close()
         glossary_csv = workflow.export_glossary(project["id"], "csv")
         assert isinstance(glossary_csv, Path)
-        assert glossary_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,VI,AR,分类,备注"
+        assert glossary_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,VN,AR,分类,备注"
 
         ko_glossary_export = workflow.export_glossary(project["id"], "xlsx", language="ko")
         assert isinstance(ko_glossary_export, Path)
@@ -4460,7 +4475,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
         wb = load_workbook(archive_export, read_only=True, data_only=True)
         try:
             headers = [cell.value for cell in next(wb["Translations"].iter_rows(min_row=1, max_row=1))]
-            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "VI", "AR", "备注"]
+            assert headers == ["ID", "CN", "EN", "KR", "JP", "FR", "DE", "IDN", "TH", "VN", "AR", "备注"]
             values = [cell.value for cell in next(wb["Translations"].iter_rows(min_row=2, max_row=2))]
             assert "Claim Rewards" in values
             assert "Claim" not in values
@@ -4468,7 +4483,7 @@ def test_multilingual_glossary_and_archive_import_once_into_wide_views(tmp_path:
             wb.close()
         archive_csv = workflow.export_translation_archive(project["id"], "csv")
         assert isinstance(archive_csv, Path)
-        assert archive_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,VI,AR,备注"
+        assert archive_csv.read_text(encoding="utf-8-sig").splitlines()[0] == "ID,CN,EN,KR,JP,FR,DE,IDN,TH,VN,AR,备注"
 
 
 def test_announcement_lookup_uses_glossary_and_qa_passed_archive(tmp_path: Path) -> None:

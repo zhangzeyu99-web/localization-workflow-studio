@@ -20,7 +20,7 @@ from .common import project_dir
 from .large_text import readback_gate_files, render_large_text_retro
 from .qa import _first_col, _row_cell, write_qa_changes_report
 from .subprocess_runner import user_facing_error
-from .translation_tasks import mark_translation_task_state
+from .translation_tasks import is_quick_task_run, mark_translation_task_state
 
 DELIVERED_WITH_ISSUES_SOURCE_TYPE = "delivered_with_issues"
 
@@ -265,8 +265,13 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
         # second file to an API surface tests and clients treat as single-file.
         final_path = _delivery_final_output_path(project, run, final_source)
         shutil.copy2(final_source["path"], final_path)
+        if final_path.read_bytes() != Path(final_source["path"]).read_bytes():
+            raise ValueError("TXT 交付文件读回不一致，请重试生成。")
         summary = _deliverable_summary(project, run, final_source)
         summary["files"] = {"final": _delivery_file("final", final_path)}
+        translation_task_id = str((run.get("metadata") or {}).get("translation_task_id") or "")
+        if translation_task_id:
+            mark_translation_task_state(project_id, translation_task_id, "delivered")
         return {"project_id": project_id, "project_name": project["name"], "deliverable": summary, "files": list(summary["files"].values()), "archive": None}
 
     final_path, changes_path = _delivery_output_paths(project, run)
@@ -296,7 +301,7 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     }
     if not qa_passed:
         summary["files"]["qa_summary"] = _delivery_file("qa_summary", qa_summary_path)
-    archive_result = _archive_delivery_translation(project_id, run, final_source)
+    archive_result = None if is_quick_task_run(run) else _archive_delivery_translation(project_id, run, final_source)
     translation_task_id = str((run.get("metadata") or {}).get("translation_task_id") or "")
     if translation_task_id:
         mark_translation_task_state(project_id, translation_task_id, "delivered")
@@ -456,6 +461,7 @@ def build_merged_delivery_package(
         "language_results": language_results,
         "files": files,
         "deliverable": deliverable,
+        "archive": None,
     }
 
 
@@ -483,7 +489,7 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
         files["changes"] = _delivery_file("changes", changes_path) if changes_path.exists() else _expected_delivery_file("changes", changes_path)
         if not qa_passed:
             files["qa_summary"] = _delivery_file("qa_summary", qa_summary_path) if qa_summary_path.exists() else _expected_delivery_file("qa_summary", qa_summary_path)
-    return _build_deliverable_summary(
+    summary = _build_deliverable_summary(
         run_id=run["id"],
         task_code=task_code,
         task_id=_short_run_id(task_run_id),
@@ -510,6 +516,10 @@ def _deliverable_summary(project: dict[str, Any], run: dict[str, Any], final_art
             "qa_report": qa_report_artifact["id"] if qa_report_artifact else "",
         },
     )
+    translation_task_id = str(metadata.get("translation_task_id") or "")
+    if translation_task_id:
+        summary["translation_task_id"] = translation_task_id
+    return summary
 
 
 def _deliverable_final_artifact(run: dict[str, Any]) -> dict[str, Any] | None:

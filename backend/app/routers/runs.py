@@ -15,7 +15,9 @@ from ..schemas import (
 )
 from ..workflow import (
     abandon_legacy_translation_run,
+    cancel_quick_task_run,
     cancel_translation_run,
+    ensure_task_run_open,
     multilingual_status,
     mark_translation_task_state,
     run_translate_sync,
@@ -23,6 +25,7 @@ from ..workflow import (
     translation_batch_file,
     translation_run_progress,
     translation_task_continuation_metadata,
+    update_task_run_status,
     user_facing_error,
 )
 from .shared import (
@@ -89,7 +92,10 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
             else continuation_metadata.get("translation_task_id")
         ),
     }
-    run = db.insert_run(payload.project_id, payload.kind, language, metadata)
+    try:
+        run = db.insert_run(payload.project_id, payload.kind, language, metadata)
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     db.add_event(run["id"], operator_context.prefixed_message(f"run created (kind={payload.kind})"))
     return run
 
@@ -169,6 +175,8 @@ def translate(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
         return run_translate_sync(run_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run or artifact not found") from exc
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
@@ -180,15 +188,23 @@ def _start_translation_background(run_id: str, payload: TranslateRequest) -> dic
         raise HTTPException(status_code=404, detail="run not found") from exc
     if run["kind"] != "translation":
         raise HTTPException(status_code=400, detail="run is not a translation run")
+    try:
+        ensure_task_run_open(run)
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     project_id = run["project_id"]
     active = active_job_id_for_project(project_id)
     job_id = f"run:{run_id}"
     if active and active != job_id:
+        cancel_quick_task_run(run_id)
         raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
     if run["status"] == "running" and active == job_id:
         return get_run(run_id)
     db.merge_run_metadata(run_id, {"queued_at": db.now_iso()})
-    db.update_run(run_id, status="queued")
+    try:
+        ensure_task_run_open(update_task_run_status(run_id, "queued"))
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
 
     def worker(cancel_event: Any) -> None:
         try:
@@ -198,15 +214,20 @@ def _start_translation_background(run_id: str, payload: TranslateRequest) -> dic
                 current = db.get_run(run_id)
                 if current.get("status") not in {"failed", "canceled", "needs_input", "passed"}:
                     db.merge_run_metadata(run_id, {"error": user_facing_error(exc)})
-                    db.update_run(run_id, status="failed")
+                    update_task_run_status(run_id, "failed")
             except Exception:
                 pass
 
-    started, conflict = start_singleton_job(project_id, job_id, worker)
+    started, conflict = start_singleton_job(
+        project_id,
+        job_id,
+        worker,
+        task_run_id=run_id,
+    )
     if not started and conflict:
-        run = db.get_run(run_id)
         db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
-        db.update_run(run_id, status=run.get("status") or "created")
+        if cancel_quick_task_run(run_id).get("status") != "canceled":
+            update_task_run_status(run_id, "queued")
         raise HTTPException(status_code=409, detail=_job_conflict_detail(conflict))
     db.add_event(run_id, "translation background job started")
     return get_run(run_id)
@@ -228,6 +249,7 @@ def translate_cancel(run_id: str) -> dict[str, Any]:
         run = db.get_run(run_id)
         cancel_singleton_job(run["project_id"], f"run:{run_id}")
         cancel_translation_run(run_id)
+        cancel_quick_task_run(run_id)
         return get_run(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc

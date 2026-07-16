@@ -7,7 +7,27 @@ from .. import db
 
 _LEGACY_UNFINISHED_STATUSES = {"failed", "needs_input", "canceled"}
 _ACTIVE_RUN_STATUSES = {"queued", "running"}
-_CLOSED_TRANSLATION_TASK_STATES = {"delivered", "abandoned", "closed"}
+_CLOSED_TRANSLATION_TASK_STATES = {"delivered", "canceled", "abandoned", "closed"}
+
+
+def is_quick_task_run(run: dict[str, Any]) -> bool:
+    metadata = run.get("metadata") or {}
+    task_id = str(metadata.get("translation_task_id") or "").strip()
+    return metadata.get("task_origin") == "quick_task" or task_id.startswith("quick-task-")
+
+
+def translation_task_terminal_state(run: dict[str, Any]) -> str:
+    state = str((run.get("metadata") or {}).get("translation_task_state") or "").strip().lower()
+    return state if state in _CLOSED_TRANSLATION_TASK_STATES else ""
+
+
+def ensure_task_run_open(run: dict[str, Any]) -> dict[str, Any]:
+    state = translation_task_terminal_state(run)
+    if state:
+        metadata = run.get("metadata") or {}
+        task_id = str(metadata.get("translation_task_id") or run.get("id") or "").strip()
+        raise db.TranslationTaskClosedError(task_id, state)
+    return run
 
 
 def translation_task_continuation_metadata(source_run: dict[str, Any]) -> dict[str, Any]:
@@ -17,11 +37,14 @@ def translation_task_continuation_metadata(source_run: dict[str, Any]) -> dict[s
         or source_metadata.get("multilingual_source_artifact_id")
         or source_metadata.get("input_artifact_id")
     )
-    return {
+    continuation = {
         "parent_input_artifact_id": parent_input_artifact_id,
         "multilingual_source_artifact_id": source_metadata.get("multilingual_source_artifact_id") or parent_input_artifact_id,
         "translation_task_id": source_metadata.get("translation_task_id"),
     }
+    if is_quick_task_run(source_run):
+        continuation["task_origin"] = "quick_task"
+    return continuation
 
 
 def translation_task_runs(project_id: str, translation_task_id: str) -> list[dict[str, Any]]:
@@ -41,9 +64,26 @@ def mark_translation_task_state(project_id: str, translation_task_id: str, state
     normalized_state = str(state or "").strip().lower()
     if not task_id:
         raise ValueError("translation task id is required")
-    if normalized_state not in {"delivered", "abandoned", "closed"}:
+    if normalized_state not in _CLOSED_TRANSLATION_TASK_STATES:
         raise ValueError("unsupported translation task state")
     return db.set_translation_task_terminal_state(project_id, task_id, normalized_state)
+
+
+def cancel_quick_task_run(run_id: str) -> dict[str, Any]:
+    run = db.get_run(run_id)
+    if not is_quick_task_run(run):
+        return run
+    metadata = run.get("metadata") or {}
+    task_id = str(metadata.get("translation_task_id") or "").strip()
+    if task_id:
+        mark_translation_task_state(run["project_id"], task_id, "canceled")
+    else:
+        db.update_run(run_id, status="canceled")
+    return db.get_run(run_id)
+
+
+def update_task_run_status(run_id: str, status: str) -> dict[str, Any]:
+    return db.update_run_status_if_task_open(run_id, status)
 
 
 def abandon_legacy_translation_run(run_id: str) -> dict[str, Any]:

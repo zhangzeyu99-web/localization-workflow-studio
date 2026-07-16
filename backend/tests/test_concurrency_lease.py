@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
@@ -165,6 +168,12 @@ def test_capacity_limit_rejects_second_project_when_workbench_is_full(tmp_path: 
         terminal_a = _wait_for_terminal_run(client, run_a["id"])
         assert terminal_a["status"] == "passed"
 
+        # The run reaches its terminal status inside the worker target; the
+        # wrapper releases the lease immediately afterwards. Join that wrapper
+        # so this assertion tests cleared capacity rather than the cleanup gap.
+        wait_for_background_jobs()
+        assert jobs.active_job_id_for_project(project_a["id"]) is None
+
         # Once project A's job clears, project B should be able to start.
         started_b_retry = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
         assert started_b_retry.status_code == 200, started_b_retry.text
@@ -198,6 +207,27 @@ def test_reconcile_interrupted_background_jobs_clears_multiple_residual_leases()
     assert jobs.active_jobs() == []
 
 
+def test_reconcile_does_not_reopen_terminal_task_with_legacy_running_status() -> None:
+    project = db.insert_project("Reconcile terminal task", "QA", "")
+    run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"translation_task_id": "task-reconcile-terminal", "task_origin": "translation_run"},
+    )
+    db.update_run(run["id"], status="passed")
+    workflow.mark_translation_task_state(project["id"], "task-reconcile-terminal", "delivered")
+    db.update_run(run["id"], status="running")
+
+    summary = workflow.reconcile_interrupted_background_jobs()
+
+    refreshed = db.get_run(run["id"])
+    assert summary["translation_runs"] == 0
+    assert refreshed["status"] == "canceled"
+    assert refreshed["metadata"]["translation_task_state"] == "delivered"
+    assert "interrupted_at" not in refreshed["metadata"]
+
+
 def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
@@ -221,6 +251,147 @@ def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, 
         assert entry["started_at"]
 
         _wait_for_terminal_run(client, run["id"])
+
+
+def test_start_singleton_job_pre_start_rejection_creates_no_job_or_lease() -> None:
+    project = db.insert_project("Pre-start rejection", "QA", "")
+    ran = False
+
+    def target(_cancel_event: object) -> None:
+        nonlocal ran
+        ran = True
+
+    started, conflict = jobs.start_singleton_job(
+        project["id"],
+        "run:pre-start-rejected",
+        target,
+        pre_start=lambda: {"reason": "translation_task_terminal", "state": "canceled"},
+    )
+
+    assert started is False
+    assert conflict == {"reason": "translation_task_terminal", "state": "canceled"}
+    assert ran is False
+    assert jobs.active_job_id_for_project(project["id"]) is None
+    lease = db.get_job_lease(jobs.lease_name_for_project(project["id"]))
+    assert lease is None or lease["status"] != "running"
+
+
+def test_atomic_task_lease_claim_rejects_terminal_committed_before_claim() -> None:
+    project = db.insert_project("Atomic terminal before claim", "QA", "")
+    run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"translation_task_id": "task-terminal-before-claim", "task_origin": "translation_run"},
+    )
+    workflow.mark_translation_task_state(project["id"], "task-terminal-before-claim", "canceled")
+    worker_called = threading.Event()
+
+    started, conflict = jobs.start_singleton_job(
+        project["id"],
+        f"run:{run['id']}",
+        lambda _cancel_event: worker_called.set(),
+        task_run_id=run["id"],
+    )
+
+    assert started is False
+    assert conflict == {
+        "reason": "translation_task_terminal",
+        "run_id": run["id"],
+        "translation_task_id": "task-terminal-before-claim",
+        "state": "canceled",
+    }
+    assert worker_called.is_set() is False
+    assert jobs.active_job_id_for_project(project["id"]) is None
+
+
+def test_atomic_task_lease_claim_linearizes_before_later_terminal_and_isolates_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("Atomic claim before terminal", "QA", "")
+    run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"translation_task_id": "task-claim-before-terminal", "task_origin": "translation_run"},
+    )
+    scheduler_thread_id: dict[str, int] = {}
+    before_lease_write = threading.Event()
+    terminal_attempted = threading.Event()
+    terminal_committed = threading.Event()
+    allow_lease_write = threading.Event()
+    allow_worker_check = threading.Event()
+    worker_started = threading.Event()
+    worker_isolated = threading.Event()
+    real_connect = db.connect
+
+    @contextmanager
+    def traced_connect():
+        with real_connect() as conn:
+            if threading.get_ident() == scheduler_thread_id.get("value"):
+                paused = False
+
+                def trace(statement: str) -> None:
+                    nonlocal paused
+                    normalized = " ".join(statement.strip().split()).upper()
+                    if paused or "INSERT INTO JOB_LEASES" not in normalized:
+                        return
+                    paused = True
+                    before_lease_write.set()
+                    assert terminal_attempted.wait(timeout=5)
+                    assert terminal_committed.is_set() is False
+                    assert allow_lease_write.wait(timeout=5)
+
+                conn.set_trace_callback(trace)
+            yield conn
+
+    monkeypatch.setattr(db, "connect", traced_connect)
+
+    def worker(cancel_event: threading.Event) -> None:
+        worker_started.set()
+        assert allow_worker_check.wait(timeout=5)
+        if cancel_event.is_set():
+            worker_isolated.set()
+            return
+        try:
+            workflow.ensure_task_run_open(db.get_run(run["id"]))
+        except db.TranslationTaskClosedError:
+            worker_isolated.set()
+
+    def start_job() -> tuple[bool, dict | None]:
+        scheduler_thread_id["value"] = threading.get_ident()
+        return jobs.start_singleton_job(
+            project["id"],
+            f"run:{run['id']}",
+            worker,
+            task_run_id=run["id"],
+        )
+
+    def close_task() -> None:
+        terminal_attempted.set()
+        workflow.mark_translation_task_state(project["id"], "task-claim-before-terminal", "canceled")
+        terminal_committed.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        start_future = executor.submit(start_job)
+        assert before_lease_write.wait(timeout=5)
+        terminal_future = executor.submit(close_task)
+        assert terminal_attempted.wait(timeout=5)
+        time.sleep(0.05)
+        assert terminal_committed.is_set() is False
+        allow_lease_write.set()
+        started, conflict = start_future.result(timeout=5)
+        terminal_future.result(timeout=5)
+
+    assert started is True
+    assert conflict is None
+    assert terminal_committed.is_set() is True
+    assert worker_started.wait(timeout=5)
+    assert jobs.cancel_singleton_job(project["id"], f"run:{run['id']}") is True
+    allow_worker_check.set()
+    assert worker_isolated.wait(timeout=5)
+    assert db.get_run(run["id"])["status"] == "canceled"
+    wait_for_background_jobs()
 
 
 def test_active_jobs_endpoint_reports_two_projects_running_concurrently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

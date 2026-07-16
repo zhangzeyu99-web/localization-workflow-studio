@@ -8,6 +8,7 @@ from .. import db
 from ..config import REAL_PROVIDERS, load_settings, normalize_provider_name
 from .common import run_dir
 from .qa import (
+    _check_qa_cancel,
     _append_improvement_items,
     _apply_workbook_fixes,
     _improvement_item,
@@ -19,7 +20,7 @@ from .qa import (
     run_qa_sync,
 )
 from .semantic_qa import _call_semantic_provider, _parse_semantic_qa_payload
-from .translation_tasks import translation_task_continuation_metadata
+from .translation_tasks import ensure_task_run_open, translation_task_continuation_metadata
 
 
 def model_fix_provider_settings() -> tuple[dict[str, Any], str]:
@@ -30,7 +31,12 @@ def model_fix_provider_settings() -> tuple[dict[str, Any], str]:
     return settings, provider
 
 
-def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+def apply_model_fixes(
+    run_id: str,
+    request: Any,
+    settings: dict[str, Any] | None = None,
+    cancel_event: Any | None = None,
+) -> dict[str, Any]:
     """Apply AI model fixes for a run's QA issues.
 
     ``settings`` lets the background job entry point (``routers/qa.py``'s
@@ -40,6 +46,8 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
     (``/api/runs/{id}/model-fixes``) omits it and gets one fresh load here.
     """
     run = db.get_run(run_id)
+    ensure_task_run_open(run)
+    _check_qa_cancel(cancel_event)
     project = db.get_project(run["project_id"])
     language = run.get("language") or "en"
     if settings is not None:
@@ -65,17 +73,21 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
         raise FileNotFoundError(str(source_path))
     rows = [_model_fix_row_context(source_path, issue, language=language) for issue in issues]
     prompt = _model_fix_prompt(project, run, rows, settings)
+    _check_qa_cancel(cancel_event)
     text = _call_semantic_provider(settings, prompt)
+    _check_qa_cancel(cancel_event)
     payload = _parse_semantic_qa_payload(text)
     fixes = _normalize_model_fixes(payload, rows)
     if not fixes:
         raise ValueError("模型没有返回可应用的修复。")
 
+    _check_qa_cancel(cancel_event)
     output_dir = run_dir(run_id) / "model_fixes"
     output_dir.mkdir(parents=True, exist_ok=True)
     fixed_path = output_dir / f"{source_path.stem}_model_fixed.xlsx"
     shutil.copy2(source_path, fixed_path)
     applied = _apply_workbook_fixes(fixed_path, fixes, run_id, language=language)
+    ensure_task_run_open(db.get_run(run_id))
     fixed_artifact = db.add_artifact(
         project["id"],
         "Model fixed workbook",
@@ -92,6 +104,7 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
             "model": settings.get("model") or "",
         },
     )
+    ensure_task_run_open(db.get_run(run_id))
     _append_improvement_items(
         project["id"],
         [
@@ -111,6 +124,8 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
         "qa_result": None,
     }
     if getattr(request, "rerun_qa", True):
+        _check_qa_cancel(cancel_event)
+        ensure_task_run_open(db.get_run(run_id))
         qa_run = db.insert_run(
             project["id"],
             kind="qa",
@@ -126,5 +141,5 @@ def apply_model_fixes(run_id: str, request: Any, settings: dict[str, Any] | None
                 **translation_task_continuation_metadata(run),
             },
         )
-        result["qa_result"] = run_qa_sync(qa_run["id"], settings=settings)
+        result["qa_result"] = run_qa_sync(qa_run["id"], settings=settings, cancel_event=cancel_event)
     return result

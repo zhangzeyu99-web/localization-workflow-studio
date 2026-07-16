@@ -70,7 +70,14 @@ def _resolve_max_concurrent_jobs() -> int:
     return max(1, min(value, 4))
 
 
-def start_singleton_job(project_id: str, job_id: str, target: Callable[[threading.Event], None]) -> tuple[bool, dict[str, Any] | None]:
+def start_singleton_job(
+    project_id: str,
+    job_id: str,
+    target: Callable[[threading.Event], None],
+    *,
+    pre_start: Callable[[], dict[str, Any] | None] | None = None,
+    task_run_id: str | None = None,
+) -> tuple[bool, dict[str, Any] | None]:
     """Start a background job under the per-project lease.
 
     Returns ``(True, None)`` on success. On rejection returns ``(False, reason)``
@@ -78,6 +85,7 @@ def start_singleton_job(project_id: str, job_id: str, target: Callable[[threadin
     i.e. an idempotent no-op) or a structured dict with one of:
     - ``{"reason": "project_busy", "active_job_id": <job_id>}``
     - ``{"reason": "capacity", "active_count": N, "limit": N}``
+    - a structured rejection returned by ``pre_start``
     """
     lease_name = lease_name_for_project(project_id)
     # Read outside the lock: this is a settings.local.json file read, not
@@ -91,9 +99,17 @@ def start_singleton_job(project_id: str, job_id: str, target: Callable[[threadin
             if existing.id == job_id:
                 return False, None
             return False, {"reason": "project_busy", "active_job_id": existing.id}
+        if pre_start is not None:
+            pre_start_conflict = pre_start()
+            if pre_start_conflict:
+                return False, pre_start_conflict
         from . import db
 
-        if not db.acquire_job_lease(lease_name, job_id):
+        if task_run_id:
+            acquired, lease_conflict = db.acquire_job_lease_for_open_task_run(lease_name, job_id, task_run_id)
+            if not acquired:
+                return False, lease_conflict
+        elif not db.acquire_job_lease(lease_name, job_id):
             lease = db.get_job_lease(lease_name)
             active_job = str((lease or {}).get("job_id") or "")
             if active_job and active_job != job_id:

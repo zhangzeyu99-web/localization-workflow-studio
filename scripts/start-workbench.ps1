@@ -47,6 +47,15 @@ function Wait-HttpOk([string]$Url, [int]$Seconds) {
   return $false
 }
 
+function Start-HiddenPowerShell([string]$Command) {
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+  Start-Process -FilePath "powershell.exe" -ArgumentList @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", $encoded
+  ) -WindowStyle Hidden
+}
+
 function Start-Backend {
   $backendHealth = "http://127.0.0.1:$BackendPort/api/health"
   if (Test-HttpOk $backendHealth) {
@@ -66,7 +75,7 @@ Set-Location "$repoRoot"
 `$env:LWS_DATA_ROOT = "$DataRoot"
 python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port $BackendPort *> "$backendLog"
 "@
-  Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command) -WindowStyle Hidden
+  Start-HiddenPowerShell $command
 
   if (-not (Wait-HttpOk $backendHealth 45)) {
     $tail = if (Test-Path $backendLog) { Get-Content $backendLog -Tail 80 | Out-String } else { "" }
@@ -96,7 +105,7 @@ Set-Location "$frontendRoot"
 `$env:LWS_API_TARGET = "$apiTarget"
 npx vite --host $HostName --port $FrontendPort *> "$frontendLog"
 "@
-  Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command) -WindowStyle Hidden
+  Start-HiddenPowerShell $command
 
   if (-not (Wait-HttpOk $frontendHealthUrl 45)) {
     $tail = if (Test-Path $frontendLog) { Get-Content $frontendLog -Tail 80 | Out-String } else { "" }
@@ -107,7 +116,7 @@ npx vite --host $HostName --port $FrontendPort *> "$frontendLog"
 
 function Test-ApiThroughFrontend {
   $url = if ($HostName -eq "0.0.0.0" -or $HostName -eq "::") { "http://127.0.0.1:$FrontendPort/api/health" } else { "http://${HostName}:$FrontendPort/api/health" }
-  if (-not (Test-HttpOk $url)) {
+  if (-not (Wait-HttpOk $url 15)) {
     throw "Frontend API proxy failed: $url. The page may open, but uploads/analyze/import will fail with 'Failed to fetch'."
   }
   Write-Host "API proxy healthy: $url"

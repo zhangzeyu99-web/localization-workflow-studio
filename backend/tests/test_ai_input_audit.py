@@ -13,6 +13,7 @@ import app.db as db
 import app.routers.system as system_router
 from app.config import DEFAULT_SETTINGS, SETTINGS_PATH, load_settings, save_settings
 from app.main import app
+from app.workflow.common import write_project_harness
 from app.workflow.prompt_snapshots import create_prompt_and_harness_snapshots
 from conftest import reset_data_root, wait_for_background_jobs
 
@@ -336,3 +337,45 @@ def test_saved_project_prompt_overrides_stale_prompt_file(tmp_path: Path) -> Non
     snapshots = create_prompt_and_harness_snapshots(project["id"], run["id"], tmp_path / "snapshots", language="en")
     assert manual_prompt in snapshots["prompt"]
     assert "OLD PROMPT" not in snapshots["prompt"]
+
+
+def test_prompt_snapshot_ignores_generated_harness_context_from_another_language(tmp_path: Path) -> None:
+    project = db.insert_project("Cross Language Prompt", "SLG", "", "G")
+    english_prompt = "Translate every source row into English."
+    db.update_project(
+        project["id"],
+        {
+            "profile": {
+                "prompts_by_language": {"en": english_prompt},
+                "display_prompts_by_language": {"en": english_prompt},
+            }
+        },
+    )
+    write_project_harness(
+        project["id"],
+        {
+            "project_metadata": {
+                "target_language": "th",
+                "generated_from": "project_analysis",
+            },
+            "style_guidance": "Use Thai sentence particles only.",
+            "target_audience": "Thai readers only.",
+            "tone": "Natural Thai.",
+        },
+    )
+    run = db.insert_run(project["id"], "quick_translation", "en", metadata={})
+
+    snapshots = create_prompt_and_harness_snapshots(
+        project["id"],
+        run["id"],
+        tmp_path / "snapshots",
+        language="en",
+    )
+
+    assert english_prompt in snapshots["prompt"]
+    assert "authoritative target language: English (EN)" in snapshots["prompt"]
+    assert "Use Thai sentence particles only." not in snapshots["prompt"]
+    assert "Thai readers only." not in snapshots["prompt"]
+    assert "Natural Thai." not in snapshots["prompt"]
+    assert snapshots["harness_snapshot"]["project_harness"]["style_guidance"] == "Use Thai sentence particles only."
+    assert snapshots["harness_snapshot"]["execution_context"]["language_context_applied"] is False

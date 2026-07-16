@@ -91,6 +91,11 @@ class GlossaryBatchResolveRequest(BaseModel):
 
 class GlossaryImportRequest(BaseModel):
     artifact_id: str
+    mode: str = "merge"
+    languages: list[str] = Field(default_factory=list)
+    dataset_key: str | None = None
+    override_protected: bool = False
+    confirmed_glossary: bool | None = None
     sheet: str | None = None
     term_key_column: str | None = None
     source_column: str | None = None
@@ -139,6 +144,20 @@ class TranslationArchiveImportRequest(BaseModel):
     note_column: str | None = None
     auto_languages: bool = True
     language: str = "en"
+    mode: str = "merge"
+    languages: list[str] = Field(default_factory=list)
+    dataset_key: str | None = None
+    override_protected: bool = False
+
+
+class ArchiveImportCommitRequest(BaseModel):
+    token: str
+
+
+class ArchiveSourcePatchRequest(BaseModel):
+    expected_revision: str
+    shared: dict[str, str] = Field(default_factory=dict)
+    targets: dict[str, str] = Field(default_factory=dict)
 
 
 class AnnouncementLookupRequest(BaseModel):
@@ -162,6 +181,10 @@ class AnnouncementTaskCreateRequest(BaseModel):
     constraint_artifact_ids: list[str] = Field(default_factory=list)
     include_project_archive: bool = True
     output_policy: str = "same_format"
+
+
+class AnnouncementTaskCancelRequest(BaseModel):
+    expected_statuses: list[str] = Field(default_factory=list)
 
 
 class AnnouncementTaskActionRequest(BaseModel):
@@ -291,8 +314,9 @@ class GlossaryExtractRequest(BaseModel):
     sheet: str | None = None
     id_column: str = "ID"
     source_column: str = "cn"
-    target_column: str = "en"
+    target_column: str | None = None
     language: str = "en"
+    update_project_prompt: bool = True
 
 
 class TranslateRequest(BaseModel):

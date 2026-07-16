@@ -11,6 +11,7 @@ from .qa import QaCanceled, run_qa_sync
 from .subprocess_runner import user_facing_error
 from .translation import run_translate_sync
 from .translation_readiness import inspect_translation_readiness
+from .translation_tasks import update_task_run_status
 
 
 TERMINAL_STATUSES = {"passed", "failed", "needs_input", "canceled"}
@@ -114,9 +115,9 @@ def start_multilingual_translation_queue(project_id: str, payload: MultilingualQ
                 try:
                     current = db.get_run(run["id"])
                     db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})
-                    db.update_run(
+                    update_task_run_status(
                         run["id"],
-                        status=current.get("status") if current.get("status") in TERMINAL_STATUSES else "failed",
+                        current.get("status") if current.get("status") in TERMINAL_STATUSES else "failed",
                     )
                 except Exception:
                     pass
@@ -191,7 +192,7 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
             except QaCanceled:
                 try:
                     db.merge_run_metadata(run["id"], {"canceled_at": db.now_iso()})
-                    db.update_run(run["id"], status="canceled")
+                    update_task_run_status(run["id"], "canceled")
                     db.add_event(run["id"], "multilingual queue QA canceled")
                 except Exception:
                     pass
@@ -199,7 +200,7 @@ def start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueReque
             except Exception as exc:
                 try:
                     db.merge_run_metadata(run["id"], {"error": user_facing_error(exc)})
-                    db.update_run(run["id"], status="failed")
+                    update_task_run_status(run["id"], "failed")
                 except Exception:
                     pass
 

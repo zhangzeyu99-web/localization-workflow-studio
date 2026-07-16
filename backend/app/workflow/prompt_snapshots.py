@@ -145,15 +145,48 @@ def _repair_stale_project_prompt(project: dict[str, Any], language: str, prompt_
     return prompt
 
 
-def compile_project_harness_prompt(project: dict[str, Any], base_prompt: str, output_dir: Path) -> tuple[Path, Path, str, dict[str, Any]]:
+def _execution_harness_for_language(harness: dict[str, Any], language: str) -> tuple[dict[str, Any], str, bool]:
+    metadata = harness.get("project_metadata") if isinstance(harness.get("project_metadata"), dict) else {}
+    raw_harness_language = str(metadata.get("target_language") or "").strip()
+    harness_language = raw_harness_language
+    if raw_harness_language:
+        try:
+            harness_language = require_supported_language(raw_harness_language)
+        except ValueError:
+            harness_language = raw_harness_language.casefold()
+    language_context_applied = not harness_language or harness_language == language
+    if language_context_applied:
+        return harness, harness_language, True
+    return {
+        **harness,
+        "style_guidance": "",
+        "target_audience": "",
+        "tone": "",
+    }, harness_language, False
+
+
+def compile_project_harness_prompt(
+    project: dict[str, Any],
+    base_prompt: str,
+    output_dir: Path,
+    *,
+    language: str,
+) -> tuple[Path, Path, str, dict[str, Any]]:
+    language = require_supported_language(language)
+    spec = language_spec(language)
     harness = read_project_harness(project["id"])
+    execution_harness, harness_language, language_context_applied = _execution_harness_for_language(harness, language)
     parts = [base_prompt.strip()]
-    project_parts = _project_harness_prompt_parts(harness)
+    project_parts = _project_harness_prompt_parts(execution_harness)
     if project_parts:
         parts.append(
             "Project Harness (project-specific; apply only to this project, do not generalize):\n"
             + "\n".join(project_parts)
         )
+    parts.append(
+        f"Execution rule - authoritative target language: {spec.prompt_name} ({spec.target_header}).\n"
+        f"Every translation field must be written in {spec.prompt_name}; never reuse output written for another target language."
+    )
     raw_compiled = "\n\n".join(part for part in parts if part)
     settings = load_settings()
     compiled = _manage_project_prompt_context(raw_compiled, settings)
@@ -163,6 +196,11 @@ def compile_project_harness_prompt(project: dict[str, Any], base_prompt: str, ou
         "global_harness": GLOBAL_HARNESS_CONTRACT,
         "project_harness": harness,
         "summary": _harness_summary(harness),
+        "execution_context": {
+            "target_language": language,
+            "harness_target_language": harness_language,
+            "language_context_applied": language_context_applied,
+        },
         "context_budget": _project_context_summary(raw_compiled, settings),
     }
     prompt_path.write_text(compiled, encoding="utf-8")
@@ -264,7 +302,12 @@ def create_prompt_and_harness_snapshots(project_id: str, run_id: str, output_dir
         base_prompt = prompt_path.read_text(encoding="utf-8")
     if _is_stale_project_prompt_text(base_prompt) or _is_stale_project_prompt_text(stored_prompt):
         base_prompt = _repair_stale_project_prompt(project, language, prompt_path)
-    compiled_path, harness_path, compiled_prompt, harness_snapshot = compile_project_harness_prompt(project, base_prompt, output)
+    compiled_path, harness_path, compiled_prompt, harness_snapshot = compile_project_harness_prompt(
+        project,
+        base_prompt,
+        output,
+        language=language,
+    )
     prompt_artifact = db.add_artifact(
         project_id,
         "Prompt snapshot",

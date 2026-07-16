@@ -988,7 +988,7 @@ test('announcement AI translation shows API reminder when provider is not config
 
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
-  await page.getByRole('button', { name: /公告翻译/ }).click()
+  await page.getByRole('button', { name: '新公告任务', exact: true }).first().click()
   await page.locator('.check-row', { hasText: 'api_reminder_notice.txt' }).locator('input').check()
   await page.getByRole('button', { name: '创建公告任务' }).click()
   await expect(page.locator('.panel-title', { hasText: '约束来源' })).toBeVisible({ timeout: 20000 })
@@ -1104,6 +1104,20 @@ wb.close()
       }),
     })
   })
+  let vietnameseGlossaryPayload: Record<string, unknown> | null = null
+  await page.route(`**/api/projects/${project.id}/glossary/extract`, async (route) => {
+    vietnameseGlossaryPayload = route.request().postDataJSON() as Record<string, unknown>
+    const now = new Date().toISOString()
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        run: { id: 'run-vn-glossary', project_id: project.id, kind: 'glossary', language: 'vn', status: 'passed', created_at: now, updated_at: now, metadata: {} },
+        artifacts: [],
+        glossary_backfill: { candidates: 0, unique_candidates: 0, skipped_existing: 0, pending_confirmation: 0, skipped_duplicate: 0 },
+      }),
+    })
+  })
 
   const languageRefresh = page.waitForResponse((response) => response.url().endsWith('/api/languages') && response.ok())
   const settingsRefresh = page.waitForResponse((response) => response.url().endsWith('/api/settings') && response.ok())
@@ -1125,6 +1139,18 @@ wb.close()
   const readinessResponse = page.waitForResponse((response) => response.url().includes(`/artifacts/${source.id}/translation-readiness`) && response.ok())
   await page.locator('.step-panel.active label.asset-select select').selectOption(source.id)
   await Promise.all([targetsResponse, readinessResponse])
+  await selectWizardStep(page, 6)
+  const initialVietnameseButton = page.getByRole('button', { name: /VN / })
+  await expect(initialVietnameseButton).toHaveClass(/selected/)
+  await initialVietnameseButton.click()
+  await expect(initialVietnameseButton).not.toHaveClass(/selected/)
+  await initialVietnameseButton.click()
+  await expect(initialVietnameseButton).toHaveClass(/current/)
+  await selectWizardStep(page, 5)
+  await page.getByRole('button', { name: '扫描候选', exact: true }).click()
+  await expect.poll(() => vietnameseGlossaryPayload).not.toBeNull()
+  expect(vietnameseGlossaryPayload).toMatchObject({ language: 'vn' })
+  expect(vietnameseGlossaryPayload).not.toHaveProperty('target_column')
   await selectWizardStep(page, 6)
 
   for (const label of [
@@ -1305,6 +1331,7 @@ wb.close()
   await selectWizardStep(page, 7)
   await page.getByTestId('multilingual-translate').click()
 
+  await expect.poll(() => queuePayload).not.toBeNull()
   expect(queuePayload).toMatchObject({ input_artifact_id: artifact.id, languages: expectedLanguages })
 })
 
@@ -1820,7 +1847,7 @@ test('switching from quick task to announcement clears the quick-task status', a
   await page.getByRole('button', { name: projectName }).click()
   await page.getByTestId('quick-task-entry').click()
   await page.getByRole('button', { name: '返回项目概览', exact: true }).click()
-  await page.locator('main').getByRole('button', { name: '公告翻译', exact: true }).click()
+  await page.locator('main').getByRole('button', { name: '新公告任务', exact: true }).first().click()
 
   await expect(page.getByRole('heading', { name: '公告翻译', exact: true })).toBeVisible()
   await expect(page.getByText('快速任务已就绪。', { exact: true })).toHaveCount(0)
@@ -1894,8 +1921,8 @@ wb.close()
   const termsResponse = await request.get(`${baseURL}/api/projects/${project.id}/glossary`)
   const terms = await termsResponse.json()
   expect(terms).toEqual(expect.arrayContaining([
-    expect.objectContaining({ source: '战机', target: 'Warplane', target_alt: 'Fighter' }),
-    expect.objectContaining({ source: '钻石', target: 'Diamonds', target_alt: 'Gems' }),
+    expect.objectContaining({ source: '战机', target: 'Warplane', target_alt: '' }),
+    expect.objectContaining({ source: '钻石', target: 'Diamonds', target_alt: '' }),
   ]))
 })
 
@@ -2100,18 +2127,32 @@ wb.close()
 `, termWorkbook])
 
   const projectName = `E2E Wide Import ${Date.now()}`
-  await request.post(`${baseURL}/api/projects`, {
+  const project = await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'wide-import', description: 'Wide import smoke.' },
-  })
+  }).then((response) => response.json())
 
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('.view-tabs .view-tab').nth(1).click()
   await page.getByRole('button', { name: '导入 / 生成 / 导出' }).click()
-  await page.locator('label.upload-box', { hasText: '上传已确认术语表模板 xlsx/csv/json' }).locator('input[type="file"]').setInputFiles(termWorkbook)
-  await expect(inlineStatus(page, `已上传：上传术语表｜${fileStem(termWorkbook)}`)).toBeVisible({ timeout: 15000 })
   await page.getByRole('button', { name: '导入已确认术语' }).click()
-  await expect(inlineStatus(page, /术语表已导入：5 条/)).toBeVisible({ timeout: 20000 })
+  const dialog = page.getByRole('dialog', { name: '导入已确认术语' })
+  await dialog.getByLabel('上传新文件').setInputFiles(termWorkbook)
+  await expect(dialog.getByTestId('archive-import-stage-settings')).toHaveAttribute('aria-current', 'step')
+  await expect(dialog.getByTestId('archive-import-language-en')).toHaveAttribute('aria-pressed', 'true')
+  await dialog.getByTestId('archive-import-language-ko').click()
+  await dialog.getByTestId('archive-import-language-ja').click()
+  await expect(dialog.getByTestId('archive-import-language-ko')).toHaveAttribute('aria-pressed', 'true')
+  await expect(dialog.getByTestId('archive-import-language-ja')).toHaveAttribute('aria-pressed', 'true')
+  await dialog.getByTestId('archive-import-analyze').click()
+  await expect(dialog.getByTestId('archive-import-stage-preview')).toHaveAttribute('aria-current', 'step')
+  await expect(dialog.getByTestId('archive-import-summary-insert')).toContainText('5')
+  await expect(dialog).not.toContainText('Fighter')
+  await expect(dialog).not.toContainText('Gems')
+  await dialog.getByTestId('archive-import-commit').click()
+  await expect(dialog.getByTestId('archive-import-stage-success')).toHaveAttribute('aria-current', 'step')
+  await expect(dialog.getByRole('heading', { name: '导入已提交并读回' })).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭并查看归档' }).click()
 
   await page.getByTestId('glossary-display-lang-ko').click()
   await page.getByTestId('glossary-display-lang-ja').click()
@@ -2122,6 +2163,12 @@ wb.close()
   await expect(wideRow).toContainText('戦闘機')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('KR2')
   await expect(page.locator('.glossary-wide-table thead')).not.toContainText('JP2')
+  const importedTerms = await request.get(`${baseURL}/api/projects/${project.id}/glossary`).then((response) => response.json())
+  expect(importedTerms).toEqual(expect.arrayContaining([
+    expect.objectContaining({ source: '战机', language: 'en', target: 'Warplane', target_alt: '' }),
+    expect.objectContaining({ source: '钻石', language: 'en', target: 'Diamonds', target_alt: '' }),
+  ]))
+  expect(importedTerms.every((term: { target_alt?: string }) => (term.target_alt || '') === '')).toBeTruthy()
 })
 
 test('project announcement workflow extracts terms with AI supplement and prepares delivery', async ({ page, request }) => {
@@ -2179,7 +2226,7 @@ wb.close()
 
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
-  await page.getByRole('button', { name: /\u516c\u544a\u7ffb\u8bd1/ }).click()
+  await page.getByRole('button', { name: '新公告任务', exact: true }).first().click()
   await expect(page.getByRole('heading', { name: /\u516c\u544a\u7ffb\u8bd1/ })).toBeVisible()
   await expect(page.locator('.panel-title', { hasText: '\u516c\u544a\u8d44\u6599' })).toBeVisible()
   await expect(page.locator('.announcement-side')).toHaveCount(0)
@@ -2281,7 +2328,7 @@ wb.close()
   await expect(page.getByRole('link', { name: '下载交付包' })).toBeVisible({ timeout: 30000 })
   await expect(page.getByRole('link', { name: '下载成品' })).toBeVisible()
   await expect(page.getByRole('link', { name: '下载 QA 摘要' })).toBeVisible()
-  await page.getByRole('button', { name: '公告翻译', exact: true }).click()
+  await page.getByRole('button', { name: '新公告任务', exact: true }).first().click()
   await expect(page.locator('.panel-title', { hasText: '\u516c\u544a\u8d44\u6599' })).toBeVisible()
   await expect(page.locator('.announcement-current-task')).toHaveCount(0)
   await page.getByRole('button', { name: '\u8fd4\u56de\u9879\u76ee\u6982\u89c8', exact: true }).click()
@@ -2727,7 +2774,7 @@ test('mobile project overview exposes all three workflow entries', async ({ page
 
   const main = page.locator('main')
   await expect(main.getByRole('button', { name: '新翻译任务', exact: true })).toBeVisible()
-  await expect(main.getByRole('button', { name: '公告翻译', exact: true })).toBeVisible()
+  await expect(main.getByRole('button', { name: '新公告任务', exact: true }).first()).toBeVisible()
   await expect(main.getByTestId('overview-quick-task')).toBeVisible()
   await main.getByTestId('overview-quick-task').click()
   await expect(page.getByRole('heading', { name: '快速任务', exact: true })).toBeVisible()

@@ -190,9 +190,13 @@ def create_project(payload: ProjectCreate) -> dict[str, Any]:
 
 
 @router.get("/api/projects/{project_id}")
-def get_project(project_id: str) -> dict[str, Any]:
+def get_project(project_id: str, include_archives: bool = True) -> dict[str, Any]:
     try:
-        return _with_project_stats(db.get_project(project_id), include_details=True)
+        return _with_project_stats(
+            db.get_project(project_id),
+            include_details=True,
+            include_archives=include_archives,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
 

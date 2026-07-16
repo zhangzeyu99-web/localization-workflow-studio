@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { Archive, BookOpenText, FileText, FolderKanban, Languages, Megaphone, PackageCheck, WandSparkles, Wrench, Zap } from 'lucide-react'
 import type { LanguageCode } from '../../languages'
 import { HISTORY_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
-import { glossaryWideRows, translationWideRows } from '../../domain/projectAssets'
+import type { ArchiveImportReadbackOptions } from '../../domain/archiveImport'
 import { projectActivityRuns, projectRunStatusText, projectRunTitle, visibleAnnouncementTaskCount } from '../../domain/projectActivity'
 import { AnnouncementProjectPanel } from '../announcement/AnnouncementProjectPanel'
 import { GlossaryTab, TranslationArchiveTab, WideTablePager } from '../assets/ProjectAssetTabs'
@@ -26,6 +26,8 @@ export interface ProjectOverviewProps {
   qaArtifact: Artifact | null
   archiveArtifact: Artifact | null
   latestRun: Run | null
+  focusedQuickRunId?: string
+  focusedQuickReadOnly?: boolean
   translationReadiness: TranslationReadiness | null
   qualityIssues: QualityIssue[]
   glossaryPreview: GlossaryPreviewRow[]
@@ -42,16 +44,16 @@ export interface ProjectOverviewProps {
   onUploadSource: (file: File) => void
   onUploadTerm: (file: File) => void
   onGlossaryPreview: () => void
-  onGlossaryImport: () => void
+  onGlossaryImport: (options?: ArchiveImportReadbackOptions) => void | Promise<boolean>
   onGlossaryExtract: () => void
   onAddTerm: (form: FormData) => void
   onUpdateTerm: (term: GlossaryTerm, updates: Partial<GlossaryTerm>) => Promise<void>
-  onDeleteTerm: (term: GlossaryTerm) => Promise<void>
+  onDeleteTerm: (term: GlossaryTerm) => Promise<boolean>
   onAddTranslation: (form: FormData) => void
   onUpdateTranslation: (entry: TranslationEntry, updates: Partial<TranslationEntry>) => Promise<void>
-  onDeleteTranslation: (entry: TranslationEntry) => Promise<void>
+  onDeleteTranslation: (entry: TranslationEntry) => Promise<boolean>
   onUploadArchive: (file: File) => Promise<Artifact | null>
-  onImportArchive: (artifact?: Artifact | null) => Promise<boolean>
+  onImportArchive: (artifact?: Artifact | null, options?: ArchiveImportReadbackOptions) => Promise<boolean>
   onSaveHarness: (updates: Partial<ProjectHarness>) => Promise<void>
   onUploadMaterial: (file: File) => Promise<Artifact | null>
   onTranslate: () => void
@@ -95,6 +97,8 @@ function ProjectOverviewImpl({
   qaArtifact,
   archiveArtifact,
   latestRun,
+  focusedQuickRunId,
+  focusedQuickReadOnly,
   translationReadiness,
   qualityIssues,
   glossaryPreview,
@@ -149,8 +153,6 @@ function ProjectOverviewImpl({
   toggleSelectedLanguage,
   confirm
 }: ProjectOverviewProps) {
-  const glossaryRows = glossaryWideRows(project)
-  const archiveRows = translationWideRows(project)
   const languageTaskCount = project.stats.language_tasks ?? ((project.stats.translation_runs || 0) + (project.stats.qa_runs || 0))
   const announcementTaskCount = visibleAnnouncementTaskCount(project)
   const fallbackDeliverableCount = (project.runs || []).filter((run) =>
@@ -179,7 +181,7 @@ function ProjectOverviewImpl({
         </div>
         <div className="row-actions">
           <button className="btn btn-primary" onClick={onStartTask}><WandSparkles size={16} aria-hidden="true" />新翻译任务</button>
-          <button className="btn btn-ghost" onClick={onStartAnnouncement}><Megaphone size={16} aria-hidden="true" />公告翻译</button>
+          <button className="btn btn-ghost" onClick={onStartAnnouncement}><Megaphone size={16} aria-hidden="true" />新公告任务</button>
           <button className="btn btn-ghost" data-testid="overview-quick-task" onClick={onStartQuickTask}><Zap size={16} aria-hidden="true" />快速任务</button>
         </div>
       </div>
@@ -194,7 +196,7 @@ function ProjectOverviewImpl({
           <div className="num">{deliverableCount}</div><div className="lbl">可交付</div><div className="stat-hint">查看下载</div>
         </button>
         <button type="button" className="stat-card stat-action" onClick={() => setTab('archive')} title="查看译文归档">
-          <div className="num">{archiveRows.length}</div><div className="lbl">已归档文本</div><div className="stat-hint">查看归档</div>
+          <div className="num">{project.stats.archived_rows || 0}</div><div className="lbl">已归档文本</div><div className="stat-hint">查看归档</div>
         </button>
       </div>
       {tab === 'meta' && activityRuns.length ? (
@@ -254,7 +256,6 @@ function ProjectOverviewImpl({
       {tab === 'glossary' ? (
         <GlossaryTab
           project={project}
-          sourceArtifact={sourceArtifact}
           termArtifact={termArtifact}
           setTermArtifact={setTermArtifact}
           glossaryPreview={glossaryPreview}
@@ -263,12 +264,12 @@ function ProjectOverviewImpl({
           onUploadTerm={onUploadTerm}
           onGlossaryPreview={onGlossaryPreview}
           onGlossaryImport={onGlossaryImport}
-          onGlossaryExtract={onGlossaryExtract}
           onAddTerm={onAddTerm}
           onUpdateTerm={onUpdateTerm}
           onDeleteTerm={onDeleteTerm}
           selectedLanguage={selectedLanguage}
           setSelectedLanguage={setSelectedLanguage}
+          confirm={confirm}
         />
       ) : null}
       {tab === 'translation' ? (
@@ -288,12 +289,15 @@ function ProjectOverviewImpl({
           onTranslate={onTranslate}
           selectedLanguage={selectedLanguage}
           setSelectedLanguage={setSelectedLanguage}
+          readOnly={focusedQuickReadOnly}
         />
       ) : null}
       {tab === 'qa' ? (
         <StepQA
           project={project}
           latestRun={latestRun}
+          focusedRunId={focusedQuickRunId}
+          readOnly={focusedQuickReadOnly}
           sourceArtifact={sourceArtifact}
           translationReadiness={translationReadiness}
           qualityIssues={qualityIssues}
@@ -337,6 +341,7 @@ function ProjectOverviewImpl({
           selectedLanguage={selectedLanguage}
           setSelectedLanguage={setSelectedLanguage}
           onGoQA={goToQaTab}
+          confirm={confirm}
         />
       ) : null}
       {tab === 'delivery' ? (

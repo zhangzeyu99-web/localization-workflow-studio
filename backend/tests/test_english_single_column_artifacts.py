@@ -177,4 +177,5 @@ def test_legacy_english_alternate_headers_remain_importable(tmp_path: Path, alte
         )
 
     assert response.status_code == 200, response.text
-    assert response.json()["rows"][0]["target_alt"] == "Fighter"
+    assert response.json()["rows"][0]["target"] == "Warplane"
+    assert response.json()["rows"][0]["target_alt"] == ""

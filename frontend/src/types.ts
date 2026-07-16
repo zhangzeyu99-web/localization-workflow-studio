@@ -29,6 +29,7 @@ export type Project = {
   translations?: TranslationEntry[]
   announcement_tasks?: AnnouncementTask[]
   harness?: ProjectHarness
+  archives_embedded?: boolean
   duplicate?: boolean
 }
 
@@ -87,6 +88,7 @@ export type GlossaryTerm = {
   category: string
   note: string
   source_type: string
+  review_status?: string
   confirmed: boolean
 }
 
@@ -101,6 +103,7 @@ export type TranslationEntry = {
   row_number: number
   note: string
   source_type: string
+  review_status?: string
   source_artifact_id: string
 }
 
@@ -144,6 +147,21 @@ export type WideTranslationRow = {
   translations: Partial<Record<LanguageCode, WideLanguageValue<TranslationEntry>>>
   languages: LanguageCode[]
   conflicts: WideConflict[]
+}
+
+export type ProjectAssetKind = 'glossary' | 'translations'
+
+export type ProjectAssetWidePage<Row extends WideGlossaryRow | WideTranslationRow> = {
+  project_id?: string
+  rows: Row[]
+  total_rows: number
+  page: number
+  page_size: number
+  total_pages: number
+  languages: LanguageCode[]
+  record_languages: LanguageCode[]
+  coverage: Partial<Record<LanguageCode, number>>
+  revision: string
 }
 
 export type GlossaryBatch = {

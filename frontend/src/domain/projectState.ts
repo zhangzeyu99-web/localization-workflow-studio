@@ -1,26 +1,27 @@
 import { newestArtifact, runArtifacts } from './artifacts'
 import type { Artifact, Project, Run } from '../types'
 
-function hasRecords<T>(items?: T[] | null): items is T[] {
-  return Array.isArray(items) && items.length > 0
-}
-
 function hasObjectFields(value?: Record<string, unknown> | null): value is Record<string, unknown> {
   return Boolean(value && Object.keys(value).length)
 }
 
+function hasOwn(project: Project, field: keyof Project): boolean {
+  return Object.prototype.hasOwnProperty.call(project, field)
+}
+
 export function mergeProjectSummary(existing: Project | undefined, summary: Project): Project {
   if (!existing) return summary
+  const archivesOmitted = summary.archives_embedded === false
   return {
     ...existing,
     ...summary,
     profile: hasObjectFields(summary.profile) ? summary.profile : existing.profile,
     harness: hasObjectFields(summary.harness as Record<string, unknown> | undefined) ? summary.harness : existing.harness,
-    artifacts: hasRecords(summary.artifacts) ? summary.artifacts : existing.artifacts,
-    runs: hasRecords(summary.runs) ? summary.runs : existing.runs,
-    glossary: hasRecords(summary.glossary) ? summary.glossary : existing.glossary,
-    translations: hasRecords(summary.translations) ? summary.translations : existing.translations,
-    announcement_tasks: hasRecords(summary.announcement_tasks) ? summary.announcement_tasks : existing.announcement_tasks,
+    artifacts: hasOwn(summary, 'artifacts') ? summary.artifacts : existing.artifacts,
+    runs: hasOwn(summary, 'runs') ? summary.runs : existing.runs,
+    glossary: archivesOmitted ? undefined : (hasOwn(summary, 'glossary') ? summary.glossary : existing.glossary),
+    translations: archivesOmitted ? undefined : (hasOwn(summary, 'translations') ? summary.translations : existing.translations),
+    announcement_tasks: hasOwn(summary, 'announcement_tasks') ? summary.announcement_tasks : existing.announcement_tasks,
   }
 }
 

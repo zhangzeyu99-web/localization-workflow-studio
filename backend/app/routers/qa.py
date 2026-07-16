@@ -12,15 +12,18 @@ from ..workflow import (
     QaCanceled,
     apply_manual_fixes,
     apply_model_fixes,
+    cancel_quick_task_run,
     create_manual_fix_qa_run,
     create_project_improvement,
     create_improvement_review,
     create_semantic_qa_context,
+    ensure_task_run_open,
     list_improvements,
     list_quality_issues,
     model_fix_provider_settings,
     run_qa_sync,
     start_multilingual_qa_queue,
+    update_task_run_status,
     user_facing_error,
 )
 from .shared import _job_conflict_detail
@@ -38,6 +41,8 @@ def qa(run_id: str) -> dict[str, Any]:
         return run_qa_sync(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run or artifact not found") from exc
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
@@ -49,10 +54,15 @@ def _start_background_qa(run_id: str) -> dict[str, Any]:
     jobs, so the same project serializes while other projects keep running.
     """
     run = db.get_run(run_id)  # KeyError -> caller maps to 404
+    try:
+        ensure_task_run_open(run)
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     project_id = run["project_id"]
     job_id = f"qa:{run_id}"
     active = active_job_id_for_project(project_id)
     if active and active != job_id:
+        cancel_quick_task_run(run_id)
         raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
     # Snapshot settings at the task entry point (same rule as model-fix /
     # multilingual jobs): a settings PATCH mid-job must not switch the
@@ -60,7 +70,10 @@ def _start_background_qa(run_id: str) -> dict[str, Any]:
     job_settings = load_settings()
     original_status = str(run.get("status") or "created")
     db.merge_run_metadata(run_id, {"queued_at": db.now_iso()})
-    db.update_run(run_id, status="queued")
+    try:
+        ensure_task_run_open(update_task_run_status(run_id, "queued"))
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
 
     def worker(cancel_event: Any) -> None:
         try:
@@ -68,7 +81,7 @@ def _start_background_qa(run_id: str) -> dict[str, Any]:
         except QaCanceled:
             try:
                 db.merge_run_metadata(run_id, {"canceled_at": db.now_iso()})
-                db.update_run(run_id, status="canceled")
+                update_task_run_status(run_id, "canceled")
                 db.add_event(run_id, "QA canceled before completion; no partial results were written")
             except Exception:
                 pass
@@ -76,15 +89,21 @@ def _start_background_qa(run_id: str) -> dict[str, Any]:
             try:
                 friendly = user_facing_error(exc)
                 db.merge_run_metadata(run_id, {"error": friendly})
-                db.update_run(run_id, status="failed")
+                update_task_run_status(run_id, "failed")
                 db.add_event(run_id, f"qa failed: {friendly}", level="error")
             except Exception:
                 pass
 
-    started, conflict = start_singleton_job(project_id, job_id, worker)
+    started, conflict = start_singleton_job(
+        project_id,
+        job_id,
+        worker,
+        task_run_id=run_id,
+    )
     if not started and conflict:
         db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
-        db.update_run(run_id, status=original_status)
+        if cancel_quick_task_run(run_id).get("status") != "canceled":
+            update_task_run_status(run_id, original_status)
         raise HTTPException(status_code=409, detail=_job_conflict_detail(conflict))
     db.add_event(run_id, "qa background job started")
     return db.get_run(run_id)
@@ -96,6 +115,8 @@ def qa_start(run_id: str) -> dict[str, Any]:
         return _start_background_qa(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run or artifact not found") from exc
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
 
 
 @router.post("/api/runs/{run_id}/qa/cancel")
@@ -105,7 +126,9 @@ def qa_cancel(run_id: str) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     cancel_singleton_job(run["project_id"], f"qa:{run_id}")
+    cancel_singleton_job(run["project_id"], f"model-fix:{run_id}")
     db.merge_run_metadata(run_id, {"cancel_requested_at": db.now_iso()})
+    cancel_quick_task_run(run_id)
     db.add_event(run_id, "qa cancel requested; stops at the next pipeline stage boundary")
     return db.get_run(run_id)
 
@@ -134,6 +157,8 @@ def manual_fixes(run_id: str, payload: ManualFixRequest) -> dict[str, Any]:
         return apply_manual_fixes(run_id, payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
@@ -153,6 +178,8 @@ def manual_fixes_start(run_id: str, payload: ManualFixRequest) -> dict[str, Any]
         result = apply_manual_fixes(run_id, no_rerun)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run, artifact, sheet, or column not found") from exc
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
     response: dict[str, Any] = {
@@ -162,9 +189,12 @@ def manual_fixes_start(run_id: str, payload: ManualFixRequest) -> dict[str, Any]
         "qa_run": None,
     }
     if payload.rerun_qa:
-        source_artifact = {"id": (result["fixed_artifact"].get("metadata") or {}).get("source_artifact_id") or ""}
-        qa_run = create_manual_fix_qa_run(source_run, result["fixed_artifact"], source_artifact, result["manual_fixes"])
-        response["qa_run"] = _start_background_qa(qa_run["id"])
+        try:
+            source_artifact = {"id": (result["fixed_artifact"].get("metadata") or {}).get("source_artifact_id") or ""}
+            qa_run = create_manual_fix_qa_run(source_run, result["fixed_artifact"], source_artifact, result["manual_fixes"])
+            response["qa_run"] = _start_background_qa(qa_run["id"])
+        except db.TranslationTaskClosedError as exc:
+            raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
     return response
 
 
@@ -186,6 +216,7 @@ def model_fixes(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
 def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
     try:
         run = db.get_run(run_id)
+        ensure_task_run_open(run)
         # Snapshot settings once here (the task's entry point) and thread the
         # same snapshot through apply_model_fixes -> the QA rerun below, so a
         # concurrent settings PATCH mid-job can't change provider/model
@@ -210,12 +241,16 @@ def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
             "model_fix_rerun_qa": payload.rerun_qa,
         },
     )
-    db.update_run(run_id, status="running")
+    try:
+        ensure_task_run_open(update_task_run_status(run_id, "running"))
+    except db.TranslationTaskClosedError as exc:
+        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
 
     def worker(cancel_event: Any) -> None:
-        _ = cancel_event
         try:
-            result = apply_model_fixes(run_id, payload, settings=job_settings)
+            if cancel_event.is_set():
+                raise QaCanceled()
+            result = apply_model_fixes(run_id, payload, settings=job_settings, cancel_event=cancel_event)
             qa_result = result.get("qa_result") or {}
             qa_run = qa_result.get("run") or {}
             terminal_status = str(qa_run.get("status") or "needs_input")
@@ -230,8 +265,19 @@ def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
                     "model_fix_quality_summary": qa_result.get("quality_summary") or {},
                 },
             )
-            db.update_run(run_id, status=terminal_status)
+            update_task_run_status(run_id, terminal_status)
             db.add_event(run_id, f"model fixes finished: status={terminal_status}, fixes={len(result.get('model_fixes') or [])}")
+        except (QaCanceled, db.TranslationTaskClosedError):
+            cancel_quick_task_run(run_id)
+            update_task_run_status(run_id, "canceled")
+            db.merge_run_metadata(
+                run_id,
+                {
+                    "model_fix_status": "canceled",
+                    "model_fix_finished_at": db.now_iso(),
+                },
+            )
+            db.add_event(run_id, "model fixes canceled before completion")
         except Exception as exc:
             friendly = user_facing_error(exc)
             db.merge_run_metadata(
@@ -243,10 +289,15 @@ def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
                     "error": friendly,
                 },
             )
-            db.update_run(run_id, status="failed")
+            update_task_run_status(run_id, "failed")
             db.add_event(run_id, f"model fixes failed: {friendly}", level="error")
 
-    started, conflict = start_singleton_job(project_id, job_id, worker)
+    started, conflict = start_singleton_job(
+        project_id,
+        job_id,
+        worker,
+        task_run_id=run_id,
+    )
     if not started and conflict:
         detail = _job_conflict_detail(conflict)
         db.merge_run_metadata(
@@ -257,7 +308,7 @@ def model_fixes_start(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
                 "queue_error": f"job start rejected: {conflict}",
             },
         )
-        db.update_run(run_id, status=original_status)
+        update_task_run_status(run_id, original_status)
         raise HTTPException(status_code=409, detail=detail)
     db.add_event(run_id, "model fixes background job started")
     return db.get_run(run_id)

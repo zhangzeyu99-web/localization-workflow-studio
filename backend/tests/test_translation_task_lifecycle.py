@@ -190,6 +190,35 @@ def test_marking_translation_task_delivered_twice_is_idempotent() -> None:
     assert db.list_events(run["id"]) == events_before
 
 
+@pytest.mark.parametrize("terminal_state", ["delivered", "closed"])
+def test_first_terminal_state_cancels_active_sibling_runs(terminal_state: str) -> None:
+    project = db.insert_project(f"Terminal sibling {terminal_state}", "QA", "")
+    passed_run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"translation_task_id": "task-terminal-sibling", "task_origin": "translation_run"},
+    )
+    active_run = db.insert_run(
+        project["id"],
+        "qa",
+        "en",
+        metadata={"translation_task_id": "task-terminal-sibling", "task_origin": "translation_continuation"},
+    )
+    db.update_run(passed_run["id"], status="passed")
+    db.update_run(active_run["id"], status="running")
+
+    result = mark_translation_task_state(project["id"], "task-terminal-sibling", terminal_state)
+
+    assert set(result["updated_run_ids"]) == {passed_run["id"], active_run["id"]}
+    assert db.get_run(passed_run["id"])["status"] == "passed"
+    assert db.get_run(active_run["id"])["status"] == "canceled"
+    assert {
+        db.get_run(run_id)["metadata"]["translation_task_state"]
+        for run_id in (passed_run["id"], active_run["id"])
+    } == {terminal_state}
+
+
 def test_abandon_does_not_overwrite_delivered_translation_task() -> None:
     project = db.insert_project("Delivered task ignores late abandon", "QA", "")
     run = db.insert_run(

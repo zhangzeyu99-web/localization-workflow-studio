@@ -142,6 +142,13 @@ def test_batch_validation_blocks_missing_tokens_and_untranslated_en() -> None:
         workflow._validate_translated_batch(batch, [{"id": "A-1", "translation": "领取奖励 {count}\\n"}], "en")
 
 
+def test_batch_validation_blocks_wrong_script_for_english() -> None:
+    batch = [{"id": "A-1", "source": "Select your province."}]
+
+    with pytest.raises(ValueError, match="target language mismatch"):
+        workflow._validate_translated_batch(batch, [{"id": "A-1", "translation": "จังหวัด"}], "en")
+
+
 def test_rate_limiter_does_not_deadlock_when_single_batch_exceeds_tpm() -> None:
     limiter = workflow._AsyncTokenRateLimiter(requests_per_minute=1, tokens_per_minute=1000)
 

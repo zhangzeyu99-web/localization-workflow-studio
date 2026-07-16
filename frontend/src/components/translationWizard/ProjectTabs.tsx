@@ -23,7 +23,8 @@ export function TranslationTab({
   onUploadSource,
   onTranslate,
   selectedLanguage,
-  setSelectedLanguage
+  setSelectedLanguage,
+  readOnly = false,
 }: {
   project: Project
   settings: AppSettings | null
@@ -40,6 +41,7 @@ export function TranslationTab({
   onTranslate: () => void
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
+  readOnly?: boolean
 }) {
   const readiness = sourceArtifact && translationReadiness?.artifact_id === sourceArtifact.id ? translationReadiness : null
   const blockReason = formalTranslationBlockReason(settings, sourceArtifact, project, readiness)
@@ -50,7 +52,7 @@ export function TranslationTab({
     <>
       <div className="card">
         <div className="card-title"><div className="left">{lang.short} 翻译任务</div></div>
-        <div className="action-card">
+        {!readOnly ? <div className="action-card">
           <div className="language-inline-select">
             <span>翻译目标语言：</span>
             <LanguageSelector selectedLanguage={selectedLanguage} setSelectedLanguage={setSelectedLanguage} />
@@ -60,7 +62,7 @@ export function TranslationTab({
           <button className="btn btn-primary" data-testid="formal-translate" disabled={busy || Boolean(blockReason)} onClick={onTranslate}>开始正式翻译</button>
           {blockReason ? <div className="warn-line">{blockReason}</div> : null}
           <ActionStatus status={status} busy={busy} />
-        </div>
+        </div> : <div className="muted-inline">历史终态快速任务仅供查看。</div>}
         <SelectedInput label="语言表" artifact={sourceArtifact} />
         <div className="workflow-note-grid">
           <div><strong>{lang.short} 提示词</strong><span>{promptReady ? '已在元信息页生成' : '未生成'}</span></div>

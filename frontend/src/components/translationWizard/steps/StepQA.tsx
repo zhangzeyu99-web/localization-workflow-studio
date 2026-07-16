@@ -36,6 +36,8 @@ export function StepQA({
   project,
   translationTaskId = '',
   latestRun,
+  focusedRunId = '',
+  readOnly = false,
   sourceArtifact,
   translationReadiness,
   qualityIssues,
@@ -63,6 +65,8 @@ export function StepQA({
   project: Project
   translationTaskId?: string
   latestRun: Run | null
+  focusedRunId?: string
+  readOnly?: boolean
   sourceArtifact: Artifact | null
   translationReadiness: TranslationReadiness | null
   qualityIssues: QualityIssue[]
@@ -88,7 +92,8 @@ export function StepQA({
   showHistory?: boolean
   confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
 }) {
-  const latestQaRun = findVisibleQaRun(project, selectedLanguage, sourceArtifact?.id, translationTaskId)
+  const focusedQaRun = focusedRunId && latestRun?.id === focusedRunId && latestRun.kind === 'qa' ? latestRun : null
+  const latestQaRun = focusedQaRun || findVisibleQaRun(project, selectedLanguage, sourceArtifact?.id, translationTaskId)
   const previousTranslationRun = findVisibleTranslationRun(project, selectedLanguage, sourceArtifact?.id, 'translation_run', translationTaskId)
   const previousTranslationArtifact = previousTranslationRun
     ? newestArtifact(runArtifacts(project, previousTranslationRun.id), ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])
@@ -100,7 +105,7 @@ export function StepQA({
     ? `${artifactKindLabel(effectiveQaArtifact)}${artifactLanguageLabel(effectiveQaArtifact) ? `（${artifactLanguageLabel(effectiveQaArtifact)}）` : ''}`
     : '未选择'
   const translationQaRun = previousTranslationRun && previousTranslationArtifact ? previousTranslationRun : null
-  const qaStatusRun = latestQaRun && (!translationQaRun || latestQaRun.created_at >= translationQaRun.created_at) ? latestQaRun : translationQaRun
+  const qaStatusRun = focusedQaRun || (latestQaRun && (!translationQaRun || latestQaRun.created_at >= translationQaRun.created_at) ? latestQaRun : translationQaRun)
   const qaIssues = latestRun?.id === qaStatusRun?.id ? qualityIssues.filter((issue) => issue.severity === 'hard' || issue.severity === 'soft') : []
   const qaStatusArtifacts = qaStatusRun ? pickerArtifacts(qaStatusRun.artifacts?.length ? qaStatusRun.artifacts : runArtifacts(project, qaStatusRun.id)) : []
   const qaFinalDownload = newestArtifact(qaStatusArtifacts, ['qa_final_workbook'])
@@ -184,17 +189,17 @@ export function StepQA({
               <span>当前可合并 {deliverableItems.length} 种，待处理 {translationRetryCount + qaRetryCount} 种。</span>
             </div>
             <div className="row-actions wrap">
-              {translationRetryCount > 0 && onRetryTranslations ? (
+              {!readOnly && translationRetryCount > 0 && onRetryTranslations ? (
                 <button className="btn btn-primary btn-sm" data-testid="multilingual-retry-translation" disabled={busy || activeLanguageCount > 0} onClick={onRetryTranslations}>
                   <Wrench size={14} aria-hidden="true" />继续处理 {translationRetryCount} 种未完成语言
                 </button>
               ) : null}
-              {qaRetryCount > 0 && onDirectQAQueue ? (
+              {!readOnly && qaRetryCount > 0 && onDirectQAQueue ? (
                 <button className="btn btn-ghost btn-sm" data-testid="multilingual-retry-qa" disabled={busy || activeLanguageCount > 0} onClick={onDirectQAQueue}>
                   重跑 {qaRetryCount} 种 QA
                 </button>
               ) : null}
-              {bulkDeliveryRun && onGoDelivery ? (
+              {!readOnly && bulkDeliveryRun && onGoDelivery ? (
                 <button className="btn btn-primary btn-sm" data-testid="multilingual-go-delivery" disabled={busy} onClick={() => onGoDelivery(bulkDeliveryRun)}>
                   <PackageCheck size={14} aria-hidden="true" />合并当前可用 {deliverableItems.length} 种语言
                 </button>
@@ -219,20 +224,20 @@ export function StepQA({
           <div><span>问题</span><strong>{qaStatusRun ? `${pendingIssueCount} 个待处理` : '尚未检查'}</strong></div>
         </div>
         <div className="qa-result-actions">
-          {repairMode === 'row_fix' ? <button className="btn btn-primary btn-sm" disabled={busy} onClick={onModelFixes}><Wrench size={14} aria-hidden="true" />修复并重跑</button> : null}
-          {repairMode === 'row_fix' ? <button className="btn btn-ghost btn-sm" disabled={busy} onClick={scrollToManualFixes}>手动修复</button> : null}
-          {repairMode === 'rerun_translation' && (multiLanguageMode ? onRetryTranslations : onRerunTranslation) ? <button className="btn btn-primary btn-sm" data-testid="qa-rerun-translation" disabled={busy || activeLanguageCount > 0} onClick={multiLanguageMode ? onRetryTranslations : onRerunTranslation}><Wrench size={14} aria-hidden="true" />{multiLanguageMode ? '继续处理未完成语言' : `返回重跑 ${currentLanguageText}`}</button> : null}
-          {repairMode === 'rerun_qa' && effectiveQaArtifact ? <button className="btn btn-primary btn-sm" data-testid="qa-rerun" disabled={busy} onClick={() => onDirectQA(effectiveQaArtifact)}><Wrench size={14} aria-hidden="true" />重新运行 {currentLanguageText} QA</button> : null}
+          {!readOnly && repairMode === 'row_fix' ? <button className="btn btn-primary btn-sm" disabled={busy} onClick={onModelFixes}><Wrench size={14} aria-hidden="true" />修复并重跑</button> : null}
+          {!readOnly && repairMode === 'row_fix' ? <button className="btn btn-ghost btn-sm" disabled={busy} onClick={scrollToManualFixes}>手动修复</button> : null}
+          {!readOnly && repairMode === 'rerun_translation' && (multiLanguageMode ? onRetryTranslations : onRerunTranslation) ? <button className="btn btn-primary btn-sm" data-testid="qa-rerun-translation" disabled={busy || activeLanguageCount > 0} onClick={multiLanguageMode ? onRetryTranslations : onRerunTranslation}><Wrench size={14} aria-hidden="true" />{multiLanguageMode ? '继续处理未完成语言' : `返回重跑 ${currentLanguageText}`}</button> : null}
+          {!readOnly && repairMode === 'rerun_qa' && effectiveQaArtifact ? <button className="btn btn-primary btn-sm" data-testid="qa-rerun" disabled={busy} onClick={() => onDirectQA(effectiveQaArtifact)}><Wrench size={14} aria-hidden="true" />重新运行 {currentLanguageText} QA</button> : null}
           {qaFinalDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-final" href={artifactDownloadHref(qaFinalDownload, project.id)}>下载译文</a> : null}
           {qaChangesDownload ? <a className="btn btn-ghost btn-sm" data-testid="qa-download-changes" href={artifactDownloadHref(qaChangesDownload, project.id)}>修改记录</a> : null}
-          {!multiLanguageMode && onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
+          {!readOnly && !multiLanguageMode && onGoDelivery && qaStatusRun && ['passed', 'failed'].includes(qaStatusRun.status) ? (
             <button className={`btn btn-sm ${qaStatusRun.status === 'failed' ? 'qa-risk-action' : 'btn-primary'}`} data-testid="qa-go-delivery" onClick={() => onGoDelivery(qaStatusRun)}>
               <PackageCheck size={14} aria-hidden="true" />{qaStatusRun.status === 'failed' ? '生成带问题交付' : '生成标准交付'}
             </button>
           ) : null}
         </div>
       </div>
-      <details className="qa-input-details" open={!qaStatusRun}>
+      {!readOnly ? <details className="qa-input-details" open={!qaStatusRun}>
         <summary>校对输入</summary>
         <div className="qa-workspace workflow-block">
         {!multiLanguageMode ? <section className="qa-step-card">
@@ -304,14 +309,14 @@ export function StepQA({
           </div>
         </details> : null}
         </div>
-      </details>
+      </details> : <div className="muted-inline">历史终态快速任务仅供查看。</div>}
       {showHistory ? (
         <details className="history-collapsed">
           <summary>查看历史校对记录</summary>
           <TaskHistoryTable project={project} kind="qa" title="校对历史记录" />
         </details>
       ) : null}
-      {qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onApply={onManualFixes} /> : null}
+      {!readOnly && qaIssues.length ? <FailedRowEditor issues={qaIssues} busy={busy} onApply={onManualFixes} /> : null}
     </WorkflowStepShell>
   )
 }

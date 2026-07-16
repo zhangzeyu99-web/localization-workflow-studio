@@ -69,7 +69,7 @@ LANGUAGE_SPECS: dict[str, LanguageSpec] = {
         "VN 越南语",
         "Vietnamese",
         "VI",
-        ("vi", "vie", "vietnamese", "越南语", "越南文"),
+        ("vn", "vi", "vie", "vietnamese", "越南语", "越南文"),
         visible_code="VN",
     ),
     "ar": _spec("ar", "AR 阿拉伯语", "Arabic", "AR", ("ar", "ara", "arabic", "阿语", "阿拉伯语", "العربية")),

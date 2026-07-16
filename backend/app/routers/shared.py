@@ -96,6 +96,7 @@ def _unique_path(path: Path) -> Path:
 
 
 _TABLE_UPLOAD_SUFFIXES = {".xlsx", ".xls", ".csv"}
+_LANGUAGE_TABLE_UPLOAD_SUFFIXES = _TABLE_UPLOAD_SUFFIXES | {".json"}
 _QUICK_INPUT_SUFFIXES = _TABLE_UPLOAD_SUFFIXES | {".txt", ".md", ".markdown"}
 _TERM_UPLOAD_SUFFIXES = {".xlsx", ".xls", ".csv", ".json"}
 _ANNOUNCEMENT_SOURCE_SUFFIXES = {".docx", ".txt", ".xlsx"}
@@ -105,7 +106,9 @@ _AI_RESPONSE_SUFFIXES = {".json", ".jsonl"}
 def _allowed_upload_suffixes(kind: str) -> set[str] | None:
     if kind == "quick_input":
         return _QUICK_INPUT_SUFFIXES
-    if kind in {"language_table", "final_workbook"}:
+    if kind == "language_table":
+        return _LANGUAGE_TABLE_UPLOAD_SUFFIXES
+    if kind == "final_workbook":
         return _TABLE_UPLOAD_SUFFIXES
     if kind in {"term_base", "glossary_final"}:
         return _TERM_UPLOAD_SUFFIXES
@@ -126,7 +129,7 @@ def _upload_kind_error(kind: str, suffix: str) -> str:
     if kind in {"language_table", "final_workbook"}:
         return (
             f"\u5f53\u524d\u5165\u53e3\u4e0d\u652f\u6301 {ext} \u6587\u4ef6\u3002"
-            "\u8bed\u8a00\u5305\u7ffb\u8bd1\u8bf7\u4e0a\u4f20 XLSX/XLS/CSV \u8bed\u8a00\u8868\uff1b"
+            "\u8bed\u8a00\u5305\u7ffb\u8bd1\u8bf7\u4e0a\u4f20 XLSX/XLS/CSV/JSON \u8bed\u8a00\u8868\uff1b"
             "TXT/DOCX \u957f\u6587\u672c\u8bf7\u4f7f\u7528\u516c\u544a\u7ffb\u8bd1/\u5916\u6587\u672c\u6d41\u7a0b\u3002"
         )
     if kind in {"term_base", "glossary_final"}:
@@ -226,7 +229,11 @@ def _require_project_translation(project_id: str, entry_id: str) -> dict[str, An
     return entry
 
 
-def _with_project_stats(project: dict[str, Any], include_details: bool = False) -> dict[str, Any]:
+def _with_project_stats(
+    project: dict[str, Any],
+    include_details: bool = False,
+    include_archives: bool = True,
+) -> dict[str, Any]:
     runs = db.list_runs(project["id"])
     announcement_tasks = list_announcement_tasks(project["id"])
     active_announcement_tasks = [task for task in announcement_tasks if task.get("status") != "canceled"]
@@ -238,9 +245,9 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     translation_entries: list[dict[str, Any]] = []
     if include_details:
         artifacts = db.list_artifacts(project_id=project["id"])
-        terms = db.list_glossary_terms(project["id"])
-        translation_entries = db.list_translation_entries(project["id"])
-        archive_metrics = _translation_archive_metrics(translation_entries)
+        if include_archives:
+            terms = db.list_glossary_terms(project["id"])
+            translation_entries = db.list_translation_entries(project["id"])
         deliverable_count = len([
             run for run in runs
             if run["kind"] in {"translation", "qa"}
@@ -250,11 +257,10 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
                 for artifact in artifacts
             )
         ])
-        glossary_count = len(terms)
     else:
-        archive_metrics = _translation_archive_metrics_fast(project["id"])
         deliverable_count = _project_delivery_count_fast(project["id"])
-        glossary_count = _project_glossary_count_fast(project["id"])
+    archive_metrics = _translation_archive_metrics_fast(project["id"])
+    glossary_count = _project_glossary_count_fast(project["id"])
     announcement_deliverable_count = len([
         task for task in active_announcement_tasks
         if task.get("status") == "delivered" and (task.get("metadata") or {}).get("delivery_artifact_id")
@@ -276,8 +282,13 @@ def _with_project_stats(project: dict[str, Any], include_details: bool = False) 
     if include_details:
         project["artifacts"] = artifacts
         project["runs"] = runs
-        project["glossary"] = terms
-        project["translations"] = translation_entries
+        project["archives_embedded"] = include_archives
+        if include_archives:
+            project["glossary"] = terms
+            project["translations"] = translation_entries
+        else:
+            project.pop("glossary", None)
+            project.pop("translations", None)
         project["announcement_tasks"] = announcement_tasks
         project["harness"] = read_project_harness(project["id"])
     return project
@@ -289,18 +300,23 @@ def _translation_archive_metrics_fast(project_id: str) -> dict[str, Any]:
             """
             SELECT
               COUNT(*) AS archived_rows,
+              COALESCE(SUM(
+                LENGTH(
+                  REPLACE(REPLACE(REPLACE(REPLACE(source, ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')
+                )
+              ), 0) AS source_chars,
               COUNT(DISTINCT language) AS language_count
             FROM translation_entries
             WHERE project_id = ?
+              AND active = 1
+              AND TRIM(source) <> ''
+              AND TRIM(target) <> ''
             """,
             (project_id,),
         ).fetchone()
     languages = {f"lang_{index}" for index in range(int(row["language_count"] or 0))}
     return {
-        # The project list is loaded on every page open/focus.  Avoid scanning
-        # and measuring every archived source string here; exact character
-        # counts are still returned by the detail endpoint.
-        "source_chars": 0,
+        "source_chars": int(row["source_chars"] or 0),
         "archived_rows": int(row["archived_rows"] or 0),
         "languages": languages,
     }
@@ -309,7 +325,7 @@ def _translation_archive_metrics_fast(project_id: str) -> dict[str, Any]:
 def _project_glossary_count_fast(project_id: str) -> int:
     with db.connect() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS count FROM glossary_terms WHERE project_id = ? AND confirmed = 1",
+            "SELECT COUNT(*) AS count FROM glossary_terms WHERE project_id = ? AND confirmed = 1 AND active = 1",
             (project_id,),
         ).fetchone()
     return int(row["count"] or 0)

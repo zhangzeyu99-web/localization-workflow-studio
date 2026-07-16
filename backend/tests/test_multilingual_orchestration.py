@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
@@ -118,6 +120,58 @@ def test_start_multilingual_translation_creates_missing_child_runs(tmp_path: Pat
     assert {item["language"] for item in response.json()["languages"]} == {"en", "ko"}
     assert all(item["translation_run_id"] for item in status["languages"])
     assert all(item["status"] == "passed" for item in status["languages"])
+
+
+@pytest.mark.parametrize("queue_kind", ["translation", "qa"])
+def test_multilingual_worker_error_cannot_overwrite_terminal_task_state(
+    tmp_path: Path,
+    queue_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project(f"multi terminal {queue_kind}", "QA", "")
+    artifact = _add_language_table(project["id"], tmp_path / f"terminal-{queue_kind}.xlsx", ["EN"])
+    task_id = f"task-multi-terminal-{queue_kind}"
+    captured: dict[str, object] = {}
+
+    def capture_start(_project_id: str, job_id: str, worker: object, **_kwargs: object) -> tuple[bool, None]:
+        captured["job_id"] = job_id
+        captured["worker"] = worker
+        return True, None
+
+    monkeypatch.setattr(multilingual, "start_singleton_job", capture_start)
+    if queue_kind == "qa":
+        monkeypatch.setattr(multilingual, "_qa_input_artifact", lambda *_args, **_kwargs: artifact)
+        started = multilingual.start_multilingual_qa_queue(
+            project["id"],
+            multilingual.MultilingualQueueRequest(
+                input_artifact_id=artifact["id"],
+                languages=["en"],
+                translation_task_id=task_id,
+            ),
+        )
+        monkeypatch.setattr(multilingual, "run_qa_sync", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("late QA")))
+    else:
+        started = multilingual.start_multilingual_translation_queue(
+            project["id"],
+            multilingual.MultilingualQueueRequest(
+                input_artifact_id=artifact["id"],
+                languages=["en"],
+                translation_task_id=task_id,
+            ),
+        )
+        monkeypatch.setattr(multilingual, "run_translate_sync", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("late translation")))
+
+    run_id = started["created_run_ids"][0]
+    from app.workflow.translation_tasks import mark_translation_task_state
+
+    mark_translation_task_state(project["id"], task_id, "delivered")
+    db.update_run(run_id, status="running")
+    monkeypatch.setattr(multilingual, "active_job_id_for_project", lambda _project_id: captured["job_id"])
+    captured["worker"](threading.Event())  # type: ignore[operator]
+
+    refreshed = db.get_run(run_id)
+    assert refreshed["status"] == "canceled"
+    assert refreshed["metadata"]["translation_task_state"] == "delivered"
 
 
 def test_new_translation_task_does_not_reuse_same_source_child_run(
@@ -267,15 +321,23 @@ def test_vietnamese_translation_keeps_vn_in_studio_and_vi_in_workflow(tmp_path: 
         )
         assert started.status_code == 200, started.text
         assert {item["language"] for item in started.json()["languages"]} == {"en", "vn"}
-        wait_for_background_jobs()
-        status = client.get(
-            f"/api/projects/{project['id']}/multilingual/status",
-            params={
-                "input_artifact_id": artifact["id"],
-                "languages": "en,vi",
-                "translation_task_id": translation_task_id,
-            },
-        ).json()
+        deadline = time.monotonic() + 60
+        while True:
+            status_response = client.get(
+                f"/api/projects/{project['id']}/multilingual/status",
+                params={
+                    "input_artifact_id": artifact["id"],
+                    "languages": "en,vi",
+                    "translation_task_id": translation_task_id,
+                },
+            )
+            assert status_response.status_code == 200, status_response.text
+            status = status_response.json()
+            if status["overall_status"] not in {"pending", "running"} and not status["active_job_id"]:
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail(f"multilingual queue did not finish: {json.dumps(status, ensure_ascii=False)}")
+            time.sleep(0.05)
         delivered = client.post(
             f"/api/projects/{project['id']}/delivery-package/merged",
             json={

@@ -44,7 +44,7 @@ export function AnnouncementProjectPanel({
     <div className="card tight announcement-project-panel">
       <div className="card-title">
         <div className="left icon-title"><Megaphone size={15} aria-hidden="true" />公告任务 / 外文本</div>
-        <button className="btn btn-ghost btn-sm" onClick={onStartAnnouncement}>进入公告工作流</button>
+        <button className="btn btn-ghost btn-sm" onClick={onStartAnnouncement}>新公告任务</button>
       </div>
       {!activeTasks.length ? (
         <div className="panel-desc">暂无公告任务。公告翻译归属于当前项目，并使用项目术语、译文归档和项目提示词约束游戏外文本。</div>

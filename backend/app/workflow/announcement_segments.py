@@ -230,7 +230,7 @@ def _translation_archive_count_summary(project_id: str, languages: list[str]) ->
             f"""
             SELECT language, COUNT(*) AS count
             FROM translation_entries
-            WHERE project_id = ? AND language IN ({placeholders})
+            WHERE project_id = ? AND active = 1 AND language IN ({placeholders})
             GROUP BY language
             """,
             [project_id, *languages],
@@ -244,7 +244,7 @@ def _translation_archive_languages(project_id: str) -> set[str]:
             """
             SELECT DISTINCT language
             FROM translation_entries
-            WHERE project_id = ?
+            WHERE project_id = ? AND active = 1
             """,
             (project_id,),
         ).fetchall()
