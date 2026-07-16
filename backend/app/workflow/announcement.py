@@ -593,8 +593,17 @@ def translate_announcement_task(task_id: str, request: Any, cancel_event: Any | 
     return asyncio.run(_translate_announcement_task(task_id, request, cancel_event=cancel_event))
 
 
-async def _translate_announcement_task(task_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+def _ensure_announcement_translation_open(task_id: str, cancel_event: Any | None = None) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
+    if task.get("status") in {"delivered", "canceled"}:
+        raise db.AnnouncementTaskStatusConflictError(task_id, str(task["status"]))
+    if cancel_event is not None and cancel_event.is_set():
+        raise db.AnnouncementTaskStatusConflictError(task_id, "cancel_requested")
+    return task
+
+
+async def _translate_announcement_task(task_id: str, request: Any, cancel_event: Any | None = None) -> dict[str, Any]:
+    task = _ensure_announcement_translation_open(task_id, cancel_event)
     metadata = _announcement_task_metadata(task)
     languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
     if not metadata.get("translation_workbook_artifact_id") or not metadata.get("workpack_artifact_ids"):
@@ -612,6 +621,7 @@ async def _translate_announcement_task(task_id: str, request: Any, cancel_event:
     run = db.insert_run(task["project_id"], kind="announcement_translate", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages, "provider": provider})
     metadata = {**metadata, "translate_run_id": run["id"]}
     db.update_announcement_task(task_id, status="running", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)
+    _ensure_announcement_translation_open(task_id, cancel_event)
     output = run_dir(run["id"]) / "announcement_translate"
     output.mkdir(parents=True, exist_ok=True)
     artifacts: list[dict[str, Any]] = []
@@ -635,14 +645,17 @@ async def _translate_announcement_task(task_id: str, request: Any, cancel_event:
             cancel_event=cancel_event,
             confirm_api_budget=bool(getattr(request, "confirm_api_budget", False)),
         )
+        _ensure_announcement_translation_open(task_id, cancel_event)
         if not translated and db.get_run(run["id"]).get("status") == "needs_input":
             task = db.update_announcement_task(task_id, status="needs_input", current_step=ANNOUNCEMENT_STEP["translate"], metadata=metadata)
             return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"status": "needs_input", "reason": "api_budget_confirmation_required"}, "artifacts": artifacts}
         response_path = output / f"{source_stem}_ai_response_{lang_code}.jsonl"
         write_jsonl(response_path, [{"para_id": item["id"], "translation": item["translation"]} for item in translated])
+        _ensure_announcement_translation_open(task_id, cancel_event)
         artifact = db.add_artifact(task["project_id"], f"公告 AI response ({lang_code})", response_path, "announcement_ai_response", run_id=run["id"], mime="application/jsonl", metadata={"task_id": task_id, "language": language, "provider": provider})
         response_artifacts[language] = artifact["id"]
         artifacts.append(artifact)
+    _ensure_announcement_translation_open(task_id, cancel_event)
     import_result = import_announcement_ai_response(task_id, _SimpleRequest(languages=languages, response_artifacts_by_language=response_artifacts))
     db.merge_run_metadata(run["id"], {"response_artifact_ids": response_artifacts})
     db.update_run(run["id"], status="passed")
@@ -650,7 +663,7 @@ async def _translate_announcement_task(task_id: str, request: Any, cancel_event:
 
 
 def import_announcement_ai_response(task_id: str, request: Any) -> dict[str, Any]:
-    task = db.get_announcement_task(task_id)
+    task = _ensure_announcement_translation_open(task_id)
     metadata = _announcement_task_metadata(task)
     languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
     workbook_artifact = db.get_artifact(metadata.get("translation_workbook_artifact_id", ""))
@@ -832,7 +845,7 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
         return {
             "task": _hydrate_announcement_task(task),
             "run": existing_run,
-            "summary": {"languages": existing_languages or languages, "delivery_artifact_id": existing_artifact["id"], "reused": True, "date_stamp": stamp, "translation_archive": archive_result},
+            "summary": {"languages": existing_languages or languages, "delivery_artifact_id": existing_artifact["id"], "reused": True, "date_stamp": stamp, "translation_archive": None},
             "artifacts": [existing_artifact],
         }
     superseded_artifacts = _matching_announcement_delivery_artifacts(task, languages, stamp) if force else []
@@ -881,7 +894,7 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status="delivered", current_step=ANNOUNCEMENT_STEP["deliver"])
     db.merge_run_metadata(run["id"], {"delivery_artifact_id": artifact["id"], "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers})
     db.update_run(run["id"], status="passed")
-    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"], "date_stamp": stamp, "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers, "translation_archive": archive_result}, "artifacts": [artifact]}
+    return {"task": _hydrate_announcement_task(task), "run": db.get_run(run["id"]), "summary": {"languages": languages, "delivery_artifact_id": artifact["id"], "date_stamp": stamp, "forced": forced_by_hard_blockers, "hard_blockers": hard_blockers, "translation_archive": None}, "artifacts": [artifact]}
 
 
 def _announcement_hard_blocker_count(task: dict[str, Any], metadata: dict[str, Any]) -> int:

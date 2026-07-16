@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+from pathlib import Path
+from pathlib import PurePosixPath
+from types import ModuleType
+from unittest.mock import patch
+
+import httpx
+import pytest
+
+from app import config
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_stability_check() -> ModuleType:
+    script_path = REPO_ROOT / "scripts" / "stability_check.py"
+    spec = importlib.util.spec_from_file_location("stability_check_contract_test", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_cloud_data_root_is_required_and_absolute() -> None:
+    with pytest.raises(RuntimeError, match="LWS_DATA_ROOT"):
+        config._resolve_data_root({"LWS_DEPLOYMENT_MODE": "cloud"})
+
+    with pytest.raises(RuntimeError, match="absolute"):
+        config._resolve_data_root(
+            {"LWS_DEPLOYMENT_MODE": "cloud", "LWS_DATA_ROOT": "data/lwstudio"}
+        )
+
+    assert config._resolve_data_root(
+        {"LWS_DEPLOYMENT_MODE": "cloud", "LWS_DATA_ROOT": "/srv/lwstudio/data"}
+    ) == Path("/srv/lwstudio/data")
+
+    with pytest.raises(RuntimeError, match="outside"):
+        config._resolve_data_root(
+            {
+                "LWS_DEPLOYMENT_MODE": "cloud",
+                "LWS_DATA_ROOT": str(REPO_ROOT / "lws-data"),
+            }
+        )
+
+
+def test_cloud_data_root_rejects_symlink_into_repository(tmp_path: Path) -> None:
+    repo_link = tmp_path / "repo-link"
+    try:
+        repo_link.symlink_to(REPO_ROOT, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    with pytest.raises(RuntimeError, match="outside"):
+        config._resolve_data_root(
+            {
+                "LWS_DEPLOYMENT_MODE": "cloud",
+                "LWS_DATA_ROOT": str(repo_link / "lws-data"),
+            }
+        )
+
+
+def test_settings_are_replaced_atomically_and_private_on_posix(tmp_path: Path) -> None:
+    target = tmp_path / "settings.local.json"
+
+    with (
+        patch.object(config.os, "replace", wraps=os.replace) as replace,
+        patch.object(config.os, "chmod", wraps=os.chmod) as chmod,
+    ):
+        config._atomic_write_private_json(
+            target,
+            {"api_key": "private"},
+            platform_name="posix",
+        )
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"api_key": "private"}
+    assert replace.call_count == 1
+    assert replace.call_args.args[1] == target
+    assert chmod.call_args_list[-1].args == (target, 0o600)
+    assert not list(tmp_path.glob(".settings.local.json.*.tmp"))
+
+
+def test_systemd_unit_enforces_single_non_root_worker_and_current_release() -> None:
+    unit = (REPO_ROOT / "deploy" / "lws.service").read_text(encoding="utf-8")
+
+    assert "User=lwstudio" in unit
+    assert "Group=lwstudio" in unit
+    assert "WorkingDirectory=/srv/lwstudio/current" in unit
+    assert "EnvironmentFile=/etc/lwstudio/lws.env" in unit
+    assert "Restart=on-failure" in unit
+    assert "--workers 1" in unit
+    assert "127.0.0.1" in unit
+    assert "npm run dev" not in unit
+
+
+def test_nginx_template_enforces_same_origin_cache_and_upload_contract() -> None:
+    nginx = (REPO_ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
+
+    assert "root /srv/lwstudio/current/frontend/dist;" in nginx
+    assert "client_max_body_size 1g;" in nginx
+    assert "location /api/" in nginx
+    assert "proxy_pass http://127.0.0.1:8082;" in nginx
+    assert "proxy_read_timeout 600s;" in nginx
+    assert "proxy_send_timeout 600s;" in nginx
+    assert 'Cache-Control "no-store" always' in nginx
+    assert 'Cache-Control "no-cache" always' in nginx
+    assert 'Cache-Control "public, max-age=31536000, immutable" always' in nginx
+    assert "proxy_cache off;" in nginx
+    assert "proxy_no_cache 1;" in nginx
+    assert "proxy_request_buffering off;" in nginx
+    assert "npm run dev" not in nginx
+    assert ":5173" not in nginx
+
+
+def test_environment_example_uses_external_data_root_and_contains_no_secret() -> None:
+    env_file = REPO_ROOT / "deploy" / "lws.env.example"
+    env_text = env_file.read_text(encoding="utf-8")
+    values = dict(
+        line.split("=", 1)
+        for line in env_text.splitlines()
+        if line and not line.startswith("#")
+    )
+
+    assert values["LWS_DEPLOYMENT_MODE"] == "cloud"
+    assert values["LWS_DATA_ROOT"] == "/srv/lwstudio/data"
+    assert values["LWS_GIT_SHA"] == "replace-with-release-git-sha"
+    assert PurePosixPath(values["LWS_DATA_ROOT"]).is_absolute()
+    assert "/releases/" not in values["LWS_DATA_ROOT"]
+    assert "API_KEY" not in env_text.upper()
+    assert "SECRET" not in env_text.upper()
+
+
+def test_cloud_acceptance_checks_git_sha_and_exact_frontend_assets() -> None:
+    guide = (REPO_ROOT / "docs" / "CLOUD_DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "PACKAGE_MANIFEST.json" in guide
+    assert "--expect-git-sha" in guide
+    assert "--check-frontend-assets frontend/dist/assets" in guide
+    assert "公网 HTML 引用" in guide
+    assert "`/api/version` 清单" in guide
+    assert "本地 `frontend/dist`" in guide
+
+
+def test_stability_check_sends_an_operator_for_ai_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_stability_check()
+    monkeypatch.setattr(module, "OUT_DIR", tmp_path)
+    check = module.StabilityCheck("https://example.test")
+    headers = dict(check.session.headers)
+    check.session.close()
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["operator"] = request.headers.get("X-Operator")
+        return httpx.Response(200, json={"ok": True})
+
+    check.session = httpx.Client(
+        follow_redirects=True,
+        headers=headers,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        check.post("/api/test")
+    finally:
+        check.session.close()
+
+    assert seen["operator"] == "stability-check"

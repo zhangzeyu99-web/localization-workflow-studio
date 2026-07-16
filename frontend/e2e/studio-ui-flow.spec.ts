@@ -26,6 +26,15 @@ test('spreadsheet column errors are shown as actionable Chinese', async ({ page 
   expect(message).toBe('所选工作表“fminth”中找不到目标译文列。请确认译文列存在，或返回“判定输入”重新选择语言表。')
 })
 
+test('API client no longer exposes the obsolete 409 queue-conflict navigation classifier', async ({ page }) => {
+  await page.goto(baseURL)
+  const hasLegacyClassifier = await page.evaluate(async () => {
+    const apiClient = await import('/src/apiClient.ts')
+    return 'isQueueConflictMessage' in apiClient
+  })
+  expect(hasLegacyClassifier).toBe(false)
+})
+
 test('glossary scan events do not expose backend diagnostics', async ({ page }) => {
   await page.goto(baseURL)
   const messages = await page.evaluate(async () => {
@@ -44,6 +53,26 @@ test('glossary scan events do not expose backend diagnostics', async ({ page }) 
     '正在整理术语候选。',
     '已整理 2 个术语候选，待确认 2 个。',
     'AI 已补充 21 个候选，跳过 9 个。'
+  ])
+})
+
+test('line proofread events are shown as actionable Chinese', async ({ page }) => {
+  await page.goto(baseURL)
+  const messages = await page.evaluate(async () => {
+    const { humanBackendEvent } = await import('/src/appText.ts')
+    return [
+      humanBackendEvent('line proofread requested: reviewing QA workbook line by line'),
+      humanBackendEvent('line proofread: reviewing batch 3/5 (50 rows)'),
+      humanBackendEvent('line proofread finished: reviewed=250, suggested=12, rejected=3, applied=9'),
+      humanBackendEvent('line proofread applied fixes; re-running machine QA on proofread workbook'),
+    ]
+  })
+
+  expect(messages).toEqual([
+    '正在开始逐行校对 QA 工作簿。',
+    '逐行校对中：第 3/5 批，本批 50 行。',
+    '逐行校对完成：已检查 250 行，建议 12 项，拒绝 3 项，已应用 9 项。',
+    '已应用逐行校对修改，正在对校对后的工作簿重新运行 QA。',
   ])
 })
 
@@ -70,6 +99,153 @@ test('quick translation completion status stays scoped to the quick task', async
   })
 
   expect(message).toBe('EN 快速翻译已完成并通过 QA，可下载结果。')
+})
+
+test('job queue presentation maps lanes, task kinds, counts, and target status', async ({ page }) => {
+  await page.goto(baseURL)
+  const result = await page.evaluate(async () => {
+    const { allQueueJobs, projectQueueJobCount, queueJobKindLabel, queueJobStatusText, queueJobForTarget } = await import('/src/domain/jobQueues.ts')
+    const queues = {
+      lanes: [
+        {
+          lane: 'language_table',
+          label: '语言表',
+          running: { job_id: 'formal-1', job_kind: 'translation', lane: 'language_table', project_id: 'p1', project_name: '项目一', target_id: 'run-1', operator_name: 'Alice', status: 'running' },
+          queued: [{ job_id: 'formal-2', job_kind: 'qa', lane: 'language_table', project_id: 'p1', project_name: '项目一', target_id: 'run-2', operator_name: 'Bob', status: 'queued', position: 1, ahead: 1 }],
+        },
+        {
+          lane: 'quick_announcement',
+          label: '快速/公告',
+          running: { job_id: 'short-1', job_kind: 'announcement', lane: 'quick_announcement', project_id: 'p2', project_name: '项目二', target_id: 'ann-1', operator_name: 'Carol', status: 'running' },
+          queued: [],
+        },
+      ],
+    } as any
+    return {
+      count: allQueueJobs(queues).length,
+      projectCount: projectQueueJobCount(queues, 'p1'),
+      kinds: ['translation', 'qa', 'announcement'].map(queueJobKindLabel),
+      queuedStatus: queueJobStatusText(queueJobForTarget(queues, 'run-2', 'p1')),
+      runningStatus: queueJobStatusText(queueJobForTarget(queues, 'ann-1', 'p2')),
+    }
+  })
+
+  expect(result).toEqual({
+    count: 3,
+    projectCount: 2,
+    kinds: ['翻译', 'QA 校对', '公告翻译'],
+    queuedStatus: '排队第 1 位、前方 1 个 · 操作人 Bob',
+    runningStatus: '运行中 · 操作人 Carol',
+  })
+})
+
+test('job queue target matching is project scoped and formal workflow prefers the multilingual source job', async ({ page }) => {
+  await page.goto(baseURL)
+  const result = await page.evaluate(async () => {
+    const { formalWorkflowQueueJob, queueJobForTarget } = await import('/src/domain/jobQueues.ts')
+    const queues = {
+      lanes: [
+        {
+          lane: 'language_table',
+          label: '语言表',
+          running: {
+            job_id: 'formal-run-job', job_kind: 'translation', lane: 'language_table',
+            project_id: 'project-a', project_name: '项目 A', target_id: 'formal-run',
+            translation_task_id: 'task-current', operator_name: 'Formal Operator', status: 'running',
+          },
+          queued: [{
+            job_id: 'multilingual-job', job_kind: 'multilingual_translate', lane: 'language_table',
+            project_id: 'project-a', project_name: '项目 A', target_id: 'source-a',
+            translation_task_id: 'task-current', operator_name: 'Multi Operator', status: 'queued', position: 1, ahead: 1,
+          }],
+        },
+        {
+          lane: 'quick_announcement',
+          label: '快速/公告',
+          running: {
+            job_id: 'wrong-project-job', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: 'project-b', project_name: '项目 B', target_id: 'shared-run',
+            operator_name: 'Wrong Project', status: 'running',
+          },
+          queued: [{
+            job_id: 'right-project-job', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: 'project-a', project_name: '项目 A', target_id: 'shared-run',
+            operator_name: 'Right Project', status: 'queued', position: 1, ahead: 1,
+          }],
+        },
+      ],
+    } as any
+    const project = {
+      id: 'project-a',
+      runs: [
+        { id: 'quick-run', project_id: 'project-a', kind: 'translation', metadata: { task_origin: 'quick_task', input_artifact_id: 'source-a' } },
+        { id: 'formal-run', project_id: 'project-a', kind: 'translation', metadata: { task_origin: 'translation_run', input_artifact_id: 'source-a', translation_task_id: 'task-current' } },
+      ],
+    } as any
+    const qaQueues = {
+      lanes: [
+        {
+          ...queues.lanes[0],
+          running: null,
+          queued: [{ ...queues.lanes[0].queued[0], job_id: 'multilingual-qa-job', job_kind: 'multilingual_qa' }],
+        },
+        queues.lanes[1],
+      ],
+    } as any
+    return {
+      scopedOperator: queueJobForTarget(queues, 'shared-run', 'project-a')?.operator_name,
+      formalKind: formalWorkflowQueueJob(queues, project, 'task-current', 'source-a')?.job_kind,
+      formalOperator: formalWorkflowQueueJob(queues, project, 'task-current', 'source-a')?.operator_name,
+      formalQaKind: formalWorkflowQueueJob(qaQueues, project, 'task-current', 'source-a')?.job_kind,
+    }
+  })
+
+  expect(result).toEqual({
+    scopedOperator: 'Right Project',
+    formalKind: 'multilingual_translate',
+    formalOperator: 'Multi Operator',
+    formalQaKind: 'multilingual_qa',
+  })
+})
+
+test('formal queue status is scoped by translation task when a source is reused', async ({ page }) => {
+  await page.goto(baseURL)
+  const operators = await page.evaluate(async () => {
+    const { formalWorkflowQueueJob } = await import('/src/domain/jobQueues.ts')
+    const queues = {
+      lanes: [
+        {
+          lane: 'language_table', label: '语言表', running: null,
+          queued: [
+            {
+              job_id: 'multilingual-old', job_kind: 'multilingual_translate', lane: 'language_table',
+              project_id: 'project-a', project_name: '项目 A', target_id: 'shared-source',
+              translation_task_id: 'task-old', operator_name: 'Old Operator', status: 'queued', position: 1, ahead: 0,
+            },
+            {
+              job_id: 'multilingual-current', job_kind: 'multilingual_translate', lane: 'language_table',
+              project_id: 'project-a', project_name: '项目 A', target_id: 'shared-source',
+              translation_task_id: 'task-current', operator_name: 'Current Operator', status: 'queued', position: 2, ahead: 1,
+            },
+          ],
+        },
+        { lane: 'quick_announcement', label: '快速/公告', running: null, queued: [] },
+      ],
+    } as any
+    const project = {
+      id: 'project-a',
+      runs: [
+        { id: 'run-old', project_id: 'project-a', kind: 'translation', metadata: { task_origin: 'translation_run', input_artifact_id: 'shared-source', translation_task_id: 'task-old' } },
+        { id: 'run-current', project_id: 'project-a', kind: 'translation', metadata: { task_origin: 'translation_run', input_artifact_id: 'shared-source', translation_task_id: 'task-current' } },
+      ],
+    } as any
+    return {
+      current: formalWorkflowQueueJob(queues, project, 'task-current', 'shared-source')?.operator_name || null,
+      missing: formalWorkflowQueueJob(queues, project, 'task-missing', 'shared-source')?.operator_name || null,
+    }
+  })
+
+  expect(operators).toEqual({ current: 'Current Operator', missing: null })
 })
 
 test('delivery issue label distinguishes available from already delivered', async ({ page }) => {
@@ -363,6 +539,7 @@ test('new translation task redirects to the active multilingual task without cre
       },
     },
   }).then((response) => response.json())
+  const taskRunIds = new Set<string>()
   for (const [kind, language] of [['translation', 'en'], ['qa', 'ko']]) {
     const created = await request.post(`${baseURL}/api/runs`, {
       data: {
@@ -375,7 +552,26 @@ test('new translation task redirects to the active multilingual task without cre
       },
     })
     expect(created.ok()).toBeTruthy()
+    taskRunIds.add((await created.json()).id)
   }
+
+  await page.route(new RegExp(`/api/projects/${project.id}(?:\\?.*)?$`), async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    const detail = await response.json()
+    await route.fulfill({
+      response,
+      json: {
+        ...detail,
+        runs: (detail.runs || []).map((item: any) => taskRunIds.has(item.id)
+          ? { ...item, status: item.kind === 'qa' ? 'running' : 'queued' }
+          : item),
+      },
+    })
+  })
 
   const beforeRuns = await request.get(`${baseURL}/api/runs?project_id=${project.id}`).then((response) => response.json())
   await page.goto(baseURL)
@@ -423,7 +619,7 @@ test('redirecting to an externally active task clears a stale upload busy lock',
   await expect.poll(() => uploadRequested).toBeTruthy()
   await expect(page.locator('.inline-status.running')).toBeVisible()
 
-  const externalRun = await request.post(`${baseURL}/api/runs`, {
+  const externalRunResponse = await request.post(`${baseURL}/api/runs`, {
     data: {
       project_id: project.id,
       kind: 'translation',
@@ -433,7 +629,25 @@ test('redirecting to an externally active task clears a stale upload busy lock',
       translation_task_id: 'task-external-active',
     },
   })
-  expect(externalRun.ok()).toBeTruthy()
+  expect(externalRunResponse.ok()).toBeTruthy()
+  const externalRun = await externalRunResponse.json()
+  await page.route(new RegExp(`/api/projects/${project.id}(?:\\?.*)?$`), async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    const detail = await response.json()
+    await route.fulfill({
+      response,
+      json: {
+        ...detail,
+        runs: (detail.runs || []).map((item: any) => item.id === externalRun.id
+          ? { ...item, status: 'running' }
+          : item),
+      },
+    })
+  })
 
   try {
     await page.locator('.sidebar').getByRole('button', { name: /新翻译任务/ }).click()
@@ -882,10 +1096,23 @@ test('user can complete the EN localization workflow from project tabs', async (
   await page.locator('.reference-card .card-actions button').nth(1).click()
   const manualPrompt = '\u4eba\u5de5\u4fee\u8ba2\u9879\u76ee\u63d0\u793a\u8bcd\uff1a\u4fdd\u6301 UI \u7b80\u6d01\uff0c\u672f\u8bed\u4e25\u683c\u6309\u9879\u76ee\u8868\u6267\u884c\u3002'
   await page.locator('textarea.prompt-editor').fill(manualPrompt)
-  await page.locator('.reference-card .row-actions .btn-primary').click()
+  const promptProject = await request.get(`${baseURL}/api/projects`)
+    .then((response) => response.json())
+    .then((items) => items.find((item: { name: string }) => item.name === projectName))
+  expect(promptProject).toBeTruthy()
+  const promptSave = page.waitForResponse((response) => (
+    response.request().method() === 'PATCH'
+    && new URL(response.url()).pathname === `/api/projects/${promptProject.id}`
+    && response.request().postDataJSON().prompt_text === manualPrompt
+  ))
+  const [, promptSaveResponse] = await Promise.all([
+    page.locator('.reference-card .row-actions .btn-primary').click(),
+    promptSave,
+  ])
+  expect(promptSaveResponse.ok()).toBeTruthy()
   await expect(page.locator('textarea.prompt-editor')).toHaveCount(0)
-  const promptProjects = await request.get(`${baseURL}/api/projects`).then((response) => response.json())
-  const promptSavedProject = promptProjects.find((item: { name: string }) => item.name === projectName)
+  const promptSavedProject = await request.get(`${baseURL}/api/projects/${promptProject.id}`)
+    .then((response) => response.json())
   expect(promptSavedProject.prompt_text).toBe(manualPrompt)
   expect(promptSavedProject.profile.prompts_by_language.en).toBe(manualPrompt)
   expect(promptSavedProject.profile.display_prompts_by_language.en).toBe(manualPrompt)
@@ -1673,7 +1900,24 @@ wb.close()
   const run = await request.post(`${baseURL}/api/runs`, {
     data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: upload.id, batch_size: 2, task_code: 'T' },
   }).then((response) => response.json())
-  await request.post(`${baseURL}/api/runs/${run.id}/translate/cancel`)
+
+  await page.route(new RegExp(`/api/projects/${project.id}(?:\\?.*)?$`), async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    const detail = await response.json()
+    await route.fulfill({
+      response,
+      json: {
+        ...detail,
+        runs: (detail.runs || []).map((item: any) => item.id === run.id
+          ? { ...item, status: 'needs_input', metadata: { ...item.metadata, reason: 'background_job_interrupted' } }
+          : item),
+      },
+    })
+  })
 
   let resumeCalled = 0
   let startCalled = 0
@@ -1685,7 +1929,7 @@ wb.close()
       body: JSON.stringify({ ...run, status: 'queued', metadata: { ...run.metadata, input_artifact_id: upload.id } }),
     })
   })
-  await page.route(`**/api/runs/${run.id}/translate/start`, async (route) => {
+  await page.route('**/api/runs/*/translate/start', async (route) => {
     startCalled += 1
     await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'start should not be called for resumable run' }) })
   })
@@ -2498,17 +2742,66 @@ wb.close()
   await expect(skipPanel.getByRole('button', { name: '\u786e\u8ba4\u8df3\u8fc7 QA \u5e76\u5f52\u6863' })).toBeEnabled({ timeout: 15000 })
 })
 
-// --- M4: active jobs panel + queue guidance --------------------------------
-// GET /api/system/active-jobs reflects backend/app/jobs.py's per-project lease
-// registry. The test-fake provider used elsewhere in this file completes a
-// translation run (even a large one) in well under a second, so there is no
-// real window in which a genuine background job stays "running" long enough
-// for the frontend's ~9s poll to observe it. Following the same technique the
-// "interrupted translation run resumes" test above uses (page.route to control
-// backend responses deterministically), these tests intercept the active-jobs
-// endpoint and/or the translate/start conflict response so they exercise the
-// frontend's polling + rendering + inline-action logic without racing a job
-// that would already be gone by the time the page checks.
+// --- operator identity + persistent job queues -----------------------------
+// Queue UI tests intercept GET /api/system/job-queues so running and waiting
+// entries stay deterministic while the browser verifies both lanes and FIFO.
+
+test('operator nickname can be set from the always-visible header control', async ({ page }) => {
+  await page.goto(baseURL)
+
+  const trigger = page.getByTestId('operator-identity-trigger')
+  await expect(trigger).toBeVisible()
+  await expect(trigger).toContainText('设置昵称')
+  await trigger.click()
+
+  const dialog = page.getByTestId('operator-identity-dialog')
+  await expect(dialog).toBeVisible()
+  await dialog.getByTestId('operator-name-input').fill('   ')
+  await dialog.getByRole('button', { name: '保存昵称' }).click()
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('请输入昵称')
+  await dialog.getByTestId('operator-name-input').fill('Alice')
+  await dialog.getByRole('button', { name: '保存昵称' }).click()
+
+  await expect(dialog).toHaveCount(0)
+  await expect(trigger).toContainText('Alice')
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('lws.operatorName'))).toBe('Alice')
+})
+
+test('Chinese operator nickname remains usable for API-backed actions', async ({ page }) => {
+  const projectName = `E2E Chinese Operator ${Date.now()}`
+  await page.goto(baseURL)
+
+  await page.getByTestId('operator-identity-trigger').click()
+  await page.getByTestId('operator-name-input').fill('张三')
+  await page.getByRole('button', { name: '保存昵称' }).click()
+  await expect(page.getByTestId('operator-identity-trigger')).toContainText('张三')
+
+  await page.locator('.new-project-btn').click()
+  await page.getByPlaceholder('例如：星际边境 / 机甲纪元').fill(projectName)
+  await page.getByPlaceholder('目标用户、题材、语气要求').fill('验证中文操作人昵称可安全随 API 请求发送。')
+  await page.getByRole('button', { name: '创建' }).click()
+
+  await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 15000 })
+  await expect(page.getByText(/String contains non ISO-8859-1 code point/)).toHaveCount(0)
+})
+
+test('operator nickname dialog traps focus and restores it after Escape', async ({ page }) => {
+  await page.goto(baseURL)
+  const trigger = page.getByTestId('operator-identity-trigger')
+  await trigger.click()
+
+  const dialog = page.getByTestId('operator-identity-dialog')
+  const closeButton = dialog.getByRole('button', { name: '关闭' })
+  const saveButton = dialog.getByRole('button', { name: '保存昵称' })
+  await closeButton.focus()
+  await page.keyboard.press('Shift+Tab')
+  await expect(saveButton).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(trigger).toBeFocused()
+})
 
 test('active jobs badge stays hidden when no task is running', async ({ page }) => {
   await page.goto(baseURL)
@@ -2585,71 +2878,359 @@ test('cleared terminal tasks do not remain in the project activity list', async 
   expect(visibleRunIds).toEqual(['failed-visible'])
 })
 
-test('active jobs badge and panel show the running project name and task type', async ({ page, request }) => {
+test('dual-lane queue panel shows FIFO jobs, drives project badges, and confirms cancellation', async ({ page, request }) => {
   const projectName = `E2E Active Jobs ${Date.now()}`
   const project = await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'active-jobs', description: 'Active jobs panel smoke.' },
   }).then((response) => response.json())
 
-  await page.route('**/api/system/active-jobs', async (route) => {
+  let queuedJobVisible = true
+  let canceledJobId = ''
+  await page.route('**/api/system/job-queues', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([
+      body: JSON.stringify({ lanes: [
         {
-          lease_name: `long_text:${project.id}`,
-          job_id: 'run:run-e2e-active',
-          job_kind: 'translation',
-          project_id: project.id,
-          project_name: projectName,
-          started_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+          lane: 'language_table',
+          label: '语言表',
+          running: {
+            job_id: 'job-formal-running', job_kind: 'translation', lane: 'language_table',
+            project_id: project.id, project_name: projectName, target_id: 'run-formal',
+            operator_name: 'Alice', status: 'running', queued_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+            started_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+          },
+          queued: [],
         },
-      ]),
+        {
+          lane: 'quick_announcement',
+          label: '快速/公告',
+          running: {
+            job_id: 'job-short-running', job_kind: 'announcement', lane: 'quick_announcement',
+            project_id: project.id, project_name: projectName, target_id: 'ann-running',
+            operator_name: 'Carol', status: 'running', queued_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+            started_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          },
+          queued: queuedJobVisible ? [{
+            job_id: 'job-short-queued', job_kind: 'qa', lane: 'quick_announcement',
+            project_id: project.id, project_name: projectName, target_id: 'run-quick-qa',
+            operator_name: 'Bob', status: 'queued', position: 1, ahead: 1,
+            queued_at: new Date(Date.now() - 30 * 1000).toISOString(), started_at: null,
+          }] : [],
+        },
+      ] }),
     })
+  })
+  await page.route('**/api/system/job-queues/job-short-queued/cancel', async (route) => {
+    canceledJobId = 'job-short-queued'
+    queuedJobVisible = false
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ queue_job: { job_id: canceledJobId, status: 'canceled' } }) })
   })
 
   await page.goto(baseURL)
   const badge = page.getByTestId('active-jobs-badge')
   await expect(badge).toBeVisible({ timeout: 15000 })
-  await expect(badge).toContainText('1')
+  await expect(badge).toContainText('3')
+  await expect(page.getByRole('button', { name: projectName })).toContainText('后台 3')
   await badge.click()
   const panel = page.getByTestId('active-jobs-panel')
   await expect(panel).toBeVisible()
-  await expect(panel).toContainText(projectName)
-  await expect(panel).toContainText('翻译')
-  await expect(panel).toContainText('分钟前')
+  const formalLane = page.getByTestId('job-queue-lane-language_table')
+  const shortLane = page.getByTestId('job-queue-lane-quick_announcement')
+  await expect(formalLane).toContainText('语言表')
+  await expect(formalLane).toContainText('运行中')
+  await expect(formalLane).toContainText('操作人 Alice')
+  await expect(formalLane).toContainText('分钟前')
+  await expect(shortLane).toContainText('快速/公告')
+  await expect(shortLane).toContainText('公告翻译')
+  await expect(shortLane).toContainText('QA 校对')
+  await expect(shortLane).toContainText('排队第 1 位、前方 1 个')
+  await expect(shortLane).toContainText('操作人 Bob')
+
+  await page.getByTestId('queue-cancel-job-short-queued').click()
+  await expect(page.getByRole('alertdialog')).toContainText('取消后台任务')
+  await expect.poll(() => canceledJobId).toBe('')
+  await page.getByTestId('confirm-modal-confirm').click()
+  await expect.poll(() => canceledJobId).toBe('job-short-queued')
+  await expect(page.getByTestId('queue-job-job-short-queued')).toHaveCount(0)
+  await expect(badge).toContainText('2')
+  await expect(page.getByRole('button', { name: projectName })).toContainText('后台 2')
 })
 
-test('starting a second task on a busy project shows a queue hint that opens the active jobs panel', async ({ page, request }) => {
-  await request.patch(`${baseURL}/api/settings`, {
-    data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 24 },
-  })
-  const projectName = `E2E Queue Hint ${Date.now()}`
+test('formal task page shows a multilingual source queue state and operator', async ({ page, request }) => {
+  const projectName = `E2E Queue Target ${Date.now()}`
   const project = await request.post(`${baseURL}/api/projects`, {
-    data: { name: projectName, type: 'queue-hint', description: 'Queue conflict inline action smoke.' },
+    data: { name: projectName, type: 'queue-target', description: 'Queue target status smoke.' },
   }).then((response) => response.json())
-
-  // Exact text backend/app/routers/shared.py's _job_conflict_detail renders
-  // for a project_busy rejection; apiClient.ts's sanitizeUserFacingError
-  // passes it through unchanged (see the "该项目正在执行任务" branch).
-  const conflictDetail = '该项目正在执行任务（翻译任务），请等它完成或先取消'
-  await page.route('**/api/runs/*/translate/start', async (route) => {
-    await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ detail: conflictDetail }) })
+  const artifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const taskId = `task-queue-target-${Date.now()}`
+  const taskRun = await request.post(`${baseURL}/api/runs`, {
+    data: {
+      project_id: project.id,
+      kind: 'translation',
+      language: 'en',
+      input_artifact_id: artifact.id,
+      task_origin: 'translation_run',
+      translation_task_id: taskId,
+    },
+  }).then((response) => response.json())
+  await page.route(new RegExp(`/api/projects/${project.id}(?:\\?.*)?$`), async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    const detail = await response.json()
+    await route.fulfill({
+      response,
+      json: {
+        ...detail,
+        runs: (detail.runs || []).map((item: any) => item.id === taskRun.id
+          ? { ...item, status: 'queued' }
+          : item),
+      },
+    })
   })
-  await page.route('**/api/system/active-jobs', async (route) => {
+  await page.route('**/api/system/job-queues', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([
+      body: JSON.stringify({ lanes: [
         {
-          lease_name: `long_text:${project.id}`,
-          job_id: 'run:run-e2e-conflict',
-          job_kind: 'translation',
-          project_id: project.id,
-          project_name: projectName,
-          started_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          lane: 'language_table', label: '语言表', running: null,
+          queued: [{
+            job_id: `multilingual:translate:${project.id}:${artifact.id}:${taskId}`, job_kind: 'multilingual_translate', lane: 'language_table',
+            project_id: project.id, project_name: projectName, target_id: artifact.id,
+            translation_task_id: taskId, operator_name: 'Multi Bob', status: 'queued', position: 2, ahead: 2,
+            queued_at: new Date().toISOString(), started_at: null,
+          }],
         },
-      ]),
+        { lane: 'quick_announcement', label: '快速/公告', running: null, queued: [] },
+      ] }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await expect(inlineStatus(page, '排队第 2 位、前方 2 个 · 操作人 Multi Bob')).toBeVisible({ timeout: 15000 })
+})
+
+test('formal and quick task pages do not leak each others queue status', async ({ page, request }) => {
+  const projectName = `E2E Queue Isolation ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'queue-isolation', description: 'Formal and quick queue status isolation.' },
+  }).then((response) => response.json())
+  const artifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const formalTaskId = `task-formal-isolated-${Date.now()}`
+  const formalRun = await request.post(`${baseURL}/api/runs`, {
+    data: {
+      project_id: project.id,
+      kind: 'translation',
+      language: 'en',
+      input_artifact_id: artifact.id,
+      task_origin: 'translation_run',
+      translation_task_id: formalTaskId,
+    },
+  }).then((response) => response.json())
+  const quickRun = await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: artifact.id, task_origin: 'quick_task' },
+  }).then((response) => response.json())
+  await page.route(new RegExp(`/api/projects/${project.id}(?:\\?.*)?$`), async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    const detail = await response.json()
+    await route.fulfill({
+      response,
+      json: {
+        ...detail,
+        runs: (detail.runs || []).map((item: any) => item.id === formalRun.id
+          ? { ...item, status: 'running' }
+          : item),
+      },
+    })
+  })
+
+  await page.route('**/api/system/job-queues', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ lanes: [
+        {
+          lane: 'language_table', label: '语言表',
+          running: {
+            job_id: 'formal-isolated', job_kind: 'translation', lane: 'language_table',
+            project_id: project.id, project_name: projectName, target_id: formalRun.id,
+            translation_task_id: formalTaskId, operator_name: 'Formal Alice', status: 'running', started_at: new Date().toISOString(),
+          },
+          queued: [],
+        },
+        {
+          lane: 'quick_announcement', label: '快速/公告',
+          running: {
+            job_id: 'quick-isolated', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: project.id, project_name: projectName, target_id: quickRun.id,
+            operator_name: 'Quick Bob', status: 'running', started_at: new Date().toISOString(),
+          },
+          queued: [],
+        },
+      ] }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '新翻译任务', exact: true }).click()
+  await expect(inlineStatus(page, '运行中 · 操作人 Formal Alice')).toBeVisible({ timeout: 15000 })
+  await expect(inlineStatus(page, 'Quick Bob')).toHaveCount(0)
+
+  await page.getByRole('button', { name: '项目概览', exact: true }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await expect(inlineStatus(page, '运行中 · 操作人 Quick Bob')).toBeVisible({ timeout: 15000 })
+  await expect(inlineStatus(page, 'Formal Alice')).toHaveCount(0)
+})
+
+test('quick page re-entry finds its queued run when a newer formal run exists', async ({ page, request }) => {
+  const projectName = `E2E Quick Reentry Queue ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'quick-reentry', description: 'Quick queue survives a newer formal run.' },
+  }).then((response) => response.json())
+  const artifact = await request.post(`${baseURL}/api/projects/${project.id}/files?kind=language_table`, {
+    multipart: {
+      file: {
+        name: fileName(sourceWorkbook),
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: fs.readFileSync(sourceWorkbook),
+      },
+    },
+  }).then((response) => response.json())
+  const quickRun = await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: artifact.id, task_origin: 'quick_task' },
+  }).then((response) => response.json())
+  await request.post(`${baseURL}/api/runs`, {
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: artifact.id, task_origin: 'translation_run' },
+  })
+
+  await page.route('**/api/system/job-queues', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ lanes: [
+        { lane: 'language_table', label: '语言表', running: null, queued: [] },
+        {
+          lane: 'quick_announcement', label: '快速/公告', running: null,
+          queued: [{
+            job_id: 'quick-reentry-job', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: project.id, project_name: projectName, target_id: quickRun.id,
+            operator_name: 'Quick Reentry Bob', status: 'queued', position: 3, ahead: 2,
+            queued_at: new Date().toISOString(), started_at: null,
+          }],
+        },
+      ] }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await expect(inlineStatus(page, '排队第 3 位、前方 2 个 · 操作人 Quick Reentry Bob')).toBeVisible({ timeout: 15000 })
+})
+
+test('quick task local run and input reset when project polling switches the current project', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 1 },
+  })
+  const suffix = Date.now()
+  const projectA = await request.post(`${baseURL}/api/projects`, {
+    data: { name: `E2E Quick Stale A ${suffix}`, type: 'quick-stale', description: 'Quick task source project.' },
+  }).then((response) => response.json())
+  const projectB = await request.post(`${baseURL}/api/projects`, {
+    data: { name: `E2E Quick Stale B ${suffix}`, type: 'quick-stale', description: 'Quick task replacement project.' },
+  }).then((response) => response.json())
+  const projectBDetail = await request.get(`${baseURL}/api/projects/${projectB.id}`).then((response) => response.json())
+  let hideProjectA = false
+  let startedRun: any = null
+
+  await page.route('**/api/projects', async (route) => {
+    if (route.request().method() === 'GET' && hideProjectA) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([projectBDetail]) })
+      return
+    }
+    await route.continue()
+  })
+  await page.route('**/api/runs/*/translate/start', async (route) => {
+    const runId = route.request().url().match(/\/api\/runs\/([^/]+)\/translate\/start/)?.[1] || ''
+    const created = await request.get(`${baseURL}/api/runs/${runId}`).then((response) => response.json())
+    startedRun = { ...created, status: 'queued' }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(startedRun) })
+  })
+  await page.route('**/api/system/job-queues', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ lanes: [
+        { lane: 'language_table', label: '语言表', running: null, queued: [] },
+        {
+          lane: 'quick_announcement', label: '快速/公告', running: startedRun ? {
+            job_id: 'quick-stale-a', job_kind: 'translation', lane: 'quick_announcement',
+            project_id: projectA.id, project_name: projectA.name, target_id: startedRun.id,
+            operator_name: 'Project A Alice', status: 'running', started_at: new Date().toISOString(),
+          } : null, queued: [],
+        },
+      ] }),
+    })
+  })
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectA.name }).click()
+  await page.getByTestId('quick-task-entry').click()
+  await page.getByTestId('quick-text-input').fill('项目 A 的快速任务')
+  await page.getByTestId('quick-text-next').click()
+  await page.getByTestId('quick-reference-next').click()
+  await page.getByTestId('quick-objective-translate').click()
+  await page.getByTestId('quick-task-start').click()
+  await expect(inlineStatus(page, '运行中 · 操作人 Project A Alice')).toBeVisible({ timeout: 15000 })
+
+  hideProjectA = true
+  await expect(page.locator('.project-item.active')).toContainText(projectB.name, { timeout: 15000 })
+  await expect(page.getByRole('heading', { name: '快速任务' })).toBeVisible()
+  await expect(page.getByTestId('quick-text-input')).toHaveValue('')
+  await expect(inlineStatus(page, 'Project A Alice')).toHaveCount(0)
+})
+
+test('operator-required task error offers a direct nickname action', async ({ page, request }) => {
+  await request.patch(`${baseURL}/api/settings`, {
+    data: { provider: 'test-fake', protocol: 'chat-completions', api_key: '', model: 'test-fake-localization', batch_size: 24 },
+  })
+  const projectName = `E2E Operator Required ${Date.now()}`
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'operator-required', description: 'Operator recovery action smoke.' },
+  }).then((response) => response.json())
+
+  await page.route('**/api/runs/*/translate/start', async (route) => {
+    await route.fulfill({
+      status: 400,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '请先设置操作人昵称，再启动 AI 任务。' }),
     })
   })
 
@@ -2660,15 +3241,10 @@ test('starting a second task on a busy project shows a queue hint that opens the
   await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeEnabled()
   await page.getByTestId('formal-translate').click()
-  await expect(inlineStatus(page, '该项目正在执行任务')).toBeVisible({ timeout: 15000 })
 
-  const action = page.getByTestId('inline-status-view-active-jobs')
-  await expect(action).toBeVisible()
-  await action.click()
-  const panel = page.getByTestId('active-jobs-panel')
-  await expect(panel).toBeVisible()
-  await expect(panel).toContainText(projectName)
-  await expect(panel).toContainText('翻译')
+  await expect(inlineStatus(page, '请先设置操作人昵称')).toBeVisible({ timeout: 15000 })
+  await page.getByTestId('inline-status-set-operator').click()
+  await expect(page.getByTestId('operator-identity-dialog')).toBeVisible()
 })
 
 test('translation evidence shows archive references and line proofreading stages', async ({ page, request }) => {
@@ -2742,11 +3318,16 @@ test('workflow remains usable without page overflow at compact desktop and mobil
     },
   }).then((response) => response.json())
 
-  for (const viewport of [{ width: 1125, height: 903 }, { width: 390, height: 844 }]) {
+  for (const [viewportIndex, viewport] of [{ width: 1125, height: 903 }, { width: 390, height: 844 }].entries()) {
     await page.setViewportSize(viewport)
     await page.goto(baseURL)
     await page.getByRole('button', { name: projectName }).click()
     await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
+    if (viewportIndex > 0) {
+      await expect(page.getByRole('alertdialog')).toBeVisible()
+      await expect(page.getByTestId('confirm-modal-cancel')).toHaveText('继续当前任务')
+      await page.getByTestId('confirm-modal-cancel').click()
+    }
     await selectWizardStep(page, 4)
     await page.locator('.step-panel.active label.asset-select select').selectOption(sourceArtifact.id)
     await selectWizardStep(page, 7)

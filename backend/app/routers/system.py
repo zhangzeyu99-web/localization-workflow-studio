@@ -6,8 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from .. import db
-from .. import jobs
+from .. import background_jobs, db, job_queue
 from ..config import (
     DATA_ROOT,
     load_settings,
@@ -107,7 +106,7 @@ def _frontend_assets() -> list[str]:
     assets_dir = APP_ROOT / "frontend" / "dist" / "assets"
     if not assets_dir.exists():
         return []
-    return sorted(path.name for path in assets_dir.glob("*") if path.is_file())[:20]
+    return sorted(path.name for path in assets_dir.glob("*") if path.is_file())
 
 
 @router.get("/api/version")
@@ -187,34 +186,75 @@ def get_settings() -> dict[str, Any]:
     return public_settings()
 
 
-def _project_id_from_lease_name(lease_name: str) -> str:
-    prefix = "long_text:"
-    return lease_name[len(prefix):] if lease_name.startswith(prefix) else ""
-
-
 @router.get("/api/system/active-jobs")
 def get_active_jobs() -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for entry in jobs.active_jobs():
-        lease_name = str(entry.get("lease_name") or "")
-        job_id = str(entry.get("job_id") or "")
-        project_id = _project_id_from_lease_name(lease_name)
+    return [_queue_entry(entry) for entry in job_queue.list_jobs(status="running")]
+
+
+def _queue_translation_task_id(entry: dict[str, Any]) -> str:
+    kind = str(entry.get("job_kind") or "")
+    if kind.startswith("multilingual_"):
+        request = ((entry.get("payload") or {}).get("request") or {})
+        return str(request.get("translation_task_id") or "").strip()
+    if kind in {"translation", "qa", "model_fix"}:
+        try:
+            run = db.get_run(str(entry.get("target_id") or ""))
+        except KeyError:
+            return ""
+        return str((run.get("metadata") or {}).get("translation_task_id") or "").strip()
+    return ""
+
+
+def _queue_entry(entry: dict[str, Any], *, position: int | None = None, ahead: int | None = None) -> dict[str, Any]:
+    project_id = str(entry.get("project_id") or "")
+    try:
+        project_name = str(db.get_project(project_id)["name"])
+    except KeyError:
         project_name = ""
-        if project_id:
-            try:
-                project_name = db.get_project(project_id)["name"]
-            except KeyError:
-                project_name = ""
-        result.append(
-            {
-                "lease_name": lease_name,
-                "job_id": job_id,
-                "job_kind": jobs.describe_job_kind(job_id),
-                "project_id": project_id,
-                "project_name": project_name,
-                "started_at": entry.get("started_at"),
-            }
-        )
+    return {
+        "lease_name": f"long_text:{project_id}" if project_id else "",
+        "job_id": str(entry.get("job_id") or ""),
+        "job_kind": str(entry.get("job_kind") or ""),
+        "lane": str(entry.get("lane") or ""),
+        "project_id": project_id,
+        "project_name": project_name,
+        "target_id": str(entry.get("target_id") or ""),
+        "translation_task_id": _queue_translation_task_id(entry),
+        "operator_name": str(entry.get("operator_name") or ""),
+        "status": str(entry.get("status") or ""),
+        "position": position,
+        "ahead": ahead,
+        "queued_at": entry.get("queued_at"),
+        "started_at": entry.get("started_at"),
+    }
+
+
+@router.get("/api/system/job-queues")
+def get_job_queues() -> dict[str, Any]:
+    lanes = []
+    labels = {"language_table": "正式语言表", "quick_announcement": "快速任务与公告"}
+    for lane in job_queue.LANES:
+        rows = job_queue.list_active_jobs(lane=lane)
+        running_row = next((row for row in rows if row["status"] == "running"), None)
+        waiting_rows = [row for row in rows if row["status"] == "queued"]
+        running = _queue_entry(running_row) if running_row else None
+        queued = [
+            _queue_entry(
+                row,
+                position=index,
+                ahead=(1 if running_row else 0) + index - 1,
+            )
+            for index, row in enumerate(waiting_rows, start=1)
+        ]
+        lanes.append({"lane": lane, "label": labels[lane], "running": running, "queued": queued})
+    return {"lanes": lanes}
+
+
+@router.post("/api/system/job-queues/{job_id}/cancel")
+def cancel_queued_job(job_id: str) -> dict[str, Any]:
+    result = background_jobs.cancel(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="job not found")
     return result
 
 

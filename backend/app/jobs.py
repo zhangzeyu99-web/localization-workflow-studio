@@ -11,6 +11,7 @@ class BackgroundJob:
     thread: threading.Thread
     cancel_event: threading.Event
     lease_name: str
+    operator_name: str
 
 
 _LOCK = threading.Lock()
@@ -83,7 +84,7 @@ def start_singleton_job(
     Returns ``(True, None)`` on success. On rejection returns ``(False, reason)``
     where ``reason`` is either ``None`` (caller already owns the running job,
     i.e. an idempotent no-op) or a structured dict with one of:
-    - ``{"reason": "project_busy", "active_job_id": <job_id>}``
+    - ``{"reason": "project_busy", "active_job_id": <job_id>, "operator_name": <name>}``
     - ``{"reason": "capacity", "active_count": N, "limit": N}``
     - a structured rejection returned by ``pre_start``
     """
@@ -92,13 +93,20 @@ def start_singleton_job(
     # in-process state, so it must not hold up every other project's
     # job-start attempt while the lock is held.
     limit = _resolve_max_concurrent_jobs()
+    from . import operator_context
+
+    operator_name = operator_context.current_operator()
     global _ACTIVE_JOBS
     with _LOCK:
         existing = _ACTIVE_JOBS.get(lease_name)
         if existing and existing.thread.is_alive():
             if existing.id == job_id:
                 return False, None
-            return False, {"reason": "project_busy", "active_job_id": existing.id}
+            return False, {
+                "reason": "project_busy",
+                "active_job_id": existing.id,
+                "operator_name": existing.operator_name,
+            }
         if pre_start is not None:
             pre_start_conflict = pre_start()
             if pre_start_conflict:
@@ -106,14 +114,23 @@ def start_singleton_job(
         from . import db
 
         if task_run_id:
-            acquired, lease_conflict = db.acquire_job_lease_for_open_task_run(lease_name, job_id, task_run_id)
+            acquired, lease_conflict = db.acquire_job_lease_for_open_task_run(
+                lease_name,
+                job_id,
+                task_run_id,
+                operator_name=operator_name,
+            )
             if not acquired:
                 return False, lease_conflict
-        elif not db.acquire_job_lease(lease_name, job_id):
+        elif not db.acquire_job_lease(lease_name, job_id, operator_name=operator_name):
             lease = db.get_job_lease(lease_name)
             active_job = str((lease or {}).get("job_id") or "")
             if active_job and active_job != job_id:
-                return False, {"reason": "project_busy", "active_job_id": active_job}
+                return False, {
+                    "reason": "project_busy",
+                    "active_job_id": active_job,
+                    "operator_name": str((lease or {}).get("operator_name") or ""),
+                }
             return False, None
 
         active_count = sum(1 for job in _ACTIVE_JOBS.values() if job.thread.is_alive())
@@ -136,7 +153,13 @@ def start_singleton_job(
                         del _ACTIVE_JOBS[lease_name]
 
         thread = threading.Thread(target=run_and_clear, name=f"lws-longtext-{job_id}", daemon=True)
-        _ACTIVE_JOBS[lease_name] = BackgroundJob(id=job_id, thread=thread, cancel_event=cancel_event, lease_name=lease_name)
+        _ACTIVE_JOBS[lease_name] = BackgroundJob(
+            id=job_id,
+            thread=thread,
+            cancel_event=cancel_event,
+            lease_name=lease_name,
+            operator_name=operator_name,
+        )
         thread.start()
         return True, None
 
@@ -154,33 +177,68 @@ def cancel_singleton_job(project_id: str, job_id: str) -> bool:
     return lease_canceled
 
 
-def active_job_id_for_project(project_id: str) -> str | None:
+def active_job_for_project(project_id: str) -> dict[str, Any] | None:
+    from . import job_queue
+
+    queued = job_queue.active_job_for_project(project_id)
+    if queued is not None:
+        return queued
     lease_name = lease_name_for_project(project_id)
     with _LOCK:
         job = _ACTIVE_JOBS.get(lease_name)
         if job and job.thread.is_alive():
-            return job.id
-    try:
-        from . import db
+            return {"job_id": job.id, "operator_name": job.operator_name, "started_at": None}
+    from . import db
 
-        lease = db.get_job_lease(lease_name)
-        if lease and lease.get("status") == "running":
-            return str(lease.get("job_id") or "") or None
-    except Exception:
-        return None
+    lease = db.get_job_lease(lease_name)
+    if lease and lease.get("status") in {"running", "cancel_requested"}:
+        job_id = str(lease.get("job_id") or "")
+        if job_id:
+            return {
+                "job_id": job_id,
+                "operator_name": str(lease.get("operator_name") or ""),
+                "started_at": lease.get("updated_at"),
+            }
     return None
 
 
+def active_job_id_for_project(project_id: str) -> str | None:
+    active = active_job_for_project(project_id)
+    if not active:
+        return None
+    return str(active.get("job_id") or "") or None
+
+
 def active_jobs() -> list[dict[str, Any]]:
-    """Return all currently running jobs, cross-referencing the in-process
-    registry with persisted ``job_leases`` rows so a lease that survives a
-    restart (or a lease driven by an in-memory job not yet flushed to disk)
-    is still reported.
+    """Return active persistent-queue jobs, with legacy lease fallback.
+
+    Queue rows are authoritative once present. The lease registry remains as
+    a compatibility source until the existing routers enqueue through the new
+    core.
     """
     from . import db
 
+    try:
+        from . import job_queue
+
+        queued = job_queue.list_jobs(status="running")
+        if queued:
+            return [
+                {
+                    **row,
+                    "lease_name": lease_name_for_project(str(row["project_id"])),
+                }
+                for row in queued
+            ]
+    except Exception:
+        pass
+
     with _LOCK:
-        in_memory = {name: job.id for name, job in _ACTIVE_JOBS.items() if job.thread.is_alive()}
+        in_memory = {
+            name: {"job_id": job.id, "operator_name": job.operator_name}
+            for name, job in _ACTIVE_JOBS.items()
+            if job.thread.is_alive()
+        }
 
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -191,12 +249,26 @@ def active_jobs() -> list[dict[str, Any]]:
     for row in rows:
         name = str(row.get("name") or "")
         job_id = str(row.get("job_id") or "")
-        result.append({"lease_name": name, "job_id": job_id, "started_at": row.get("updated_at")})
+        result.append(
+            {
+                "lease_name": name,
+                "job_id": job_id,
+                "operator_name": str(row.get("operator_name") or ""),
+                "started_at": row.get("updated_at"),
+            }
+        )
         seen.add(name)
-    for name, job_id in in_memory.items():
+    for name, job in in_memory.items():
         if name in seen:
             continue
-        result.append({"lease_name": name, "job_id": job_id, "started_at": None})
+        result.append(
+            {
+                "lease_name": name,
+                "job_id": job["job_id"],
+                "operator_name": job["operator_name"],
+                "started_at": None,
+            }
+        )
     return result
 
 

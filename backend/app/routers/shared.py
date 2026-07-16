@@ -33,7 +33,8 @@ def _job_conflict_detail(reason: dict[str, Any] | None) -> str:
         return f"工作台已有 {active_count} 个任务在跑（上限 {limit}），请稍后再试"
     active_job_id = str(payload.get("active_job_id") or "")
     job_label = describe_job(active_job_id) if active_job_id else "其他任务"
-    return f"该项目正在执行任务（{job_label}），请等它完成或先取消"
+    operator_name = str(payload.get("operator_name") or "").strip() or "未署名用户"
+    return f"该项目正在由“{operator_name}”执行任务（{job_label}），请等它完成或先取消"
 
 
 def _query_language(language: str | None) -> str | None:

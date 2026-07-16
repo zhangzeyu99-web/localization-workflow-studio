@@ -1,10 +1,11 @@
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Languages } from 'lucide-react'
 import { findVisibleTranslationRun, matchesTranslationRun, translationInputMode, translationNextStep } from '../../domain/translationFlow'
+import { formalWorkflowQueueJob, queueJobStatusText } from '../../domain/jobQueues'
 import { projectPromptForLanguage } from '../../domain/projectAssets'
 import { type LanguageCode } from '../../languages'
 import { ActionStatus } from '../shared/WorkflowPrimitives'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
-import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, DeliveryLanguageResult, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, Project, ProjectHarness, QualityIssue, Run, TranslationReadiness } from '../../types'
+import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, DeliveryLanguageResult, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, JobQueues, Project, ProjectHarness, QualityIssue, Run, TranslationReadiness } from '../../types'
 import { StepIntro } from './steps/StepIntro'
 import { StepAnalyze } from './steps/StepAnalyze'
 import { StepTerm } from './steps/StepTerm'
@@ -30,6 +31,7 @@ export function Wizard(props: {
   qaArtifact: Artifact | null
   assetArtifacts: Artifact[]
   latestRun: Run | null
+  jobQueues: JobQueues
   translationReadiness: TranslationReadiness | null
   sourceInputNotice?: TranslationReadiness | null
   invalidSourceArtifactIds?: string[]
@@ -111,6 +113,8 @@ export function Wizard(props: {
   const stepDeliveryReady = step !== 9 || stepDeliveryFiles.length > 0
   const stepSourceMissing = step === 4 && !props.sourceArtifact
   const glossaryReview = glossaryReviewState(props.latestRun, props.glossaryBatches, props.glossaryCandidates)
+  const workflowStatus = queueJobStatusText(formalWorkflowQueueJob(props.jobQueues, project, props.translationTaskId, props.sourceArtifact?.id, props.latestRun)) || props.status
+  const workflowProps = { ...props, status: workflowStatus }
   const skippedSteps = translationInputMode(sourceReadiness) === 'ready_for_qa' ? [5, 6, 7] : []
   const nextButtonLabels = ['去 AI 分析', '确认分析', '继续', '确认输入', '继续', '确认语言', '去 QA 校对', '去交付']
   const goNext = async () => {
@@ -148,21 +152,21 @@ export function Wizard(props: {
         <button className="btn btn-ghost" onClick={props.onBack}><ArrowLeft size={16} aria-hidden="true" />项目概览</button>
       </div>
       <PhaseStepper step={step} steps={steps} skippedSteps={skippedSteps} maxStep={maxNavigableStep} onStepChange={setStep} />
-      {step !== 7 && (props.busy || props.status !== '准备就绪') ? <ActionStatus status={props.status} busy={props.busy} /> : null}
+      {step !== 7 && (props.busy || workflowStatus !== '准备就绪') ? <ActionStatus status={workflowStatus} busy={props.busy} /> : null}
       <div className="step-panel active">
-        {step === 1 ? <StepIntro {...props} /> : null}
-        {step === 2 ? <StepAnalyze {...props} /> : null}
-        {step === 3 ? <StepTerm {...props} /> : null}
-        {step === 4 ? <StepSource {...props} /> : null}
-        {step === 5 ? <StepFreqV2 {...props} /> : null}
-        {step === 6 ? <StepLang {...props} /> : null}
-        {step === 7 ? <StepTranslate {...props} /> : null}
-        {step === 8 ? <StepQA {...props} showHistory={false} onRetryTranslations={props.onTranslateQueue || props.onTranslate} onRerunTranslation={() => props.setStep(7)} onGoDelivery={(run) => {
+        {step === 1 ? <StepIntro {...workflowProps} /> : null}
+        {step === 2 ? <StepAnalyze {...workflowProps} /> : null}
+        {step === 3 ? <StepTerm {...workflowProps} /> : null}
+        {step === 4 ? <StepSource {...workflowProps} /> : null}
+        {step === 5 ? <StepFreqV2 {...workflowProps} /> : null}
+        {step === 6 ? <StepLang {...workflowProps} /> : null}
+        {step === 7 ? <StepTranslate {...workflowProps} /> : null}
+        {step === 8 ? <StepQA {...workflowProps} showHistory={false} onRetryTranslations={props.onTranslateQueue || props.onTranslate} onRerunTranslation={() => props.setStep(7)} onGoDelivery={(run) => {
           props.setStep(9)
           if (multilingualMode && props.onCreateMergedDelivery) void props.onCreateMergedDelivery()
           else void props.onCreateDelivery(run.id)
         }} /> : null}
-        {step === 9 ? <StepDone {...props} onRetryTranslations={props.onTranslateQueue || props.onTranslate} /> : null}
+        {step === 9 ? <StepDone {...workflowProps} onRetryTranslations={props.onTranslateQueue || props.onTranslate} /> : null}
       </div>
       <div className="actions">
         <button className="btn btn-ghost btn-icon" aria-label="上一步" title="上一步" disabled={step === 1} onClick={() => setStep(step - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>

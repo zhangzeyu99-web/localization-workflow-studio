@@ -12,10 +12,12 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+import app.background_jobs as background_jobs
 import app.db as db
-import app.jobs as jobs
+import app.job_queue as job_queue
 import app.routers.qa as qa_router
 import app.routers.runs as runs_router
+import app.workflow as workflow
 import app.workflow.delivery as delivery_workflow
 import app.workflow.qa as qa_workflow
 import app.workflow.qa_model_fixes as qa_model_fixes
@@ -440,173 +442,141 @@ def test_quick_model_fix_qa_rerun_does_not_archive(
 
 
 @pytest.mark.parametrize(
-    ("kind", "endpoint", "router_module"),
+    ("kind", "endpoint", "job_prefix"),
     [
-        ("translation", "translate", runs_router),
-        ("qa", "qa", qa_router),
+        ("translation", "translate", "run"),
+        ("qa", "qa", "qa"),
     ],
 )
-def test_quick_start_preexisting_project_job_cancels_new_run_and_task(
+def test_quick_start_queues_behind_preexisting_lane_job(
     tmp_path: Path,
     kind: str,
     endpoint: str,
-    router_module: object,
-    monkeypatch: pytest.MonkeyPatch,
+    job_prefix: str,
 ) -> None:
     path = _write_workbook(tmp_path / f"{kind}-preexisting.xlsx")
-    monkeypatch.setattr(router_module, "active_job_id_for_project", lambda _project_id: "other-job")
 
     with TestClient(app) as client:
-        project = db.insert_project(f"Quick {kind} preexisting conflict", "quick-task", "")
+        project = db.insert_project(f"Quick {kind} persistent queue", "quick-task", "")
         artifact = db.add_artifact(project["id"], path.name, path, "quick_input")
         run = _quick_run(project["id"], artifact["id"], kind=kind, task_id=f"quick-task-{kind}-preexisting")
+        existing = job_queue.enqueue_job(
+            job_id="announcement:preexisting",
+            lane="quick_announcement",
+            job_kind="announcement",
+            project_id=project["id"],
+            target_id="preexisting",
+            autostart=False,
+        )
+        assert job_queue.claim_next_job("quick_announcement")["job_id"] == existing["job_id"]
         response = client.post(
             f"/api/runs/{run['id']}/{endpoint}/start",
             json={"provider": "test-fake"} if kind == "translation" else None,
         )
 
-    assert response.status_code == 409
+    assert response.status_code == 200, response.text
     refreshed = db.get_run(run["id"])
-    assert refreshed["status"] == "canceled"
-    assert refreshed["metadata"]["translation_task_state"] == "canceled"
+    assert refreshed["status"] == "queued"
+    assert "translation_task_state" not in refreshed["metadata"]
+    queued = job_queue.get_job(f"{job_prefix}:{run['id']}")
+    assert queued is not None
+    assert queued["lane"] == "quick_announcement"
+    assert queued["status"] == "queued"
 
 
 @pytest.mark.parametrize(
-    ("kind", "endpoint", "router_module"),
+    "kind",
     [
-        ("translation", "translate", runs_router),
-        ("qa", "qa", qa_router),
+        "translation",
+        "qa",
     ],
 )
-def test_quick_start_singleton_rejection_leaves_no_queued_ghost(
+def test_quick_queue_persistence_failure_leaves_run_retryable_without_ghost(
     tmp_path: Path,
     kind: str,
-    endpoint: str,
-    router_module: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = _write_workbook(tmp_path / f"{kind}-singleton.xlsx")
-    monkeypatch.setattr(router_module, "active_job_id_for_project", lambda _project_id: None)
+    path = _write_workbook(tmp_path / f"{kind}-queue-write.xlsx")
     monkeypatch.setattr(
-        router_module,
-        "start_singleton_job",
-        lambda _project_id, _job_id, _worker, **_kwargs: (False, {"reason": "project_busy", "active_job_id": "other-job"}),
+        background_jobs.job_queue,
+        "enqueue_job",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("queue write failed")),
     )
 
-    with TestClient(app) as client:
-        project = db.insert_project(f"Quick {kind} singleton conflict", "quick-task", "")
-        artifact = db.add_artifact(project["id"], path.name, path, "quick_input")
-        run = _quick_run(project["id"], artifact["id"], kind=kind, task_id=f"quick-task-{kind}-singleton")
-        response = client.post(
-            f"/api/runs/{run['id']}/{endpoint}/start",
-            json={"provider": "test-fake"} if kind == "translation" else None,
-        )
+    project = db.insert_project(f"Quick {kind} queue write failure", "quick-task", "")
+    artifact = db.add_artifact(project["id"], path.name, path, "quick_input")
+    run = _quick_run(project["id"], artifact["id"], kind=kind, task_id=f"quick-task-{kind}-queue-write")
+    job_prefix = "run" if kind == "translation" else "qa"
 
-    assert response.status_code == 409
+    with pytest.raises(RuntimeError, match="queue write failed"):
+        if kind == "translation":
+            runs_router._start_translation_background(run["id"], TranslateRequest(provider="test-fake"))
+        else:
+            qa_router._start_background_qa(run["id"])
+
     refreshed = db.get_run(run["id"])
-    assert refreshed["status"] == "canceled"
-    assert refreshed["metadata"]["translation_task_state"] == "canceled"
+    assert refreshed["status"] == "created"
+    assert "translation_task_state" not in refreshed["metadata"]
+    assert job_queue.get_job(f"{job_prefix}:{run['id']}") is None
 
 
-def test_capacity_rejection_cancels_quick_task_without_breaking_formal_retry(
+def test_quick_and_formal_runs_use_independent_persistent_lanes_without_capacity_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    save_settings({**DEFAULT_SETTINGS, "max_concurrent_ai_jobs": 1})
-    blocker_project = db.insert_project("Capacity blocker", "QA", "")
-    blocker_started = threading.Event()
-    release_blocker = threading.Event()
-
-    def block_capacity(_cancel_event: threading.Event) -> None:
-        blocker_started.set()
-        release_blocker.wait()
-
-    started, conflict = jobs.start_singleton_job(
-        blocker_project["id"],
-        "run:capacity-blocker",
-        block_capacity,
+    monkeypatch.setattr(job_queue, "dispatch_lane", lambda _lane: False)
+    quick_project = db.insert_project("Quick persistent lane", "quick-task", "")
+    quick_path = _write_workbook(tmp_path / "quick-lane.xlsx")
+    quick_artifact = db.add_artifact(quick_project["id"], quick_path.name, quick_path, "quick_input")
+    quick_run = _quick_run(
+        quick_project["id"],
+        quick_artifact["id"],
+        task_id="quick-task-persistent-lane",
     )
-    try:
-        assert started is True
-        assert conflict is None
-        assert blocker_started.wait(timeout=5)
+    formal_project = db.insert_project("Formal persistent lane", "QA", "")
+    formal_path = _write_workbook(tmp_path / "formal-lane.xlsx")
+    formal_artifact = db.add_artifact(formal_project["id"], formal_path.name, formal_path, "language_table")
+    formal_run = db.insert_run(
+        formal_project["id"],
+        "translation",
+        "en",
+        metadata={
+            "input_artifact_id": formal_artifact["id"],
+            "task_origin": "translation_run",
+            "translation_task_id": "formal-task-persistent-lane",
+        },
+    )
 
-        quick_project = db.insert_project("Quick capacity rejection", "quick-task", "")
-        quick_path = _write_workbook(tmp_path / "quick-capacity.xlsx")
-        quick_artifact = db.add_artifact(quick_project["id"], quick_path.name, quick_path, "quick_input")
-        quick_run = _quick_run(
-            quick_project["id"],
-            quick_artifact["id"],
-            task_id="quick-task-capacity-rejected",
-        )
-        with pytest.raises(runs_router.HTTPException) as quick_exc:
-            runs_router._start_translation_background(
-                quick_run["id"],
-                TranslateRequest(provider="test-fake"),
-            )
-        assert quick_exc.value.status_code == 409
-        quick_refreshed = db.get_run(quick_run["id"])
-        assert quick_refreshed["status"] == "canceled"
-        assert quick_refreshed["metadata"]["translation_task_state"] == "canceled"
-        quick_lease = db.get_job_lease(jobs.lease_name_for_project(quick_project["id"]))
-        assert quick_lease is not None
-        assert quick_lease["status"] == "capacity_rejected"
-
-        formal_project = db.insert_project("Formal capacity retry", "QA", "")
-        formal_path = _write_workbook(tmp_path / "formal-capacity.xlsx")
-        formal_artifact = db.add_artifact(formal_project["id"], formal_path.name, formal_path, "language_table")
-        formal_run = db.insert_run(
-            formal_project["id"],
-            "translation",
-            "en",
-            metadata={
-                "input_artifact_id": formal_artifact["id"],
-                "task_origin": "translation_run",
-                "translation_task_id": "formal-task-capacity-retry",
-            },
-        )
-        with pytest.raises(runs_router.HTTPException) as formal_exc:
-            runs_router._start_translation_background(
-                formal_run["id"],
-                TranslateRequest(provider="test-fake"),
-            )
-        assert formal_exc.value.status_code == 409
-        formal_refreshed = db.get_run(formal_run["id"])
-        assert formal_refreshed["status"] != "canceled"
-        assert "translation_task_state" not in formal_refreshed["metadata"]
-        formal_lease = db.get_job_lease(jobs.lease_name_for_project(formal_project["id"]))
-        assert formal_lease is not None
-        assert formal_lease["status"] == "capacity_rejected"
-    finally:
-        release_blocker.set()
-        wait_for_background_jobs()
-
-    def finish_formal(run_id: str, *_args: object, **_kwargs: object) -> dict:
-        db.update_run(run_id, status="passed")
-        return {"run": db.get_run(run_id), "artifacts": []}
-
-    monkeypatch.setattr(runs_router, "run_translate_sync", finish_formal)
-    retried = runs_router._start_translation_background(
+    quick_result = runs_router._start_translation_background(
+        quick_run["id"],
+        TranslateRequest(provider="test-fake"),
+    )
+    formal_result = runs_router._start_translation_background(
         formal_run["id"],
         TranslateRequest(provider="test-fake"),
     )
-    assert retried["status"] in {"queued", "passed"}
-    wait_for_background_jobs()
-    assert db.get_run(formal_run["id"])["status"] == "passed"
+
+    assert quick_result["status"] == "queued"
+    assert formal_result["status"] == "queued"
+    assert job_queue.get_job(f"run:{quick_run['id']}")["lane"] == "quick_announcement"
+    assert job_queue.get_job(f"run:{formal_run['id']}")["lane"] == "language_table"
+    assert "translation_task_state" not in db.get_run(quick_run["id"])["metadata"]
+    assert "translation_task_state" not in db.get_run(formal_run["id"])["metadata"]
 
 
 @pytest.mark.parametrize(
-    ("kind", "endpoint", "router_module"),
+    ("kind", "endpoint", "start_method", "job_prefix"),
     [
-        ("translation", "translate", runs_router),
-        ("qa", "qa", qa_router),
+        ("translation", "translate", "start_translation", "run"),
+        ("qa", "qa", "start_qa", "qa"),
     ],
 )
 def test_terminal_quick_run_is_rejected_before_background_scheduling(
     tmp_path: Path,
     kind: str,
     endpoint: str,
-    router_module: object,
+    start_method: str,
+    job_prefix: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = db.insert_project(f"Terminal quick {kind}", "quick-task", "")
@@ -616,9 +586,9 @@ def test_terminal_quick_run_is_rejected_before_background_scheduling(
     mark_translation_task_state(project["id"], f"quick-task-terminal-{kind}", "canceled")
     scheduled: list[str] = []
     monkeypatch.setattr(
-        router_module,
-        "start_singleton_job",
-        lambda _project_id, job_id, _worker: scheduled.append(job_id) or (True, None),
+        background_jobs,
+        start_method,
+        lambda run_id, *_args: scheduled.append(run_id) or db.get_run(run_id),
     )
 
     with TestClient(app) as client:
@@ -629,12 +599,13 @@ def test_terminal_quick_run_is_rejected_before_background_scheduling(
 
     assert response.status_code == 409, response.text
     assert scheduled == []
+    assert job_queue.get_job(f"{job_prefix}:{run['id']}") is None
     refreshed = db.get_run(run["id"])
     assert refreshed["status"] == "canceled"
     assert refreshed["metadata"]["translation_task_state"] == "canceled"
 
 
-def test_terminal_commit_between_guard_and_scheduler_prevents_job_start(
+def test_terminal_commit_during_persistent_queue_staging_prevents_translation_activation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -642,27 +613,23 @@ def test_terminal_commit_between_guard_and_scheduler_prevents_job_start(
     path = _write_workbook(tmp_path / "scheduler-race.xlsx")
     artifact = db.add_artifact(project["id"], path.name, path, "quick_input")
     run = _quick_run(project["id"], artifact["id"], task_id="quick-task-scheduler-race")
-    scheduler_entered = threading.Event()
+    staged = threading.Event()
     terminal_committed = threading.Event()
-    worker_called = threading.Event()
-    real_start = jobs.start_singleton_job
+    activated: list[str] = []
+    real_enqueue = job_queue.enqueue_job
 
-    def controlled_start(
-        project_id: str,
-        job_id: str,
-        worker: object,
-        *,
-        task_run_id: str | None = None,
-    ) -> tuple[bool, dict | None]:
-        scheduler_entered.set()
+    def controlled_enqueue(**kwargs: object) -> dict:
+        queued = real_enqueue(**kwargs)
+        assert queued["status"] == job_queue.STAGING_STATUS
+        staged.set()
         assert terminal_committed.wait(timeout=5)
-        return real_start(project_id, job_id, worker, task_run_id=task_run_id)  # type: ignore[arg-type]
+        return queued
 
-    monkeypatch.setattr(runs_router, "start_singleton_job", controlled_start)
+    monkeypatch.setattr(background_jobs.job_queue, "enqueue_job", controlled_enqueue)
     monkeypatch.setattr(
-        runs_router,
-        "run_translate_sync",
-        lambda *_args, **_kwargs: worker_called.set() or {},
+        background_jobs.job_queue,
+        "activate_job",
+        lambda job_id, **_kwargs: activated.append(job_id) or job_queue.get_job(job_id),
     )
 
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -671,21 +638,22 @@ def test_terminal_commit_between_guard_and_scheduler_prevents_job_start(
             run["id"],
             TranslateRequest(provider="test-fake"),
         )
-        assert scheduler_entered.wait(timeout=5)
+        assert staged.wait(timeout=5)
         mark_translation_task_state(project["id"], "quick-task-scheduler-race", "canceled")
         terminal_committed.set()
-        with pytest.raises(runs_router.HTTPException) as exc_info:
+        with pytest.raises(db.TranslationTaskClosedError):
             future.result(timeout=5)
 
-    assert exc_info.value.status_code == 409
-    assert worker_called.is_set() is False
-    assert jobs.active_job_id_for_project(project["id"]) is None
-    lease = db.get_job_lease(jobs.lease_name_for_project(project["id"]))
-    assert lease is None or lease["status"] != "running"
+    assert activated == []
+    queued = job_queue.get_job(f"run:{run['id']}")
+    assert queued is None or queued["status"] not in {job_queue.STAGING_STATUS, "queued", "running"}
+    refreshed = db.get_run(run["id"])
+    assert refreshed["status"] == "canceled"
+    assert refreshed["metadata"]["translation_task_state"] == "canceled"
 
 
 @pytest.mark.parametrize("mode", ["qa", "model_fix"])
-def test_qa_and_model_fix_terminal_commit_between_guard_and_scheduler_prevents_job_start(
+def test_qa_and_model_fix_terminal_commit_during_staging_prevents_activation(
     tmp_path: Path,
     mode: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -695,42 +663,31 @@ def test_qa_and_model_fix_terminal_commit_between_guard_and_scheduler_prevents_j
     artifact = db.add_artifact(project["id"], path.name, path, "quick_input")
     task_id = f"quick-task-{mode}-scheduler-race"
     run = _quick_run(project["id"], artifact["id"], kind="qa", task_id=task_id)
-    scheduler_entered = threading.Event()
+    staged = threading.Event()
     terminal_committed = threading.Event()
-    worker_called = threading.Event()
-    real_start = jobs.start_singleton_job
+    activated: list[str] = []
+    real_enqueue = job_queue.enqueue_job
+    expected_kind = "qa" if mode == "qa" else "model_fix"
+    job_prefix = "qa" if mode == "qa" else "model-fix"
 
-    def controlled_start(
-        project_id: str,
-        job_id: str,
-        worker: object,
-        *,
-        task_run_id: str | None = None,
-    ) -> tuple[bool, dict | None]:
-        assert task_run_id == run["id"]
-        scheduler_entered.set()
+    def controlled_enqueue(**kwargs: object) -> dict:
+        assert kwargs["job_kind"] == expected_kind
+        assert kwargs["target_id"] == run["id"]
+        queued = real_enqueue(**kwargs)
+        assert queued["status"] == job_queue.STAGING_STATUS
+        staged.set()
         assert terminal_committed.wait(timeout=5)
-        return real_start(project_id, job_id, worker, task_run_id=task_run_id)  # type: ignore[arg-type]
+        return queued
 
-    monkeypatch.setattr(qa_router, "start_singleton_job", controlled_start)
+    monkeypatch.setattr(background_jobs.job_queue, "enqueue_job", controlled_enqueue)
+    monkeypatch.setattr(
+        background_jobs.job_queue,
+        "activate_job",
+        lambda job_id, **_kwargs: activated.append(job_id) or job_queue.get_job(job_id),
+    )
     if mode == "qa":
-        monkeypatch.setattr(
-            qa_router,
-            "run_qa_sync",
-            lambda *_args, **_kwargs: worker_called.set() or {},
-        )
         invoke = lambda: qa_router._start_background_qa(run["id"])
     else:
-        monkeypatch.setattr(
-            qa_router,
-            "model_fix_provider_settings",
-            lambda: ({"provider": "openai", "api_key": "test-key"}, "openai"),
-        )
-        monkeypatch.setattr(
-            qa_router,
-            "apply_model_fixes",
-            lambda *_args, **_kwargs: worker_called.set() or {},
-        )
         invoke = lambda: qa_router.model_fixes_start(
             run["id"],
             ModelFixRequest(max_issues=1, rerun_qa=True),
@@ -738,53 +695,57 @@ def test_qa_and_model_fix_terminal_commit_between_guard_and_scheduler_prevents_j
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(invoke)
-        assert scheduler_entered.wait(timeout=5)
+        assert staged.wait(timeout=5)
         mark_translation_task_state(project["id"], task_id, "canceled")
         terminal_committed.set()
-        with pytest.raises(qa_router.HTTPException) as exc_info:
+        with pytest.raises(db.TranslationTaskClosedError):
             future.result(timeout=5)
 
-    assert exc_info.value.status_code == 409
-    assert worker_called.is_set() is False
-    assert jobs.active_job_id_for_project(project["id"]) is None
-    lease = db.get_job_lease(jobs.lease_name_for_project(project["id"]))
-    assert lease is None or lease["status"] != "running"
+    assert activated == []
+    queued = job_queue.get_job(f"{job_prefix}:{run['id']}")
+    assert queued is None or queued["status"] not in {job_queue.STAGING_STATUS, "queued", "running"}
     refreshed = db.get_run(run["id"])
     assert refreshed["status"] == "canceled"
     assert refreshed["metadata"]["translation_task_state"] == "canceled"
 
 
 @pytest.mark.parametrize(
-    ("kind", "endpoint", "job_prefix", "router_module"),
+    ("kind", "endpoint", "job_prefix"),
     [
-        ("translation", "translate", "run", runs_router),
-        ("qa", "qa", "qa", qa_router),
+        ("translation", "translate", "run"),
+        ("qa", "qa", "qa"),
     ],
 )
-def test_quick_cancel_signals_job_and_cancels_run_and_task(
+def test_quick_cancel_updates_persistent_job_and_cancels_run_and_task(
     tmp_path: Path,
     kind: str,
     endpoint: str,
     job_prefix: str,
-    router_module: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = _write_workbook(tmp_path / f"{kind}-cancel.xlsx")
-    canceled: list[tuple[str, str]] = []
-    monkeypatch.setattr(router_module, "cancel_singleton_job", lambda project_id, job_id: canceled.append((project_id, job_id)) or True)
+    monkeypatch.setattr(job_queue, "dispatch_lane", lambda _lane: False)
 
     with TestClient(app) as client:
         project = db.insert_project(f"Quick {kind} cancel", "quick-task", "")
         artifact = db.add_artifact(project["id"], path.name, path, "quick_input")
         run = _quick_run(project["id"], artifact["id"], kind=kind, task_id=f"quick-task-{kind}-cancel")
-        db.update_run(run["id"], status="running")
+        if kind == "translation":
+            start_response = client.post(
+                f"/api/runs/{run['id']}/{endpoint}/start",
+                json={"provider": "test-fake"},
+            )
+        else:
+            start_response = client.post(f"/api/runs/{run['id']}/{endpoint}/start")
+        assert start_response.status_code == 200, start_response.text
         response = client.post(f"/api/runs/{run['id']}/{endpoint}/cancel")
 
     assert response.status_code == 200, response.text
-    expected = [(project["id"], f"{job_prefix}:{run['id']}")]
-    if kind == "qa":
-        expected.append((project["id"], f"model-fix:{run['id']}"))
-    assert canceled == expected
+    canceled = job_queue.get_job(f"{job_prefix}:{run['id']}")
+    assert canceled is not None
+    assert canceled["lane"] == "quick_announcement"
+    assert canceled["status"] == "canceled"
+    assert canceled["cancel_requested"] is True
     refreshed = db.get_run(run["id"])
     assert refreshed["status"] == "canceled"
     assert refreshed["metadata"]["translation_task_state"] == "canceled"
@@ -991,26 +952,26 @@ def test_model_fix_worker_stops_before_apply_when_cancel_event_is_set(
     path = _write_workbook(tmp_path / "model-cancel.xlsx")
     artifact = db.add_artifact(project["id"], path.name, path, "quick_input")
     run = _quick_run(project["id"], artifact["id"], kind="qa", task_id="quick-task-model-cancel")
-    captured: dict[str, object] = {}
     applied: list[str] = []
-    monkeypatch.setattr(qa_router, "model_fix_provider_settings", lambda: ({"provider": "openai", "api_key": "test-key"}, "openai"))
-    monkeypatch.setattr(qa_router, "active_job_id_for_project", lambda _project_id: None)
-
-    def capture_worker(_project_id: str, _job_id: str, worker: object, **_kwargs: object) -> tuple[bool, None]:
-        captured["worker"] = worker
-        return True, None
-
-    monkeypatch.setattr(qa_router, "start_singleton_job", capture_worker)
     monkeypatch.setattr(
-        qa_router,
+        workflow,
         "apply_model_fixes",
         lambda *_args, **_kwargs: applied.append("called") or {},
     )
 
-    qa_router.model_fixes_start(run["id"], ModelFixRequest(max_issues=1, rerun_qa=True))
     cancel_event = threading.Event()
     cancel_event.set()
-    captured["worker"](cancel_event)  # type: ignore[operator]
+    background_jobs._model_fix_handler(
+        {
+            "job_id": f"model-fix:{run['id']}",
+            "job_kind": "model_fix",
+            "project_id": project["id"],
+            "target_id": run["id"],
+            "operator_name": "",
+            "payload": {"max_issues": 1, "rerun_qa": True},
+        },
+        cancel_event,
+    )
 
     assert applied == []
     refreshed = db.get_run(run["id"])
@@ -1025,22 +986,10 @@ def test_canceled_quick_task_rejects_late_model_fix_status(tmp_path: Path, monke
     run = _quick_run(project["id"], artifact["id"], kind="qa", task_id="quick-task-late-model-fix")
     mark_translation_task_state(project["id"], "quick-task-late-model-fix", "canceled")
     scheduled: list[str] = []
-    monkeypatch.setattr(qa_router, "model_fix_provider_settings", lambda: ({"provider": "openai", "api_key": "test-key"}, "openai"))
-    monkeypatch.setattr(qa_router, "active_job_id_for_project", lambda _project_id: None)
-
     monkeypatch.setattr(
-        qa_router,
-        "start_singleton_job",
-        lambda _project_id, job_id, _worker: scheduled.append(job_id) or (True, None),
-    )
-    monkeypatch.setattr(
-        qa_router,
-        "apply_model_fixes",
-        lambda _run_id, _payload, settings=None, cancel_event=None: {
-            "qa_result": {"run": {"status": "passed"}, "quality_summary": {}},
-            "model_fixes": [],
-            "fixed_artifact": {},
-        },
+        background_jobs,
+        "start_model_fix",
+        lambda run_id, _payload: scheduled.append(run_id) or db.get_run(run_id),
     )
 
     with pytest.raises(qa_router.HTTPException) as exc_info:
@@ -1048,6 +997,7 @@ def test_canceled_quick_task_rejects_late_model_fix_status(tmp_path: Path, monke
 
     assert exc_info.value.status_code == 409
     assert scheduled == []
+    assert job_queue.get_job(f"model-fix:{run['id']}") is None
     refreshed = db.get_run(run["id"])
     assert refreshed["status"] == "canceled"
     assert refreshed["metadata"]["translation_task_state"] == "canceled"

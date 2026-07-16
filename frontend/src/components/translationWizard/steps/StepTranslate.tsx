@@ -129,7 +129,7 @@ export function StepTranslate({
   const scopedTranslateStatus = /交付|delivery/i.test(status) ? '' : status
   const showTranslateStatus = Boolean(scopedTranslateStatus) && (busy
     || Boolean(progress)
-    || /provider|API|workpack|batch|QA|\u7ffb\u8bd1|\u6821\u5bf9/i.test(scopedTranslateStatus))
+    || /provider|API|workpack|batch|QA|\u7ffb\u8bd1|\u6821\u5bf9|\u6392\u961f|\u64cd\u4f5c\u4eba/i.test(scopedTranslateStatus))
   const translationArtifacts = pickerArtifacts(currentTranslationRun?.artifacts?.length ? currentTranslationRun.artifacts : runArtifacts(project, currentTranslationRun?.id))
     .filter((artifact) => ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'].includes(artifact.kind))
   const qaInputArtifact = newestArtifact(translationArtifacts, ['qa_final_workbook', 'final_workbook', 'raw_translated_workbook'])

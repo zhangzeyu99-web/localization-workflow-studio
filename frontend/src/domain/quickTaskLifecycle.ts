@@ -31,7 +31,7 @@ const timestamp = (run: Run) => String(run.updated_at || run.created_at || '')
 const newestFirst = (left: Run, right: Run) => timestamp(right).localeCompare(timestamp(left))
 
 export function quickTaskIdOfRun(run?: Run | null): string {
-  if (!run || run.metadata?.task_origin !== 'quick_task') return ''
+  if (!run || !isQuickTaskRun(run)) return ''
   return String(run.metadata?.translation_task_id || '').trim()
 }
 
@@ -56,7 +56,7 @@ function preferredActiveRun(runs: Run[]): Run | null {
 }
 
 export function groupQuickTasks(runs: Run[]): QuickTaskGroup[] {
-  const taskRuns = (runs || []).filter((run) => run.metadata?.task_origin === 'quick_task')
+  const taskRuns = (runs || []).filter(isQuickTaskRun)
   const grouped = new Map<string, { taskId: string; legacy: boolean; runs: Run[] }>()
   for (const run of taskRuns) {
     const taskId = quickTaskIdOfRun(run)

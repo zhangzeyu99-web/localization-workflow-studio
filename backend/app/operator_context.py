@@ -1,10 +1,11 @@
-"""Optional, unauthenticated operator attribution for a small shared team.
+"""Unauthenticated operator attribution for a small shared team.
 
 There is no account/session system in this product (see docs/superpowers/plans
 /2026-07-08-multiuser-concurrency.md). This module only lets a browser-local
-nickname (sent as the ``X-Operator`` request header) show up next to a handful
-of key actions so a team can tell who did what -- it performs no validation
-and grants no permissions.
+nickname (sent as the ``X-Operator`` request header) show up next to key
+actions so a team can tell who did what. Cloud AI task starts require a
+nickname, but it still performs no identity validation and grants no
+permissions.
 
 The current request's operator name is exposed through a ``contextvars``
 context set by ``OperatorContextMiddleware`` in ``main.py``. FastAPI/Starlette
@@ -19,10 +20,14 @@ from __future__ import annotations
 
 import contextvars
 import json
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
+
+from fastapi import HTTPException
 
 _MAX_OPERATOR_LENGTH = 40
 _CONTROL_CHARS = re.compile(r"[\r\n\t\x00-\x1f]")
@@ -38,11 +43,31 @@ def sanitize_operator_name(value: Any) -> str:
 
 
 def set_current_operator(value: Any) -> None:
-    _operator_var.set(sanitize_operator_name(value))
+    raw_value = str(value or "")
+    try:
+        decoded_value = unquote(raw_value, encoding="utf-8", errors="strict")
+    except UnicodeDecodeError:
+        decoded_value = raw_value
+    _operator_var.set(sanitize_operator_name(decoded_value))
 
 
 def current_operator() -> str:
     return _operator_var.get()
+
+
+def require_operator_for_cloud() -> str:
+    from .config import DATA_ROOT
+
+    app_root = Path(__file__).resolve().parents[2]
+    raw_mode = os.environ.get("LWS_DEPLOYMENT_MODE")
+    if raw_mode is None and (
+        str(DATA_ROOT).replace("\\", "/").startswith("/data/web/")
+        or str(app_root).replace("\\", "/").startswith("/data/web/")
+    ):
+        raw_mode = "cloud"
+    if (raw_mode or "local").strip().lower() == "cloud" and not current_operator():
+        raise HTTPException(status_code=400, detail="请先设置操作人昵称，再启动 AI 任务。")
+    return current_operator()
 
 
 def prefixed_message(message: str, operator: str | None = None) -> str:

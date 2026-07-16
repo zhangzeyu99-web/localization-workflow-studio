@@ -1,7 +1,9 @@
-import type { ActiveJob } from '../../types'
+import { allQueueJobs } from '../../domain/jobQueues'
+import type { JobQueues } from '../../types'
 
-export function ActiveJobsBadge({ jobs, open, onToggle }: { jobs: ActiveJob[]; open: boolean; onToggle: () => void }) {
-  if (!jobs.length) return null
+export function ActiveJobsBadge({ queues, open, onToggle }: { queues: JobQueues; open: boolean; onToggle: () => void }) {
+  const count = allQueueJobs(queues).length
+  if (!count) return null
   return (
     <button
       type="button"
@@ -11,8 +13,8 @@ export function ActiveJobsBadge({ jobs, open, onToggle }: { jobs: ActiveJob[]; o
       onClick={onToggle}
     >
       <span className="active-jobs-dot" />
-      活跃任务
-      <span className="active-jobs-count">{jobs.length}</span>
+      后台任务
+      <span className="active-jobs-count">{count}</span>
     </button>
   )
 }

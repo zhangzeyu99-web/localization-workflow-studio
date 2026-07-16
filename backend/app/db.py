@@ -34,6 +34,20 @@ class TranslationTaskClosedError(ValueError):
         self.state = state
 
 
+class ProjectNotActiveError(RuntimeError):
+    def __init__(self, project_id: str, state: str) -> None:
+        super().__init__(f"project {project_id} is {state}")
+        self.project_id = project_id
+        self.state = state
+
+
+class ProjectHasActiveJobError(RuntimeError):
+    def __init__(self, project_id: str, job_id: str) -> None:
+        super().__init__(f"project {project_id} has active job {job_id}")
+        self.project_id = project_id
+        self.job_id = job_id
+
+
 _TRANSLATION_TASK_TERMINAL_STATES = ("closed", "abandoned", "delivered", "canceled")
 
 
@@ -140,6 +154,7 @@ def init_db() -> None:
                 description TEXT NOT NULL DEFAULT '',
                 profile_json TEXT NOT NULL DEFAULT '{}',
                 prompt_text TEXT NOT NULL DEFAULT '',
+                lifecycle_state TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -280,10 +295,29 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS job_leases (
                 name TEXT PRIMARY KEY,
                 job_id TEXT NOT NULL DEFAULT '',
+                operator_name TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'idle',
                 cancel_requested INTEGER NOT NULL DEFAULT 0,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS job_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL UNIQUE,
+                lane TEXT NOT NULL CHECK(lane IN ('language_table', 'quick_announcement')),
+                job_kind TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                target_id TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                operator_name TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                canceled_by TEXT NOT NULL DEFAULT '',
+                cancel_requested_at TEXT,
+                canceled_at TEXT,
+                queued_at TEXT NOT NULL,
+                started_at TEXT,
                 updated_at TEXT NOT NULL
             );
             """
@@ -306,6 +340,10 @@ def init_db() -> None:
         from .archive_import_schema import ensure_archive_import_schema
 
         ensure_archive_import_schema(conn)
+        _ensure_column(conn, "job_leases", "operator_name", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "job_queue", "cancel_requested_at", "TEXT")
+        _ensure_column(conn, "job_queue", "canceled_at", "TEXT")
+        _ensure_column(conn, "projects", "lifecycle_state", "TEXT NOT NULL DEFAULT 'active'")
         _dedupe_unique_index_rows(conn)
         _ensure_indexes(conn)
 
@@ -344,6 +382,13 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
           ON events(run_id);
         CREATE INDEX IF NOT EXISTS idx_announcement_tasks_project_status
           ON announcement_tasks(project_id, status);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_lane_status_fifo
+          ON job_queue(lane, status, queued_at, id);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_project_lane_status
+          ON job_queue(project_id, lane, status);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_job_queue_one_running_per_lane
+          ON job_queue(lane)
+          WHERE status = 'running';
         """
     )
 
@@ -403,6 +448,12 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return payload
 
 
+def project_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    payload = row_to_dict(row)
+    payload.pop("lifecycle_state", None)
+    return payload
+
+
 def infer_artifact_role(kind: str) -> str:
     return ARTIFACT_ROLE_BY_KIND.get(kind, kind or "upload")
 
@@ -445,12 +496,22 @@ def find_project_by_name(name: str) -> dict[str, Any] | None:
         rows = conn.execute("SELECT * FROM projects ORDER BY created_at ASC").fetchall()
         for row in rows:
             if _project_name_key(row["name"]) == normalized:
-                return row_to_dict(row)
+                return project_row_to_dict(row)
     return None
 
 
 def _project_name_key(value: Any) -> str:
     return " ".join(str(value or "").strip().split()).casefold()
+
+
+def require_project_active(conn: sqlite3.Connection, project_id: str) -> None:
+    row = conn.execute(
+        "SELECT lifecycle_state FROM projects WHERE id = ?",
+        (project_id,),
+    ).fetchone()
+    state = str(row["lifecycle_state"] or "active") if row is not None else "missing"
+    if state != "active":
+        raise ProjectNotActiveError(project_id, state)
 
 
 def get_project(project_id: str, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
@@ -461,7 +522,7 @@ def get_project(project_id: str, conn: sqlite3.Connection | None = None) -> dict
         row = active.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         if row is None:
             raise KeyError(project_id)
-        return row_to_dict(row)
+        return project_row_to_dict(row)
     finally:
         if ctx:
             ctx.__exit__(None, None, None)
@@ -470,7 +531,7 @@ def get_project(project_id: str, conn: sqlite3.Connection | None = None) -> dict
 def list_projects() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
-        return [row_to_dict(row) for row in rows]
+        return [project_row_to_dict(row) for row in rows]
 
 
 def update_project(project_id: str, updates: dict[str, Any]) -> dict[str, Any]:
@@ -494,8 +555,43 @@ def update_project(project_id: str, updates: dict[str, Any]) -> dict[str, Any]:
 
 def delete_project(project_id: str) -> None:
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
             raise KeyError(project_id)
+        active_queue_job = conn.execute(
+            """
+            SELECT job_id FROM job_queue
+            WHERE project_id = ? AND status IN ('staged', 'queued', 'running')
+            ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END, queued_at ASC, id ASC
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        if active_queue_job is not None:
+            raise ProjectHasActiveJobError(project_id, str(active_queue_job["job_id"] or ""))
+        active_lease = conn.execute(
+            """
+            SELECT job_id FROM job_leases
+            WHERE name = ? AND status IN ('running', 'cancel_requested')
+            LIMIT 1
+            """,
+            (f"long_text:{project_id}",),
+        ).fetchone()
+        if active_lease is not None:
+            raise ProjectHasActiveJobError(project_id, str(active_lease["job_id"] or ""))
+        changed = conn.execute(
+            "UPDATE projects SET lifecycle_state = 'deleting', updated_at = ? WHERE id = ? AND lifecycle_state = 'active'",
+            (now_iso(), project_id),
+        )
+        if changed.rowcount != 1:
+            state_row = conn.execute(
+                "SELECT lifecycle_state FROM projects WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            if state_row is None:
+                raise KeyError(project_id)
+            raise ProjectNotActiveError(project_id, str(state_row["lifecycle_state"] or "deleting"))
+        conn.execute("DELETE FROM job_queue WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE project_id = ?)", (project_id,))
         conn.execute("DELETE FROM artifacts WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM announcement_task_languages WHERE project_id = ?", (project_id,))
@@ -515,6 +611,7 @@ def insert_run(project_id: str, kind: str, language: str = "en", metadata: dict[
     translation_task_id = str(run_metadata.get("translation_task_id") or "").strip()
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        require_project_active(conn, project_id)
         if translation_task_id:
             rows = conn.execute(
                 "SELECT metadata_json FROM runs WHERE project_id = ? AND kind IN ('translation', 'qa')",
@@ -536,7 +633,7 @@ def insert_run(project_id: str, kind: str, language: str = "en", metadata: dict[
             INSERT INTO runs (id, project_id, kind, language, status, metadata_json, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (run_id, project_id, kind, language, "queued", json.dumps(run_metadata, ensure_ascii=False), ts, ts),
+            (run_id, project_id, kind, language, "created", json.dumps(run_metadata, ensure_ascii=False), ts, ts),
         )
         return get_run(run_id, conn=conn)
 
@@ -594,6 +691,19 @@ def merge_run_metadata(run_id: str, patch: dict[str, Any]) -> dict[str, Any]:
 
 def update_run_status_if_task_open(run_id: str, status: str) -> dict[str, Any]:
     """Atomically ignore late status writes after an identified task closes."""
+    run, _updated = update_run_if_task_open(run_id, status=status)
+    return run
+
+
+def update_run_if_task_open(
+    run_id: str,
+    *,
+    status: str | None = None,
+    metadata_patch: dict[str, Any] | None = None,
+    event_message: str = "",
+    event_level: str = "info",
+) -> tuple[dict[str, Any], bool]:
+    """Atomically update a run only while its translation task remains open."""
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -601,19 +711,76 @@ def update_run_status_if_task_open(run_id: str, status: str) -> dict[str, Any]:
             raise KeyError(run_id)
         run = row_to_dict(row)
         task_state = str((run.get("metadata") or {}).get("translation_task_state") or "").strip().lower()
-        if task_state in {"delivered", "canceled", "abandoned", "closed"}:
-            if run.get("status") in {"queued", "running"}:
+        if task_state in _TRANSLATION_TASK_TERMINAL_STATES:
+            if run.get("status") in {"created", "queued", "running"}:
                 conn.execute(
                     "UPDATE runs SET status = 'canceled', updated_at = ? WHERE id = ?",
                     (now_iso(), run_id),
                 )
-                return get_run(run_id, conn=conn)
-            return run
+                return get_run(run_id, conn=conn), False
+            return run, False
+        updated_at = now_iso()
+        metadata = {**(run.get("metadata") or {}), **(metadata_patch or {})}
         conn.execute(
-            "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
-            (status, now_iso(), run_id),
+            """
+            UPDATE runs
+            SET status = COALESCE(?, status), metadata_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, json.dumps(metadata, ensure_ascii=False), updated_at, run_id),
         )
-        return get_run(run_id, conn=conn)
+        if event_message:
+            conn.execute(
+                "INSERT INTO events (run_id, level, message, created_at) VALUES (?, ?, ?, ?)",
+                (run_id, event_level, event_message, updated_at),
+            )
+        return get_run(run_id, conn=conn), True
+
+
+def prepare_runs_for_queue(
+    run_ids: list[str],
+    metadata_patch: dict[str, Any],
+    *,
+    queueable_statuses: set[str] | None = None,
+    event_message: str = "",
+) -> list[dict[str, Any]]:
+    """Atomically guard task terminal state before marking runs queued."""
+    if not run_ids:
+        return []
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows: list[dict[str, Any]] = []
+        for run_id in run_ids:
+            row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            rows.append(row_to_dict(row))
+
+        for run in rows:
+            metadata = run.get("metadata") or {}
+            task_id = str(metadata.get("translation_task_id") or "").strip()
+            task_state = str(metadata.get("translation_task_state") or "").strip().lower()
+            if task_id and task_state in _TRANSLATION_TASK_TERMINAL_STATES:
+                raise TranslationTaskClosedError(task_id, task_state)
+
+        updated_at = now_iso()
+        prepared: list[dict[str, Any]] = []
+        for run in rows:
+            if queueable_statuses is not None and str(run.get("status") or "") not in queueable_statuses:
+                prepared.append(run)
+                continue
+            merged_metadata = {**(run.get("metadata") or {}), **(metadata_patch or {})}
+            conn.execute(
+                "UPDATE runs SET status = 'queued', metadata_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(merged_metadata, ensure_ascii=False), updated_at, run["id"]),
+            )
+            if event_message:
+                conn.execute(
+                    "INSERT INTO events (run_id, level, message, created_at) VALUES (?, 'info', ?, ?)",
+                    (run["id"], event_message, updated_at),
+                )
+            prepared.append(get_run(run["id"], conn=conn))
+        return prepared
 
 
 def set_translation_task_terminal_state(project_id: str, translation_task_id: str, state: str) -> dict[str, Any]:
@@ -699,7 +866,7 @@ def set_translation_task_terminal_state(project_id: str, translation_task_id: st
             conn.execute(
                 "UPDATE runs SET status = ?, metadata_json = ?, updated_at = ? WHERE id = ?",
                 (
-                    "canceled" if run.get("status") in {"queued", "running"} else run.get("status"),
+                    "canceled" if state == "canceled" or run.get("status") in {"queued", "running"} else run.get("status"),
                     json.dumps(metadata, ensure_ascii=False),
                     updated_at,
                     run["id"],
@@ -833,6 +1000,7 @@ def cancel_announcement_task(
     task_id: str,
     canceled_at: str,
     expected_statuses: list[str] | None = None,
+    audit_patch: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -842,32 +1010,63 @@ def cancel_announcement_task(
             raise AnnouncementTaskStatusConflictError(task_id, task["status"])
         if task["status"] == "delivered":
             return task
+        if task["status"] == "canceled":
+            effective_canceled_at = str((task.get("metadata") or {}).get("canceled_at") or canceled_at)
+            for language in task.get("languages") or []:
+                if language["status"] in {"delivered", "canceled"}:
+                    continue
+                language_metadata = {
+                    **(language.get("metadata") or {}),
+                    "canceled_at": effective_canceled_at,
+                }
+                conn.execute(
+                    """
+                    UPDATE announcement_task_languages
+                    SET status = 'canceled', metadata_json = ?, updated_at = ?
+                    WHERE task_id = ? AND language = ?
+                      AND status NOT IN ('delivered', 'canceled')
+                    """,
+                    (
+                        json.dumps(language_metadata, ensure_ascii=False),
+                        now_iso(),
+                        task_id,
+                        language["language"],
+                    ),
+                )
+            return get_announcement_task(task_id, conn=conn)
 
         effective_canceled_at = str((task.get("metadata") or {}).get("canceled_at") or canceled_at)
-        if task["status"] != "canceled":
-            metadata = {**(task.get("metadata") or {}), "canceled_at": effective_canceled_at}
-            conn.execute(
-                """
-                UPDATE announcement_tasks
-                SET status = 'canceled', metadata_json = ?, updated_at = ?
-                WHERE id = ? AND status NOT IN ('delivered', 'canceled')
-                """,
-                (json.dumps(metadata, ensure_ascii=False), now_iso(), task_id),
-            )
+        metadata = {
+            **(task.get("metadata") or {}),
+            **(audit_patch or {}),
+            "canceled_at": effective_canceled_at,
+        }
+        conn.execute(
+            """
+            UPDATE announcement_tasks
+            SET status = 'canceled', metadata_json = ?, updated_at = ?
+            WHERE id = ? AND status != 'delivered'
+            """,
+            (json.dumps(metadata, ensure_ascii=False), now_iso(), task_id),
+        )
 
         for language in task.get("languages") or []:
-            if language["status"] in {"delivered", "canceled"}:
+            if language["status"] == "delivered":
                 continue
-            metadata = {**(language.get("metadata") or {}), "canceled_at": effective_canceled_at}
+            language_metadata = {
+                **(language.get("metadata") or {}),
+                **(audit_patch or {}),
+                "canceled_at": effective_canceled_at,
+            }
             conn.execute(
                 """
                 UPDATE announcement_task_languages
                 SET status = 'canceled', metadata_json = ?, updated_at = ?
                 WHERE task_id = ? AND language = ?
-                  AND status NOT IN ('delivered', 'canceled')
+                  AND status != 'delivered'
                 """,
                 (
-                    json.dumps(metadata, ensure_ascii=False),
+                    json.dumps(language_metadata, ensure_ascii=False),
                     now_iso(),
                     task_id,
                     language["language"],
@@ -939,6 +1138,33 @@ def merge_announcement_task_metadata(task_id: str, patch: dict[str, Any]) -> dic
             (json.dumps(merged, ensure_ascii=False), now_iso(), task_id),
         )
         return merged
+
+
+def prepare_announcement_task_for_queue(
+    task_id: str,
+    metadata_patch: dict[str, Any],
+    *,
+    current_step: int,
+) -> dict[str, Any]:
+    """Atomically guard announcement terminal state before marking it queued."""
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM announcement_tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        task = announcement_task_row_to_dict(row)
+        if task["status"] in {"delivered", "canceled"}:
+            raise AnnouncementTaskStatusConflictError(task_id, task["status"])
+        metadata = {**(task.get("metadata") or {}), **(metadata_patch or {})}
+        conn.execute(
+            """
+            UPDATE announcement_tasks
+            SET status = 'queued', current_step = ?, metadata_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (current_step, json.dumps(metadata, ensure_ascii=False), now_iso(), task_id),
+        )
+        return get_announcement_task(task_id, conn=conn)
 
 
 def upsert_announcement_task_language(
@@ -2076,32 +2302,57 @@ def _claim_job_lease(
     name: str,
     job_id: str,
     metadata: dict[str, Any] | None,
+    operator_name: str = "",
 ) -> tuple[bool, dict[str, Any] | None]:
     row = conn.execute("SELECT * FROM job_leases WHERE name = ?", (name,)).fetchone()
     if row and row["status"] == "running" and row["job_id"] != job_id:
-        return False, {"reason": "project_busy", "active_job_id": row["job_id"]}
+        return False, {
+            "reason": "project_busy",
+            "active_job_id": row["job_id"],
+            "operator_name": str(row["operator_name"] or ""),
+        }
     if row and row["job_id"] == job_id and row["status"] == "running":
         return True, None
     ts = now_iso()
     conn.execute(
         """
-        INSERT INTO job_leases (name, job_id, status, cancel_requested, metadata_json, created_at, updated_at)
-        VALUES (?, ?, 'running', 0, ?, ?, ?)
+        INSERT INTO job_leases
+          (name, job_id, operator_name, status, cancel_requested, metadata_json, created_at, updated_at)
+        VALUES (?, ?, ?, 'running', 0, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
           job_id = excluded.job_id,
+          operator_name = excluded.operator_name,
           status = 'running',
           cancel_requested = 0,
           metadata_json = excluded.metadata_json,
           updated_at = excluded.updated_at
         """,
-        (name, job_id, json.dumps(metadata or {}, ensure_ascii=False), ts, ts),
+        (name, job_id, operator_name, json.dumps(metadata or {}, ensure_ascii=False), ts, ts),
     )
     return True, None
 
 
-def acquire_job_lease(name: str, job_id: str, metadata: dict[str, Any] | None = None) -> bool:
+def _project_id_from_job_lease_name(name: str) -> str:
+    prefix = "long_text:"
+    return name[len(prefix):] if name.startswith(prefix) else ""
+
+
+def acquire_job_lease(
+    name: str,
+    job_id: str,
+    metadata: dict[str, Any] | None = None,
+    *,
+    operator_name: str = "",
+) -> bool:
     with connect() as conn:
-        acquired, _conflict = _claim_job_lease(conn, name, job_id, metadata)
+        conn.execute("BEGIN IMMEDIATE")
+        project_id = _project_id_from_job_lease_name(name)
+        if project_id:
+            try:
+                require_project_active(conn, project_id)
+            except ProjectNotActiveError:
+                return False
+        acquired, _conflict = _claim_job_lease(conn, name, job_id, metadata, operator_name)
         return acquired
 
 
@@ -2110,13 +2361,23 @@ def acquire_job_lease_for_open_task_run(
     job_id: str,
     run_id: str,
     metadata: dict[str, Any] | None = None,
+    *,
+    operator_name: str = "",
 ) -> tuple[bool, dict[str, Any] | None]:
     """Validate task state and claim its lease at one SQLite write-transaction linearization point."""
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT metadata_json FROM runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute("SELECT project_id, metadata_json FROM runs WHERE id = ?", (run_id,)).fetchone()
         if row is None:
             return False, {"reason": "run_missing", "run_id": run_id}
+        try:
+            require_project_active(conn, str(row["project_id"] or ""))
+        except ProjectNotActiveError as exc:
+            return False, {
+                "reason": "project_not_active",
+                "project_id": exc.project_id,
+                "state": exc.state,
+            }
         run_metadata = json.loads(row["metadata_json"] or "{}")
         task_state = str(run_metadata.get("translation_task_state") or "").strip().lower()
         if task_state in _TRANSLATION_TASK_TERMINAL_STATES:
@@ -2126,7 +2387,7 @@ def acquire_job_lease_for_open_task_run(
                 "translation_task_id": str(run_metadata.get("translation_task_id") or ""),
                 "state": task_state,
             }
-        return _claim_job_lease(conn, name, job_id, metadata)
+        return _claim_job_lease(conn, name, job_id, metadata, operator_name)
 
 
 def release_job_lease(name: str, job_id: str, *, status: str = "completed", metadata: dict[str, Any] | None = None) -> None:

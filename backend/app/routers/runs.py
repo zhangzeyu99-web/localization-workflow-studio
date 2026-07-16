@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-from .. import db, operator_context
+from .. import background_jobs, db, operator_context
 from ..ai_input_audit import run_ai_input_summary
-from ..jobs import (
-    active_job_id_for_project,
-    cancel_singleton_job,
-    start_singleton_job,
-)
 from ..languages import require_supported_language
 from ..schemas import (
     MultilingualQueueRequest,
@@ -25,11 +20,9 @@ from ..workflow import (
     translation_batch_file,
     translation_run_progress,
     translation_task_continuation_metadata,
-    update_task_run_status,
     user_facing_error,
 )
 from .shared import (
-    _job_conflict_detail,
     _resolve_task_code,
     _validate_run_input_artifact,
 )
@@ -53,13 +46,6 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     _validate_run_input_artifact(payload)
-    active = [
-        run
-        for run in db.list_runs(payload.project_id)
-        if run["kind"] == payload.kind and run["status"] in {"queued", "running"}
-    ]
-    if active:
-        raise HTTPException(status_code=409, detail=f"{payload.kind} run already active for this project")
     reference_artifact_ids = [str(item).strip() for item in payload.reference_artifact_ids if str(item).strip()]
     for artifact_id in reference_artifact_ids:
         try:
@@ -69,14 +55,15 @@ def create_run(payload: RunCreate) -> dict[str, Any]:
         if artifact["project_id"] != payload.project_id:
             raise HTTPException(status_code=400, detail=f"reference artifact does not belong to project: {artifact_id}")
     continuation_metadata: dict[str, Any] = {}
-    if payload.kind == "qa" and payload.source_run_id:
+    if payload.source_run_id:
         try:
             source_run = db.get_run(payload.source_run_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="source run not found") from exc
         if source_run["project_id"] != payload.project_id:
             raise HTTPException(status_code=400, detail="source run does not belong to project")
-        continuation_metadata = translation_task_continuation_metadata(source_run)
+        if payload.kind == "qa":
+            continuation_metadata = translation_task_continuation_metadata(source_run)
     metadata = {
         "input_artifact_id": payload.input_artifact_id,
         "term_artifact_id": payload.term_artifact_id,
@@ -192,45 +179,7 @@ def _start_translation_background(run_id: str, payload: TranslateRequest) -> dic
         ensure_task_run_open(run)
     except db.TranslationTaskClosedError as exc:
         raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
-    project_id = run["project_id"]
-    active = active_job_id_for_project(project_id)
-    job_id = f"run:{run_id}"
-    if active and active != job_id:
-        cancel_quick_task_run(run_id)
-        raise HTTPException(status_code=409, detail=_job_conflict_detail({"reason": "project_busy", "active_job_id": active}))
-    if run["status"] == "running" and active == job_id:
-        return get_run(run_id)
-    db.merge_run_metadata(run_id, {"queued_at": db.now_iso()})
-    try:
-        ensure_task_run_open(update_task_run_status(run_id, "queued"))
-    except db.TranslationTaskClosedError as exc:
-        raise HTTPException(status_code=409, detail=user_facing_error(exc)) from exc
-
-    def worker(cancel_event: Any) -> None:
-        try:
-            run_translate_sync(run_id, payload, cancel_event=cancel_event)
-        except Exception as exc:
-            try:
-                current = db.get_run(run_id)
-                if current.get("status") not in {"failed", "canceled", "needs_input", "passed"}:
-                    db.merge_run_metadata(run_id, {"error": user_facing_error(exc)})
-                    update_task_run_status(run_id, "failed")
-            except Exception:
-                pass
-
-    started, conflict = start_singleton_job(
-        project_id,
-        job_id,
-        worker,
-        task_run_id=run_id,
-    )
-    if not started and conflict:
-        db.merge_run_metadata(run_id, {"queue_error": f"job start rejected: {conflict}"})
-        if cancel_quick_task_run(run_id).get("status") != "canceled":
-            update_task_run_status(run_id, "queued")
-        raise HTTPException(status_code=409, detail=_job_conflict_detail(conflict))
-    db.add_event(run_id, "translation background job started")
-    return get_run(run_id)
+    return background_jobs.start_translation(run_id, payload)
 
 
 @router.post("/api/runs/{run_id}/translate/start")
@@ -247,7 +196,9 @@ def translate_resume(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
 def translate_cancel(run_id: str) -> dict[str, Any]:
     try:
         run = db.get_run(run_id)
-        cancel_singleton_job(run["project_id"], f"run:{run_id}")
+        canceled = background_jobs.cancel(f"run:{run_id}")
+        if canceled is None and run.get("status") in {"queued", "running"}:
+            raise HTTPException(status_code=404, detail="active translation job not found")
         cancel_translation_run(run_id)
         cancel_quick_task_run(run_id)
         return get_run(run_id)

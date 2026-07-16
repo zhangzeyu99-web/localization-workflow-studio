@@ -148,7 +148,7 @@ def test_qa_background_start_passes_clean_workbook(tmp_path: Path) -> None:
         assert final["metadata"]["quality_summary"]["passed"] is True
 
 
-def test_qa_cancel_endpoint_records_request(tmp_path: Path) -> None:
+def test_qa_cancel_endpoint_returns_404_without_active_queue_job(tmp_path: Path) -> None:
     workbook = tmp_path / "passing.xlsx"
     _passing_workbook(workbook)
     with TestClient(app) as client:
@@ -159,8 +159,8 @@ def test_qa_cancel_endpoint_records_request(tmp_path: Path) -> None:
             json={"project_id": project["id"], "kind": "qa", "language": "en", "input_artifact_id": artifact["id"]},
         ).json()
         response = client.post(f"/api/runs/{run['id']}/qa/cancel")
-        assert response.status_code == 200
-        assert response.json()["metadata"].get("cancel_requested_at")
+        assert response.status_code == 404
+        assert db.get_run(run["id"])["status"] == "created"
 
 
 def test_run_qa_sync_raises_when_cancel_event_preset(tmp_path: Path) -> None:

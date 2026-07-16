@@ -25,10 +25,11 @@ import { useGlossaryActions } from './hooks/useGlossaryActions'
 import { useAnnouncementActions } from './hooks/useAnnouncementActions'
 import { ActiveJobsBadge } from './components/system/ActiveJobsBadge'
 import { ActiveJobsPanel } from './components/system/ActiveJobsPanel'
-import { onOpenActiveJobsPanelRequest } from './components/system/activeJobsPanelBus'
+import { OperatorIdentityControl } from './components/system/OperatorIdentityControl'
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { artifactForProject, preferredTranslationResultArtifact, runForProject } from './domain/projectState'
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
+import { projectQueueJobCount, queueJobKindLabel } from './domain/jobQueues'
 import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
 import { scopeProjectToLanguage } from './domain/projectAssets'
 import { announcementTaskStatusConflict, selectAnnouncementTaskLifecycle, type AnnouncementSessionScope } from './domain/announcementTaskLifecycle'
@@ -51,6 +52,7 @@ import {
   type FormalTranslationTask,
   type TranslationTaskSession,
 } from './domain/translationTaskLifecycle'
+import { clearSessionNavigation, readSessionNavigation, writeSessionNavigation, type SessionNavigation, type SessionTaskScope } from './sessionNavigation'
 
 const QuickTaskWizard = lazy(() => import('./components/quickTask/QuickTaskWizard').then((m) => ({ default: m.QuickTaskWizard })))
 const AnnouncementWizard = lazy(() => import('./components/announcement/AnnouncementWorkflow').then((m) => ({ default: m.AnnouncementWizard })))
@@ -62,7 +64,7 @@ declare global {
   }
 }
 
-import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, AppSettings, Artifact, DeliverableTask, GeneratedDeliveryState, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, Project, ProjectTab, QualityIssue, Run, TranslationReadiness, AppView } from './types'
+import type { AnnouncementLookupResult, AnnouncementTask, AppRuntimeVersion, AppSettings, Artifact, DeliverableTask, GeneratedDeliveryState, GlossaryBatch, GlossaryCandidate, GlossaryPreviewRow, JobQueueEntry, Project, ProjectTab, QualityIssue, Run, TranslationReadiness, AppView } from './types'
 
 
 function App() {
@@ -102,6 +104,11 @@ function App() {
   const [translationTaskId, setTranslationTaskId] = useState('')
   const translationTaskIdRef = useRef('')
   const translationTaskSessionsRef = useRef(new Map<string, TranslationTaskSession>())
+  const restoredNavigationRef = useRef<SessionNavigation | null | undefined>(undefined)
+  if (restoredNavigationRef.current === undefined) restoredNavigationRef.current = readSessionNavigation()
+  const [restoredTaskScopeHandled, setRestoredTaskScopeHandled] = useState(() => (
+    !restoredNavigationRef.current || restoredNavigationRef.current.view === 'overview'
+  ))
   const [hydratedProjectId, setHydratedProjectId] = useState('')
   const projectNavigationRef = useRef(new Map<string, { view: AppView; tab: ProjectTab; step: number }>())
   const [intro, setIntro] = useState('')
@@ -540,9 +547,9 @@ function App() {
     }
   }, [current, invalidateQuickTaskSession, captureAnnouncementSession, refreshCurrent, isCurrentAnnouncementSession, openAnnouncementTask, confirm, setStatusForProject])
 
-  const openQuickTaskGroup = useCallback((project: Project, group: QuickTaskGroup | null, message: string) => {
+  const openQuickTaskGroup = useCallback((project: Project, group: QuickTaskGroup | null, message: string, preferredRunId = '') => {
     const taskId = group?.taskId || createQuickTaskId()
-    const selectedRun = group?.activeRun || group?.latestRun || null
+    const selectedRun = group?.runs.find((run) => run.id === preferredRunId) || group?.activeRun || group?.latestRun || null
     const initialRun = selectedRun
       ? { ...selectedRun, artifacts: runArtifacts(project, selectedRun.id) }
       : null
@@ -789,7 +796,22 @@ function App() {
   }, [current, beginQuickTaskSession, setPrimaryLanguage])
 
   useEffect(() => {
-    refreshProjects().catch(() => undefined).finally(() => setProjectsReady(true))
+    const restored = restoredNavigationRef.current
+    refreshProjects(restored?.projectId)
+      .then(() => {
+        if (restored && currentIdRef.current === restored.projectId) {
+          setView(restored.view)
+          setTab(restored.tab)
+          setStep(restored.step)
+          return
+        }
+        clearSessionNavigation()
+        setView('overview')
+        setTab('meta')
+        setStep(1)
+      })
+      .catch(() => clearSessionNavigation())
+      .finally(() => setProjectsReady(true))
     refreshSettings()
     refreshRuntimeVersion()
     refreshLanguageOptions(API)
@@ -798,9 +820,21 @@ function App() {
   }, [])
 
   useProjectListPolling(refreshProjects, currentIdRef)
-  const activeJobs = useActiveJobsPolling()
+  const { queues: jobQueues, refresh: refreshJobQueues } = useActiveJobsPolling()
 
-  useEffect(() => onOpenActiveJobsPanelRequest(() => setActiveJobsPanelOpen(true)), [])
+  const cancelQueueJob = useCallback(async (job: JobQueueEntry) => {
+    const accepted = await confirm(
+      `确定取消“${job.project_name || '未知项目'}”的${queueJobKindLabel(job.job_kind)}任务吗？`,
+      { title: '取消后台任务', confirmLabel: '确认取消', cancelLabel: '返回', tone: 'warn' }
+    )
+    if (!accepted) return
+    try {
+      await api(`/api/system/job-queues/${encodeURIComponent(job.job_id)}/cancel`, { method: 'POST' }, '取消后台任务')
+      await refreshJobQueues()
+    } catch (error) {
+      setStatus(`取消后台任务失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }, [confirm, refreshJobQueues])
 
   useEffect(() => {
     currentIdRef.current = currentId
@@ -815,23 +849,119 @@ function App() {
   }, [currentId, activateTranslationTaskId, beginAnnouncementSession, resetProjectTransientState])
 
   useEffect(() => {
+    if (!projectsReady || !restoredTaskScopeHandled || !currentId || view !== 'quick' || quickTaskSessionRef.current.projectId === currentId) return
+    beginQuickTaskSession(currentId, `quick-idle-${createQuickTaskId()}`)
+  }, [projectsReady, restoredTaskScopeHandled, currentId, view, beginQuickTaskSession])
+
+  useEffect(() => {
     let canceled = false
+    let retryTimer: number | null = null
     setHydratedProjectId('')
     if (!currentId) return () => { canceled = true }
-    refreshCurrent(currentId)
-      .catch(() => null)
-      .finally(() => {
-        if (!canceled && currentIdRef.current === currentId) setHydratedProjectId(currentId)
-      })
-    return () => { canceled = true }
-  }, [currentId])
+    const scheduleRetry = () => {
+      if (canceled || currentIdRef.current !== currentId) return
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null
+        void hydrate()
+      }, 1000)
+    }
+    const hydrate = async () => {
+      try {
+        const loaded = await refreshCurrent(currentId)
+        if (canceled || currentIdRef.current !== currentId) return
+        if (loaded?.id === currentId) setHydratedProjectId(currentId)
+        else scheduleRetry()
+      } catch {
+        scheduleRetry()
+      }
+    }
+    void hydrate()
+    return () => {
+      canceled = true
+      if (retryTimer !== null) window.clearTimeout(retryTimer)
+    }
+  }, [currentId, refreshCurrent])
+
+  useEffect(() => {
+    if (restoredTaskScopeHandled || !projectsReady) return
+    const restored = restoredNavigationRef.current
+    const storedScope = restored?.taskScope
+    if (!restored || currentId !== restored.projectId) {
+      setRestoredTaskScopeHandled(true)
+      return
+    }
+    if (!current || hydratedProjectId !== currentId) return
+
+    const restoreFormal = restored.view === 'wizard'
+    const restoreQuick = restored.view === 'quick'
+    const restoreAnnouncement = restored.view === 'announcement'
+    let restoreStoredStep = restored.view !== 'wizard'
+
+    if (restoreFormal) {
+      const exactTask = storedScope?.kind === 'formal'
+        ? formalTranslationTasks(current).find((task) => task.translationTaskId === storedScope.taskId) || null
+        : null
+      const task = exactTask || findActiveFormalTask(current) || findUnfinishedFormalTask(current)
+      if (task) {
+        openFormalTaskInWizard(current, task, '\u5df2\u6062\u590d\u5237\u65b0\u524d\u7684\u7ffb\u8bd1\u4efb\u52a1\u3002')
+        if (exactTask) {
+          const session = translationTaskSessionsRef.current.get(current.id)
+          if (session) translationTaskSessionsRef.current.set(current.id, { ...session, step: restored.step })
+          restoreStoredStep = true
+        }
+      } else {
+        beginFreshTranslationTask(current)
+      }
+    } else if (restoreQuick) {
+      const lifecycle = selectQuickTaskLifecycle(current.runs || [])
+      const exactGroup = storedScope?.kind === 'quick'
+        ? lifecycle.groups.find((group) => (
+            !group.terminal
+            && group.taskId === storedScope.taskId
+            && group.runs.some((run) => run.id === storedScope.runId)
+          )) || null
+        : null
+      const group = exactGroup || lifecycle.activeTask || lifecycle.stoppedTasks[0] || null
+      if (group) {
+        const preferredRunId = exactGroup && storedScope?.kind === 'quick' ? storedScope.runId : ''
+        openQuickTaskGroup(current, group, '\u5df2\u6062\u590d\u5237\u65b0\u524d\u7684\u5feb\u901f\u4efb\u52a1\u3002', preferredRunId)
+      } else {
+        openQuickTaskGroup(current, null, '\u65b0\u7684\u5feb\u901f\u4efb\u52a1\u5df2\u5c31\u7eea\u3002')
+      }
+    } else if (restoreAnnouncement) {
+      const tasks = current.announcement_tasks || []
+      const exactTask = storedScope?.kind === 'announcement'
+        ? tasks.find((task) => task.id === storedScope.taskId && task.status !== 'canceled') || null
+        : null
+      const lifecycle = selectAnnouncementTaskLifecycle(tasks)
+      const task = exactTask || lifecycle.activeTask || lifecycle.stoppedTasks[0] || null
+      openAnnouncementTask(task || undefined, task
+        ? '\u5df2\u6062\u590d\u5237\u65b0\u524d\u7684\u516c\u544a\u4efb\u52a1\u3002'
+        : '\u65b0\u7684\u516c\u544a\u4efb\u52a1\u5df2\u5c31\u7eea\u3002')
+    }
+
+    setView(restored.view)
+    setTab(restored.tab)
+    if (restoreStoredStep) setStep(restored.step)
+    setRestoredTaskScopeHandled(true)
+  }, [
+    restoredTaskScopeHandled,
+    projectsReady,
+    currentId,
+    hydratedProjectId,
+    current,
+    beginFreshTranslationTask,
+    openFormalTaskInWizard,
+    openQuickTaskGroup,
+    openAnnouncementTask,
+  ])
 
   useEffect(() => {
     if (currentId) projectNavigationRef.current.set(currentId, { view, tab, step })
   }, [currentId, view, tab, step])
 
   useEffect(() => {
-    if (!currentId || view !== 'wizard' || hydratedProjectId !== currentId) return
+    if (!restoredTaskScopeHandled || !currentId || view !== 'wizard' || hydratedProjectId !== currentId) return
     const session = translationTaskSessionsRef.current.get(currentId)
     if (!session) return
     translationTaskSessionsRef.current.set(currentId, {
@@ -840,7 +970,42 @@ function App() {
       sourceArtifactId: scopedSourceArtifact?.id || '',
       selectedLanguages,
     })
-  }, [currentId, hydratedProjectId, view, step, scopedSourceArtifact?.id, selectedLanguages.join('|')])
+  }, [restoredTaskScopeHandled, currentId, hydratedProjectId, view, step, scopedSourceArtifact?.id, selectedLanguages.join('|')])
+
+  useEffect(() => {
+    if (!projectsReady || !restoredTaskScopeHandled || !currentId) return
+    let taskScope: SessionTaskScope | undefined
+    if (view === 'wizard') {
+      taskScope = translationTaskId ? { kind: 'formal', taskId: translationTaskId } : undefined
+    } else if (view === 'quick') {
+      const session = quickTaskSession?.projectId === currentId ? quickTaskSession : null
+      const group = session && current
+        ? selectQuickTaskLifecycle(current.runs || []).groups.find((item) => item.taskId === session.taskId) || null
+        : null
+      const initialRun = session && quickTaskInitialRun
+        && quickTaskInitialRun.project_id === currentId
+        && quickTaskIdOfRun(quickTaskInitialRun) === session.taskId
+        ? quickTaskInitialRun
+        : null
+      const run = initialRun || group?.activeRun || group?.latestRun || null
+      taskScope = session && run ? { kind: 'quick', taskId: session.taskId, runId: run.id } : undefined
+    } else if (view === 'announcement') {
+      taskScope = announcementFocusTaskId ? { kind: 'announcement', taskId: announcementFocusTaskId } : undefined
+    }
+    writeSessionNavigation({ projectId: currentId, view, tab, step, ...(taskScope ? { taskScope } : {}) })
+  }, [
+    projectsReady,
+    restoredTaskScopeHandled,
+    currentId,
+    current,
+    view,
+    tab,
+    step,
+    translationTaskId,
+    quickTaskSession,
+    quickTaskInitialRun,
+    announcementFocusTaskId,
+  ])
 
   const activeRunPolling = Boolean(pollingLatestRun && ['queued', 'running'].includes(pollingLatestRun.status))
   const activeAnnouncementPolling = Boolean(current?.announcement_tasks?.some((task) => ['queued', 'running'].includes(task.status)))
@@ -1077,8 +1242,8 @@ function App() {
           <div className="header-actions">
             <span className={`status ${busy ? 'running' : ''}`} role="status" aria-live="polite">{busy ? <span className="loading" /> : null}{status}</span>
             <div className="active-jobs-anchor">
-              <ActiveJobsBadge jobs={activeJobs} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
-              {activeJobsPanelOpen ? <ActiveJobsPanel jobs={activeJobs} onClose={() => setActiveJobsPanelOpen(false)} /> : null}
+              <ActiveJobsBadge queues={jobQueues} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
+              {activeJobsPanelOpen ? <ActiveJobsPanel queues={jobQueues} onClose={() => setActiveJobsPanelOpen(false)} onCancel={cancelQueueJob} /> : null}
             </div>
             <span
               className={versionMismatch ? 'runtime-version-badge version-mismatch' : 'runtime-version-badge'}
@@ -1088,6 +1253,7 @@ function App() {
             >
               {versionMismatch ? `v${bundleVersion} / 后端 v${backendVersion} 版本不一致` : `v${bundleVersion}`}
             </span>
+            <OperatorIdentityControl />
             {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}><Settings size={16} aria-hidden="true" />设置</button> : null}
           </div>
         </header>
@@ -1100,6 +1266,7 @@ function App() {
                 <ProjectListItem
                   key={project.id}
                   project={project}
+                  backgroundTaskCount={projectQueueJobCount(jobQueues, project.id)}
                   isActive={project.id === currentId}
                   isDeleteHold={deleteHoldProjectId === project.id}
                   onPointerDown={handleProjectPointerDown}
@@ -1222,6 +1389,7 @@ function App() {
                     project={current}
                     busy={busy}
                     status={status}
+                    jobQueues={jobQueues}
                     settings={settings}
                     scope={quickTaskSession}
                     initialRun={quickTaskInitialRun}
@@ -1234,7 +1402,13 @@ function App() {
                     }}
                     onStartNextTask={() => { void openNewQuickTask() }}
                     onUploadFile={(file, kind, accept) => upload(file, kind, '', accept)}
-                    onStartQuickTask={startQuickTask}
+                    onStartQuickTask={async (payload) => {
+                      const run = await startQuickTask(payload)
+                      if (run && quickTaskSession && isCurrentQuickTaskSession(quickTaskSession) && quickTaskIdOfRun(run) === quickTaskSession.taskId) {
+                        setQuickTaskInitialRun(run)
+                      }
+                      return run
+                    }}
                     onRefreshProject={async (scope) => {
                       const loaded = await refreshCurrent(scope.projectId).catch(() => null)
                       return isCurrentQuickTaskSession(scope) ? loaded : null
@@ -1251,6 +1425,7 @@ function App() {
                     project={current}
                     busy={busy}
                     status={status}
+                    jobQueues={jobQueues}
                     selectedLanguage={selectedLanguage}
                     setSelectedLanguage={setSelectedLanguage}
                     assetArtifacts={scopedAssetArtifacts}
@@ -1310,6 +1485,7 @@ function App() {
                     glossaryPreview={glossaryPreview}
                     settings={settings}
                     status={status}
+                    jobQueues={jobQueues}
                     onBack={() => { setStatusForProject(current.id, '准备就绪'); setView('overview') }}
                     onUploadSource={uploadSourceWorkbook}
                     onUploadTerm={handleUploadTerm}

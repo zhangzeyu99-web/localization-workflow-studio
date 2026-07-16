@@ -46,6 +46,10 @@ test('quick lifecycle groups identified runs, ignores legacy for recovery, and p
     })
     const runs = [
       run('legacy', 'running'),
+      {
+        ...run('prefix-only', 'queued', 'quick-task-prefix-only', undefined, '2026-07-15T09:30:00Z'),
+        metadata: { translation_task_id: 'quick-task-prefix-only' },
+      },
       run('stopped-newer', 'failed', 'quick-task-stopped', undefined, '2026-07-15T10:00:00Z'),
       run('queued', 'queued', 'quick-task-queued', undefined, '2026-07-15T09:00:00Z'),
       run('running', 'running', 'quick-task-running', undefined, '2026-07-15T08:00:00Z'),
@@ -68,6 +72,7 @@ test('quick lifecycle groups identified runs, ignores legacy for recovery, and p
   })
 
   expect(result.groupIds).toContain('quick-task-delivered')
+  expect(result.groupIds).toContain('quick-task-prefix-only')
   expect(result.legacy).toBe(1)
   expect(result.activeTaskId).toBe('quick-task-running')
   expect(result.stoppedTaskIds).toEqual(['quick-task-stopped'])

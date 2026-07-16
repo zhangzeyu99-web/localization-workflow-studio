@@ -12,14 +12,14 @@ from fastapi.responses import JSONResponse
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app import db, operator_context
+    from app import background_jobs, db, job_queue, operator_context
     from app.errors import UserFacingError, http_status_for_user_facing_error
-    from app.workflow import reconcile_interrupted_background_jobs, user_facing_error
+    from app.workflow import user_facing_error
     from app.routers.api import router as api_router
 else:
-    from . import db, operator_context
+    from . import background_jobs, db, job_queue, operator_context
     from .errors import UserFacingError, http_status_for_user_facing_error
-    from .workflow import reconcile_interrupted_background_jobs, user_facing_error
+    from .workflow import user_facing_error
     from .routers.api import router as api_router
 
 
@@ -27,8 +27,14 @@ else:
 async def lifespan(app: FastAPI):
     _ = app
     db.init_db()
-    reconcile_interrupted_background_jobs()
-    yield
+    background_jobs.register_handlers()
+    interrupted = job_queue.recover_interrupted_jobs()
+    background_jobs.reconcile_startup(interrupted)
+    job_queue.resume_dispatchers()
+    try:
+        yield
+    finally:
+        job_queue.shutdown_dispatchers(cancel_running=False)
 
 
 def _cors_origins() -> list[str]:
@@ -38,7 +44,7 @@ def _cors_origins() -> list[str]:
     return [*defaults, *[origin for origin in extra if origin not in defaults]]
 
 
-app = FastAPI(title="Localization Workflow Studio", version="1.3.1", lifespan=lifespan)
+app = FastAPI(title="Localization Workflow Studio", version="1.4.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
@@ -84,6 +90,16 @@ async def _handle_user_facing_error(request: Request, exc: UserFacingError) -> J
     return JSONResponse(
         status_code=http_status_for_user_facing_error(exc),
         content={"detail": user_facing_error(exc)},
+    )
+
+
+@app.exception_handler(db.ProjectNotActiveError)
+async def _handle_project_not_active(request: Request, exc: db.ProjectNotActiveError) -> JSONResponse:
+    _ = request
+    missing = exc.state == "missing"
+    return JSONResponse(
+        status_code=404 if missing else 409,
+        content={"detail": "项目不存在" if missing else "项目正在删除，请稍后重试"},
     )
 
 

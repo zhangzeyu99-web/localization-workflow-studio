@@ -2,7 +2,6 @@
 
 import { Settings } from 'lucide-react'
 import { api } from './apiClient'
-import { getOperatorName, setOperatorName } from './operator'
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null)
@@ -11,7 +10,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState('')
-  const [operatorName, setOperatorNameInput] = useState(() => getOperatorName())
   const apiKeyPlaceholder = settings?.api_key === 'configured' ? '已配置；留空不修改' : '首次配置：填写后点击保存'
 
   useEffect(() => {
@@ -26,7 +24,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   }, [])
 
   async function submit(form: FormData) {
-    setOperatorName(String(form.get('operator_name') || ''))
     const saved = await api<Record<string, unknown>>('/api/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -91,17 +88,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             <input name="api_key" type="password" placeholder={apiKeyPlaceholder} />
           </label>
           <p className="settings-wide settings-note">通常只填 AI 服务商、预设和 API 密钥即可；中转站需要额外填写接口地址。长文本拆批、限流、重试和预算提醒由系统按预设自动管理。</p>
-          <label className="settings-wide">
-            <span>操作人昵称（可选）</span>
-            <input
-              name="operator_name"
-              value={operatorName}
-              onChange={(event) => setOperatorNameInput(event.target.value)}
-              placeholder="填写后，创建任务/交付/删除项目会带上你的昵称"
-              maxLength={40}
-            />
-          </label>
-          <p className="settings-wide settings-note">仅保存在本机浏览器，用于团队共用同一个工作台时留痕；不做身份校验，也不影响你能看到或操作哪些项目。</p>
         </div>
         <div className="settings-actions"><button className="btn btn-primary">保存设置</button></div>
       </form>

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from pathlib import Path
 
 os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
@@ -15,12 +15,15 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+import app.background_jobs as background_jobs
 import app.db as db
+import app.job_queue as job_queue
 import app.jobs as jobs
 import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
 from app.providers import test_fake_translate_batch
+from app.schemas import TranslateRequest
 from conftest import reset_data_root, wait_for_background_jobs
 
 
@@ -104,7 +107,7 @@ def test_two_projects_translate_in_parallel_independently(tmp_path: Path, monkey
         assert terminal_a["id"] != terminal_b["id"]
 
 
-def test_same_project_second_translation_rejected_as_project_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_same_project_second_translation_is_accepted_into_fifo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
     with TestClient(app) as client:
@@ -125,60 +128,89 @@ def test_same_project_second_translation_rejected_as_project_busy(tmp_path: Path
             "/api/runs",
             json={"project_id": project["id"], "kind": "translation", "language": "en", "input_artifact_id": artifact_1["id"], "batch_size": 2},
         ).json()
-        # create_run() itself already guards against two active runs of the same
-        # kind in one project (pre-existing, independent of the job lease), so
-        # insert run_2 directly via the db layer to exercise the *lease-level*
-        # project_busy rejection in isolation.
         run_2 = db.insert_run(
             project["id"],
             "translation",
-            "ko",
+            "en",
             metadata={"input_artifact_id": artifact_2["id"], "batch_size": 2, "task_origin": "translation_run"},
         )
 
-        started_1 = client.post(f"/api/runs/{run_1['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        started_1 = client.post(
+            f"/api/runs/{run_1['id']}/translate/start",
+            json={"provider": "test-fake", "batch_size": 2},
+            headers={"X-Operator": "Alice"},
+        )
         assert started_1.status_code == 200, started_1.text
 
-        rejected = client.post(f"/api/runs/{run_2['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
-        assert rejected.status_code == 409
-        detail = rejected.json()["detail"]
-        assert "该项目正在执行任务" in detail
+        queued = client.post(
+            f"/api/runs/{run_2['id']}/translate/start",
+            json={"provider": "test-fake", "batch_size": 2},
+            headers={"X-Operator": "Bob"},
+        )
+        assert queued.status_code == 200, queued.text
+        assert job_queue.get_job(f"run:{run_2['id']}")["status"] == "queued"
+        assert db.get_run(run_2["id"])["status"] == "queued"
 
         terminal_1 = _wait_for_terminal_run(client, run_1["id"])
+        terminal_2 = _wait_for_terminal_run(client, run_2["id"])
         assert terminal_1["status"] == "passed"
+        assert terminal_2["status"] == "passed"
 
 
-def test_capacity_limit_rejects_second_project_when_workbench_is_full(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_capacity_setting_does_not_reject_second_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     save_settings({**DEFAULT_SETTINGS, "max_concurrent_ai_jobs": 1})
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
     with TestClient(app) as client:
         project_a, run_a = _create_project_with_run(client, tmp_path, "Capacity A")
         project_b, run_b = _create_project_with_run(client, tmp_path, "Capacity B")
+        run_b = db.update_run(run_b["id"], status="needs_input")
 
         started_a = client.post(f"/api/runs/{run_a['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
         assert started_a.status_code == 200, started_a.text
 
-        rejected = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
-        assert rejected.status_code == 409
-        detail = rejected.json()["detail"]
-        assert "工作台已有" in detail
-        assert "上限 1" in detail
+        queued = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        assert queued.status_code == 200, queued.text
+        stored_b = client.get(f"/api/runs/{run_b['id']}").json()
+        assert stored_b["status"] == "queued"
+        assert stored_b["metadata"]["queued_at"]
+        assert "queue_error" not in stored_b["metadata"]
 
         terminal_a = _wait_for_terminal_run(client, run_a["id"])
         assert terminal_a["status"] == "passed"
 
-        # The run reaches its terminal status inside the worker target; the
-        # wrapper releases the lease immediately afterwards. Join that wrapper
-        # so this assertion tests cleared capacity rather than the cleanup gap.
-        wait_for_background_jobs()
-        assert jobs.active_job_id_for_project(project_a["id"]) is None
-
-        # Once project A's job clears, project B should be able to start.
-        started_b_retry = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
-        assert started_b_retry.status_code == 200, started_b_retry.text
         terminal_b = _wait_for_terminal_run(client, run_b["id"])
         assert terminal_b["status"] == "passed"
+
+
+def test_announcement_start_uses_quick_lane_without_legacy_capacity_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
+    project = db.insert_project("Announcement Queue Rollback", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {
+            "title": "Rollback",
+            "selected_languages": ["en"],
+            "status": "prepared",
+            "current_step": 6,
+        },
+    )
+    def fake_translate(task_id: str, payload: object, *, cancel_event: object) -> dict:
+        _ = payload, cancel_event
+        db.update_announcement_task(task_id, status="translated", current_step=8)
+        return {"task": db.get_announcement_task(task_id)}
+
+    monkeypatch.setattr(workflow, "translate_announcement_task", fake_translate)
+
+    with TestClient(app) as client:
+        started = client.post(
+            f"/api/announcement-tasks/{task['id']}/translate/start",
+            json={"languages": ["en"], "provider": "test-fake", "batch_size": 2},
+        )
+
+    assert started.status_code == 200, started.text
+    queued = job_queue.get_job(f"announcement:{task['id']}")
+    assert queued is not None
+    assert queued["lane"] == "quick_announcement"
 
 
 def test_reconcile_interrupted_background_jobs_clears_multiple_residual_leases() -> None:
@@ -228,12 +260,69 @@ def test_reconcile_does_not_reopen_terminal_task_with_legacy_running_status() ->
     assert "interrupted_at" not in refreshed["metadata"]
 
 
+def test_job_lease_persists_operator_name() -> None:
+    project = db.insert_project("Operator Lease", "QA", "")
+    lease_name = jobs.lease_name_for_project(project["id"])
+
+    assert db.acquire_job_lease(lease_name, "run:operator", operator_name="Alice")
+
+    lease = db.get_job_lease(lease_name)
+    assert lease is not None
+    assert lease["operator_name"] == "Alice"
+
+
+def test_init_db_adds_operator_name_to_v132_job_lease_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_db = tmp_path / "v1.3.2.sqlite3"
+    with sqlite3.connect(legacy_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE job_leases (
+                name TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'idle',
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO job_leases
+              (name, job_id, status, cancel_requested, metadata_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("long_text:legacy", "run:legacy", "running", 0, "{}", "2026-07-14T00:00:00Z", "2026-07-14T00:00:00Z"),
+        )
+
+    monkeypatch.setattr(db, "DB_PATH", legacy_db)
+    db.init_db()
+
+    with sqlite3.connect(legacy_db) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(job_leases)")}
+        row = conn.execute(
+            "SELECT operator_name FROM job_leases WHERE name = ?",
+            ("long_text:legacy",),
+        ).fetchone()
+
+    assert "operator_name" in columns
+    assert row == ("",)
+
+
 def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
     with TestClient(app) as client:
         project, run = _create_project_with_run(client, tmp_path, "Active Jobs Panel")
-        started = client.post(f"/api/runs/{run['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
+        started = client.post(
+            f"/api/runs/{run['id']}/translate/start",
+            json={"provider": "test-fake", "batch_size": 2},
+            headers={"X-Operator": "Alice"},
+        )
         assert started.status_code == 200, started.text
 
         entry = None
@@ -249,6 +338,7 @@ def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, 
         assert entry["project_name"] == "Active Jobs Panel"
         assert entry["lease_name"] == f"long_text:{project['id']}"
         assert entry["started_at"]
+        assert entry["operator_name"] == "Alice"
 
         _wait_for_terminal_run(client, run["id"])
 
@@ -305,96 +395,59 @@ def test_atomic_task_lease_claim_rejects_terminal_committed_before_claim() -> No
     assert jobs.active_job_id_for_project(project["id"]) is None
 
 
-def test_atomic_task_lease_claim_linearizes_before_later_terminal_and_isolates_worker(
+def test_persistent_queue_staging_cannot_reopen_task_closed_before_activation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = db.insert_project("Atomic claim before terminal", "QA", "")
+    project = db.insert_project("Persistent queue terminal race", "QA", "")
     run = db.insert_run(
         project["id"],
         "translation",
         "en",
-        metadata={"translation_task_id": "task-claim-before-terminal", "task_origin": "translation_run"},
+        metadata={"translation_task_id": "task-persistent-queue-race", "task_origin": "translation_run"},
     )
-    scheduler_thread_id: dict[str, int] = {}
-    before_lease_write = threading.Event()
-    terminal_attempted = threading.Event()
+    staged = threading.Event()
     terminal_committed = threading.Event()
-    allow_lease_write = threading.Event()
-    allow_worker_check = threading.Event()
-    worker_started = threading.Event()
-    worker_isolated = threading.Event()
-    real_connect = db.connect
+    activated: list[str] = []
+    real_enqueue = job_queue.enqueue_job
 
-    @contextmanager
-    def traced_connect():
-        with real_connect() as conn:
-            if threading.get_ident() == scheduler_thread_id.get("value"):
-                paused = False
+    def controlled_enqueue(**kwargs: object) -> dict:
+        queued = real_enqueue(**kwargs)
+        assert queued["status"] == job_queue.STAGING_STATUS
+        staged.set()
+        assert terminal_committed.wait(timeout=5)
+        return queued
 
-                def trace(statement: str) -> None:
-                    nonlocal paused
-                    normalized = " ".join(statement.strip().split()).upper()
-                    if paused or "INSERT INTO JOB_LEASES" not in normalized:
-                        return
-                    paused = True
-                    before_lease_write.set()
-                    assert terminal_attempted.wait(timeout=5)
-                    assert terminal_committed.is_set() is False
-                    assert allow_lease_write.wait(timeout=5)
+    def capture_activation(job_id: str, *, autostart: bool = True) -> dict:
+        _ = autostart
+        activated.append(job_id)
+        queued = job_queue.get_job(job_id)
+        assert queued is not None
+        return queued
 
-                conn.set_trace_callback(trace)
-            yield conn
+    monkeypatch.setattr(background_jobs.job_queue, "enqueue_job", controlled_enqueue)
+    monkeypatch.setattr(background_jobs.job_queue, "activate_job", capture_activation)
 
-    monkeypatch.setattr(db, "connect", traced_connect)
-
-    def worker(cancel_event: threading.Event) -> None:
-        worker_started.set()
-        assert allow_worker_check.wait(timeout=5)
-        if cancel_event.is_set():
-            worker_isolated.set()
-            return
-        try:
-            workflow.ensure_task_run_open(db.get_run(run["id"]))
-        except db.TranslationTaskClosedError:
-            worker_isolated.set()
-
-    def start_job() -> tuple[bool, dict | None]:
-        scheduler_thread_id["value"] = threading.get_ident()
-        return jobs.start_singleton_job(
-            project["id"],
-            f"run:{run['id']}",
-            worker,
-            task_run_id=run["id"],
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        start_future = executor.submit(
+            background_jobs.start_translation,
+            run["id"],
+            TranslateRequest(provider="test-fake"),
         )
-
-    def close_task() -> None:
-        terminal_attempted.set()
-        workflow.mark_translation_task_state(project["id"], "task-claim-before-terminal", "canceled")
+        assert staged.wait(timeout=5)
+        workflow.mark_translation_task_state(project["id"], "task-persistent-queue-race", "canceled")
         terminal_committed.set()
+        with pytest.raises(db.TranslationTaskClosedError):
+            start_future.result(timeout=5)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        start_future = executor.submit(start_job)
-        assert before_lease_write.wait(timeout=5)
-        terminal_future = executor.submit(close_task)
-        assert terminal_attempted.wait(timeout=5)
-        time.sleep(0.05)
-        assert terminal_committed.is_set() is False
-        allow_lease_write.set()
-        started, conflict = start_future.result(timeout=5)
-        terminal_future.result(timeout=5)
-
-    assert started is True
-    assert conflict is None
-    assert terminal_committed.is_set() is True
-    assert worker_started.wait(timeout=5)
-    assert jobs.cancel_singleton_job(project["id"], f"run:{run['id']}") is True
-    allow_worker_check.set()
-    assert worker_isolated.wait(timeout=5)
-    assert db.get_run(run["id"])["status"] == "canceled"
-    wait_for_background_jobs()
+    refreshed = db.get_run(run["id"])
+    assert refreshed["status"] == "canceled"
+    assert refreshed["metadata"]["translation_task_state"] == "canceled"
+    assert activated == []
+    queued = job_queue.get_job(f"run:{run['id']}")
+    assert queued is None or queued["status"] not in {job_queue.STAGING_STATUS, "queued", "running"}
 
 
-def test_active_jobs_endpoint_reports_two_projects_running_concurrently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_active_jobs_excludes_second_project_waiting_in_same_lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
 
     with TestClient(app) as client:
@@ -406,19 +459,15 @@ def test_active_jobs_endpoint_reports_two_projects_running_concurrently(tmp_path
         started_b = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
         assert started_b.status_code == 200, started_b.text
 
-        observed_both_running = False
-        for _ in range(40):
-            active = client.get("/api/system/active-jobs").json()
-            project_ids = {item["project_id"] for item in active}
-            if {project_a["id"], project_b["id"]}.issubset(project_ids):
-                observed_both_running = True
-                lease_names = {item["lease_name"] for item in active}
-                assert f"long_text:{project_a['id']}" in lease_names
-                assert f"long_text:{project_b['id']}" in lease_names
-                assert all(item["job_kind"] == "translation" for item in active)
-                break
-            time.sleep(0.05)
-        assert observed_both_running, "expected both projects' jobs to be reported by /api/system/active-jobs concurrently"
+        active = client.get("/api/system/active-jobs").json()
+        assert [item["project_id"] for item in active] == [project_a["id"]]
+        assert active[0]["lane"] == "language_table"
+        queues = client.get("/api/system/job-queues").json()
+        language_lane = next(item for item in queues["lanes"] if item["lane"] == "language_table")
+        assert language_lane["running"]["project_id"] == project_a["id"]
+        assert language_lane["queued"][0]["project_id"] == project_b["id"]
+        assert language_lane["queued"][0]["position"] == 1
+        assert language_lane["queued"][0]["ahead"] == 1
 
         assert _wait_for_terminal_run(client, run_a["id"])["status"] == "passed"
         assert _wait_for_terminal_run(client, run_b["id"])["status"] == "passed"

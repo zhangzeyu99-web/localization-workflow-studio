@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import shutil
+import sqlite3
 from pathlib import Path
 from .. import db, operator_context
 from ..ai_input_audit import project_ai_input_summary
@@ -241,7 +242,13 @@ def delete_project(project_id: str) -> dict[str, bool]:
     # still be reading/writing project files and artifacts on disk. Deleting
     # the project directory out from under it races the job's file IO, so
     # refuse the delete while a job is active instead of racing it.
-    active_job_id = active_job_id_for_project(project_id)
+    try:
+        active_job_id = active_job_id_for_project(project_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="任务队列状态暂时不可用，请稍后重试",
+        ) from exc
     if active_job_id:
         raise HTTPException(
             status_code=409,
@@ -254,6 +261,18 @@ def delete_project(project_id: str) -> dict[str, bool]:
         project_name = db.get_project(project_id).get("name") or ""
         run_ids = [run["id"] for run in db.list_runs(project_id)]
         db.delete_project(project_id)
+    except db.ProjectHasActiveJobError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该项目正在执行任务（{describe_job(exc.job_id)}），请先取消或等待任务完成再删除",
+        ) from exc
+    except db.ProjectNotActiveError as exc:
+        raise HTTPException(status_code=409, detail="该项目正在删除，请稍后重试") from exc
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="任务队列状态暂时不可用，请稍后重试",
+        ) from exc
     except KeyError:
         existed = False
     # delete_project() deletes this project's own run events in the same

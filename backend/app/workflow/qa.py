@@ -31,6 +31,30 @@ from .translation_tasks import ensure_task_run_open, is_quick_task_run, translat
 WORKBOOK_ID_HEADER_ALIASES = ["id", "key", "编号", "序号"]
 
 
+def _is_quick_task_run(run: dict[str, Any], seen: set[str] | None = None) -> bool:
+    metadata = run.get("metadata") or {}
+    if metadata.get("task_origin") == "quick_task":
+        return True
+    seen = seen or set()
+    run_id = str(run.get("id") or "")
+    if run_id in seen:
+        return False
+    seen.add(run_id)
+    for key in ("source_run_id", "manual_fix_source_run_id", "model_fix_source_run_id"):
+        source_run_id = str(metadata.get(key) or "").strip()
+        if not source_run_id or source_run_id in seen:
+            continue
+        try:
+            source_run = db.get_run(source_run_id)
+            if source_run.get("project_id") != run.get("project_id"):
+                continue
+            if _is_quick_task_run(source_run, seen):
+                return True
+        except KeyError:
+            continue
+    return False
+
+
 def _harness_summary(harness: dict[str, Any]) -> dict[str, Any]:
     return {
         "source": "project_harness",

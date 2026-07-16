@@ -2,6 +2,43 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.4.0 - 2026-07-15
+
+Persistent dual-lane queue and shared-workbench reliability release.
+
+- Added two durable FIFO channels: one global formal language-table worker and one global quick-task/announcement worker. The two channels may run concurrently for the same project while each channel remains strictly serial.
+- Added restart recovery, queue-level cancellation audit, operator/position visibility, dual-lane queue APIs, and queue-authoritative header/project badges. Running work pauses for explicit continuation after restart; waiting work resumes automatically.
+- Fixed orphaned legacy QA cleanup, created-to-queued state ordering, line-proofread Chinese status text, queue/handler race conditions, and graceful single-worker shutdown.
+- Quick tasks and announcements still generate downloadable outputs but no longer write project translation archives; formal language-table QA/delivery continues to archive normally.
+- Release packaging now emits and verifies a `.zip.sha256` sidecar in addition to the archive's internal member checksum manifest.
+
+## 1.3.4 - 2026-07-15
+
+Unicode operator nickname compatibility release.
+
+- Operator nicknames are now percent-encoded before being attached to browser API requests, so Chinese and other non-Latin nicknames no longer trigger the browser `Headers` ISO-8859-1 error.
+- The backend decodes the transport-safe nickname before attribution, preserving the original nickname in events, active-job ownership, and conflict messages.
+- Added backend and browser regression coverage for a Chinese nickname creating an API-backed project/run.
+- Deployment guidance now requires a fresh release directory and atomic switch instead of overlaying new files onto an old frontend build.
+
+## 1.3.3 - 2026-07-14
+
+Shared-workbench operator attribution release.
+
+- Added an always-visible operator nickname control independent of the hidden online settings page; the nickname remains browser-local and is sent with API requests through `X-Operator`.
+- Cloud deployments now require a nickname before background translation, QA, model-fix, announcement, or multilingual AI work can start or resume, and reject the request before changing task state.
+- Background job leases persist the initiating operator. Active-job panels and same-project conflict messages now show who owns the running task, with a clear fallback for older unsigned leases.
+- Added direct “设置昵称” recovery from blocked workflow status messages and responsive desktop/narrow-screen coverage for the new control.
+
+## 1.3.2 - 2026-07-14
+
+Production deployment reliability release.
+
+- Added installable single-node systemd and Nginx templates with same-origin routing, production cache headers, large-upload handling, and a release-independent persistent data directory.
+- Deployment checks now reject Vite development pages, stale HTML/API cache policy, Git/version mismatches, missing public assets, and any mismatch between public HTML, backend asset metadata, and the packaged frontend build.
+- Full-page refresh restores the current project and all workbench views while project, run, artifact, and settings data continue to reload from the API.
+- Release packaging now uses a production allowlist, excludes private/runtime material, scans source and archive text for credentials, and verifies every archive member and checksum after writing.
+
 ## 1.3.1 - 2026-07-12
 
 Background-task model for QA and removal of the global busy lock — the three items deferred from the 2026-07-11 UX audit.

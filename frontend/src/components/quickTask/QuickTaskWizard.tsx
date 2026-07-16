@@ -3,12 +3,13 @@ import { ArrowLeft, Check, Download, Square, Zap } from 'lucide-react'
 import { api } from '../../apiClient'
 import { artifactPickerLabel, uniqueArtifactsByContent } from '../../domain/artifacts'
 import { groupQuickTasks, quickTaskIdOfRun, type QuickTaskGroup, type QuickTaskSessionScope } from '../../domain/quickTaskLifecycle'
+import { quickWorkflowQueueJob, queueJobStatusText } from '../../domain/jobQueues'
 import { aiProviderConfigurationReminder } from '../../domain/providerSettings'
 import { canSkipModelTranslation, effectiveBatchSize, isTranslationRunResumable } from '../../domain/translationFlow'
 import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { ActionStatus, ArtifactNote, FileBox } from '../shared/WorkflowPrimitives'
 import { runStatusLabel } from '../../uiText'
-import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, Project, QuickObjective, Run, TranslationReadiness, TranslationTargets } from '../../types'
+import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, JobQueues, Project, QuickObjective, Run, TranslationReadiness, TranslationTargets } from '../../types'
 
 type StartQuickPayload = {
   inputArtifact: Artifact
@@ -51,6 +52,7 @@ export function QuickTaskWizard({
   project,
   busy,
   status,
+  jobQueues,
   settings,
   scope,
   initialRun,
@@ -66,6 +68,7 @@ export function QuickTaskWizard({
   project: Project
   busy: boolean
   status: string
+  jobQueues: JobQueues
   settings: AppSettings | null
   scope: QuickTaskSessionScope
   initialRun: Run | null
@@ -309,23 +312,27 @@ export function QuickTaskWizard({
     ? `${readiness.source_rows} 行源文 / 已译 ${readiness.translated_rows} / 空译文 ${readiness.empty_target_rows} / 预计 ${readiness.estimated_batches || '-'} 批`
     : '上传后自动检查'
   const apiConfigurationReminder = objective === 'translate' ? aiProviderConfigurationReminder(settings) : ''
-  const startedRunActive = Boolean(startedRun && ['queued', 'running'].includes(startedRun.status))
-  const runBlocksRestart = Boolean(startedRun && (
-    ['passed', 'canceled'].includes(startedRun.status)
-    || ['delivered', 'canceled', 'abandoned', 'closed'].includes(String(startedRun.metadata?.translation_task_state || ''))
+  const projectStartedRun = startedRun?.project_id === project.id ? startedRun : null
+  const quickQueueJob = quickWorkflowQueueJob(jobQueues, project, projectStartedRun)
+  // The persistent queue can stay active after the initiating request returns,
+  // while the task scope prevents an older quick task from controlling this view.
+  const startedRunActive = Boolean(quickQueueJob || (projectStartedRun && ['queued', 'running'].includes(projectStartedRun.status)))
+  const runBlocksRestart = Boolean(projectStartedRun && (
+    ['passed', 'canceled'].includes(projectStartedRun.status)
+    || ['delivered', 'canceled', 'abandoned', 'closed'].includes(String(projectStartedRun.metadata?.translation_task_state || ''))
   ))
   const canStart = Boolean(inputArtifact && !busy && !startedRunActive && !runBlocksRestart && !deliveryBusy)
   const resumableCurrentRun = Boolean(
-    startedRun
-    && quickTaskIdOfRun(startedRun) === scope.taskId
-    && isTranslationRunResumable(startedRun),
+    projectStartedRun
+    && quickTaskIdOfRun(projectStartedRun) === scope.taskId
+    && isTranslationRunResumable(projectStartedRun),
   )
   const launchLabel = objective === 'qa'
     ? `开始 ${lang.short} 校对`
     : resumableCurrentRun
       ? `继续 ${lang.short} 翻译`
       : `开始 ${lang.short} 翻译`
-
+  const effectiveStatus = queueJobStatusText(quickQueueJob) || status
   return (
     <>
       <span className="sr-only" data-testid="quick-task-id" data-task-id={scope.taskId}>{scope.taskId}</span>
@@ -351,7 +358,7 @@ export function QuickTaskWizard({
           </button>
         ))}
       </div>
-      <ActionStatus status={localStatus || status} busy={busy || deliveryBusy} />
+      <ActionStatus status={localStatus || effectiveStatus} busy={busy || deliveryBusy} />
       <div className="quick-task-card">
         {quickStep === 1 ? (
           <>
