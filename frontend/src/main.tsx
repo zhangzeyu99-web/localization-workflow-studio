@@ -1258,7 +1258,7 @@ function App() {
             >
               {versionMismatch ? `v${bundleVersion} / 后端 v${backendVersion} 版本不一致` : `v${bundleVersion}`}
             </span>
-            <OperatorIdentityControl />
+            {!authEnabled ? <OperatorIdentityControl /> : null}
             {showSettingsButton ? <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}><Settings size={16} aria-hidden="true" />设置</button> : null}
             {authEnabled && can(ADMIN) ? <button className="btn btn-ghost" data-testid="open-user-management" onClick={() => setUserManagementOpen(true)}><UserCog size={16} aria-hidden="true" />用户管理</button> : null}
             {authEnabled && user ? (

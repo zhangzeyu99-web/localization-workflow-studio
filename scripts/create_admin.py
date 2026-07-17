@@ -12,6 +12,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app import auth, db  # noqa: E402
 
+MAX_USERNAME_LENGTH = 128
+MIN_PASSWORD_LENGTH = 8
+
 
 def _read_password() -> str:
     from_environment = os.environ.get("LWS_ADMIN_PASSWORD")
@@ -31,6 +34,10 @@ def create_or_reset_admin(username: str, password: str) -> tuple[dict, bool]:
     normalized_username = username.strip()
     if not normalized_username:
         raise ValueError("用户名不能为空")
+    if len(normalized_username) > MAX_USERNAME_LENGTH:
+        raise ValueError(f"用户名不能超过 {MAX_USERNAME_LENGTH} 个字符")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"管理员密码至少 {MIN_PASSWORD_LENGTH} 位")
     existing = db.get_user_by_username(normalized_username)
     updates = {
         "password_hash": auth.hash_password(password),
@@ -39,7 +46,8 @@ def create_or_reset_admin(username: str, password: str) -> tuple[dict, bool]:
         "must_change_password": True,
     }
     if existing is not None:
-        return db.update_user(existing["id"], updates), False
+        updated = db.update_user(existing["id"], updates, revoke_sessions=True)
+        return updated, False
     return (
         db.create_user(
             normalized_username,

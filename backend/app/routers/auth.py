@@ -139,16 +139,18 @@ def change_password(payload: ChangePasswordRequest, response: Response) -> dict[
         raise HTTPException(status_code=400, detail="当前密码不正确")
     if len(payload.new_password) < MIN_NEW_PASSWORD_LENGTH:
         raise HTTPException(status_code=400, detail=f"新密码至少 {MIN_NEW_PASSWORD_LENGTH} 位")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
 
     db.update_user(
         user["id"],
         {"password_hash": auth.hash_password(payload.new_password), "must_change_password": False},
+        revoke_sessions=True,
     )
     # Revoke every existing session (including the one used for this request)
     # and issue a fresh one -- simpler than "revoke others, keep this one" and
     # gives the same guarantee: the pre-change-password token is dead, and
     # exactly one valid session (this browser's) survives.
-    db.delete_sessions_for_user(user["id"])
     token, _session = auth.issue_session(user["id"])
     _set_session_cookie(response, token)
     operator_context.record_operator_audit(DATA_ROOT, "change_password", {"username": user["username"]})

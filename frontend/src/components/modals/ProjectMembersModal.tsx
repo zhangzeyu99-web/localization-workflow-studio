@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { UserMinus, UserPlus, Users } from 'lucide-react'
 import { api } from '../../apiClient'
 import { roleBadgeLabel } from '../../auth/roleText'
@@ -24,20 +24,39 @@ export function ProjectMembersModal({ projectId, projectName, onClose }: { proje
   const [selectedUserId, setSelectedUserId] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const loadGeneration = useRef(0)
   const { confirm, dialog } = useConfirmDialog()
 
-  async function load() {
-    const [nextMembers, nextAddable] = await Promise.all([
-      api<ProjectMember[]>(`/api/projects/${projectId}/members`, undefined, '加载项目成员'),
-      api<AddableUser[]>(`/api/projects/${projectId}/members/addable`, undefined, '加载可添加用户'),
-    ])
-    setMembers(nextMembers)
-    setAddable(nextAddable)
-    setSelectedUserId((value) => nextAddable.some((user) => user.id === value) ? value : (nextAddable[0]?.id || ''))
+  async function load(initial = false) {
+    const generation = ++loadGeneration.current
+    if (initial) {
+      setLoading(true)
+      setError('')
+      setMembers([])
+      setAddable([])
+      setSelectedUserId('')
+    }
+    try {
+      const [nextMembers, nextAddable] = await Promise.all([
+        api<ProjectMember[]>(`/api/projects/${projectId}/members`, undefined, '加载项目成员'),
+        api<AddableUser[]>(`/api/projects/${projectId}/members/addable`, undefined, '加载可添加用户'),
+      ])
+      if (generation !== loadGeneration.current) return
+      setMembers(nextMembers)
+      setAddable(nextAddable)
+      setSelectedUserId((value) => nextAddable.some((user) => user.id === value) ? value : (nextAddable[0]?.id || ''))
+    } catch (err) {
+      if (generation === loadGeneration.current) setError(err instanceof Error ? err.message : String(err))
+      if (!initial) throw err
+    } finally {
+      if (initial && generation === loadGeneration.current) setLoading(false)
+    }
   }
 
   useEffect(() => {
-    void load().catch((err) => setError(err instanceof Error ? err.message : String(err)))
+    void load(true)
+    return () => { loadGeneration.current += 1 }
   }, [projectId])
 
   async function run(action: () => Promise<void>) {
@@ -90,7 +109,8 @@ export function ProjectMembersModal({ projectId, projectName, onClose }: { proje
           </select>
           <button className="btn btn-primary btn-sm" data-testid="add-project-member" disabled={busy || !selectedUserId} onClick={() => { void addMember() }}><UserPlus size={14} aria-hidden="true" />添加成员</button>
         </div>
-        {!addable.length ? <div className="muted management-empty">暂无可添加的 active 用户。</div> : null}
+        {loading ? <div className="muted management-empty" data-testid="project-members-loading"><span className="loading" />正在加载项目成员...</div> : null}
+        {!loading && !error && !addable.length ? <div className="muted management-empty">暂无可添加的 active 用户。</div> : null}
         {error ? <div className="inline-status error" data-testid="project-members-error">{error}</div> : null}
         <div className="management-list">
           {members.map((member) => (
@@ -100,7 +120,7 @@ export function ProjectMembersModal({ projectId, projectName, onClose }: { proje
               <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { void removeMember(member) }}><UserMinus size={14} aria-hidden="true" />移除</button>
             </div>
           ))}
-          {!members.length ? <div className="muted management-empty">当前项目还没有成员。</div> : null}
+          {!loading && !error && !members.length ? <div className="muted management-empty">当前项目还没有成员。</div> : null}
         </div>
       </div>
       {dialog}

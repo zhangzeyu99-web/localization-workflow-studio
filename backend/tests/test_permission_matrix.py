@@ -443,7 +443,7 @@ def test_admin_bypasses_membership_and_can_manage_users(
         assert deleted.status_code == 200, deleted.text
 
 
-def test_role_downgrade_takes_effect_on_the_next_request_in_same_session(
+def test_role_change_revokes_session_and_new_role_applies_after_relogin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     test_app = _required_app(monkeypatch)
@@ -471,8 +471,16 @@ def test_role_downgrade_takes_effect_on_the_next_request_in_same_session(
             f"/api/projects/{project['id']}/glossary",
             json={"source": "立即", "target": "Immediate"},
         )
-        assert after.status_code == 403, after.text
-        assert after.json() == {"detail": "权限不足"}
+        assert after.status_code == 401, after.text
+        assert after.json() == {"detail": "未登录"}
+
+        _login(ops_client, "downgraded-ops")
+        after_relogin = ops_client.post(
+            f"/api/projects/{project['id']}/glossary",
+            json={"source": "重新登录", "target": "Relogin"},
+        )
+        assert after_relogin.status_code == 403, after_relogin.text
+        assert after_relogin.json() == {"detail": "权限不足"}
 
 
 def test_member_can_create_announcement_task(

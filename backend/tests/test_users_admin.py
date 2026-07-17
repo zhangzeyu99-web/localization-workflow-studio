@@ -14,6 +14,7 @@ import app.main as main_module
 from app.config import DATA_ROOT
 from app.operator_context import AUDIT_LOG_FILENAME
 from conftest import reset_data_root
+from scripts.create_admin import create_or_reset_admin
 
 ADMIN_PASSWORD = "Initial-Admin-Password!"
 USER_PASSWORD = "Sup3rSecret1!"
@@ -190,6 +191,17 @@ def test_create_user_invalid_role_returns_422(monkeypatch: pytest.MonkeyPatch) -
     assert response.status_code == 422, response.text
 
 
+def test_create_user_rejects_username_longer_than_login_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as client:
+        _bootstrap_admin_client(client)
+        response = client.post(
+            USERS_URL,
+            json={"username": "u" * 129, "role": "member", "initial_password": USER_PASSWORD},
+        )
+    assert response.status_code == 422, response.text
+
+
 def test_list_users_never_exposes_password_hash(monkeypatch: pytest.MonkeyPatch) -> None:
     test_app = _required_app(monkeypatch)
     with TestClient(test_app) as client:
@@ -223,6 +235,60 @@ def test_update_user_role_and_status(monkeypatch: pytest.MonkeyPatch) -> None:
         assert disabled.status_code == 200, disabled.text
         assert disabled.json()["status"] == "disabled"
         assert disabled.json()["display_name"] == "Disabled Ops"
+
+
+def test_role_change_revokes_existing_sessions_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as admin_client:
+        _bootstrap_admin_client(admin_client)
+        created = _create_user_via_api(admin_client, "role-change-user", "ops")
+
+        with TestClient(test_app) as user_client:
+            _login(user_client, "role-change-user", USER_PASSWORD)
+            assert user_client.get(ME_URL).status_code == 200
+
+            update_response = admin_client.patch(
+                f"{USERS_URL}/{created['id']}", json={"role": "member"}
+            )
+            assert update_response.status_code == 200, update_response.text
+
+            assert user_client.get(ME_URL).status_code == 401
+
+
+def test_create_admin_cli_revokes_existing_session_when_promoting_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as admin_client:
+        _bootstrap_admin_client(admin_client)
+        _create_user_via_api(admin_client, "cli-promote-user", "member")
+
+        with TestClient(test_app) as user_client:
+            _login(user_client, "cli-promote-user", USER_PASSWORD)
+            assert user_client.get(ME_URL).status_code == 200
+
+            updated, created = create_or_reset_admin("cli-promote-user", "Promoted-Admin-Pass1!")
+
+            assert created is False
+            assert updated["role"] == "admin"
+            assert user_client.get(ME_URL).status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("username", "password"),
+    [
+        ("u" * 129, "Valid-Admin-Pass1!"),
+        ("valid-admin", "short"),
+    ],
+)
+def test_create_admin_cli_rejects_credentials_outside_web_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    username: str,
+    password: str,
+) -> None:
+    _required_app(monkeypatch)
+    with pytest.raises(ValueError):
+        create_or_reset_admin(username, password)
 
 
 def test_admin_cannot_demote_self(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,6 +460,24 @@ def test_change_password_weak_new_password_returns_400(monkeypatch: pytest.Monke
 
     # must_change_password must remain untouched after a rejected attempt.
     user = db.get_user_by_username("weak-new")
+    assert user["must_change_password"] is True
+
+
+def test_change_password_rejects_reusing_current_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as admin_client:
+        _bootstrap_admin_client(admin_client)
+        _create_user_via_api(admin_client, "reuse-current", "member")
+
+    with TestClient(test_app) as client:
+        _login(client, "reuse-current", USER_PASSWORD)
+        response = client.post(
+            CHANGE_PASSWORD_URL,
+            json={"current_password": USER_PASSWORD, "new_password": USER_PASSWORD},
+        )
+
+    assert response.status_code == 400, response.text
+    user = db.get_user_by_username("reuse-current")
     assert user["must_change_password"] is True
 
 

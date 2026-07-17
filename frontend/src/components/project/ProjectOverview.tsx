@@ -365,7 +365,7 @@ function ProjectOverviewImpl({
           onGoArchive={() => setTab('archive')}
         />
       ) : null}
-      {membersOpen ? <ProjectMembersModal projectId={project.id} projectName={project.name} onClose={() => setMembersOpen(false)} /> : null}
+      {membersOpen ? <ProjectMembersModal key={project.id} projectId={project.id} projectName={project.name} onClose={() => setMembersOpen(false)} /> : null}
     </>
   )
 }

@@ -91,9 +91,12 @@ def update_user(
     if not updates:
         return _public_user_with_meta(target)
 
-    updated = db.update_user(user_id, updates)
-    if updates.get("status") == "disabled":
-        db.delete_sessions_for_user(user_id)
+    role_changed = "role" in updates and updates["role"] != target.get("role")
+    updated = db.update_user(
+        user_id,
+        updates,
+        revoke_sessions=updates.get("status") == "disabled" or role_changed,
+    )
     operator_context.record_operator_audit(
         DATA_ROOT,
         "update_user",
@@ -117,7 +120,7 @@ def reset_password(user_id: str, payload: UserPasswordResetRequest) -> dict[str,
             "password_hash": auth.hash_password(payload.initial_password),
             "must_change_password": True,
         },
+        revoke_sessions=True,
     )
-    db.delete_sessions_for_user(user_id)
     operator_context.record_operator_audit(DATA_ROOT, "reset_password", {"username": target["username"]})
     return _public_user_with_meta(updated)

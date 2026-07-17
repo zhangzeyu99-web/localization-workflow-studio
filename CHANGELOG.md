@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.5.3 - 2026-07-17
+
+Account acceptance and deployment hygiene release.
+
+- Hid the legacy browser nickname control when authenticated accounts are enabled and added a real loading state to project membership management.
+- Rejected disabled/admin membership targets, current-password reuse, and usernames that cannot later pass the login schema.
+- Revoked existing sessions after role changes or administrator CLI resets/promotions, and disabled self-demotion/self-disable controls in the user management UI.
+- Added browser and backend regression coverage for the affected account flows and documented fresh-directory deployment requirements.
+
 ## 1.5.1 - 2026-07-16
 
 Project-selection race fix release.

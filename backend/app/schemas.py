@@ -355,7 +355,7 @@ class ChangePasswordRequest(BaseModel):
 
 
 class UserCreateRequest(BaseModel):
-    username: str
+    username: str = Field(min_length=1, max_length=128)
     display_name: str = ""
     role: Literal["admin", "ops", "member"]
     initial_password: str

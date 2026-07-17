@@ -134,18 +134,13 @@ def issue_session(user_id: str) -> tuple[str, dict[str, Any]]:
 def get_user_for_session_token(token: str) -> dict[str, Any] | None:
     """Resolve a raw cookie token to its owning user, or None if invalid/expired/disabled.
 
-    ``db.get_session_by_token_hash`` already deletes the row lazily once its
-    ``expires_at`` has passed, so no separate cleanup call is needed here.
+    Session validity and the user role/status are read from one SQLite snapshot
+    so a revoked old cookie cannot be paired with a newly elevated role.
     """
     if not token:
         return None
-    session = db.get_session_by_token_hash(hash_token(token))
-    if session is None:
-        return None
-    try:
-        user = db.get_user(session["user_id"])
-    except KeyError:
-        db.delete_session(session["token_hash"])
+    user = db.get_user_by_session_token_hash(hash_token(token))
+    if user is None:
         return None
     if user.get("status") == "disabled":
         return None

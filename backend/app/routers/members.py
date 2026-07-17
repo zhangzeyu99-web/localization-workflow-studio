@@ -78,6 +78,10 @@ def add_member(project_id: str, payload: ProjectMemberAddRequest) -> dict[str, A
         target = db.get_user(payload.user_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="user not found") from exc
+    if target.get("status") != "active":
+        raise HTTPException(status_code=400, detail="user is not active")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="admin users cannot be project members")
     actor = auth.current_user() or {}
     db.add_project_member(project_id, target["id"], added_by=str(actor.get("id") or ""))
     operator_context.record_operator_audit(

@@ -212,6 +212,38 @@ def test_ops_manages_own_member_project_members_successfully(monkeypatch: pytest
         assert remove_response.status_code == 200, remove_response.text
 
 
+def test_add_member_rejects_disabled_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as admin_client:
+        _bootstrap_admin_client(admin_client)
+        project = admin_client.post(PROJECTS_URL, json={"name": "Reject Disabled", "type": "QA"}).json()
+        _create_user_via_api(admin_client, "disabled-target", "member")
+        target = db.get_user_by_username("disabled-target")
+        db.update_user(target["id"], {"status": "disabled"})
+
+        response = admin_client.post(
+            f"/api/projects/{project['id']}/members", json={"user_id": target["id"]}
+        )
+
+    assert response.status_code == 400, response.text
+    assert not db.is_project_member(project["id"], target["id"])
+
+
+def test_add_member_rejects_admin_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as admin_client:
+        _bootstrap_admin_client(admin_client)
+        project = admin_client.post(PROJECTS_URL, json={"name": "Reject Admin", "type": "QA"}).json()
+        target = db.get_user_by_username("root-admin")
+
+        response = admin_client.post(
+            f"/api/projects/{project['id']}/members", json={"user_id": target["id"]}
+        )
+
+    assert response.status_code == 400, response.text
+    assert not db.is_project_member(project["id"], target["id"])
+
+
 def test_ops_managing_non_member_project_gets_404(monkeypatch: pytest.MonkeyPatch) -> None:
     test_app = _required_app(monkeypatch)
     with TestClient(test_app) as admin_client:

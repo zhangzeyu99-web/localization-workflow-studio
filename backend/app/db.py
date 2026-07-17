@@ -2618,7 +2618,12 @@ def get_user_by_username(username: str, conn: sqlite3.Connection | None = None) 
             ctx.__exit__(None, None, None)
 
 
-def update_user(user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+def update_user(
+    user_id: str,
+    updates: dict[str, Any],
+    *,
+    revoke_sessions: bool = False,
+) -> dict[str, Any]:
     allowed = {"display_name", "password_hash", "role", "status", "external_id", "must_change_password", "last_login_at"}
     fields: list[str] = []
     values: list[Any] = []
@@ -2632,6 +2637,8 @@ def update_user(user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
     values.append(user_id)
     with connect() as conn:
         conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values)
+        if revoke_sessions:
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         return get_user(user_id, conn=conn)
 
 
@@ -2659,6 +2666,29 @@ def get_session_by_token_hash(token_hash: str) -> dict[str, Any] | None:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
             return None
         return session
+
+
+def get_user_by_session_token_hash(token_hash: str) -> dict[str, Any] | None:
+    """Resolve a live session and its user from one SQLite snapshot."""
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT users.*, sessions.expires_at AS session_expires_at
+            FROM sessions
+            JOIN users ON users.id = sessions.user_id
+            WHERE sessions.token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        expires_at = str(payload.pop("session_expires_at"))
+        if expires_at <= now_iso():
+            conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+            return None
+        payload["must_change_password"] = bool(payload["must_change_password"])
+        return payload
 
 
 def delete_session(token_hash: str) -> None:

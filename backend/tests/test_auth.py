@@ -118,6 +118,26 @@ def test_me_with_valid_session_returns_current_user() -> None:
         assert body["capabilities"] == sorted(authz.ALL_CAPABILITIES)
 
 
+def test_session_resolution_cannot_mix_old_session_with_new_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user("role-race", role="member")
+    token, _session = auth.issue_session(user["id"])
+    original_session_lookup = db.get_session_by_token_hash
+
+    def promote_after_session_read(token_hash: str):
+        session = original_session_lookup(token_hash)
+        db.update_user(user["id"], {"role": "admin"}, revoke_sessions=True)
+        return session
+
+    monkeypatch.setattr(db, "get_session_by_token_hash", promote_after_session_read)
+
+    resolved = auth.get_user_for_session_token(token)
+
+    assert resolved is not None
+    assert resolved["role"] == "member"
+
+
 def test_logout_invalidates_session_and_is_idempotent() -> None:
     _create_user("erin")
     with TestClient(app) as client:

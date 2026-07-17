@@ -60,8 +60,8 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
   async function createUser(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const username = createDraft.username.trim()
-    if (!username || createDraft.password.length < 8) {
-      setError('请填写用户名，并提供至少 8 位的初始密码。')
+    if (!username || username.length > 128 || createDraft.password.length < 8) {
+      setError('请填写不超过 128 个字符的用户名，并提供至少 8 位的初始密码。')
       return
     }
     await run(async () => {
@@ -123,7 +123,7 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
         <form className="management-create-form" onSubmit={createUser}>
           <strong className="icon-title"><UserPlus size={16} aria-hidden="true" />新建用户</strong>
           <div className="management-form-grid">
-            <label><span>用户名</span><input data-testid="create-user-username" value={createDraft.username} onChange={(event) => setCreateDraft((draft) => ({ ...draft, username: event.target.value }))} /></label>
+            <label><span>用户名</span><input data-testid="create-user-username" maxLength={128} value={createDraft.username} onChange={(event) => setCreateDraft((draft) => ({ ...draft, username: event.target.value }))} /></label>
             <label><span>显示名</span><input data-testid="create-user-display-name" value={createDraft.displayName} onChange={(event) => setCreateDraft((draft) => ({ ...draft, displayName: event.target.value }))} /></label>
             <label><span>角色</span><select data-testid="create-user-role" value={createDraft.role} onChange={(event) => setCreateDraft((draft) => ({ ...draft, role: event.target.value as UserRole }))}><option value="admin">管理员</option><option value="ops">运营</option><option value="member">成员</option></select></label>
             <label><span>初始密码</span><input data-testid="create-user-password" type="password" value={createDraft.password} onChange={(event) => setCreateDraft((draft) => ({ ...draft, password: event.target.value }))} /></label>
@@ -146,12 +146,12 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
               <select
                 aria-label={`${managedUser.username} 角色`}
                 value={managedUser.role}
-                disabled={busy}
+                disabled={busy || managedUser.id === currentUserId}
                 onChange={(event) => { void patchUser(managedUser, { role: event.target.value as UserRole }) }}
               >
                 <option value="admin">管理员</option><option value="ops">运营</option><option value="member">成员</option>
               </select>
-              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { void patchUser(managedUser, { status: managedUser.status === 'active' ? 'disabled' : 'active' }) }}>{managedUser.status === 'active' ? '停用' : '启用'}</button>
+              <button className="btn btn-ghost btn-sm" disabled={busy || managedUser.id === currentUserId} onClick={() => { void patchUser(managedUser, { status: managedUser.status === 'active' ? 'disabled' : 'active' }) }}>{managedUser.status === 'active' ? '停用' : '启用'}</button>
               <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setResetTarget(managedUser); setResetPassword(''); setError('') }}><KeyRound size={14} aria-hidden="true" />重置密码</button>
               {managedUser.id === currentUserId ? <span className="management-self">当前账号</span> : null}
             </div>
