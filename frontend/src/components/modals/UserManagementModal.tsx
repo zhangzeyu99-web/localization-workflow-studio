@@ -12,6 +12,7 @@ type ManagedUser = {
   display_name: string
   role: UserRole
   status: UserStatus
+  created_at: string
   last_login_at?: string | null
 }
 
@@ -22,8 +23,8 @@ const initialCreate = {
   password: '',
 }
 
-function dateText(value?: string | null): string {
-  if (!value) return '从未登录'
+function dateText(value: string | null | undefined, emptyText: string): string {
+  if (!value) return emptyText
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-CN')
 }
@@ -35,19 +36,34 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
   const [resetPassword, setResetPassword] = useState('')
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [canRetryUsers, setCanRetryUsers] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [loadingUsers, setLoadingUsers] = useState(true)
+  const [hasLoadedUsers, setHasLoadedUsers] = useState(false)
 
   async function loadUsers() {
-    setUsers(await api<ManagedUser[]>('/api/users', undefined, '加载用户'))
+    setLoadingUsers(true)
+    setError('')
+    setCanRetryUsers(false)
+    try {
+      setUsers(await api<ManagedUser[]>('/api/users', undefined, '加载用户'))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setCanRetryUsers(true)
+    } finally {
+      setLoadingUsers(false)
+      setHasLoadedUsers(true)
+    }
   }
 
   useEffect(() => {
-    void loadUsers().catch((err) => setError(err instanceof Error ? err.message : String(err)))
+    void loadUsers()
   }, [])
 
   async function run(action: () => Promise<void>) {
     setBusy(true)
     setError('')
+    setCanRetryUsers(false)
     try {
       await action()
     } catch (err) {
@@ -62,6 +78,7 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
     const username = createDraft.username.trim()
     if (!username || username.length > 128 || createDraft.password.length < 8) {
       setError('请填写不超过 128 个字符的用户名，并提供至少 8 位的初始密码。')
+      setCanRetryUsers(false)
       return
     }
     await run(async () => {
@@ -97,6 +114,7 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
     event.preventDefault()
     if (!resetTarget || resetPassword.length < 8) {
       setError('重置密码至少 8 位。')
+      setCanRetryUsers(false)
       return
     }
     await run(async () => {
@@ -132,14 +150,29 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
         </form>
 
         {notice ? <div className="inline-status success" data-testid="initial-password-reminder">{notice}</div> : null}
-        {error ? <div className="inline-status error" data-testid="user-management-error">{error}</div> : null}
+        {error ? (
+          <div className="inline-status error" data-testid="user-management-error" role="alert">
+            <span>{error}</span>
+            {canRetryUsers ? <button type="button" className="btn btn-ghost btn-sm inline-status-action" data-testid="retry-user-list" disabled={loadingUsers} onClick={() => { void loadUsers() }}>重试加载</button> : null}
+          </div>
+        ) : null}
+
+        <div className="management-list-head">
+          <strong data-testid="user-management-count">{hasLoadedUsers ? `共 ${users.length} 位用户` : '用户总数加载中'}</strong>
+          <button type="button" className="btn btn-ghost btn-sm" data-testid="refresh-users" disabled={busy || loadingUsers} onClick={() => { void loadUsers() }}>{loadingUsers && hasLoadedUsers ? '刷新中...' : '刷新'}</button>
+        </div>
+
+        {loadingUsers && !hasLoadedUsers ? <div className="muted management-empty" data-testid="user-management-loading"><span className="loading" />正在加载用户...</div> : null}
+        {loadingUsers && hasLoadedUsers ? <div className="muted management-list-refreshing" data-testid="user-management-refreshing"><span className="loading" />正在刷新用户...</div> : null}
+        {!loadingUsers && !error && users.length === 0 ? <div className="muted management-empty" data-testid="user-management-empty">暂无用户。</div> : null}
 
         <div className="management-list">
           {users.map((managedUser) => (
             <div className="management-row" key={managedUser.id} data-testid={`user-row-${managedUser.username}`}>
               <div className="management-user-main">
                 <strong>{managedUser.display_name || managedUser.username}</strong>
-                <span>@{managedUser.username} · 最近登录：{dateText(managedUser.last_login_at)}</span>
+                <span>@{managedUser.username}</span>
+                <span>注册时间：{dateText(managedUser.created_at, '未知')} · 最近登录：{dateText(managedUser.last_login_at, '从未登录')}</span>
               </div>
               <span className="badge">{roleBadgeLabel(managedUser.role)}</span>
               <span className={`badge ${managedUser.status === 'active' ? '' : 'danger'}`}>{managedUser.status === 'active' ? '启用' : '停用'}</span>

@@ -222,6 +222,42 @@ def test_self_registered_user_appears_in_admin_list_with_account_metadata(
     assert registered["last_login_at"] is None
 
 
+def test_list_users_orders_newest_registration_first_with_stable_id_tiebreak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as admin_client:
+        _bootstrap_admin_client(admin_client)
+        older = _create_user_via_api(admin_client, "older-user", "member")
+        tied_a = _create_user_via_api(admin_client, "tied-user-a", "member")
+        tied_b = _create_user_via_api(admin_client, "tied-user-b", "member")
+        admin = db.get_user_by_username("root-admin")
+        assert admin is not None
+
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE users SET created_at = ? WHERE id = ?",
+                ("2026-01-01T00:00:00+00:00", admin["id"]),
+            )
+            conn.execute(
+                "UPDATE users SET created_at = ? WHERE id = ?",
+                ("2026-02-01T00:00:00+00:00", older["id"]),
+            )
+            conn.executemany(
+                "UPDATE users SET created_at = ? WHERE id = ?",
+                [
+                    ("2026-03-01T00:00:00+00:00", tied_a["id"]),
+                    ("2026-03-01T00:00:00+00:00", tied_b["id"]),
+                ],
+            )
+
+        response = admin_client.get(USERS_URL)
+
+    assert response.status_code == 200, response.text
+    tied_ids = sorted((tied_a["id"], tied_b["id"]), reverse=True)
+    assert [user["id"] for user in response.json()] == [*tied_ids, older["id"], admin["id"]]
+
+
 def test_create_admin_cli_case_variant_conflict_exits_cleanly_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

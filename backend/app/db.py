@@ -2607,7 +2607,7 @@ def count_users() -> int:
 
 def list_users() -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM users ORDER BY created_at ASC").fetchall()
+        rows = conn.execute("SELECT * FROM users ORDER BY created_at DESC, id DESC").fetchall()
         return [user_row_to_dict(row) for row in rows]
 
 

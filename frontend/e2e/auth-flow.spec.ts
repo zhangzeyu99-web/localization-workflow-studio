@@ -13,6 +13,8 @@ const opsUsername = `e2e-ops-${suffix}`
 const memberUsername = `e2e-member-${suffix}`
 const registeredUsername = `e2e-registered-${suffix}`
 const registeredPassword = 'Registered-Member-Password!'
+const refreshedRegistrationUsername = `e2e-admin-refresh-${suffix}`
+const refreshedRegistrationDisplayName = 'E2E 刷新注册成员'
 const duplicateUsername = `e2e-register-duplicate-${suffix}`
 const recoveryUsername = `e2e-register-recovery-${suffix}`
 const staleRegistrationUsername = `e2e-register-stale-${suffix}`
@@ -450,6 +452,98 @@ test('管理员首次登录后强制改密并进入应用', async ({ page }) => 
   await page.getByRole('button', { name: '设置' }).click()
   await expect(page.getByText('操作人昵称（可选）')).toHaveCount(0)
   await page.getByRole('button', { name: '关闭' }).click()
+})
+
+test('管理员刷新用户列表后新注册账号置顶且失败可重试', async ({ page, request }) => {
+  await login(page, 'e2e-admin', adminPassword)
+
+  let releaseInitialLoad = () => {}
+  const initialLoadGate = new Promise<void>((resolve) => { releaseInitialLoad = resolve })
+  await page.route('**/api/users', async (route) => {
+    if (route.request().method() === 'GET') await initialLoadGate
+    await route.continue()
+  }, { times: 1 })
+
+  await page.getByTestId('open-user-management').click()
+  const modal = page.getByTestId('user-management-modal')
+  try {
+    await expect(modal.getByTestId('user-management-loading')).toBeVisible()
+    await expect(modal.getByTestId('user-management-empty')).toHaveCount(0)
+  } finally {
+    releaseInitialLoad()
+  }
+
+  const rows = modal.locator('[data-testid^="user-row-"]')
+  await expect(rows.first()).toBeVisible()
+  const initialTotal = await rows.count()
+  await expect(modal.getByTestId('user-management-count')).toHaveText(`共 ${initialTotal} 位用户`)
+
+  const registration = await request.post('/api/auth/register', {
+    data: {
+      username: refreshedRegistrationUsername,
+      display_name: refreshedRegistrationDisplayName,
+      password: registeredPassword,
+    },
+  })
+  expect(registration.status()).toBe(201)
+
+  let releaseRefresh = () => {}
+  const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve })
+  await page.route('**/api/users', async (route) => {
+    if (route.request().method() === 'GET') await refreshGate
+    await route.continue()
+  }, { times: 1 })
+
+  await modal.getByTestId('refresh-users').click()
+  try {
+    await expect(modal.getByTestId('user-management-refreshing')).toBeVisible()
+    await expect(rows.first()).toBeVisible()
+    await expect(modal.getByTestId('user-management-empty')).toHaveCount(0)
+  } finally {
+    releaseRefresh()
+  }
+
+  const registeredRow = modal.getByTestId(`user-row-${refreshedRegistrationUsername}`)
+  await expect(rows.first()).toHaveAttribute('data-testid', `user-row-${refreshedRegistrationUsername}`)
+  await expect(registeredRow).toContainText(refreshedRegistrationDisplayName)
+  await expect(registeredRow).toContainText(`@${refreshedRegistrationUsername}`)
+  await expect(registeredRow).toContainText('注册时间：')
+  await expect(registeredRow).not.toContainText('注册时间：未知')
+  await expect(registeredRow).toContainText('最近登录：从未登录')
+  await expect(registeredRow).toContainText('成员')
+  await expect(registeredRow).toContainText('启用')
+  await expect(registeredRow.getByRole('combobox', { name: `${refreshedRegistrationUsername} 角色` })).toHaveValue('member')
+  await expect(registeredRow.getByRole('button', { name: '停用' })).toBeEnabled()
+  await expect(modal.getByTestId('user-management-count')).toHaveText(`共 ${initialTotal + 1} 位用户`)
+
+  await page.route('**/api/users', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '测试用户列表暂时不可用' }),
+    })
+  }, { times: 1 })
+  await modal.getByTestId('refresh-users').click()
+  await expect(modal.getByTestId('user-management-error')).toContainText('测试用户列表暂时不可用')
+  await expect(rows.first()).toHaveAttribute('data-testid', `user-row-${refreshedRegistrationUsername}`)
+  await modal.getByTestId('retry-user-list').click()
+  await expect(modal.getByTestId('user-management-error')).toHaveCount(0)
+  await expect(rows.first()).toHaveAttribute('data-testid', `user-row-${refreshedRegistrationUsername}`)
+
+  await page.route('**/api/users', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+      return
+    }
+    await route.continue()
+  }, { times: 1 })
+  await modal.getByTestId('refresh-users').click()
+  await expect(modal.getByTestId('user-management-empty')).toHaveText('暂无用户。')
+  await expect(modal.getByTestId('user-management-count')).toHaveText('共 0 位用户')
 })
 
 test('管理员通过用户管理界面创建 ops 和 member', async ({ page }) => {

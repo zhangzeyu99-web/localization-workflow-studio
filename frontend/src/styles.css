@@ -3222,10 +3222,25 @@ input:focus, textarea:focus, select:focus { border-color: var(--c-purple-500); }
   color: var(--c-neutral-400);
   font-size: var(--fs-sm);
 }
+.management-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+.management-list-head strong { color: var(--c-neutral-200); }
+.management-list-refreshing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-top: 10px;
+}
 .management-list {
   display: grid;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 10px;
 }
 .management-row {
   display: grid;
