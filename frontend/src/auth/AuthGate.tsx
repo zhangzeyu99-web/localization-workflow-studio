@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useAuth } from './AuthContext'
 import { LoginPage } from './LoginPage'
 import { RegisterPage } from './RegisterPage'
@@ -9,8 +9,17 @@ import { ChangePasswordPage } from './ChangePasswordPage'
 // response lands (see AuthContext's applyMe), so this gate is a no-op there
 // -- the brief 'loading' flash is the only visible change from today.
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  const { status, refresh } = useAuth()
+  const { status, refresh, invalidateAuthActions } = useAuth()
   const [anonymousView, setAnonymousView] = useState<'login' | 'register'>('login')
+
+  useEffect(() => {
+    if (status !== 'anonymous') setAnonymousView('login')
+  }, [status])
+
+  function showAnonymousView(view: 'login' | 'register') {
+    invalidateAuthActions()
+    setAnonymousView(view)
+  }
   if (status === 'loading') {
     return (
       <div className="auth-screen" data-testid="auth-loading">
@@ -37,8 +46,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }
   if (status === 'anonymous') {
     return anonymousView === 'register'
-      ? <RegisterPage onLogin={() => setAnonymousView('login')} />
-      : <LoginPage onRegister={() => setAnonymousView('register')} />
+      ? <RegisterPage onLogin={() => showAnonymousView('login')} />
+      : <LoginPage onRegister={() => showAnonymousView('register')} />
   }
   if (status === 'must-change-password') return <ChangePasswordPage />
   return <>{children}</>

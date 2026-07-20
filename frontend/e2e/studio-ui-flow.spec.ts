@@ -27,6 +27,9 @@ test('auth bootstrap network failure shows a recoverable error instead of loadin
   await page.unroute('**/api/auth/me')
   await page.getByTestId('auth-retry').click()
   await expect(page.getByRole('heading', { name: '本地化工作台' })).toBeVisible()
+  await expect(page.locator('.new-project-btn')).toBeVisible()
+  await expect(page.getByTestId('login-submit')).toHaveCount(0)
+  await expect(page.getByTestId('show-register')).toHaveCount(0)
 })
 
 test('glossary candidates stay readable while curation actions are hidden in read-only mode', async ({ page }) => {

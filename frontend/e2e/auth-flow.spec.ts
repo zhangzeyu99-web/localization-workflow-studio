@@ -15,6 +15,9 @@ const registeredUsername = `e2e-registered-${suffix}`
 const registeredPassword = 'Registered-Member-Password!'
 const duplicateUsername = `e2e-register-duplicate-${suffix}`
 const recoveryUsername = `e2e-register-recovery-${suffix}`
+const staleRegistrationUsername = `e2e-register-stale-${suffix}`
+const logoutResetUsername = `e2e-register-logout-reset-${suffix}`
+const sessionResetUsername = `e2e-register-session-reset-${suffix}`
 const memberProjectName = `Member Project ${suffix}`
 const registeredProjectName = `Registered Project ${suffix}`
 const opsProjectName = `Ops Project ${suffix}`
@@ -191,6 +194,167 @@ test('登录注册切换会清除密码、错误和忙碌状态', async ({ page 
   } finally {
     releaseRequest()
   }
+})
+
+test('切换到注册后忽略陈旧登录成功和失败响应', async ({ page }) => {
+  await page.goto('/')
+
+  let releaseSuccess = () => {}
+  let markSuccessStarted = () => {}
+  const successGate = new Promise<void>((resolve) => { releaseSuccess = resolve })
+  const successStarted = new Promise<void>((resolve) => { markSuccessStarted = resolve })
+  await page.route('**/api/auth/login', async (route) => {
+    markSuccessStarted()
+    await successGate
+    await route.continue()
+  })
+  await page.getByTestId('login-username').fill('e2e-admin')
+  await page.getByTestId('login-password').fill(adminInitialPassword)
+  await page.getByTestId('login-submit').click()
+  await successStarted
+  await page.getByTestId('show-register').click()
+  const successResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/auth/login' && response.status() === 200
+  ))
+  releaseSuccess()
+  await successResponse
+  await page.waitForTimeout(100)
+  await expect(page.getByTestId('register-submit')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '首次登录请修改密码' })).toHaveCount(0)
+  await page.unroute('**/api/auth/login')
+  await page.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }))
+
+  await page.getByTestId('show-login').click()
+  let releaseFailure = () => {}
+  let markFailureStarted = () => {}
+  const failureGate = new Promise<void>((resolve) => { releaseFailure = resolve })
+  const failureStarted = new Promise<void>((resolve) => { markFailureStarted = resolve })
+  await page.route('**/api/auth/login', async (route) => {
+    markFailureStarted()
+    await failureGate
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '陈旧登录失败不应污染注册页' }),
+    })
+  })
+  await page.getByTestId('login-username').fill('stale-login-failure')
+  await page.getByTestId('login-password').fill('Wrong-Password!')
+  await page.getByTestId('login-submit').click()
+  await failureStarted
+  await page.getByTestId('show-register').click()
+  const failureResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/auth/login' && response.status() === 401
+  ))
+  releaseFailure()
+  await failureResponse
+  await page.waitForTimeout(100)
+  await expect(page.getByTestId('register-submit')).toBeEnabled()
+  await expect(page.getByTestId('register-error')).toHaveCount(0)
+})
+
+test('切换到登录后忽略陈旧注册成功和失败响应', async ({ page }) => {
+  await openRegistration(page)
+
+  let releaseSuccess = () => {}
+  let markSuccessStarted = () => {}
+  const successGate = new Promise<void>((resolve) => { releaseSuccess = resolve })
+  const successStarted = new Promise<void>((resolve) => { markSuccessStarted = resolve })
+  await page.route('**/api/auth/register', async (route) => {
+    markSuccessStarted()
+    await successGate
+    await route.continue()
+  })
+  await fillRegistration(page, { username: staleRegistrationUsername, password: registeredPassword })
+  await page.getByTestId('register-submit').click()
+  await successStarted
+  await page.getByTestId('show-login').click()
+  const successResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/auth/register' && response.status() === 201
+  ))
+  releaseSuccess()
+  await successResponse
+  await page.waitForTimeout(100)
+  await expect(page.getByTestId('login-submit')).toBeVisible()
+  await expect(page.getByTestId('current-user-chip')).toHaveCount(0)
+  await page.unroute('**/api/auth/register')
+  await page.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }))
+
+  await page.getByTestId('show-register').click()
+  let releaseFailure = () => {}
+  let markFailureStarted = () => {}
+  const failureGate = new Promise<void>((resolve) => { releaseFailure = resolve })
+  const failureStarted = new Promise<void>((resolve) => { markFailureStarted = resolve })
+  await page.route('**/api/auth/register', async (route) => {
+    markFailureStarted()
+    await failureGate
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '陈旧注册失败不应污染登录页' }),
+    })
+  })
+  await fillRegistration(page, { username: `stale-register-failure-${suffix}`, password: registeredPassword })
+  await page.getByTestId('register-submit').click()
+  await failureStarted
+  await page.getByTestId('show-login').click()
+  const failureResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/auth/register' && response.status() === 409
+  ))
+  releaseFailure()
+  await failureResponse
+  await page.waitForTimeout(100)
+  await expect(page.getByTestId('login-submit')).toBeEnabled()
+  await expect(page.getByTestId('login-error')).toHaveCount(0)
+})
+
+test('注册成功后的登出和会话失效都回到登录页', async ({ page }) => {
+  await openRegistration(page)
+  await fillRegistration(page, { username: logoutResetUsername, password: registeredPassword })
+  await page.getByTestId('register-submit').click()
+  await expect(page.getByTestId('current-user-chip')).toContainText(logoutResetUsername)
+  await page.getByRole('button', { name: '退出' }).click()
+  await expect(page.getByTestId('login-submit')).toBeVisible()
+  await expect(page.getByTestId('show-register')).toBeVisible()
+  await expect(page.getByTestId('register-submit')).toHaveCount(0)
+
+  await page.getByTestId('show-register').click()
+  await fillRegistration(page, { username: sessionResetUsername, password: registeredPassword })
+  await page.getByTestId('register-submit').click()
+  await expect(page.getByTestId('current-user-chip')).toContainText(sessionResetUsername)
+  await page.route('**/api/projects', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '测试会话已失效' }),
+    })
+  })
+  await page.locator('.new-project-btn').click()
+  await page.locator('input[name="name"]').fill(`Session Reset Project ${suffix}`)
+  await page.getByRole('button', { name: '创建', exact: true }).click()
+  await expect(page.getByTestId('login-submit')).toBeVisible()
+  await expect(page.getByTestId('show-register')).toBeVisible()
+  await expect(page.getByTestId('register-submit')).toHaveCount(0)
+})
+
+test('登录和注册表单提供可访问标签与错误提示', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByLabel('用户名', { exact: true })).toHaveAttribute('data-testid', 'login-username')
+  await expect(page.getByLabel('密码', { exact: true })).toHaveAttribute('data-testid', 'login-password')
+  await page.getByTestId('login-submit').click()
+  await expect(page.getByTestId('login-error')).toHaveAttribute('role', 'alert')
+
+  await page.getByTestId('show-register').click()
+  await expect(page.getByLabel('用户名', { exact: true })).toHaveAttribute('data-testid', 'register-username')
+  await expect(page.getByLabel('显示名称（可选）', { exact: true })).toHaveAttribute('data-testid', 'register-display-name')
+  await expect(page.getByLabel('密码', { exact: true })).toHaveAttribute('data-testid', 'register-password')
+  await expect(page.getByLabel('确认密码', { exact: true })).toHaveAttribute('data-testid', 'register-password-confirm')
+  await page.getByTestId('register-submit').click()
+  await expect(page.getByTestId('register-error')).toHaveAttribute('role', 'alert')
 })
 
 test('同步重复提交只发送一次注册请求', async ({ page }) => {

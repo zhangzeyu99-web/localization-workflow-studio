@@ -37,7 +37,7 @@ export function RegisterPage({ onLogin }: { onLogin: () => void }) {
     setError('')
     try {
       const result = await register(normalizedUsername, normalizedDisplayName, password)
-      if (!result.ok) setError(result.detail || '注册失败，请重试。')
+      if (!result.ok && !result.stale) setError(result.detail || '注册失败，请重试。')
     } finally {
       submittingRef.current = false
       setBusy(false)
@@ -54,15 +54,15 @@ export function RegisterPage({ onLogin }: { onLogin: () => void }) {
             <p>注册后以普通成员权限进入，管理员可以调整账号权限。</p>
           </div>
         </div>
-        <label className="field-label">用户名</label>
-        <input value={username} onChange={(event) => { setUsername(event.target.value); setError('') }} disabled={busy} autoFocus autoComplete="username" data-testid="register-username" />
-        <label className="field-label">显示名称（可选）</label>
-        <input value={displayName} onChange={(event) => { setDisplayName(event.target.value); setError('') }} disabled={busy} autoComplete="nickname" data-testid="register-display-name" />
-        <label className="field-label">密码</label>
-        <input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError('') }} disabled={busy} autoComplete="new-password" data-testid="register-password" />
-        <label className="field-label">确认密码</label>
-        <input type="password" value={passwordConfirm} onChange={(event) => { setPasswordConfirm(event.target.value); setError('') }} disabled={busy} autoComplete="new-password" data-testid="register-password-confirm" />
-        {error ? <div className="inline-status error" data-testid="register-error">{error}</div> : null}
+        <label className="field-label" htmlFor="register-username">用户名</label>
+        <input id="register-username" value={username} onChange={(event) => { setUsername(event.target.value); setError('') }} disabled={busy} autoFocus autoComplete="username" data-testid="register-username" />
+        <label className="field-label" htmlFor="register-display-name">显示名称（可选）</label>
+        <input id="register-display-name" value={displayName} onChange={(event) => { setDisplayName(event.target.value); setError('') }} disabled={busy} autoComplete="nickname" data-testid="register-display-name" />
+        <label className="field-label" htmlFor="register-password">密码</label>
+        <input id="register-password" type="password" value={password} onChange={(event) => { setPassword(event.target.value); setError('') }} disabled={busy} autoComplete="new-password" data-testid="register-password" />
+        <label className="field-label" htmlFor="register-password-confirm">确认密码</label>
+        <input id="register-password-confirm" type="password" value={passwordConfirm} onChange={(event) => { setPasswordConfirm(event.target.value); setError('') }} disabled={busy} autoComplete="new-password" data-testid="register-password-confirm" />
+        {error ? <div className="inline-status error" role="alert" data-testid="register-error">{error}</div> : null}
         <button className="btn btn-primary auth-submit" disabled={busy} data-testid="register-submit">
           <UserPlus size={16} aria-hidden="true" />{busy ? '注册中...' : '创建账号'}
         </button>
