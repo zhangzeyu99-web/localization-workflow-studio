@@ -153,6 +153,29 @@ def test_public_release_docs_match_repository_version() -> None:
     assert f"<strong>{version}</strong><span>当前有账号版</span>" in pages_index
 
 
+def test_v160_release_commands_are_shell_safe_and_self_contained() -> None:
+    release_note = (REPO_ROOT / "docs" / "releases" / "v1.6.0.md").read_text(encoding="utf-8")
+    bash_blocks = [section.split("```", 1)[0] for section in release_note.split("```bash")[1:]]
+
+    assert "<git-sha>" not in release_note
+    assert "将 `REPLACE_WITH_GIT_SHA` 替换为" in release_note
+    assert len(bash_blocks) == 2
+
+    deploy_block, acceptance_block = bash_blocks
+    for block in bash_blocks:
+        assert "set -euo pipefail" in block
+        assert "20260720-REPLACE_WITH_GIT_SHA" in block
+        assert 'cd "$release"' in block
+        assert "PACKAGE_GIT_SHA=" in block
+        assert "PACKAGE_MANIFEST.json" in block
+
+    assert "if sudo grep -q '^LWS_GIT_SHA=' \"$env_file\"; then" in deploy_block
+    assert 'sudo sed -i "s/^LWS_GIT_SHA=.*/LWS_GIT_SHA=$PACKAGE_GIT_SHA/" "$env_file"' in deploy_block
+    assert "else\n  printf 'LWS_GIT_SHA=%s\\n' \"$PACKAGE_GIT_SHA\" | sudo tee -a \"$env_file\" >/dev/null" in deploy_block
+    assert 'sudo grep -Fx "LWS_GIT_SHA=$PACKAGE_GIT_SHA" "$env_file"' in deploy_block
+    assert "scripts/deployment_check.py" in acceptance_block
+
+
 def test_cloud_acceptance_checks_git_sha_and_exact_frontend_assets() -> None:
     guide = (REPO_ROOT / "docs" / "CLOUD_DEPLOYMENT.md").read_text(encoding="utf-8")
 
