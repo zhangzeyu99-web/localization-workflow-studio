@@ -32,27 +32,29 @@ async function readDetail(response: Response): Promise<string> {
   }
 }
 
-export async function fetchMe(): Promise<AuthResult<AuthMeResponse>> {
-  const response = await authFetch('/api/auth/me')
+export async function fetchMe(signal?: AbortSignal): Promise<AuthResult<AuthMeResponse>> {
+  const response = await authFetch('/api/auth/me', signal ? { signal } : undefined)
   if (response.ok) return { status: response.status, data: await response.json() }
   return { status: response.status, detail: await readDetail(response) }
 }
 
-export async function login(username: string, password: string): Promise<AuthResult<AuthMeResponse>> {
+export async function login(username: string, password: string, signal?: AbortSignal): Promise<AuthResult<AuthMeResponse>> {
   const response = await authFetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
+    body: JSON.stringify({ username, password }),
+    signal
   })
   if (response.ok) return { status: response.status, data: await response.json() }
   return { status: response.status, detail: await readDetail(response) }
 }
 
-export async function register(username: string, displayName: string, password: string): Promise<AuthResult<AuthMeResponse>> {
+export async function register(username: string, displayName: string, password: string, signal?: AbortSignal): Promise<AuthResult<AuthMeResponse>> {
   const response = await authFetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, display_name: displayName, password })
+    body: JSON.stringify({ username, display_name: displayName, password }),
+    signal
   })
   if (response.ok) return { status: response.status, data: await response.json() }
   return { status: response.status, detail: await readDetail(response) }

@@ -22,13 +22,31 @@ export type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null)
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<AuthGateStatus>('loading')
   const [user, setUser] = useState<AuthMeResponse | null>(null)
   const authActionGenerationRef = useRef(0)
+  const authActionControllerRef = useRef<AbortController | null>(null)
 
   const invalidateAuthActions = useCallback(() => {
     authActionGenerationRef.current += 1
+    authActionControllerRef.current?.abort()
+    authActionControllerRef.current = null
+  }, [])
+
+  const startAuthAction = useCallback(() => {
+    authActionControllerRef.current?.abort()
+    const controller = new AbortController()
+    authActionControllerRef.current = controller
+    return { controller, generation: ++authActionGenerationRef.current }
+  }, [])
+
+  const finishAuthAction = useCallback((controller: AbortController) => {
+    if (authActionControllerRef.current === controller) authActionControllerRef.current = null
   }, [])
 
   const applyMe = useCallback((data: AuthMeResponse | null) => {
@@ -41,18 +59,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const refresh = useCallback(async () => {
-    const generation = ++authActionGenerationRef.current
+    const { controller, generation } = startAuthAction()
     setStatus('loading')
     try {
-      const result = await authApi.fetchMe()
+      const result = await authApi.fetchMe(controller.signal)
       if (generation !== authActionGenerationRef.current) return
       applyMe(result.status === 200 ? result.data || null : null)
-    } catch {
-      if (generation !== authActionGenerationRef.current) return
+    } catch (error) {
+      if (generation !== authActionGenerationRef.current || controller.signal.aborted || isAbortError(error)) return
       setUser(null)
       setStatus('error')
+    } finally {
+      finishAuthAction(controller)
     }
-  }, [applyMe])
+  }, [applyMe, finishAuthAction, startAuthAction])
 
   useEffect(() => {
     refresh()
@@ -75,25 +95,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }), [])
 
   const login = useCallback(async (username: string, password: string): Promise<AuthActionResult> => {
-    const generation = ++authActionGenerationRef.current
+    const { controller, generation } = startAuthAction()
     try {
-      const result = await authApi.login(username, password)
+      const result = await authApi.login(username, password, controller.signal)
       if (generation !== authActionGenerationRef.current) return { ok: false, stale: true }
       if (result.status !== 200) return { ok: false, detail: result.detail || '登录失败，请重试。' }
-      const meResult = await authApi.fetchMe()
+      const meResult = await authApi.fetchMe(controller.signal)
       if (generation !== authActionGenerationRef.current) return { ok: false, stale: true }
-      applyMe(meResult.status === 200 ? meResult.data || null : null)
+      if (meResult.status !== 200 || !meResult.data) {
+        await authApi.logout().catch(() => undefined)
+        if (generation !== authActionGenerationRef.current || controller.signal.aborted) {
+          return { ok: false, stale: true }
+        }
+        return {
+          ok: false,
+          detail: meResult.status === 401
+            ? '登录状态未生效，请重新登录。'
+            : '暂时无法确认登录状态，请稍后重试。',
+        }
+      }
+      applyMe(meResult.data)
       return { ok: true }
-    } catch {
-      if (generation !== authActionGenerationRef.current) return { ok: false, stale: true }
+    } catch (error) {
+      if (generation !== authActionGenerationRef.current || controller.signal.aborted || isAbortError(error)) {
+        return { ok: false, stale: true }
+      }
       return { ok: false, detail: '网络连接失败，请检查网络后重试。' }
+    } finally {
+      finishAuthAction(controller)
     }
-  }, [applyMe])
+  }, [applyMe, finishAuthAction, startAuthAction])
 
   const register = useCallback(async (username: string, displayName: string, password: string): Promise<AuthActionResult> => {
-    const generation = ++authActionGenerationRef.current
+    const { controller, generation } = startAuthAction()
     try {
-      const result = await authApi.register(username, displayName, password)
+      const result = await authApi.register(username, displayName, password, controller.signal)
       if (generation !== authActionGenerationRef.current) return { ok: false, stale: true }
       if (result.status === 201 && result.data) {
         applyMe(result.data)
@@ -106,11 +142,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         429: '注册请求过多，请稍后再试。',
       }
       return { ok: false, detail: detailByStatus[result.status] || '注册服务暂时不可用，请稍后重试。' }
-    } catch {
-      if (generation !== authActionGenerationRef.current) return { ok: false, stale: true }
+    } catch (error) {
+      if (generation !== authActionGenerationRef.current || controller.signal.aborted || isAbortError(error)) {
+        return { ok: false, stale: true }
+      }
       return { ok: false, detail: '网络连接失败，请检查网络后重试。' }
+    } finally {
+      finishAuthAction(controller)
     }
-  }, [applyMe])
+  }, [applyMe, finishAuthAction, startAuthAction])
 
   const logout = useCallback(async () => {
     invalidateAuthActions()
