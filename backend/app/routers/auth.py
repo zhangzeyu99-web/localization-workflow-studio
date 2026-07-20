@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import auth, authz, db, operator_context
 from ..config import DATA_ROOT, deployment_mode
-from ..schemas import ChangePasswordRequest, LoginRequest
+from ..schemas import ChangePasswordRequest, LoginRequest, RegisterRequest
 
 router = APIRouter()
 
@@ -40,6 +40,51 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(key=auth.SESSION_COOKIE_NAME, path="/")
+
+
+def _me_payload(user: dict[str, Any], *, auth_enabled: bool) -> dict[str, Any]:
+    return {
+        **auth.public_user(user),
+        "auth_enabled": auth_enabled,
+        "capabilities": authz.capabilities_for_role(user.get("role", "")),
+    }
+
+
+@router.post("/api/auth/register", status_code=201)
+def register(payload: RegisterRequest, request: Request, response: Response) -> dict[str, Any]:
+    if not auth.auth_required():
+        raise HTTPException(status_code=403, detail="当前模式不开放注册")
+
+    retry_after = auth.registration_rate_limiter.check_and_record(_client_ip(request))
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="注册请求过多，请稍后重试。",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    username = payload.username
+    try:
+        user = db.create_user(
+            username,
+            auth.hash_password(payload.password),
+            "member",
+            display_name=payload.display_name or username,
+            status="active",
+            must_change_password=False,
+        )
+    except db.UsernameConflictError as exc:
+        raise HTTPException(status_code=409, detail="用户名已存在") from exc
+
+    token, _session = auth.issue_session(user["id"])
+    _set_session_cookie(response, token)
+    operator_context.record_operator_audit(
+        DATA_ROOT,
+        "self_register",
+        {"user_id": user["id"], "username": user["username"]},
+        operator=user["username"],
+    )
+    return _me_payload(user, auth_enabled=True)
 
 
 @router.post("/api/auth/login")
@@ -117,11 +162,7 @@ def me(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="未登录")
     else:
         user = auth.current_user() or auth.LOCAL_ADMIN_USER
-    return {
-        **auth.public_user(user),
-        "auth_enabled": auth_enabled,
-        "capabilities": authz.capabilities_for_role(user.get("role", "")),
-    }
+    return _me_payload(user, auth_enabled=auth_enabled)
 
 
 @router.post("/api/auth/change-password")

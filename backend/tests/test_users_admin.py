@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ import app.main as main_module
 from app.config import DATA_ROOT
 from app.operator_context import AUDIT_LOG_FILENAME
 from conftest import reset_data_root
+import scripts.create_admin as create_admin_module
 from scripts.create_admin import create_or_reset_admin
 
 ADMIN_PASSWORD = "Initial-Admin-Password!"
@@ -23,6 +25,7 @@ USERS_URL = "/api/users"
 LOGIN_URL = "/api/auth/login"
 ME_URL = "/api/auth/me"
 CHANGE_PASSWORD_URL = "/api/auth/change-password"
+REGISTER_URL = "/api/auth/register"
 
 
 def _build_app():
@@ -178,6 +181,69 @@ def test_create_user_duplicate_username_returns_409(monkeypatch: pytest.MonkeyPa
             json={"username": "dup-user", "role": "member", "initial_password": USER_PASSWORD},
         )
     assert response.status_code == 409, response.text
+
+
+def test_admin_create_user_case_variant_duplicate_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as client:
+        _bootstrap_admin_client(client)
+        _create_user_via_api(client, "AdminCase", "member")
+        response = client.post(
+            USERS_URL,
+            json={"username": "admincase", "role": "member", "initial_password": USER_PASSWORD},
+        )
+
+    assert response.status_code == 409, response.text
+    assert sum(user["username"].casefold() == "admincase" for user in db.list_users()) == 1
+
+
+def test_self_registered_user_appears_in_admin_list_with_account_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as anonymous_client:
+        registration = anonymous_client.post(
+            REGISTER_URL,
+            json={"username": "listed-registration", "password": USER_PASSWORD},
+        )
+    assert registration.status_code == 201, registration.text
+
+    with TestClient(test_app) as admin_client:
+        _bootstrap_admin_client(admin_client)
+        response = admin_client.get(USERS_URL)
+
+    assert response.status_code == 200, response.text
+    registered = next(user for user in response.json() if user["username"] == "listed-registration")
+    assert registered["id"] == registration.json()["id"]
+    assert registered["role"] == "member"
+    assert registered["status"] == "active"
+    assert registered["must_change_password"] is False
+    assert registered["created_at"]
+    assert registered["last_login_at"] is None
+
+
+def test_create_admin_cli_case_variant_conflict_exits_cleanly_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db.init_db()
+    db.create_user(
+        "CliCase",
+        auth.hash_password("Existing-Pass1!"),
+        "member",
+        display_name="CliCase",
+    )
+    monkeypatch.setenv("LWS_ADMIN_PASSWORD", "Replacement-Pass1!")
+    monkeypatch.setattr(sys, "argv", ["create_admin.py", "--username", "clicase"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        create_admin_module.main()
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "已存在" in captured.err
+    assert "Traceback" not in captured.err
+    assert sum(user["username"].casefold() == "clicase" for user in db.list_users()) == 1
 
 
 def test_create_user_invalid_role_returns_422(monkeypatch: pytest.MonkeyPatch) -> None:

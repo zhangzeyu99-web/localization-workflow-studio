@@ -48,6 +48,13 @@ class ProjectHasActiveJobError(RuntimeError):
         self.job_id = job_id
 
 
+class UsernameConflictError(ValueError):
+    def __init__(self, username: str, existing_username: str) -> None:
+        super().__init__(username)
+        self.username = username
+        self.existing_username = existing_username
+
+
 _TRANSLATION_TASK_TERMINAL_STATES = ("closed", "abandoned", "delivered", "canceled")
 
 
@@ -2559,6 +2566,18 @@ def create_user(
     user_id = new_id("user")
     ts = now_iso()
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            """
+            SELECT username
+            FROM users
+            WHERE unicode_casefold(username) = unicode_casefold(?)
+            LIMIT 1
+            """,
+            (username,),
+        ).fetchone()
+        if existing is not None:
+            raise UsernameConflictError(username, str(existing["username"]))
         conn.execute(
             """
             INSERT INTO users

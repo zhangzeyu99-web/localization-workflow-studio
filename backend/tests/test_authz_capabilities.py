@@ -22,6 +22,7 @@ USER_PASSWORD = "Sup3rSecret1!"
 PROJECTS_URL = "/api/projects"
 USERS_URL = "/api/users"
 LOGIN_URL = "/api/auth/login"
+REGISTER_URL = "/api/auth/register"
 
 
 def _build_app():
@@ -552,6 +553,34 @@ def test_admin_bypasses_capability_and_membership_entirely(monkeypatch: pytest.M
 # ---------------------------------------------------------------------------
 # fail-closed startup assertion
 # ---------------------------------------------------------------------------
+
+
+def test_self_registration_route_is_explicitly_prelogin_and_capability_exempt() -> None:
+    route_key = ("POST", REGISTER_URL)
+
+    assert route_key in main_module._PRELOGIN_API_ENDPOINTS  # noqa: SLF001
+    assert route_key in route_capabilities.EXEMPT_ROUTES
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/projects",
+        "/api/users",
+        "/api/settings",
+        "/api/system/job-queues",
+    ],
+)
+def test_registration_exemption_does_not_open_anonymous_business_routes(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    test_app = _required_app(monkeypatch)
+
+    with TestClient(test_app) as client:
+        response = client.get(path)
+
+    assert response.status_code == 401, response.text
 
 
 def test_fail_closed_startup_assertion_rejects_unregistered_route() -> None:

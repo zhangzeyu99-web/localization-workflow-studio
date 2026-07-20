@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ProjectCreate(BaseModel):
@@ -347,6 +347,19 @@ class MultilingualQueueRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(max_length=128)
     password: str
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=128)
+    display_name: str | None = Field(default=None, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("username", "display_name", mode="before")
+    @classmethod
+    def trim_names(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
 
 class ChangePasswordRequest(BaseModel):

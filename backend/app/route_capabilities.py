@@ -47,6 +47,7 @@ RouteKey = tuple[str, str]
 # ---------------------------------------------------------------------------
 EXEMPT_ROUTES: dict[RouteKey, str] = {
     ("POST", "/api/auth/login"): "登录入口本身；调用者此时必然没有 session",
+    ("POST", "/api/auth/register"): "公开自助注册入口；路由自身限制为仅认证开启模式可用",
     ("POST", "/api/auth/logout"): "任何已登录身份都能登出自己，不需要业务能力",
     ("GET", "/api/auth/me"): "前端探测登录态本身，不含业务数据",
     ("POST", "/api/auth/change-password"): "首登强制改密必须在拿到任何能力之前可用",

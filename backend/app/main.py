@@ -85,6 +85,7 @@ async def _no_store_api_responses(request: Request, call_next):
 
 _PRELOGIN_API_ENDPOINTS = {
     ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/register"),
     ("POST", "/api/auth/logout"),
     ("GET", "/api/auth/me"),
     # check.py delegates to deployment_check.py, whose pre-login reads are

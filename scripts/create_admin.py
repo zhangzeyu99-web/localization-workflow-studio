@@ -48,16 +48,19 @@ def create_or_reset_admin(username: str, password: str) -> tuple[dict, bool]:
     if existing is not None:
         updated = db.update_user(existing["id"], updates, revoke_sessions=True)
         return updated, False
-    return (
-        db.create_user(
-            normalized_username,
-            updates["password_hash"],
-            "admin",
-            display_name=normalized_username,
-            must_change_password=True,
-        ),
-        True,
-    )
+    try:
+        return (
+            db.create_user(
+                normalized_username,
+                updates["password_hash"],
+                "admin",
+                display_name=normalized_username,
+                must_change_password=True,
+            ),
+            True,
+        )
+    except db.UsernameConflictError as exc:
+        raise ValueError("用户名已存在（用户名不区分大小写）") from exc
 
 
 def main() -> int:

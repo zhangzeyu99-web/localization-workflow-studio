@@ -52,13 +52,16 @@ def create_user(payload: UserCreateRequest) -> dict[str, Any]:
     if db.get_user_by_username(username) is not None:
         raise HTTPException(status_code=409, detail="用户名已存在")
 
-    user = db.create_user(
-        username,
-        auth.hash_password(payload.initial_password),
-        payload.role,
-        display_name=payload.display_name.strip() or username,
-        must_change_password=True,
-    )
+    try:
+        user = db.create_user(
+            username,
+            auth.hash_password(payload.initial_password),
+            payload.role,
+            display_name=payload.display_name.strip() or username,
+            must_change_password=True,
+        )
+    except db.UsernameConflictError as exc:
+        raise HTTPException(status_code=409, detail="用户名已存在") from exc
     operator_context.record_operator_audit(
         DATA_ROOT, "create_user", {"username": username, "role": payload.role}
     )

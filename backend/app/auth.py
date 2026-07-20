@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
+import math
 import os
 import secrets
 import threading
@@ -30,6 +31,9 @@ LOGIN_MAX_FAILURES = 5
 LOGIN_WINDOW_SECONDS = 600.0
 LOGIN_LOCKOUT_SECONDS = 600.0
 LOGIN_MAX_TRACKED_KEYS = 4096
+REGISTRATION_MAX_ATTEMPTS = 30
+REGISTRATION_WINDOW_SECONDS = 600.0
+REGISTRATION_MAX_TRACKED_KEYS = 4096
 
 _password_hasher = PasswordHasher()
 _current_user_var: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
@@ -243,4 +247,56 @@ class LoginRateLimiter:
             self._state.pop(key, None)
 
 
+class RegistrationRateLimiter:
+    """Bounded in-process rolling-window limiter keyed only by client IP."""
+
+    def __init__(
+        self,
+        max_attempts: int = REGISTRATION_MAX_ATTEMPTS,
+        window_seconds: float = REGISTRATION_WINDOW_SECONDS,
+        max_keys: int = REGISTRATION_MAX_TRACKED_KEYS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.max_attempts = max(1, int(max_attempts))
+        self.window_seconds = float(window_seconds)
+        self.max_keys = max(1, int(max_keys))
+        self._clock = clock
+        self._state: OrderedDict[str, list[float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _sweep_stale(self, now: float) -> None:
+        for key, attempts in list(self._state.items()):
+            fresh = [attempt for attempt in attempts if now - attempt < self.window_seconds]
+            if fresh:
+                self._state[key] = fresh
+            else:
+                self._state.pop(key, None)
+
+    def _capacity_retry_after(self, now: float) -> int:
+        earliest_expiry = min(
+            attempts[-1] + self.window_seconds
+            for attempts in self._state.values()
+            if attempts
+        )
+        return max(1, math.ceil(earliest_expiry - now))
+
+    def check_and_record(self, client_ip: str) -> int | None:
+        """Record an accepted handler attempt, or return integer retry seconds."""
+        with self._lock:
+            now = self._clock()
+            self._sweep_stale(now)
+            attempts = self._state.pop(client_ip, None)
+            if attempts is None:
+                if len(self._state) >= self.max_keys:
+                    return self._capacity_retry_after(now)
+                attempts = []
+            if len(attempts) >= self.max_attempts:
+                self._state[client_ip] = attempts
+                return max(1, math.ceil(attempts[0] + self.window_seconds - now))
+            attempts.append(now)
+            self._state[client_ip] = attempts
+            return None
+
+
 login_rate_limiter = LoginRateLimiter()
+registration_rate_limiter = RegistrationRateLimiter()
