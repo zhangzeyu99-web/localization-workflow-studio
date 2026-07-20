@@ -34,7 +34,7 @@ Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web �
 - 长文本翻译：由后端任务编排器拆批、限流、断点续跑和失败恢复；不依赖 Codex/Agent 才能运行。
 - Agent 本地大语言包任务：使用 `workflow/localization/scripts/run_large_text_multilingual_*.py` 做 preflight、API manifest、cache-lint、readback 和 retro；cache-lint 已覆盖机器型括号 token、富文本/换行占位、中文小数字和日期过滤、千/万/M/K 等跨语言数字单位、强术语命中，以及 skipped/waived gate 状态和超过一小时任务的 retro 复盘提示。详细流程见 `docs/LARGE_TEXT_MULTILINGUAL_WORKFLOW.md`。
 - 公告翻译：项目内 9 步外文本工作流，支持公告资料、约束来源、目标语言、术语提取、译文反查、翻译准备、AI 翻译/导入、校对回填和交付。
-- 账号与权限：管理员/项目运营/普通用户三档角色，按项目成员关系控制可见性；云端部署默认强制登录（fail-closed），本地部署默认零感知（免登录、不建号）。用户管理、项目成员管理和首次登录改密都是内置能力，详见 `docs/CLOUD_DEPLOYMENT.md`「账号与认证」一节。
+- 账号与权限：管理员/项目运营/普通用户三档角色，按项目成员关系控制可见性；账号版未登录时只显示登录/注册页，自助注册固定创建启用的普通成员账号，不会自动加入既有项目，但可按现有流程新建项目并自动成为该项目成员。云端部署默认强制登录（fail-closed），本地部署默认零感知（免登录、不建号）。用户管理、项目成员管理和首次登录改密都是内置能力，详见 `docs/CLOUD_DEPLOYMENT.md`「账号与认证」一节。
 - 禁止路径：不使用 Google Translate、`deep_translator`、`googletrans` 或浏览器机翻。
 - GitHub Pages：只是公开静态 Demo。完整功能必须启动 FastAPI 后端并使用私有数据目录。
 
@@ -430,12 +430,13 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 - [v1.5.0 正式版说明](docs/releases/v1.5.0.md)
 - [v1.5.1 正式版说明](docs/releases/v1.5.1.md)
 - [v1.5.3 正式版说明](docs/releases/v1.5.3.md)
+- [v1.6.0 账号版说明](docs/releases/v1.6.0.md)
 - [许可证](LICENSE)
 
 ## 版本
 
 
-当前版本：`1.5.3`
+当前有账号版：`1.6.0`。本次只更新有账号版；无账号版保持 `v1.5.2` 不变。
 
 - `VERSION`
 - `backend/app/main.py`

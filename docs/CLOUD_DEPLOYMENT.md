@@ -50,7 +50,7 @@ sudo chmod 0640 /etc/lwstudio/lws.env
 
 发布包必须携带已经在构建环境完成验证的 `frontend/dist`。服务器不得重新执行 `npm ci` 或 `npm run build`，否则现场生成的前端可能与包内后端版本不一致。
 
-编辑 `/etc/lwstudio/lws.env`，把 `LWS_GIT_SHA` 改成发布提交号。`LWS_DATA_ROOT` 必须保留为版本目录之外的绝对路径；cloud 模式下缺失或使用相对路径会在启动时直接失败。
+编辑 `/etc/lwstudio/lws.env`，把 `LWS_GIT_SHA` 设置为发布包 `PACKAGE_MANIFEST.json` 中的 `git_sha`，不要手工猜测或填写工作区 HEAD。`LWS_DATA_ROOT` 必须保留为版本目录之外的绝对路径；cloud 模式下缺失或使用相对路径会在启动时直接失败。
 
 安装服务和反向代理模板：
 
@@ -114,6 +114,8 @@ local 模式（默认）                                              → 免登
 ```
 
 `LWS_AUTH_MODE` 只接受 `required` 或 `off`；其它值会让后端启动失败，不会静默降级。
+
+v1.6.0 只更新有账号版，无账号版保持 v1.5.2 不变。在有账号版中，未登录访客只能看到登录/注册页，不能进入工作台；自助注册成功后账号固定为启用状态的 `member`，不会自动加入既有项目，但可按现有流程新建项目并自动成为该项目成员。现有用户、项目和数据无需迁移，继续使用版本目录外的同一份 `LWS_DATA_ROOT` 和 `settings.local.json`。
 
 ### 首次管理员
 

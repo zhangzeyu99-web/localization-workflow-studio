@@ -148,9 +148,9 @@ def test_public_release_docs_match_repository_version() -> None:
     github_guide = (REPO_ROOT / "docs" / "GITHUB_MANAGEMENT.md").read_text(encoding="utf-8")
     pages_index = (REPO_ROOT / "docs" / "index.html").read_text(encoding="utf-8")
 
-    assert f"当前正式版本：`{version}`" in github_guide
+    assert f"当前有账号版：`{version}`" in github_guide
     assert f"正式版 v{version}" in pages_index
-    assert f"<strong>{version}</strong><span>当前正式版本</span>" in pages_index
+    assert f"<strong>{version}</strong><span>当前有账号版</span>" in pages_index
 
 
 def test_cloud_acceptance_checks_git_sha_and_exact_frontend_assets() -> None:

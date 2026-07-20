@@ -2,6 +2,16 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.6.0 - 2026-07-20
+
+Account self-registration release.
+
+- Added public self-registration for account-enabled deployments. Anonymous visitors see only the login and registration screens; successful registrations create active `member` accounts without granting project membership automatically.
+- Stabilized login/registration transitions by canceling stale authentication requests and making successful login responses self-contained.
+- Expanded administrator user management with registration and last-login metadata, deterministic newest-first ordering, and independent loading states for list refreshes and account actions.
+- Kept existing users, projects, and data compatible without migration. This release updates only the account-enabled line; the no-account v1.5.2 line remains unchanged.
+- Documented fresh-directory deployment with external `LWS_DATA_ROOT` and `settings.local.json`, manifest-derived `LWS_GIT_SHA`, one worker, and an atomic `current` switch.
+
 ## 1.5.3 - 2026-07-17
 
 Account acceptance and deployment hygiene release.
