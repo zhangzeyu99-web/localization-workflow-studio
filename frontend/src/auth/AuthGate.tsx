@@ -1,6 +1,7 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useAuth } from './AuthContext'
 import { LoginPage } from './LoginPage'
+import { RegisterPage } from './RegisterPage'
 import { ChangePasswordPage } from './ChangePasswordPage'
 
 // Sits above <App/> in main.tsx. authEnabled=false (local/off deployments)
@@ -9,6 +10,7 @@ import { ChangePasswordPage } from './ChangePasswordPage'
 // -- the brief 'loading' flash is the only visible change from today.
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { status, refresh } = useAuth()
+  const [anonymousView, setAnonymousView] = useState<'login' | 'register'>('login')
   if (status === 'loading') {
     return (
       <div className="auth-screen" data-testid="auth-loading">
@@ -33,7 +35,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       </div>
     )
   }
-  if (status === 'anonymous') return <LoginPage />
+  if (status === 'anonymous') {
+    return anonymousView === 'register'
+      ? <RegisterPage onLogin={() => setAnonymousView('login')} />
+      : <LoginPage onRegister={() => setAnonymousView('register')} />
+  }
   if (status === 'must-change-password') return <ChangePasswordPage />
   return <>{children}</>
 }

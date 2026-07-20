@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { Languages, LogIn } from 'lucide-react'
 import { useAuth } from './AuthContext'
 
-export function LoginPage() {
+export function LoginPage({ onRegister }: { onRegister: () => void }) {
   const { login } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -56,6 +56,9 @@ export function LoginPage() {
         {error ? <div className="inline-status error" data-testid="login-error">{error}</div> : null}
         <button className="btn btn-primary auth-submit" disabled={busy} data-testid="login-submit">
           <LogIn size={16} aria-hidden="true" />{busy ? '登录中...' : '登录'}
+        </button>
+        <button type="button" className="auth-switch" data-testid="show-register" onClick={onRegister}>
+          没有账号？创建账号
         </button>
       </form>
     </div>

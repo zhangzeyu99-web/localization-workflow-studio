@@ -13,6 +13,7 @@ export type AuthState = {
   authEnabled: boolean
   can: (capability: string) => boolean
   login: (username: string, password: string) => Promise<AuthActionResult>
+  register: (username: string, displayName: string, password: string) => Promise<AuthActionResult>
   logout: () => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<AuthActionResult>
   refresh: () => Promise<void>
@@ -68,6 +69,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { ok: true }
   }, [refresh])
 
+  const register = useCallback(async (username: string, displayName: string, password: string): Promise<AuthActionResult> => {
+    try {
+      const result = await authApi.register(username, displayName, password)
+      if (result.status === 201 && result.data) {
+        applyMe(result.data)
+        return { ok: true }
+      }
+      const detailByStatus: Record<number, string> = {
+        403: '当前环境未开放注册，请使用已有账号登录。',
+        409: '用户名已存在，请更换后重试。',
+        422: '注册信息不符合要求，请检查后重试。',
+        429: '注册请求过多，请稍后再试。',
+      }
+      return { ok: false, detail: detailByStatus[result.status] || '注册服务暂时不可用，请稍后重试。' }
+    } catch {
+      return { ok: false, detail: '网络连接失败，请检查网络后重试。' }
+    }
+  }, [applyMe])
+
   const logout = useCallback(async () => {
     await authApi.logout()
     applyMe(null)
@@ -92,10 +112,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authEnabled: user?.auth_enabled ?? false,
     can,
     login,
+    register,
     logout,
     changePassword,
     refresh
-  }), [status, user, can, login, logout, changePassword, refresh])
+  }), [status, user, can, login, register, logout, changePassword, refresh])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

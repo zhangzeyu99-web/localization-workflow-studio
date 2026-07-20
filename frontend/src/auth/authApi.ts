@@ -48,6 +48,16 @@ export async function login(username: string, password: string): Promise<AuthRes
   return { status: response.status, detail: await readDetail(response) }
 }
 
+export async function register(username: string, displayName: string, password: string): Promise<AuthResult<AuthMeResponse>> {
+  const response = await authFetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, display_name: displayName, password })
+  })
+  if (response.ok) return { status: response.status, data: await response.json() }
+  return { status: response.status, detail: await readDetail(response) }
+}
+
 export async function logout(): Promise<void> {
   await authFetch('/api/auth/logout', { method: 'POST' })
 }

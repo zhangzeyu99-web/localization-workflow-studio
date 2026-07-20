@@ -3135,6 +3135,13 @@ input:focus, textarea:focus, select:focus { border-color: var(--c-purple-500); }
   margin-top: var(--space-4);
   justify-content: center;
 }
+.auth-switch {
+  margin-top: var(--space-3);
+  border: 0;
+  background: transparent;
+  color: var(--c-indigo-300);
+  cursor: pointer;
+}
 .settings-modal {
   width: min(520px, calc(100vw - 36px));
   padding: var(--space-5);
