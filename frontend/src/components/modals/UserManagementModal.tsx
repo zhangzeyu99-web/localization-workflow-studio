@@ -35,24 +35,24 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
   const [resetTarget, setResetTarget] = useState<ManagedUser | null>(null)
   const [resetPassword, setResetPassword] = useState('')
   const [notice, setNotice] = useState('')
-  const [error, setError] = useState('')
-  const [canRetryUsers, setCanRetryUsers] = useState(false)
+  const [actionError, setActionError] = useState('')
+  const [usersError, setUsersError] = useState('')
   const [busy, setBusy] = useState(false)
   const [loadingUsers, setLoadingUsers] = useState(true)
   const [hasLoadedUsers, setHasLoadedUsers] = useState(false)
+  const businessBusy = busy || loadingUsers
 
   async function loadUsers() {
     setLoadingUsers(true)
-    setError('')
-    setCanRetryUsers(false)
+    setUsersError('')
     try {
-      setUsers(await api<ManagedUser[]>('/api/users', undefined, '加载用户'))
+      const loadedUsers = await api<ManagedUser[]>('/api/users', undefined, '加载用户')
+      setUsers(loadedUsers)
+      setHasLoadedUsers(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setCanRetryUsers(true)
+      setUsersError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoadingUsers(false)
-      setHasLoadedUsers(true)
     }
   }
 
@@ -62,12 +62,11 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
 
   async function run(action: () => Promise<void>) {
     setBusy(true)
-    setError('')
-    setCanRetryUsers(false)
+    setActionError('')
     try {
       await action()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setActionError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -77,8 +76,7 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
     event.preventDefault()
     const username = createDraft.username.trim()
     if (!username || username.length > 128 || createDraft.password.length < 8) {
-      setError('请填写不超过 128 个字符的用户名，并提供至少 8 位的初始密码。')
-      setCanRetryUsers(false)
+      setActionError('请填写不超过 128 个字符的用户名，并提供至少 8 位的初始密码。')
       return
     }
     await run(async () => {
@@ -113,8 +111,7 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
   async function submitReset(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!resetTarget || resetPassword.length < 8) {
-      setError('重置密码至少 8 位。')
-      setCanRetryUsers(false)
+      setActionError('重置密码至少 8 位。')
       return
     }
     await run(async () => {
@@ -146,25 +143,30 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
             <label><span>角色</span><select data-testid="create-user-role" value={createDraft.role} onChange={(event) => setCreateDraft((draft) => ({ ...draft, role: event.target.value as UserRole }))}><option value="admin">管理员</option><option value="ops">运营</option><option value="member">成员</option></select></label>
             <label><span>初始密码</span><input data-testid="create-user-password" type="password" value={createDraft.password} onChange={(event) => setCreateDraft((draft) => ({ ...draft, password: event.target.value }))} /></label>
           </div>
-          <div className="management-form-foot"><span>创建后首次登录必须修改密码。</span><button className="btn btn-primary btn-sm" disabled={busy} data-testid="create-user-submit">创建用户</button></div>
+          <div className="management-form-foot"><span>创建后首次登录必须修改密码。</span><button className="btn btn-primary btn-sm" disabled={businessBusy} data-testid="create-user-submit">创建用户</button></div>
         </form>
 
         {notice ? <div className="inline-status success" data-testid="initial-password-reminder">{notice}</div> : null}
-        {error ? (
+        {actionError ? (
           <div className="inline-status error" data-testid="user-management-error" role="alert">
-            <span>{error}</span>
-            {canRetryUsers ? <button type="button" className="btn btn-ghost btn-sm inline-status-action" data-testid="retry-user-list" disabled={loadingUsers} onClick={() => { void loadUsers() }}>重试加载</button> : null}
+            <span>{actionError}</span>
+          </div>
+        ) : null}
+        {usersError ? (
+          <div className="inline-status error" data-testid="user-list-error" role="alert">
+            <span>{usersError}</span>
+            <button type="button" className="btn btn-ghost btn-sm inline-status-action" data-testid="retry-user-list" disabled={loadingUsers} onClick={() => { void loadUsers() }}>重试加载</button>
           </div>
         ) : null}
 
         <div className="management-list-head">
-          <strong data-testid="user-management-count">{hasLoadedUsers ? `共 ${users.length} 位用户` : '用户总数加载中'}</strong>
+          <strong data-testid="user-management-count">{hasLoadedUsers ? `共 ${users.length} 位用户` : loadingUsers ? '用户总数加载中' : '用户总数未知'}</strong>
           <button type="button" className="btn btn-ghost btn-sm" data-testid="refresh-users" disabled={busy || loadingUsers} onClick={() => { void loadUsers() }}>{loadingUsers && hasLoadedUsers ? '刷新中...' : '刷新'}</button>
         </div>
 
         {loadingUsers && !hasLoadedUsers ? <div className="muted management-empty" data-testid="user-management-loading"><span className="loading" />正在加载用户...</div> : null}
         {loadingUsers && hasLoadedUsers ? <div className="muted management-list-refreshing" data-testid="user-management-refreshing"><span className="loading" />正在刷新用户...</div> : null}
-        {!loadingUsers && !error && users.length === 0 ? <div className="muted management-empty" data-testid="user-management-empty">暂无用户。</div> : null}
+        {hasLoadedUsers && !loadingUsers && !usersError && users.length === 0 ? <div className="muted management-empty" data-testid="user-management-empty">暂无用户。</div> : null}
 
         <div className="management-list">
           {users.map((managedUser) => (
@@ -179,13 +181,13 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
               <select
                 aria-label={`${managedUser.username} 角色`}
                 value={managedUser.role}
-                disabled={busy || managedUser.id === currentUserId}
+                disabled={businessBusy || managedUser.id === currentUserId}
                 onChange={(event) => { void patchUser(managedUser, { role: event.target.value as UserRole }) }}
               >
                 <option value="admin">管理员</option><option value="ops">运营</option><option value="member">成员</option>
               </select>
-              <button className="btn btn-ghost btn-sm" disabled={busy || managedUser.id === currentUserId} onClick={() => { void patchUser(managedUser, { status: managedUser.status === 'active' ? 'disabled' : 'active' }) }}>{managedUser.status === 'active' ? '停用' : '启用'}</button>
-              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setResetTarget(managedUser); setResetPassword(''); setError('') }}><KeyRound size={14} aria-hidden="true" />重置密码</button>
+              <button className="btn btn-ghost btn-sm" disabled={businessBusy || managedUser.id === currentUserId} onClick={() => { void patchUser(managedUser, { status: managedUser.status === 'active' ? 'disabled' : 'active' }) }}>{managedUser.status === 'active' ? '停用' : '启用'}</button>
+              <button className="btn btn-ghost btn-sm" disabled={businessBusy} onClick={() => { setResetTarget(managedUser); setResetPassword(''); setActionError('') }}><KeyRound size={14} aria-hidden="true" />重置密码</button>
               {managedUser.id === currentUserId ? <span className="management-self">当前账号</span> : null}
             </div>
           ))}
@@ -196,7 +198,7 @@ export function UserManagementModal({ currentUserId, onClose }: { currentUserId:
             <strong>重置 @{resetTarget.username} 的密码</strong>
             <input data-testid="user-reset-password" type="password" autoFocus value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} placeholder="至少 8 位" />
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => setResetTarget(null)}>取消</button>
-            <button className="btn btn-primary btn-sm" disabled={busy} data-testid="user-reset-submit">确认重置</button>
+            <button className="btn btn-primary btn-sm" disabled={businessBusy} data-testid="user-reset-submit">确认重置</button>
           </form>
         ) : null}
       </div>

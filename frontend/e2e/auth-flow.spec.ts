@@ -15,6 +15,9 @@ const registeredUsername = `e2e-registered-${suffix}`
 const registeredPassword = 'Registered-Member-Password!'
 const refreshedRegistrationUsername = `e2e-admin-refresh-${suffix}`
 const refreshedRegistrationDisplayName = 'E2E 刷新注册成员'
+const refreshExistingUsername = `e2e-admin-refresh-existing-${suffix}`
+const initialRetrySentinelUsername = `e2e-admin-retry-sentinel-${suffix}`
+const actionFailureUsername = `e2e-admin-action-error-${suffix}`
 const duplicateUsername = `e2e-register-duplicate-${suffix}`
 const recoveryUsername = `e2e-register-recovery-${suffix}`
 const staleRegistrationUsername = `e2e-register-stale-${suffix}`
@@ -454,7 +457,77 @@ test('管理员首次登录后强制改密并进入应用', async ({ page }) => 
   await page.getByRole('button', { name: '关闭' }).click()
 })
 
+test('管理员首次加载失败后显示未知总数并用真实请求重试', async ({ page }) => {
+  await login(page, 'e2e-admin', adminPassword)
+
+  let userListRequestCount = 0
+  let releaseRetry = () => {}
+  const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve })
+  await page.route('**/api/users', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue()
+      return
+    }
+    userListRequestCount += 1
+    if (userListRequestCount === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: '测试首次用户列表加载失败' }),
+      })
+      return
+    }
+    await retryGate
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: 'user_retry_sentinel',
+        username: initialRetrySentinelUsername,
+        display_name: 'E2E 重试哨兵用户',
+        role: 'member',
+        status: 'active',
+        must_change_password: false,
+        created_at: '2026-07-20T01:02:03+00:00',
+        last_login_at: null,
+      }]),
+    })
+  })
+
+  await page.getByTestId('open-user-management').click()
+  const modal = page.getByTestId('user-management-modal')
+  await expect.poll(() => userListRequestCount).toBe(1)
+  await expect(modal.getByTestId('user-list-error')).toContainText('测试首次用户列表加载失败')
+  await expect(modal.getByTestId('user-management-count')).toHaveText('用户总数未知')
+  await expect(modal.getByTestId('user-management-empty')).toHaveCount(0)
+
+  await modal.getByTestId('retry-user-list').click()
+  await expect.poll(() => userListRequestCount).toBe(2)
+  try {
+    await expect(modal.getByTestId('user-management-loading')).toBeVisible()
+    await expect(modal.getByTestId('user-management-refreshing')).toHaveCount(0)
+    await expect(modal.getByTestId('user-management-count')).toHaveText('用户总数加载中')
+    await expect(modal.getByTestId('user-management-empty')).toHaveCount(0)
+  } finally {
+    releaseRetry()
+  }
+
+  await expect(modal.getByTestId('user-management-loading')).toHaveCount(0)
+  await expect(modal.getByTestId(`user-row-${initialRetrySentinelUsername}`)).toBeVisible()
+  await expect(modal.getByTestId('user-management-count')).toHaveText('共 1 位用户')
+  await expect(modal.getByTestId('user-list-error')).toHaveCount(0)
+  await page.unroute('**/api/users')
+})
+
 test('管理员刷新用户列表后新注册账号置顶且失败可重试', async ({ page, request }) => {
+  const existingRegistration = await request.post('/api/auth/register', {
+    data: {
+      username: refreshExistingUsername,
+      display_name: 'E2E 刷新前成员',
+      password: registeredPassword,
+    },
+  })
+  expect(existingRegistration.status()).toBe(201)
   await login(page, 'e2e-admin', adminPassword)
 
   let releaseInitialLoad = () => {}
@@ -477,6 +550,9 @@ test('管理员刷新用户列表后新注册账号置顶且失败可重试', as
   await expect(rows.first()).toBeVisible()
   const initialTotal = await rows.count()
   await expect(modal.getByTestId('user-management-count')).toHaveText(`共 ${initialTotal} 位用户`)
+  const existingRow = modal.getByTestId(`user-row-${refreshExistingUsername}`)
+  await existingRow.getByRole('button', { name: '重置密码' }).click()
+  await expect(modal.getByTestId('user-reset-submit')).toBeVisible()
 
   const registration = await request.post('/api/auth/register', {
     data: {
@@ -499,6 +575,11 @@ test('管理员刷新用户列表后新注册账号置顶且失败可重试', as
     await expect(modal.getByTestId('user-management-refreshing')).toBeVisible()
     await expect(rows.first()).toBeVisible()
     await expect(modal.getByTestId('user-management-empty')).toHaveCount(0)
+    await expect(modal.getByTestId('create-user-submit')).toBeDisabled()
+    await expect(existingRow.getByRole('combobox', { name: `${refreshExistingUsername} 角色` })).toBeDisabled()
+    await expect(existingRow.getByRole('button', { name: '停用' })).toBeDisabled()
+    await expect(existingRow.getByRole('button', { name: '重置密码' })).toBeDisabled()
+    await expect(modal.getByTestId('user-reset-submit')).toBeDisabled()
   } finally {
     releaseRefresh()
   }
@@ -528,10 +609,10 @@ test('管理员刷新用户列表后新注册账号置顶且失败可重试', as
     })
   }, { times: 1 })
   await modal.getByTestId('refresh-users').click()
-  await expect(modal.getByTestId('user-management-error')).toContainText('测试用户列表暂时不可用')
+  await expect(modal.getByTestId('user-list-error')).toContainText('测试用户列表暂时不可用')
   await expect(rows.first()).toHaveAttribute('data-testid', `user-row-${refreshedRegistrationUsername}`)
   await modal.getByTestId('retry-user-list').click()
-  await expect(modal.getByTestId('user-management-error')).toHaveCount(0)
+  await expect(modal.getByTestId('user-list-error')).toHaveCount(0)
   await expect(rows.first()).toHaveAttribute('data-testid', `user-row-${refreshedRegistrationUsername}`)
 
   await page.route('**/api/users', async (route) => {
@@ -544,6 +625,39 @@ test('管理员刷新用户列表后新注册账号置顶且失败可重试', as
   await modal.getByTestId('refresh-users').click()
   await expect(modal.getByTestId('user-management-empty')).toHaveText('暂无用户。')
   await expect(modal.getByTestId('user-management-count')).toHaveText('共 0 位用户')
+})
+
+test('用户业务操作失败不显示列表重试', async ({ page, request }) => {
+  const registration = await request.post('/api/auth/register', {
+    data: {
+      username: actionFailureUsername,
+      display_name: 'E2E 业务失败成员',
+      password: registeredPassword,
+    },
+  })
+  expect(registration.status()).toBe(201)
+
+  await login(page, 'e2e-admin', adminPassword)
+  await page.getByTestId('open-user-management').click()
+  const modal = page.getByTestId('user-management-modal')
+  const row = modal.getByTestId(`user-row-${actionFailureUsername}`)
+  await expect(row).toBeVisible()
+  await page.route('**/api/users/*', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      await route.fulfill({
+        status: 400,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: '测试业务更新失败' }),
+      })
+      return
+    }
+    await route.continue()
+  }, { times: 1 })
+
+  await row.getByRole('button', { name: '停用' }).click()
+  await expect(modal.getByTestId('user-management-error')).toContainText('测试业务更新失败')
+  await expect(modal.getByTestId('retry-user-list')).toHaveCount(0)
+  await expect(row).toBeVisible()
 })
 
 test('管理员通过用户管理界面创建 ops 和 member', async ({ page }) => {
