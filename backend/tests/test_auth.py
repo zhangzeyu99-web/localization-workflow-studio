@@ -344,6 +344,26 @@ def test_login_success_returns_public_user_fields_and_httponly_cookie() -> None:
         assert "secure" not in set_cookie.lower()
 
 
+def test_login_success_returns_same_me_payload_with_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
+    _create_user("login-shape", role="member")
+
+    with TestClient(test_app) as client:
+        login_response = client.post(
+            LOGIN_URL,
+            json={"username": "login-shape", "password": "Sup3rSecret!"},
+        )
+        me_response = client.get(ME_URL)
+
+    assert login_response.status_code == 200, login_response.text
+    assert me_response.status_code == 200, me_response.text
+    assert login_response.json() == me_response.json()
+    assert login_response.json()["auth_enabled"] is True
+    assert login_response.json()["capabilities"] == authz.capabilities_for_role("member")
+
+
 def test_login_cookie_is_secure_in_cloud_deployment_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     _create_user("cloud-user")
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")

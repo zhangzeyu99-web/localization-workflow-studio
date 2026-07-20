@@ -241,19 +241,37 @@ test('登录注册切换会清除密码、错误和忙碌状态', async ({ page 
   }
 })
 
-test('切换到注册会中止登录请求并忽略竞态返回的陈旧 200', async ({ page }) => {
+test('登录成功只发送一次登录请求且不再追加身份请求', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('login-submit')).toBeVisible()
+  let loginRequests = 0
   let followupMeRequests = 0
   page.on('request', (request) => {
-    if (new URL(request.url()).pathname === '/api/auth/me') followupMeRequests += 1
+    const pathname = new URL(request.url()).pathname
+    if (request.method() === 'POST' && pathname === '/api/auth/login') loginRequests += 1
+    if (request.method() === 'GET' && pathname === '/api/auth/me') followupMeRequests += 1
   })
+
+  await page.getByTestId('login-username').fill('e2e-admin')
+  await page.getByTestId('login-password').fill(adminInitialPassword)
+  await page.getByTestId('login-submit').click()
+  await expect(page.getByRole('heading', { name: '首次登录请修改密码' })).toBeVisible()
+
+  expect(loginRequests).toBe(1)
+  expect(followupMeRequests).toBe(0)
+})
+
+test('切换到注册会中止响应前的登录请求且刷新仍匿名', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('login-submit')).toBeVisible()
   await installDeferredAuthFetch(page, '/api/auth/login', 200, {
     id: 'stale-login-user',
     username: 'stale-login-user',
     display_name: 'Stale Login User',
     role: 'member',
     must_change_password: false,
+    auth_enabled: true,
+    capabilities: [],
   }, false)
   await page.getByTestId('login-username').fill('stale-login-user')
   await page.getByTestId('login-password').fill('Stale-Login-Password!')
@@ -264,10 +282,9 @@ test('切换到注册会中止登录请求并忽略竞态返回的陈旧 200', a
   await expect.poll(async () => (await authFetchProbe(page)).aborted).toBe(true)
 
   // Even if a transport races with abort and still resolves, generation must
-  // prevent the stale response from starting /me or changing the auth gate.
+  // prevent the stale response from changing the auth gate.
   await releaseDeferredAuthFetch(page)
   await page.waitForTimeout(100)
-  expect(followupMeRequests).toBe(0)
   await expect(page.getByTestId('register-submit')).toBeVisible()
   await page.reload()
   await expect(page.getByTestId('login-submit')).toBeVisible()
@@ -291,37 +308,6 @@ test('切换到登录会中止注册请求且旧用户名仍可注册', async ({
   await fillRegistration(page, { username: staleRegistrationUsername, password: registeredPassword })
   await page.getByTestId('register-submit').click()
   await expect(page.getByTestId('current-user-chip')).toContainText(staleRegistrationUsername)
-})
-
-test('登录成功但身份确认失败时显示可恢复错误', async ({ page }) => {
-  await page.goto('/')
-  await expect(page.getByTestId('login-submit')).toBeVisible()
-
-  const failures = [
-    { status: 401, body: { detail: '未登录' }, expected: '登录状态未生效，请重新登录。' },
-    { status: 500, body: { detail: 'Internal Server Error' }, expected: '暂时无法确认登录状态，请稍后重试。' },
-    { status: 200, body: null, expected: '暂时无法确认登录状态，请稍后重试。' },
-  ]
-  for (const failure of failures) {
-    await page.route('**/api/auth/me', async (route) => {
-      await route.fulfill({
-        status: failure.status,
-        contentType: 'application/json',
-        body: JSON.stringify(failure.body),
-      })
-    })
-    await page.getByTestId('login-username').fill('e2e-admin')
-    await page.getByTestId('login-password').fill(adminInitialPassword)
-    await page.getByTestId('login-submit').click()
-    await expect(page.getByTestId('login-error')).toHaveText(failure.expected)
-    await expect(page.getByTestId('login-submit')).toBeEnabled()
-    await page.getByTestId('login-username').fill('e2e-admin-retry')
-    await expect(page.getByTestId('login-error')).toHaveCount(0)
-    await page.unroute('**/api/auth/me')
-    await page.reload()
-    await expect(page.getByTestId('login-submit')).toBeVisible()
-    await expect(page.getByTestId('current-user-chip')).toHaveCount(0)
-  }
 })
 
 test('注册成功后的登出和会话失效都回到登录页', async ({ page }) => {

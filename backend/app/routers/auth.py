@@ -120,7 +120,7 @@ def login(payload: LoginRequest, request: Request, response: Response) -> dict[s
         {"username": user["username"]},
         operator=user.get("display_name") or user["username"],
     )
-    return auth.public_user(user)
+    return _me_payload(user, auth_enabled=True)
 
 
 @router.post("/api/auth/logout")

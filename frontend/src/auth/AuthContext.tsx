@@ -99,22 +99,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const result = await authApi.login(username, password, controller.signal)
       if (generation !== authActionGenerationRef.current) return { ok: false, stale: true }
-      if (result.status !== 200) return { ok: false, detail: result.detail || '登录失败，请重试。' }
-      const meResult = await authApi.fetchMe(controller.signal)
-      if (generation !== authActionGenerationRef.current) return { ok: false, stale: true }
-      if (meResult.status !== 200 || !meResult.data) {
-        await authApi.logout().catch(() => undefined)
-        if (generation !== authActionGenerationRef.current || controller.signal.aborted) {
-          return { ok: false, stale: true }
-        }
-        return {
-          ok: false,
-          detail: meResult.status === 401
-            ? '登录状态未生效，请重新登录。'
-            : '暂时无法确认登录状态，请稍后重试。',
-        }
+      if (result.status !== 200 || !result.data) {
+        return { ok: false, detail: result.detail || '登录失败，请重试。' }
       }
-      applyMe(meResult.data)
+      applyMe(result.data)
       return { ok: true }
     } catch (error) {
       if (generation !== authActionGenerationRef.current || controller.signal.aborted || isAbortError(error)) {
