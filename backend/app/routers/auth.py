@@ -139,7 +139,7 @@ def logout(request: Request, response: Response) -> dict[str, Any]:
 
 
 @router.get("/api/auth/me")
-def me(request: Request) -> dict[str, Any]:
+def me(request: Request, response: Response) -> dict[str, Any]:
     """Report the caller's identity plus the frontend's permission-gate inputs.
 
     Auth-off/local mode's dominant case is "no session cookie at all" (the
@@ -148,16 +148,19 @@ def me(request: Request) -> dict[str, Any]:
     wrongly bounce every local deployment to a login screen. A *present*
     session cookie is still honored either way (an operator can log in with
     a real account even while enforcement happens to be off), and an
-    invalid/expired cookie is always rejected regardless of mode -- only the
-    "no cookie presented" case falls back to the synthetic admin, and only
-    when enforcement is off.
+    invalid/expired cookie remains a 401 while enforcement is on. When it is
+    off, clear the stale cookie and recover to the synthetic local admin so a
+    leftover cloud session cannot turn a local deployment into a login gate.
     """
     auth_enabled = auth.auth_required()
     token = request.cookies.get(auth.SESSION_COOKIE_NAME, "")
     if token:
         user = auth.get_user_for_session_token(token)
         if user is None:
-            raise HTTPException(status_code=401, detail="未登录")
+            if auth_enabled:
+                raise HTTPException(status_code=401, detail="未登录")
+            _clear_session_cookie(response)
+            user = auth.LOCAL_ADMIN_USER
     elif auth_enabled:
         raise HTTPException(status_code=401, detail="未登录")
     else:

@@ -446,6 +446,42 @@ def test_me_with_valid_session_returns_current_user() -> None:
         assert body["capabilities"] == sorted(authz.ALL_CAPABILITIES)
 
 
+@pytest.mark.parametrize("session_kind", ["invalid", "revoked"])
+def test_me_with_invalid_or_revoked_session_cookie_falls_back_to_local_admin_when_auth_is_off(
+    session_kind: str,
+) -> None:
+    token = auth.generate_session_token()
+    if session_kind == "revoked":
+        user = _create_user("revoked-session-owner")
+        token, _session = auth.issue_session(user["id"])
+        auth.revoke_session(token)
+
+    with TestClient(app) as client:
+        client.cookies.set(auth.SESSION_COOKIE_NAME, token)
+        response = client.get(ME_URL)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == auth.LOCAL_ADMIN_USER["id"]
+    assert response.json()["auth_enabled"] is False
+    assert response.json()["capabilities"] == sorted(authz.ALL_CAPABILITIES)
+    clear_cookie = response.headers.get("set-cookie", "").lower()
+    assert f"{auth.SESSION_COOKIE_NAME}=" in clear_cookie
+    assert "max-age=0" in clear_cookie
+
+
+def test_me_with_invalid_session_cookie_is_rejected_when_auth_is_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
+
+    with TestClient(test_app) as client:
+        client.cookies.set(auth.SESSION_COOKIE_NAME, auth.generate_session_token())
+        response = client.get(ME_URL)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "未登录"}
+
+
 def test_session_resolution_cannot_mix_old_session_with_new_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -489,7 +525,7 @@ def test_logout_invalidates_session_and_is_idempotent() -> None:
         assert second_logout.json()["ok"] is True
 
 
-def test_expired_session_is_rejected_and_lazily_purged() -> None:
+def test_expired_session_falls_back_to_local_admin_and_is_lazily_purged_when_auth_is_off() -> None:
     user = _create_user("frank")
     token = auth.generate_session_token()
     token_hash = auth.hash_token(token)
@@ -498,7 +534,13 @@ def test_expired_session_is_rejected_and_lazily_purged() -> None:
     with TestClient(app) as client:
         client.cookies.set(auth.SESSION_COOKIE_NAME, token)
         response = client.get(ME_URL)
-        assert response.status_code == 401
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == auth.LOCAL_ADMIN_USER["id"]
+    assert response.json()["auth_enabled"] is False
+    clear_cookie = response.headers.get("set-cookie", "").lower()
+    assert f"{auth.SESSION_COOKIE_NAME}=" in clear_cookie
+    assert "max-age=0" in clear_cookie
 
     # get_session_by_token_hash lazily deletes the expired row on read.
     assert db.get_session_by_token_hash(token_hash) is None

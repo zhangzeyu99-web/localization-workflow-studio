@@ -32,6 +32,27 @@ test('auth bootstrap network failure shows a recoverable error instead of loadin
   await expect(page.getByTestId('show-register')).toHaveCount(0)
 })
 
+test('auth-off clears an invalid session cookie and keeps the workbench open', async ({ page, context }) => {
+  await page.goto(baseURL)
+  await expect(page.getByRole('heading', { name: '本地化工作台' })).toBeVisible()
+
+  await context.addCookies([{
+    name: 'lws_session',
+    value: 'invalid-auth-off-session',
+    url: baseURL,
+    httpOnly: true,
+    sameSite: 'Lax',
+  }])
+  await page.reload()
+
+  await expect(page.getByRole('heading', { name: '本地化工作台' })).toBeVisible()
+  await expect(page.locator('.new-project-btn')).toBeVisible()
+  await expect(page.getByTestId('login-submit')).toHaveCount(0)
+  await expect(page.getByTestId('show-register')).toHaveCount(0)
+  const cookies = await context.cookies(baseURL)
+  expect(cookies.find((cookie) => cookie.name === 'lws_session')).toBeUndefined()
+})
+
 test('glossary candidates stay readable while curation actions are hidden in read-only mode', async ({ page }) => {
   await page.goto(baseURL)
   await page.evaluate(async () => {

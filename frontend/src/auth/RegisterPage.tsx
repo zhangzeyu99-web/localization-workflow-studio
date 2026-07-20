@@ -66,7 +66,7 @@ export function RegisterPage({ onLogin }: { onLogin: () => void }) {
         <button className="btn btn-primary auth-submit" disabled={busy} data-testid="register-submit">
           <UserPlus size={16} aria-hidden="true" />{busy ? '注册中...' : '创建账号'}
         </button>
-        <button type="button" className="auth-switch" data-testid="show-login" onClick={onLogin}>
+        <button type="button" className="auth-switch" data-testid="show-login" onClick={onLogin} disabled={busy}>
           已有账号？返回登录
         </button>
       </form>

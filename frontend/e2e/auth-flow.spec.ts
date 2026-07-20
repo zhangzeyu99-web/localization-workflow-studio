@@ -20,7 +20,6 @@ const initialRetrySentinelUsername = `e2e-admin-retry-sentinel-${suffix}`
 const actionFailureUsername = `e2e-admin-action-error-${suffix}`
 const duplicateUsername = `e2e-register-duplicate-${suffix}`
 const recoveryUsername = `e2e-register-recovery-${suffix}`
-const staleRegistrationUsername = `e2e-register-stale-${suffix}`
 const logoutResetUsername = `e2e-register-logout-reset-${suffix}`
 const sessionResetUsername = `e2e-register-session-reset-${suffix}`
 const memberProjectName = `Member Project ${suffix}`
@@ -66,51 +65,6 @@ async function fillRegistration(page: Page, values: {
   await page.getByTestId('register-display-name').fill(values.displayName || '')
   await page.getByTestId('register-password').fill(values.password)
   await page.getByTestId('register-password-confirm').fill(values.passwordConfirm ?? values.password)
-}
-
-async function installDeferredAuthFetch(page: Page, path: string, status: number, body: unknown, rejectOnAbort: boolean) {
-  await page.evaluate(({ path, status, body, rejectOnAbort }) => {
-    type Probe = { started: boolean; hasSignal: boolean; aborted: boolean; release?: () => void }
-    const target = window as typeof window & { __authFetchProbe?: Probe }
-    const originalFetch = window.fetch.bind(window)
-    const probe: Probe = { started: false, hasSignal: false, aborted: false }
-    target.__authFetchProbe = probe
-    window.fetch = (input, init) => {
-      const requestUrl = input instanceof Request ? input.url : String(input)
-      if (new URL(requestUrl, window.location.origin).pathname !== path) return originalFetch(input, init)
-      probe.started = true
-      probe.hasSignal = Boolean(init?.signal)
-      return new Promise<Response>((resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => {
-          probe.aborted = true
-          if (rejectOnAbort) reject(new DOMException('The operation was aborted.', 'AbortError'))
-        }, { once: true })
-        probe.release = () => resolve(new Response(JSON.stringify(body), {
-          status,
-          headers: { 'Content-Type': 'application/json' },
-        }))
-      })
-    }
-  }, { path, status, body, rejectOnAbort })
-}
-
-async function authFetchProbe(page: Page) {
-  return page.evaluate(() => {
-    type Probe = { started: boolean; hasSignal: boolean; aborted: boolean }
-    const target = window as typeof window & { __authFetchProbe?: Probe }
-    return {
-      started: target.__authFetchProbe?.started || false,
-      hasSignal: target.__authFetchProbe?.hasSignal || false,
-      aborted: target.__authFetchProbe?.aborted || false,
-    }
-  })
-}
-
-async function releaseDeferredAuthFetch(page: Page) {
-  await page.evaluate(() => {
-    const target = window as typeof window & { __authFetchProbe?: { release?: () => void } }
-    target.__authFetchProbe?.release?.()
-  })
 }
 
 test('自助注册只发送一次注册请求并直接以 member 进入应用', async ({ page }) => {
@@ -223,27 +177,73 @@ test('登录注册切换会清除密码、错误和忙碌状态', async ({ page 
   await expect(page.getByTestId('login-password')).toHaveValue('')
   await expect(page.getByTestId('login-error')).toHaveCount(0)
   await expect(page.getByTestId('login-submit')).toBeEnabled()
+})
+
+test('登录请求期间禁止切到注册且失败后恢复', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('login-submit')).toBeVisible()
 
   let releaseRequest = () => {}
+  let markRequestStarted = () => {}
   const requestGate = new Promise<void>((resolve) => { releaseRequest = resolve })
-  await page.route('**/api/auth/register', async (route) => {
+  const requestStarted = new Promise<void>((resolve) => { markRequestStarted = resolve })
+  await page.route('**/api/auth/login', async (route) => {
+    markRequestStarted()
     await requestGate
-    await route.abort('failed')
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '用户名或密码错误' }),
+    })
   })
-  await page.getByTestId('show-register').click()
-  await fillRegistration(page, { username: 'switch-busy-user', password: registeredPassword })
-  await page.getByTestId('register-submit').click()
-  await expect(page.getByTestId('register-submit')).toContainText('注册中...')
+
+  await page.getByTestId('login-username').fill('busy-login-user')
+  await page.getByTestId('login-password').fill('Busy-Login-Password!')
+  await page.getByTestId('login-submit').click()
+  await requestStarted
   try {
-    await page.getByTestId('show-login').click()
-    await page.getByTestId('show-register').click()
-    await expect(page.getByTestId('register-password')).toHaveValue('')
-    await expect(page.getByTestId('register-error')).toHaveCount(0)
-    await expect(page.getByTestId('register-submit')).toBeEnabled()
-    await expect(page.getByTestId('register-submit')).toContainText('创建账号')
+    await expect(page.getByTestId('show-register')).toBeDisabled({ timeout: 2_000 })
   } finally {
     releaseRequest()
   }
+  await expect(page.getByTestId('login-error')).toHaveText('用户名或密码错误')
+  await expect(page.getByTestId('show-register')).toBeEnabled()
+  await page.getByTestId('show-register').click()
+  await page.getByTestId('show-login').click()
+  await expect(page.getByTestId('login-password')).toHaveValue('')
+  await expect(page.getByTestId('login-error')).toHaveCount(0)
+})
+
+test('注册请求期间禁止切到登录且失败后恢复', async ({ page }) => {
+  await openRegistration(page)
+
+  let releaseRequest = () => {}
+  let markRequestStarted = () => {}
+  const requestGate = new Promise<void>((resolve) => { releaseRequest = resolve })
+  const requestStarted = new Promise<void>((resolve) => { markRequestStarted = resolve })
+  await page.route('**/api/auth/register', async (route) => {
+    markRequestStarted()
+    await requestGate
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '用户名已存在' }),
+    })
+  })
+  await fillRegistration(page, { username: 'switch-busy-user', password: registeredPassword })
+  await page.getByTestId('register-submit').click()
+  await requestStarted
+  try {
+    await expect(page.getByTestId('show-login')).toBeDisabled({ timeout: 2_000 })
+  } finally {
+    releaseRequest()
+  }
+  await expect(page.getByTestId('register-error')).toHaveText('用户名已存在，请更换后重试。')
+  await expect(page.getByTestId('show-login')).toBeEnabled()
+  await page.getByTestId('show-login').click()
+  await page.getByTestId('show-register').click()
+  await expect(page.getByTestId('register-password')).toHaveValue('')
+  await expect(page.getByTestId('register-error')).toHaveCount(0)
 })
 
 test('登录成功只发送一次登录请求且不再追加身份请求', async ({ page }) => {
@@ -264,55 +264,6 @@ test('登录成功只发送一次登录请求且不再追加身份请求', async
 
   expect(loginRequests).toBe(1)
   expect(followupMeRequests).toBe(0)
-})
-
-test('切换到注册会中止响应前的登录请求且刷新仍匿名', async ({ page }) => {
-  await page.goto('/')
-  await expect(page.getByTestId('login-submit')).toBeVisible()
-  await installDeferredAuthFetch(page, '/api/auth/login', 200, {
-    id: 'stale-login-user',
-    username: 'stale-login-user',
-    display_name: 'Stale Login User',
-    role: 'member',
-    must_change_password: false,
-    auth_enabled: true,
-    capabilities: [],
-  }, false)
-  await page.getByTestId('login-username').fill('stale-login-user')
-  await page.getByTestId('login-password').fill('Stale-Login-Password!')
-  await page.getByTestId('login-submit').click()
-  await expect.poll(async () => (await authFetchProbe(page)).started).toBe(true)
-  await page.getByTestId('show-register').click()
-  await expect.poll(async () => (await authFetchProbe(page)).hasSignal).toBe(true)
-  await expect.poll(async () => (await authFetchProbe(page)).aborted).toBe(true)
-
-  // Even if a transport races with abort and still resolves, generation must
-  // prevent the stale response from changing the auth gate.
-  await releaseDeferredAuthFetch(page)
-  await page.waitForTimeout(100)
-  await expect(page.getByTestId('register-submit')).toBeVisible()
-  await page.reload()
-  await expect(page.getByTestId('login-submit')).toBeVisible()
-  await expect(page.getByTestId('current-user-chip')).toHaveCount(0)
-})
-
-test('切换到登录会中止注册请求且旧用户名仍可注册', async ({ page }) => {
-  await openRegistration(page)
-  await installDeferredAuthFetch(page, '/api/auth/register', 201, null, true)
-  await fillRegistration(page, { username: staleRegistrationUsername, password: registeredPassword })
-  await page.getByTestId('register-submit').click()
-  await expect.poll(async () => (await authFetchProbe(page)).started).toBe(true)
-  await page.getByTestId('show-login').click()
-  await expect.poll(async () => (await authFetchProbe(page)).hasSignal).toBe(true)
-  await expect.poll(async () => (await authFetchProbe(page)).aborted).toBe(true)
-  await page.waitForTimeout(100)
-  await expect(page.getByTestId('login-submit')).toBeVisible()
-  await page.reload()
-  await expect(page.getByTestId('login-submit')).toBeVisible()
-  await page.getByTestId('show-register').click()
-  await fillRegistration(page, { username: staleRegistrationUsername, password: registeredPassword })
-  await page.getByTestId('register-submit').click()
-  await expect(page.getByTestId('current-user-chip')).toContainText(staleRegistrationUsername)
 })
 
 test('注册成功后的登出和会话失效都回到登录页', async ({ page }) => {
