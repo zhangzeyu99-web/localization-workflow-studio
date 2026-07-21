@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import app.db as db
 import app.jobs as jobs
+from app import workflow
 from app.main import app
 from conftest import reset_data_root, wait_for_background_jobs
 
@@ -28,6 +29,37 @@ def _create_announcement_source(project_id: str, tmp_path: Path, name: str = "an
     source_path = tmp_path / name
     source_path.write_text("维护公告", encoding="utf-8")
     return db.add_artifact(project_id, name, source_path, "asset", mime="text/plain", origin="uploaded")
+
+
+def test_translation_cancel_preserves_concurrent_cancel_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+    project = db.insert_project("Announcement cancel audit", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {
+            "title": "cancel audit",
+            "selected_languages": ["en"],
+            "status": "running",
+            "current_step": 7,
+            "metadata": {},
+        },
+    )
+    stale_task = db.get_announcement_task(task["id"])
+    db.merge_announcement_task_metadata(task["id"], {"canceled_by": "Bob"})
+
+    real_get = db.get_announcement_task
+    stale_reads = 0
+
+    def stale_get_once(task_id: str, *args: object, **kwargs: object) -> dict:
+        nonlocal stale_reads
+        if task_id == task["id"] and stale_reads == 0:
+            stale_reads += 1
+            return stale_task
+        return real_get(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(db, "get_announcement_task", stale_get_once)
+    workflow.cancel_announcement_translation_task(task["id"])
+
+    assert real_get(task["id"])["metadata"]["canceled_by"] == "Bob"
 
 
 def test_duplicate_create_returns_existing_unfinished_task_conflict(tmp_path: Path) -> None:

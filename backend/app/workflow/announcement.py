@@ -273,20 +273,23 @@ def cancel_announcement_task(task_id: str, expected_statuses: list[str] | None =
 
 
 def cancel_announcement_translation_task(task_id: str) -> dict[str, Any]:
-    task = db.get_announcement_task(task_id)
-    metadata = _announcement_task_metadata(task)
-    metadata["translation_cancel_requested_at"] = db.now_iso()
-    metadata["reason"] = "announcement_translation_canceled"
+    translation_cancel_requested_at = db.now_iso()
+    db.merge_announcement_task_metadata(
+        task_id,
+        {
+            "translation_cancel_requested_at": translation_cancel_requested_at,
+            "reason": "announcement_translation_canceled",
+        },
+    )
     task = db.update_announcement_task(
         task_id,
         status="prepared",
         current_step=ANNOUNCEMENT_STEP["translate"],
-        metadata=metadata,
     )
     for item in task.get("languages") or []:
         if item.get("status") in {"queued", "running"}:
             lang_meta = dict(item.get("metadata") or {})
-            lang_meta["translation_cancel_requested_at"] = metadata["translation_cancel_requested_at"]
+            lang_meta["translation_cancel_requested_at"] = translation_cancel_requested_at
             db.upsert_announcement_task_language(
                 task_id,
                 task["project_id"],
