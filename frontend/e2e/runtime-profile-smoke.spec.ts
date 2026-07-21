@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 
 const expectedProfile = process.env.LWS_EXPECT_RUNTIME_PROFILE
 
-test('extracted runtime matches its declared profile and UI boundary', async ({ page, request }) => {
+test('extracted runtime matches its declared profile and UI boundary', async ({ page, request, context }) => {
   test.skip(!expectedProfile, 'LWS_EXPECT_RUNTIME_PROFILE is only set by extracted-package smoke jobs')
   expect(['local-off', 'cloud-required']).toContain(expectedProfile)
 
@@ -12,6 +12,9 @@ test('extracted runtime matches its declared profile and UI boundary', async ({ 
   const versionResponse = await request.get('/api/version')
   expect(versionResponse.ok()).toBe(true)
   expect(await versionResponse.json()).toMatchObject(expected)
+  const healthResponse = await request.get('/api/health')
+  expect(healthResponse.ok()).toBe(true)
+  expect(await healthResponse.json()).toMatchObject(expected)
 
   const anonymousProjects = await request.get('/api/projects')
   if (expectedProfile === 'local-off') {
@@ -36,5 +39,9 @@ test('extracted runtime matches its declared profile and UI boundary', async ({ 
   await page.getByTestId('login-password').fill(password!)
   await page.getByTestId('login-submit').click()
   await expect(page.getByTestId('current-user-chip')).toBeVisible()
+  const cookies = await context.cookies()
+  const sessionCookie = cookies.find((cookie) => cookie.name === 'lws_session')
+  expect(sessionCookie).toBeDefined()
+  expect(sessionCookie?.secure).toBe(true)
   await expect(page.getByRole('button', { name: '设置', exact: true })).toHaveCount(0)
 })

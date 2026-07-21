@@ -57,6 +57,12 @@ def test_playwright_specs_assert_runtime_identity_and_ui_boundaries() -> None:
         "设置",
     ):
         assert token in runtime_smoke
+    assert "const healthResponse = await request.get('/api/health')" in runtime_smoke
+    assert "expect(healthResponse.ok()).toBe(true)" in runtime_smoke
+    assert "expect(await healthResponse.json()).toMatchObject(expected)" in runtime_smoke
+    assert "const cookies = await context.cookies()" in runtime_smoke
+    assert "cookie.name === 'lws_session'" in runtime_smoke
+    assert "expect(sessionCookie?.secure).toBe(true)" in runtime_smoke
 
 
 def test_ci_job_graph_builds_frontend_once_and_packages_without_rebuild() -> None:
@@ -138,7 +144,30 @@ def test_ci_extracted_smokes_use_the_same_zip_and_verify_profile_boundaries() ->
     assert "LWS_EXPECT_RUNTIME_PROFILE = 'local-off'" in local_job
 
     assert "ubuntu-latest" in cloud_job
-    assert "openssl req -x509" in cloud_job
+    for trust_contract in (
+        "CA_CERT=",
+        "SERVER_CERT=",
+        "SERVER_KEY=",
+        "openssl req -x509",
+        "basicConstraints=critical,CA:TRUE",
+        "basicConstraints=critical,CA:FALSE",
+        "openssl x509 -req",
+        'openssl verify -CAfile "$CA_CERT" "$SERVER_CERT"',
+        "libnss3-tools",
+        "update-ca-certificates",
+        "certutil -d",
+        "-A -t 'C,,'",
+        'SSL_CERT_FILE="$CA_CERT"',
+        'NODE_EXTRA_CA_CERTS="$CA_CERT"',
+        '--cacert "$CA_CERT"',
+        '--ssl-keyfile "$SERVER_KEY"',
+        '--ssl-certfile "$SERVER_CERT"',
+    ):
+        assert trust_contract in cloud_job
+    assert 'SSL_CERT_FILE="$CERT"' not in cloud_job
+    assert 'NODE_EXTRA_CA_CERTS="$CERT"' not in cloud_job
+    assert '--cacert "$CERT"' not in cloud_job
+    assert "ignoreHTTPSErrors" not in cloud_job
     assert "LWS_DEPLOYMENT_MODE=cloud" in cloud_job
     assert "LWS_AUTH_MODE=required" in cloud_job
     assert "LWS_SERVE_FRONTEND=1" in cloud_job

@@ -313,8 +313,10 @@ jobs:
         with:
           name: universal-release
           path: ${{ runner.temp }}/release
-      - name: Install Playwright runner only
+      - name: Install Playwright runner and trust tools
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3-tools
           npm ci --prefix frontend
           npx --prefix frontend playwright install chromium
       - name: Smoke extracted cloud-required runtime over TLS
@@ -358,13 +360,39 @@ jobs:
           GIT_SHA="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])' "$MANIFEST")"
           printf '%s\n' '{"provider":"test-fake","api_key":""}' > "$DATA_ROOT/settings.local.json"
 
-          CERT="$RUNNER_TEMP/lws-smoke-cert.pem"
-          KEY="$RUNNER_TEMP/lws-smoke-key.pem"
+          CA_CERT="$RUNNER_TEMP/lws-smoke-ca.crt"
+          CA_KEY="$RUNNER_TEMP/lws-smoke-ca.key"
+          SERVER_CERT="$RUNNER_TEMP/lws-smoke-server.crt"
+          SERVER_KEY="$RUNNER_TEMP/lws-smoke-server.key"
+          SERVER_CSR="$RUNNER_TEMP/lws-smoke-server.csr"
+          SERVER_EXT="$RUNNER_TEMP/lws-smoke-server.ext"
           openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
-            -keyout "$KEY" -out "$CERT" -subj '/CN=localhost' \
-            -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            -keyout "$CA_KEY" -out "$CA_CERT" -subj '/CN=LWS Smoke Root CA' \
             -addext 'basicConstraints=critical,CA:TRUE' \
-            -addext 'keyUsage=critical,keyCertSign,digitalSignature,keyEncipherment'
+            -addext 'keyUsage=critical,keyCertSign,cRLSign'
+          openssl req -new -newkey rsa:2048 -sha256 -nodes \
+            -keyout "$SERVER_KEY" -out "$SERVER_CSR" -subj '/CN=localhost'
+          printf '%s\n' \
+            'basicConstraints=critical,CA:FALSE' \
+            'keyUsage=critical,digitalSignature,keyEncipherment' \
+            'extendedKeyUsage=serverAuth' \
+            'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            > "$SERVER_EXT"
+          openssl x509 -req -sha256 -days 1 \
+            -in "$SERVER_CSR" -CA "$CA_CERT" -CAkey "$CA_KEY" -CAcreateserial \
+            -out "$SERVER_CERT" -extfile "$SERVER_EXT"
+          openssl verify -CAfile "$CA_CERT" "$SERVER_CERT"
+
+          sudo cp "$CA_CERT" /usr/local/share/ca-certificates/lws-smoke-ca.crt
+          sudo update-ca-certificates
+          NSS_DB="$HOME/.pki/nssdb"
+          mkdir -p "$NSS_DB"
+          if [ ! -f "$NSS_DB/cert9.db" ]; then
+            certutil -d "sql:$NSS_DB" -N --empty-password
+          fi
+          certutil -d "sql:$NSS_DB" -D -n 'LWS Smoke CA' 2>/dev/null || true
+          certutil -d "sql:$NSS_DB" -A -t 'C,,' -n 'LWS Smoke CA' -i "$CA_CERT"
+          certutil -d "sql:$NSS_DB" -L -n 'LWS Smoke CA' >/dev/null
 
           export LWS_DEPLOYMENT_MODE=cloud
           export LWS_AUTH_MODE=required
@@ -380,28 +408,29 @@ jobs:
           python -m pip install -r backend/requirements.txt
           python -m pip install -r workflow/glossary/requirements.txt
           python -m pip install -r workflow/localization/requirements.txt
-          export SSL_CERT_FILE="$CERT"
+          export SSL_CERT_FILE="$CA_CERT"
+          export NODE_EXTRA_CA_CERTS="$CA_CERT"
           python -m uvicorn app.main:app --app-dir backend \
             --host 127.0.0.1 --port 18443 --workers 1 \
-            --ssl-keyfile "$KEY" --ssl-certfile "$CERT" \
+            --ssl-keyfile "$SERVER_KEY" --ssl-certfile "$SERVER_CERT" \
             > "$RUNNER_TEMP/lws-cloud-backend.log" 2>&1 &
           BACKEND_PID=$!
           trap 'kill "$BACKEND_PID" 2>/dev/null || true' EXIT
 
           for attempt in $(seq 1 60); do
-            curl --silent --show-error --fail --cacert "$CERT" https://localhost:18443/api/health >/dev/null && break
+            curl --silent --show-error --fail --cacert "$CA_CERT" https://localhost:18443/api/health >/dev/null && break
             test "$attempt" -lt 60 || { cat "$RUNNER_TEMP/lws-cloud-backend.log"; exit 1; }
             sleep 1
           done
-          anonymous_status="$(curl --silent --show-error --cacert "$CERT" -o /dev/null -w '%{http_code}' https://localhost:18443/api/projects)"
+          anonymous_status="$(curl --silent --show-error --cacert "$CA_CERT" -o /dev/null -w '%{http_code}' https://localhost:18443/api/projects)"
           test "$anonymous_status" = 401
 
           COOKIE_JAR="$RUNNER_TEMP/lws-smoke-cookie.jar"
-          curl --silent --show-error --fail --cacert "$CERT" -c "$COOKIE_JAR" \
+          curl --silent --show-error --fail --cacert "$CA_CERT" -c "$COOKIE_JAR" \
             -H 'Content-Type: application/json' \
             -d '{"username":"smoke-admin","password":"Initial-Smoke-Password1!"}' \
             https://localhost:18443/api/auth/login >/dev/null
-          curl --silent --show-error --fail --cacert "$CERT" -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+          curl --silent --show-error --fail --cacert "$CA_CERT" -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
             -H 'Content-Type: application/json' \
             -d '{"current_password":"Initial-Smoke-Password1!","new_password":"Final-Smoke-Password1!"}' \
             https://localhost:18443/api/auth/change-password >/dev/null
@@ -422,8 +451,8 @@ jobs:
             --auth-user smoke-admin \
             --auth-password 'Final-Smoke-Password1!' | tee "$RUNNER_TEMP/cloud-stability-check.jsonl"
           grep -q '^deleted_project=' "$RUNNER_TEMP/cloud-stability-check.jsonl"
-          curl --silent --show-error --fail --cacert "$CERT" -b "$COOKIE_JAR" https://localhost:18443/api/system/active-jobs > "$RUNNER_TEMP/cloud-active-jobs.json"
-          curl --silent --show-error --fail --cacert "$CERT" -b "$COOKIE_JAR" https://localhost:18443/api/projects > "$RUNNER_TEMP/cloud-projects.json"
+          curl --silent --show-error --fail --cacert "$CA_CERT" -b "$COOKIE_JAR" https://localhost:18443/api/system/active-jobs > "$RUNNER_TEMP/cloud-active-jobs.json"
+          curl --silent --show-error --fail --cacert "$CA_CERT" -b "$COOKIE_JAR" https://localhost:18443/api/projects > "$RUNNER_TEMP/cloud-projects.json"
           python - "$RUNNER_TEMP/cloud-active-jobs.json" "$RUNNER_TEMP/cloud-projects.json" <<'PY'
           import json
           import sys
@@ -441,7 +470,6 @@ jobs:
           export LWS_EXPECT_RUNTIME_PROFILE=cloud-required
           export LWS_RUNTIME_SMOKE_USER=smoke-admin
           export LWS_RUNTIME_SMOKE_PASSWORD='Final-Smoke-Password1!'
-          export NODE_EXTRA_CA_CERTS="$CERT"
           cd "$GITHUB_WORKSPACE/frontend"
           npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line
           python - "$MANIFEST" "$IDENTITY" "$RUNNER_TEMP/cloud-release-identity.json" <<'PY'
