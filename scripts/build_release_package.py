@@ -434,27 +434,51 @@ Windows 可运行 `start-workbench.cmd`，或调用 `scripts/start-workbench.ps1
 
 ## 云端部署
 
+先在发布目录中创建独立 Python 环境并安装包内三份运行依赖：
+
 ```bash
 export APP_HOME=/srv/lwstudio/current
 export LWS_DATA_ROOT=/srv/lwstudio/data
 cd "$APP_HOME"
-sudo install -d -m 750 -o lwstudio -g lwstudio "$LWS_DATA_ROOT"
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
+.venv/bin/python -m pip install -r workflow/glossary/requirements.txt
+.venv/bin/python -m pip install -r workflow/localization/requirements.txt
+```
+
+创建受限配置目录，从 cloud profile 模板安装环境文件，并创建发布目录之外的数据目录：
+
+```bash
+cd "$APP_HOME"
+sudo install -d -m 750 -o root -g lwstudio /etc/lwstudio
+sudo install -m 640 -o root -g lwstudio deploy/profiles/cloud-required.env.example /etc/lwstudio/lws.env
+sudo install -d -m 750 -o lwstudio -g lwstudio /srv/lwstudio/data
 sudo -u lwstudio cp "$APP_HOME/settings.example.json" "$LWS_DATA_ROOT/settings.local.json"
 sudo -u lwstudio chmod 600 "$LWS_DATA_ROOT/settings.local.json"
 ```
 
-仅在 `$LWS_DATA_ROOT/settings.local.json` 中填写私有 API 配置。依赖从包内三个 requirements 文件安装，服务器不需要 Node.js。
+编辑 `/etc/lwstudio/lws.env`，必须把
+`LWS_GIT_SHA=replace-with-package-manifest-git-sha` 替换为包内 manifest 的 `git_sha`，并把
+`LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password` 替换为一次性强引导密码；不得把真实密码写回模板或发布包。
+确认 `LWS_DATA_ROOT=/srv/lwstudio/data` 位于发布目录之外，且目录归属为 `lwstudio:lwstudio`、权限为 `750`。
+仅在 `$LWS_DATA_ROOT/settings.local.json` 中填写私有 API 配置。服务器不需要 Node.js。
 
 首次启动可用 `LWS_ADMIN_USER` 与 `LWS_ADMIN_PASSWORD` 引导管理员，也可运行
 `scripts/create_admin.py`。完成首次登录和改密后应移除引导密码。
 
-安装并启动 systemd 与 Nginx 接入链：
+安装并启动 systemd 服务：
 
 ```bash
 cd "$APP_HOME"
 sudo install -m 644 deploy/lws.service /etc/systemd/system/lws.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now lws
+```
+
+后端服务正常后，最后安装并校验 Nginx 接入：
+
+```bash
+cd "$APP_HOME"
 sudo install -m 644 deploy/nginx.conf /etc/nginx/conf.d/lwstudio.conf
 sudo nginx -t
 sudo systemctl reload nginx
@@ -752,22 +776,21 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         zip_path = output_dir / f"{root_name}.zip"
         sidecar_path = zip_path.with_name(f"{zip_path.name}.sha256")
-        zip_path.unlink(missing_ok=True)
-        sidecar_path.unlink(missing_ok=True)
-        with zipfile.ZipFile(
-            zip_path,
-            "w",
-            compression=zipfile.ZIP_DEFLATED,
-            strict_timestamps=False,
-        ) as archive:
-            for path in sorted(staging_root.rglob("*")):
-                if path.is_file():
-                    archive.write(
-                        path,
-                        path.relative_to(staging_root.parent).as_posix(),
-                    )
-
         try:
+            zip_path.unlink(missing_ok=True)
+            sidecar_path.unlink(missing_ok=True)
+            with zipfile.ZipFile(
+                zip_path,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+                strict_timestamps=False,
+            ) as archive:
+                for path in sorted(staging_root.rglob("*")):
+                    if path.is_file():
+                        archive.write(
+                            path,
+                            path.relative_to(staging_root.parent).as_posix(),
+                        )
             _verify_archive(zip_path)
             _write_archive_sidecar(zip_path)
             _assert_source_state(sha_full, phase="archive packaging")

@@ -327,6 +327,25 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert "deploy/nginx.conf" in readme
     assert "nginx -t" in readme
     assert "systemctl reload nginx" in readme
+    cloud_install_steps = [
+        'cd "$APP_HOME"',
+        "python3.11 -m venv .venv",
+        ".venv/bin/python -m pip install -r backend/requirements.txt",
+        ".venv/bin/python -m pip install -r workflow/glossary/requirements.txt",
+        ".venv/bin/python -m pip install -r workflow/localization/requirements.txt",
+        "sudo install -d -m 750 -o root -g lwstudio /etc/lwstudio",
+        ("sudo install -m 640 -o root -g lwstudio deploy/profiles/cloud-required.env.example /etc/lwstudio/lws.env"),
+        "sudo install -d -m 750 -o lwstudio -g lwstudio /srv/lwstudio/data",
+        "sudo install -m 644 deploy/lws.service /etc/systemd/system/lws.service",
+        "sudo systemctl enable --now lws",
+        "sudo install -m 644 deploy/nginx.conf /etc/nginx/conf.d/lwstudio.conf",
+    ]
+    positions = [readme.index(step) for step in cloud_install_steps]
+    assert positions == sorted(positions)
+    assert "LWS_GIT_SHA=replace-with-package-manifest-git-sha" in readme
+    assert "LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password" in readme
+    assert "发布目录之外" in readme
+    assert "/etc/lwstudio/lws.env" in readme
     assert "scripts/create_admin.py" in files
     assert "scripts/deployment_auth.py" in files
     assert "scripts/start-workbench.ps1" in files
@@ -486,6 +505,34 @@ def test_build_deletes_artifact_if_head_changes_during_packaging(
 
     assert not artifact.exists()
     assert not artifact.with_name(f"{artifact.name}.sha256").exists()
+
+
+def test_build_deletes_partial_artifacts_if_archive_write_fails(
+    tmp_path,
+    monkeypatch,
+):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    _configure_clean_git(package, monkeypatch)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    artifact = output_dir / "localization-workflow-studio-v9.9.9-gdeadbeefcafe-universal.zip"
+    sidecar = artifact.with_name(f"{artifact.name}.sha256")
+    artifact.write_bytes(b"stale archive")
+    sidecar.write_text("stale sidecar", encoding="utf-8")
+
+    def fail_archive_write(*args, **kwargs):
+        raise OSError("simulated archive write failure")
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", fail_archive_write)
+
+    with pytest.raises(OSError, match="simulated archive write failure"):
+        package.build(output_dir, rebuild_frontend=False)
+
+    assert not artifact.exists()
+    assert not sidecar.exists()
 
 
 def test_package_rejects_symlinks_inside_allowed_runtime_paths(tmp_path, monkeypatch):
