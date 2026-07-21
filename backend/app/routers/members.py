@@ -16,13 +16,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from .. import auth, db, operator_context
+from ..authz import require_account_mode
 from ..config import DATA_ROOT
 from ..schemas import ProjectMemberAddRequest
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_account_mode)])
 
 
 def _public_member(row: dict[str, Any]) -> dict[str, Any]:

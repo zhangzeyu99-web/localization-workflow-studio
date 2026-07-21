@@ -14,13 +14,12 @@ from fastapi.testclient import TestClient
 
 import app.auth as auth
 import app.authz as authz
+import app.config as config
 import app.db as db
 import app.main as main_module
 from app.config import DATA_ROOT
 from app.operator_context import AUDIT_LOG_FILENAME
 from conftest import reset_data_root
-
-app = main_module.app
 
 LOGIN_URL = "/api/auth/login"
 LOGOUT_URL = "/api/auth/logout"
@@ -29,29 +28,29 @@ REGISTER_URL = "/api/auth/register"
 
 ADMIN_PASSWORD = "Initial-Admin-Password!"
 _AUTH_ENV_VARS = ("LWS_AUTH_MODE", "LWS_DEPLOYMENT_MODE", "LWS_ADMIN_USER", "LWS_ADMIN_PASSWORD")
+LOCAL_OFF_PROFILE = config.RuntimeProfile("local", "off")
+LOCAL_REQUIRED_PROFILE = config.RuntimeProfile("local", "required")
+CLOUD_REQUIRED_PROFILE = config.RuntimeProfile("cloud", "required")
 
 
-def _build_app():
-    profile = main_module.config.RuntimeProfile.from_environment(
-        os.environ,
-        data_root=main_module.config.DATA_ROOT,
-        app_root=main_module.config.REPO_ROOT,
-    )
+def _build_app(profile: config.RuntimeProfile = LOCAL_OFF_PROFILE):
     return main_module.create_app(profile)
 
 
-def _required_app(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("LWS_AUTH_MODE", "required")
-    monkeypatch.setenv("LWS_ADMIN_USER", "root-admin")
+def _required_app(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    username: str = "root-admin",
+):
+    monkeypatch.setenv("LWS_ADMIN_USER", username)
     monkeypatch.setenv("LWS_ADMIN_PASSWORD", ADMIN_PASSWORD)
-    return _build_app()
+    return _build_app(LOCAL_REQUIRED_PROFILE)
 
 
 def _cloud_app(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
     monkeypatch.setenv("LWS_ADMIN_USER", "root-admin")
     monkeypatch.setenv("LWS_ADMIN_PASSWORD", ADMIN_PASSWORD)
-    return _build_app()
+    return _build_app(CLOUD_REQUIRED_PROFILE)
 
 
 def _clear_registration_limiter() -> None:
@@ -313,7 +312,7 @@ def test_registration_rate_limiter_capacity_retry_after_waits_for_slot_release()
 
 
 def test_self_registration_is_forbidden_when_auth_is_off_and_local_admin_survives() -> None:
-    with TestClient(app) as client:
+    with TestClient(_build_app()) as client:
         response = client.post(
             REGISTER_URL,
             json={"username": "local-user", "password": "Register-Pass1!"},
@@ -326,9 +325,52 @@ def test_self_registration_is_forbidden_when_auth_is_off_and_local_admin_survive
     assert me_response.json()["id"] == auth.LOCAL_ADMIN_USER["id"]
 
 
-def test_login_success_returns_public_user_fields_and_httponly_cookie() -> None:
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            LOGIN_URL,
+            {"username": "off-user", "password": "Sup3rSecret!"},
+        ),
+        (
+            REGISTER_URL,
+            {"username": "off-register", "password": "Register-Pass1!"},
+        ),
+        (
+            "/api/auth/change-password",
+            {
+                "current_password": "Sup3rSecret!",
+                "new_password": "New-Strong-Pass1!",
+            },
+        ),
+    ],
+)
+def test_auth_off_disables_account_entrypoints(
+    path: str,
+    payload: dict[str, str],
+) -> None:
+    test_app = _build_app()
+    with TestClient(test_app) as client:
+        db.create_user(
+            "off-user",
+            auth.hash_password("Sup3rSecret!"),
+            "admin",
+        )
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 403, response.text
+    assert response.json() == {"detail": "当前模式未启用账号功能"}
+    assert db.get_user_by_username("off-register") is None
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_login_success_returns_public_user_fields_and_httponly_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
     _create_user("alice")
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         response = client.post(LOGIN_URL, json={"username": "alice", "password": "Sup3rSecret!"})
         assert response.status_code == 200, response.text
         body = response.json()
@@ -376,25 +418,34 @@ def test_login_cookie_is_secure_in_cloud_deployment_mode(monkeypatch: pytest.Mon
         assert "secure" in set_cookie.lower()
 
 
-def test_login_wrong_password_returns_401_with_generic_message() -> None:
+def test_login_wrong_password_returns_401_with_generic_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
     _create_user("bob")
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         response = client.post(LOGIN_URL, json={"username": "bob", "password": "wrong-password"})
         assert response.status_code == 401
         assert response.json()["detail"] == "用户名或密码错误"
 
 
-def test_login_unknown_username_returns_same_401_message_as_wrong_password() -> None:
-    with TestClient(app) as client:
+def test_login_unknown_username_returns_same_401_message_as_wrong_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as client:
         response = client.post(LOGIN_URL, json={"username": "does-not-exist", "password": "whatever"})
         assert response.status_code == 401
         assert response.json()["detail"] == "用户名或密码错误"
 
 
-def test_login_username_matching_remains_case_sensitive() -> None:
+def test_login_username_matching_remains_case_sensitive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
     _create_user("CaseLogin")
 
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         case_variant = client.post(
             LOGIN_URL,
             json={"username": "caselogin", "password": "Sup3rSecret!"},
@@ -408,21 +459,24 @@ def test_login_username_matching_remains_case_sensitive() -> None:
     assert exact_case.status_code == 200, exact_case.text
 
 
-def test_login_disabled_user_returns_401_even_with_correct_password() -> None:
+def test_login_disabled_user_returns_401_even_with_correct_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
     _create_user("carol", status="disabled")
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         response = client.post(LOGIN_URL, json={"username": "carol", "password": "Sup3rSecret!"})
         assert response.status_code == 401
         assert response.json()["detail"] == "用户名或密码错误"
 
 
 def test_me_without_session_falls_back_to_local_admin_when_auth_is_off() -> None:
-    """This module's app is built with no LWS_AUTH_MODE/cloud deployment env,
-    so enforcement is off. The dominant real-world case for that mode is a
+    """The explicit local/off profile keeps enforcement off. The dominant
+    real-world case for that mode is a
     fresh page load with no session cookie at all -- the frontend's app-shell
     gate must see the synthetic local administrator (200), not 401, or every
     local deployment would incorrectly show a login screen."""
-    with TestClient(app) as client:
+    with TestClient(_build_app()) as client:
         response = client.get(ME_URL)
         assert response.status_code == 200, response.text
         body = response.json()
@@ -432,20 +486,32 @@ def test_me_without_session_falls_back_to_local_admin_when_auth_is_off() -> None
         assert body["capabilities"] == sorted(authz.ALL_CAPABILITIES)
 
 
-def test_me_with_valid_session_returns_current_user() -> None:
-    _create_user("dave")
-    with TestClient(app) as client:
-        login_response = client.post(LOGIN_URL, json={"username": "dave", "password": "Sup3rSecret!"})
-        assert login_response.status_code == 200
+def test_auth_off_me_discards_valid_session_and_revokes_server_row() -> None:
+    test_app = _build_app()
+    with TestClient(test_app) as client:
+        user = db.create_user(
+            "old-cookie-member",
+            auth.hash_password("Sup3rSecret!"),
+            "member",
+            display_name="Old Cookie",
+            must_change_password=True,
+        )
+        token, _session = auth.issue_session(user["id"])
+        token_hash = auth.hash_token(token)
+        client.cookies.set(auth.SESSION_COOKIE_NAME, token)
 
-        me_response = client.get(ME_URL)
-        assert me_response.status_code == 200
-        body = me_response.json()
-        assert body["username"] == "dave"
-        # A real session cookie is honored even though this app's enforcement
-        # switch is off (see the fallback test above for the "no cookie" case).
-        assert body["auth_enabled"] is False
-        assert body["capabilities"] == sorted(authz.ALL_CAPABILITIES)
+        response = client.get(ME_URL)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        **auth.public_user(auth.LOCAL_ADMIN_USER),
+        "auth_enabled": False,
+        "capabilities": authz.capabilities_for_role("admin"),
+    }
+    assert db.get_session_by_token_hash(token_hash) is None
+    clear_cookie = response.headers.get("set-cookie", "").lower()
+    assert f"{auth.SESSION_COOKIE_NAME}=" in clear_cookie
+    assert "max-age=0" in clear_cookie
 
 
 @pytest.mark.parametrize("session_kind", ["invalid", "revoked"])
@@ -458,7 +524,7 @@ def test_me_with_invalid_or_revoked_session_cookie_falls_back_to_local_admin_whe
         token, _session = auth.issue_session(user["id"])
         auth.revoke_session(token)
 
-    with TestClient(app) as client:
+    with TestClient(_build_app()) as client:
         client.cookies.set(auth.SESSION_COOKIE_NAME, token)
         response = client.get(ME_URL)
 
@@ -466,6 +532,20 @@ def test_me_with_invalid_or_revoked_session_cookie_falls_back_to_local_admin_whe
     assert response.json()["id"] == auth.LOCAL_ADMIN_USER["id"]
     assert response.json()["auth_enabled"] is False
     assert response.json()["capabilities"] == sorted(authz.ALL_CAPABILITIES)
+    clear_cookie = response.headers.get("set-cookie", "").lower()
+    assert f"{auth.SESSION_COOKIE_NAME}=" in clear_cookie
+    assert "max-age=0" in clear_cookie
+
+
+def test_auth_off_me_clears_an_empty_session_cookie() -> None:
+    with TestClient(_build_app()) as client:
+        response = client.get(
+            ME_URL,
+            headers={"Cookie": f"{auth.SESSION_COOKIE_NAME}="},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == auth.LOCAL_ADMIN_USER["id"]
     clear_cookie = response.headers.get("set-cookie", "").lower()
     assert f"{auth.SESSION_COOKIE_NAME}=" in clear_cookie
     assert "max-age=0" in clear_cookie
@@ -504,9 +584,12 @@ def test_session_resolution_cannot_mix_old_session_with_new_role(
     assert resolved["role"] == "member"
 
 
-def test_logout_invalidates_session_and_is_idempotent() -> None:
+def test_logout_invalidates_session_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
     _create_user("erin")
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         assert client.post(LOGIN_URL, json={"username": "erin", "password": "Sup3rSecret!"}).status_code == 200
         assert client.get(ME_URL).status_code == 200
 
@@ -514,12 +597,9 @@ def test_logout_invalidates_session_and_is_idempotent() -> None:
         assert logout_response.status_code == 200
         assert logout_response.json()["ok"] is True
 
-        # Logout clears the cookie, so this app's "no cookie + auth off"
-        # fallback answers with the synthetic local admin rather than 401 --
-        # the important assertion is that it is no longer erin's session.
+        # Required mode no longer recognizes the revoked session.
         after_logout = client.get(ME_URL)
-        assert after_logout.status_code == 200, after_logout.text
-        assert after_logout.json()["id"] == auth.LOCAL_ADMIN_USER["id"]
+        assert after_logout.status_code == 401, after_logout.text
 
         # Logging out again with no active session must not error.
         second_logout = client.post(LOGOUT_URL)
@@ -527,13 +607,29 @@ def test_logout_invalidates_session_and_is_idempotent() -> None:
         assert second_logout.json()["ok"] is True
 
 
-def test_expired_session_falls_back_to_local_admin_and_is_lazily_purged_when_auth_is_off() -> None:
-    user = _create_user("frank")
-    token = auth.generate_session_token()
-    token_hash = auth.hash_token(token)
-    db.create_session(user["id"], token_hash, "2000-01-01T00:00:00+00:00")
+def test_logout_remains_available_when_auth_is_off() -> None:
+    with TestClient(_build_app()) as client:
+        user = _create_user("off-logout-user")
+        token, _session = auth.issue_session(user["id"])
+        token_hash = auth.hash_token(token)
+        client.cookies.set(auth.SESSION_COOKIE_NAME, token)
 
-    with TestClient(app) as client:
+        response = client.post(LOGOUT_URL)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True}
+    assert db.get_session_by_token_hash(token_hash) is None
+    clear_cookie = response.headers.get("set-cookie", "").lower()
+    assert f"{auth.SESSION_COOKIE_NAME}=" in clear_cookie
+    assert "max-age=0" in clear_cookie
+
+
+def test_auth_off_me_discards_expired_session_and_clears_cookie() -> None:
+    with TestClient(_build_app()) as client:
+        user = _create_user("frank")
+        token = auth.generate_session_token()
+        token_hash = auth.hash_token(token)
+        db.create_session(user["id"], token_hash, "2000-01-01T00:00:00+00:00")
         client.cookies.set(auth.SESSION_COOKIE_NAME, token)
         response = client.get(ME_URL)
 
@@ -544,7 +640,7 @@ def test_expired_session_falls_back_to_local_admin_and_is_lazily_purged_when_aut
     assert f"{auth.SESSION_COOKIE_NAME}=" in clear_cookie
     assert "max-age=0" in clear_cookie
 
-    # get_session_by_token_hash lazily deletes the expired row on read.
+    # Auth-off revokes the cookie row without resolving its real identity.
     assert db.get_session_by_token_hash(token_hash) is None
 
 
@@ -592,6 +688,7 @@ def test_login_rate_limiter_locks_after_max_failures_and_recovers_after_lockout_
 
 
 def test_login_endpoint_returns_429_after_repeated_failures_and_recovers_after_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = _required_app(monkeypatch)
     _create_user("iris")
     fake_time = [0.0]
     monkeypatch.setattr(auth.login_rate_limiter, "_clock", lambda: fake_time[0])
@@ -599,7 +696,7 @@ def test_login_endpoint_returns_429_after_repeated_failures_and_recovers_after_w
     monkeypatch.setattr(auth.login_rate_limiter, "window_seconds", 600.0)
     monkeypatch.setattr(auth.login_rate_limiter, "lockout_seconds", 600.0)
 
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         for _ in range(5):
             response = client.post(LOGIN_URL, json={"username": "iris", "password": "wrong-password"})
             assert response.status_code == 401
@@ -610,19 +707,6 @@ def test_login_endpoint_returns_429_after_repeated_failures_and_recovers_after_w
         fake_time[0] += 601.0  # advance past the lockout window
         recovered_response = client.post(LOGIN_URL, json={"username": "iris", "password": "Sup3rSecret!"})
         assert recovered_response.status_code == 200, recovered_response.text
-
-
-def test_change_password_in_local_auth_off_mode_returns_400() -> None:
-    """In auth-off/local mode every request is the synthetic LOCAL_ADMIN_USER
-    (see _enforce_authentication), which has no row in the users table --
-    there is no password to change."""
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/auth/change-password",
-            json={"current_password": "whatever", "new_password": "New-Strong-Pass1!"},
-        )
-        assert response.status_code == 400
-        assert response.json()["detail"] == "本地模式无需修改密码"
 
 
 def test_login_rate_limit_is_scoped_per_username_and_ip_key() -> None:
@@ -682,6 +766,7 @@ def test_login_rate_limiter_capacity_pressure_does_not_evict_locked_account() ->
 
 
 def test_login_endpoint_fails_closed_when_rate_limit_capacity_is_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = _required_app(monkeypatch)
     monkeypatch.setattr(auth.login_rate_limiter, "max_keys", 1)
     assert auth.login_rate_limiter.record_failure("occupied|10.0.0.1") is True
     _create_user("untracked")
@@ -695,15 +780,18 @@ def test_login_endpoint_fails_closed_when_rate_limit_capacity_is_full(monkeypatc
 
     monkeypatch.setattr(auth, "verify_password", counted_verify)
 
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         response = client.post(LOGIN_URL, json={"username": "untracked", "password": "wrong"})
 
     assert response.status_code == 429
     assert verify_calls == 0
 
 
-def test_login_rejects_overlong_username_before_rate_limit_tracking() -> None:
-    with TestClient(app) as client:
+def test_login_rejects_overlong_username_before_rate_limit_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch)
+    with TestClient(test_app) as client:
         response = client.post(LOGIN_URL, json={"username": "u" * 129, "password": "irrelevant"})
 
     assert response.status_code == 422

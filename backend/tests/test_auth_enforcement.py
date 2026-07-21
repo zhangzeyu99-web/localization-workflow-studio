@@ -9,6 +9,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 import app.auth as auth
+import app.config as config
 import app.db as db
 import app.main as main_module
 from app.config import DATA_ROOT
@@ -17,14 +18,12 @@ from conftest import reset_data_root
 
 
 PASSWORD = "Initial-Admin-Password!"
+LOCAL_OFF_PROFILE = config.RuntimeProfile("local", "off")
+LOCAL_REQUIRED_PROFILE = config.RuntimeProfile("local", "required")
+CLOUD_REQUIRED_PROFILE = config.RuntimeProfile("cloud", "required")
 
 
-def _build_app():
-    profile = main_module.config.RuntimeProfile.from_environment(
-        os.environ,
-        data_root=main_module.config.DATA_ROOT,
-        app_root=main_module.config.REPO_ROOT,
-    )
+def _build_app(profile: config.RuntimeProfile = LOCAL_OFF_PROFILE):
     return main_module.create_app(profile)
 
 
@@ -44,10 +43,9 @@ def reset_auth_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _required_app(monkeypatch: pytest.MonkeyPatch, *, username: str = "admin"):
-    monkeypatch.setenv("LWS_AUTH_MODE", "required")
     monkeypatch.setenv("LWS_ADMIN_USER", username)
     monkeypatch.setenv("LWS_ADMIN_PASSWORD", PASSWORD)
-    return _build_app()
+    return _build_app(LOCAL_REQUIRED_PROFILE)
 
 
 def test_local_mode_defaults_to_auth_off_and_exposes_synthetic_admin() -> None:
@@ -142,23 +140,21 @@ def test_required_mode_allows_only_exact_prelogin_self_check_endpoints(monkeypat
     assert future_auth_route.status_code == 401
 
 
-def test_cloud_mode_defaults_to_auth_required(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
+def test_cloud_required_profile_rejects_unauthenticated_business_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("LWS_ADMIN_USER", "cloud-admin")
     monkeypatch.setenv("LWS_ADMIN_PASSWORD", PASSWORD)
 
-    with TestClient(_build_app()) as client:
+    with TestClient(_build_app(CLOUD_REQUIRED_PROFILE)) as client:
         response = client.get("/api/projects")
 
     assert response.status_code == 401
 
 
-def test_explicit_auth_off_is_rejected_in_cloud_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
-    monkeypatch.setenv("LWS_AUTH_MODE", "off")
-
+def test_explicit_auth_off_is_rejected_in_cloud_mode() -> None:
     with pytest.raises(RuntimeError, match="cloud.*off"):
-        _build_app()
+        config.RuntimeProfile("cloud", "off")
 
 
 def test_required_mode_bootstraps_initial_admin(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,11 +170,98 @@ def test_required_mode_bootstraps_initial_admin(monkeypatch: pytest.MonkeyPatch)
     assert auth.verify_password(user["password_hash"], PASSWORD)
 
 
-def test_required_mode_without_bootstrap_credentials_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LWS_AUTH_MODE", "required")
+def test_required_mode_freezes_bootstrap_credentials_at_app_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_app = _required_app(monkeypatch, username="construction-admin")
+    monkeypatch.setenv("LWS_ADMIN_USER", "lifespan-admin")
+    monkeypatch.setenv("LWS_ADMIN_PASSWORD", "Late-Lifespan-Pass1!")
 
+    with TestClient(test_app):
+        construction_admin = db.get_user_by_username("construction-admin")
+
+    assert construction_admin is not None
+    assert auth.verify_password(construction_admin["password_hash"], PASSWORD)
+    assert db.get_user_by_username("lifespan-admin") is None
+
+
+def test_required_mode_without_bootstrap_credentials_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(RuntimeError, match=r"LWS_ADMIN_USER.*LWS_ADMIN_PASSWORD.*create_admin"):
-        with TestClient(_build_app()):
+        with TestClient(_build_app(LOCAL_REQUIRED_PROFILE)):
+            pass
+
+
+def test_required_mode_bootstraps_admin_when_only_non_admin_users_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db.init_db()
+    db.create_user(
+        "existing-member",
+        auth.hash_password("Member-Pass1!"),
+        "member",
+    )
+    test_app = _required_app(monkeypatch, username="recovery-admin")
+
+    with TestClient(test_app):
+        admin = db.get_user_by_username("recovery-admin")
+
+    assert admin is not None
+    assert admin["role"] == "admin"
+    assert admin["status"] == "active"
+    assert admin["must_change_password"] is True
+
+
+def test_required_mode_without_active_admin_or_bootstrap_credentials_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db.init_db()
+    db.create_user(
+        "disabled-admin",
+        auth.hash_password("Disabled-Pass1!"),
+        "admin",
+        status="disabled",
+    )
+    monkeypatch.delenv("LWS_ADMIN_USER", raising=False)
+    monkeypatch.delenv("LWS_ADMIN_PASSWORD", raising=False)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"LWS_ADMIN_USER.*LWS_ADMIN_PASSWORD.*create_admin",
+    ):
+        with TestClient(_build_app(LOCAL_REQUIRED_PROFILE)):
+            pass
+
+
+def test_required_mode_with_existing_active_admin_needs_no_bootstrap_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db.init_db()
+    db.create_user(
+        "existing-admin",
+        auth.hash_password("Existing-Pass1!"),
+        "admin",
+        status="active",
+    )
+    monkeypatch.delenv("LWS_ADMIN_USER", raising=False)
+    monkeypatch.delenv("LWS_ADMIN_PASSWORD", raising=False)
+
+    with TestClient(_build_app(LOCAL_REQUIRED_PROFILE)) as client:
+        assert client.get("/api/health").status_code == 200
+
+
+def test_required_mode_active_admin_recovery_username_conflict_fails_clearly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db.init_db()
+    db.create_user(
+        "recovery-admin",
+        auth.hash_password("Member-Pass1!"),
+        "member",
+    )
+    test_app = _required_app(monkeypatch, username="recovery-admin")
+
+    with pytest.raises(RuntimeError, match=r"recovery-admin.*scripts/create_admin\.py"):
+        with TestClient(test_app):
             pass
 
 
@@ -212,7 +295,7 @@ def test_startup_purges_expired_sessions() -> None:
     token_hash = auth.hash_token("expired-token")
     db.create_session(user["id"], token_hash, "2000-01-01T00:00:00+00:00")
 
-    with TestClient(_build_app()):
+    with TestClient(_build_app(LOCAL_REQUIRED_PROFILE)):
         with db.connect() as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE token_hash = ?",
@@ -220,3 +303,18 @@ def test_startup_purges_expired_sessions() -> None:
             ).fetchone()[0]
 
     assert count == 0
+
+
+def test_auth_off_startup_revokes_all_live_sessions() -> None:
+    db.init_db()
+    user = db.create_user(
+        "live-session-owner",
+        auth.hash_password(PASSWORD),
+        "member",
+    )
+    token, _session = auth.issue_session(user["id"])
+    token_hash = auth.hash_token(token)
+    assert db.get_session_by_token_hash(token_hash) is not None
+
+    with TestClient(_build_app()):
+        assert db.get_session_by_token_hash(token_hash) is None

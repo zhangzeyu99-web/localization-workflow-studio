@@ -29,8 +29,15 @@ async def lifespan(app: FastAPI):
     profile_token = config.bind_runtime_profile(runtime_profile)
     try:
         db.init_db()
-        db.purge_expired_sessions()
-        auth.bootstrap_initial_admin(required=runtime_profile.auth_required)
+        if runtime_profile.auth_required:
+            db.purge_expired_sessions()
+            auth.bootstrap_initial_admin(
+                required=True,
+                username=app.state.bootstrap_admin_username,
+                password=app.state.bootstrap_admin_password,
+            )
+        else:
+            db.delete_all_sessions()
         background_jobs.register_handlers()
         interrupted = job_queue.recover_interrupted_jobs()
         background_jobs.reconcile_startup(interrupted)
@@ -193,6 +200,14 @@ def create_app(
         lifespan=lifespan,
     )
     application.state.runtime_profile = profile
+    application.state.bootstrap_admin_username = os.environ.get(
+        "LWS_ADMIN_USER",
+        "",
+    ).strip()
+    application.state.bootstrap_admin_password = os.environ.get(
+        "LWS_ADMIN_PASSWORD",
+        "",
+    )
     # A single, centrally-reviewable dependency guards every /api/ route's
     # capability + project-membership requirement -- see route_capabilities.py
     # for the (method, path) -> capability table and docs/ROUTE_CAPABILITIES.md

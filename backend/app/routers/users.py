@@ -13,11 +13,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import auth, db, operator_context
-from ..authz import require_admin
+from ..authz import require_account_mode, require_admin
 from ..config import DATA_ROOT
 from ..schemas import UserCreateRequest, UserPasswordResetRequest, UserUpdateRequest
 
-router = APIRouter(dependencies=[Depends(require_admin)])
+router = APIRouter(
+    dependencies=[Depends(require_account_mode), Depends(require_admin)],
+)
 
 # role/status legality (admin|ops|member, active|disabled) is enforced by the
 # ``Literal`` types on UserCreateRequest/UserUpdateRequest -- FastAPI rejects

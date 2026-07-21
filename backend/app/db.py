@@ -2605,6 +2605,19 @@ def count_users() -> int:
         return int(row[0])
 
 
+def has_active_admin() -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM users
+            WHERE role = 'admin' AND status = 'active'
+            LIMIT 1
+            """
+        ).fetchone()
+        return row is not None
+
+
 def list_users() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM users ORDER BY created_at DESC, id DESC").fetchall()
@@ -2713,6 +2726,12 @@ def get_user_by_session_token_hash(token_hash: str) -> dict[str, Any] | None:
 def delete_session(token_hash: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+
+def delete_all_sessions() -> int:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM sessions")
+        return cur.rowcount
 
 
 def purge_expired_sessions() -> int:

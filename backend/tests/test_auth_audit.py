@@ -11,10 +11,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.auth as auth
+import app.config as config
 import app.db as db
 import app.main as main_module
 from app.config import DATA_ROOT
-from app.main import app
 from app.operator_context import AUDIT_LOG_FILENAME
 from conftest import reset_data_root
 
@@ -22,6 +22,7 @@ LOGIN_URL = "/api/auth/login"
 LOGOUT_URL = "/api/auth/logout"
 
 BOOTSTRAP_PASSWORD = "Initial-Admin-Password!"
+LOCAL_REQUIRED_PROFILE = config.RuntimeProfile("local", "required")
 
 
 @pytest.fixture(autouse=True)
@@ -35,21 +36,14 @@ def reset_test_state() -> None:
     auth.login_rate_limiter._state.clear()  # type: ignore[attr-defined]
 
 
-def _required_app(monkeypatch: pytest.MonkeyPatch, *, username: str):
-    """A rebuilt app with authentication enforced, mirroring
-    test_auth_enforcement.py's pattern -- needed for the logout tests below
-    because in auth-off mode the middleware derives operator identity solely
-    from the (here, absent) ``X-Operator`` header, never from a real session,
-    so a logged-in user's logout would not otherwise resolve to their name."""
-    monkeypatch.setenv("LWS_AUTH_MODE", "required")
+def _required_app(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    username: str = "root-admin",
+):
     monkeypatch.setenv("LWS_ADMIN_USER", username)
     monkeypatch.setenv("LWS_ADMIN_PASSWORD", BOOTSTRAP_PASSWORD)
-    profile = main_module.config.RuntimeProfile.from_environment(
-        os.environ,
-        data_root=main_module.config.DATA_ROOT,
-        app_root=main_module.config.REPO_ROOT,
-    )
-    return main_module.create_app(profile)
+    return main_module.create_app(LOCAL_REQUIRED_PROFILE)
 
 
 def _audit_entries() -> list[dict]:
@@ -63,14 +57,17 @@ def _create_user(username: str, password: str = "Sup3rSecret!", role: str = "adm
     return db.create_user(username, auth.hash_password(password), role, display_name=username.title())
 
 
-def test_successful_login_is_audited_with_real_identity_not_x_operator_header() -> None:
+def test_successful_login_is_audited_with_real_identity_not_x_operator_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The login request itself has no session yet, so the authentication
     middleware cannot have populated operator_context's contextvar with the
     logging-in user's identity for this request -- the audit entry must
     still name the real account, not whatever unrelated X-Operator nickname
     header the caller happened to send."""
+    test_app = _required_app(monkeypatch)
     _create_user("heidi")
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         response = client.post(
             LOGIN_URL,
             json={"username": "heidi", "password": "Sup3rSecret!"},
@@ -85,11 +82,12 @@ def test_successful_login_is_audited_with_real_identity_not_x_operator_header() 
     assert entries[-1]["detail"]["username"] == "heidi"
 
 
-def test_failed_login_is_not_audited() -> None:
+def test_failed_login_is_not_audited(monkeypatch: pytest.MonkeyPatch) -> None:
     """Auditing every failed attempt would let a brute-force run flood the
     audit log; only successful logins are recorded (A4 requirement)."""
+    test_app = _required_app(monkeypatch)
     _create_user("ivan")
-    with TestClient(app) as client:
+    with TestClient(test_app) as client:
         wrong_password = client.post(LOGIN_URL, json={"username": "ivan", "password": "wrong"})
         assert wrong_password.status_code == 401
         unknown_user = client.post(LOGIN_URL, json={"username": "no-such-user", "password": "whatever"})

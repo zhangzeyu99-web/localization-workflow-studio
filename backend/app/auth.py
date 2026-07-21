@@ -65,25 +65,44 @@ def current_user() -> dict[str, Any] | None:
     return _current_user_var.get()
 
 
-def bootstrap_initial_admin(*, required: bool | None = None) -> dict[str, Any] | None:
+def bootstrap_initial_admin(
+    *,
+    required: bool | None = None,
+    username: str | None = None,
+    password: str | None = None,
+) -> dict[str, Any] | None:
     """Create the first administrator in required mode, or fail closed."""
     enforcement_enabled = auth_required() if required is None else required
-    if not enforcement_enabled or db.count_users() > 0:
+    if not enforcement_enabled or db.has_active_admin():
         return None
-    username = os.environ.get("LWS_ADMIN_USER", "").strip()
-    password = os.environ.get("LWS_ADMIN_PASSWORD", "")
-    if not username or not password:
-        raise RuntimeError(
-            "认证已开启但 users 表为空；请同时设置 LWS_ADMIN_USER 和 "
-            "LWS_ADMIN_PASSWORD，或先运行 scripts/create_admin.py。"
-        )
-    return db.create_user(
-        username,
-        hash_password(password),
-        "admin",
-        display_name=username,
-        must_change_password=True,
+    bootstrap_username = (
+        os.environ.get("LWS_ADMIN_USER", "").strip()
+        if username is None
+        else username.strip()
     )
+    bootstrap_password = (
+        os.environ.get("LWS_ADMIN_PASSWORD", "")
+        if password is None
+        else password
+    )
+    if not bootstrap_username or not bootstrap_password:
+        raise RuntimeError(
+            "Authentication requires an active administrator; set both "
+            "LWS_ADMIN_USER and LWS_ADMIN_PASSWORD, or run scripts/create_admin.py."
+        )
+    try:
+        return db.create_user(
+            bootstrap_username,
+            hash_password(bootstrap_password),
+            "admin",
+            display_name=bootstrap_username,
+            must_change_password=True,
+        )
+    except db.UsernameConflictError as exc:
+        raise RuntimeError(
+            f"Bootstrap administrator username {bootstrap_username!r} already exists; "
+            "use scripts/create_admin.py to promote or reset an existing account explicitly."
+        ) from exc
 
 
 def hash_password(password: str) -> str:

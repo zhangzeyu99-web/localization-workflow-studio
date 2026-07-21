@@ -171,7 +171,8 @@ def test_app_profile_does_not_hot_switch_after_environment_changes(
         assert response.json()["auth_mode"] == "off"
         assert response.json()["runtime_profile"] == "local-off"
     assert business.status_code == 200, business.text
-    assert login.status_code == 200, login.text
+    assert login.status_code == 403, login.text
+    assert login.json() == {"detail": "当前模式未启用账号功能"}
     assert "secure" not in login.headers.get("set-cookie", "").lower()
     assert operator.status_code == 200, operator.text
     assert operator.json() == {"operator": ""}

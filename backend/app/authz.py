@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from . import auth, db
 
@@ -32,6 +32,7 @@ PROJECT_MANAGE = "project:manage"
 ADMIN = "admin:*"
 
 ALL_CAPABILITIES = {PROJECT_READ, TASK_RUN, ASSETS_CURATE, PROJECT_MANAGE, ADMIN}
+ACCOUNT_MODE_DISABLED_DETAIL = "当前模式未启用账号功能"
 
 # Plan §2.1 role -> capability matrix. "admin" gets every capability
 # (including future ones added to ALL_CAPABILITIES) rather than an
@@ -60,6 +61,12 @@ def capabilities_for_role(role: str) -> list[str]:
     if role == "admin":
         return sorted(ALL_CAPABILITIES)
     return sorted(ROLE_CAPABILITIES.get(role, set()))
+
+
+def require_account_mode(request: Request) -> None:
+    runtime_profile = request.app.state.runtime_profile
+    if not runtime_profile.auth_required:
+        raise HTTPException(status_code=403, detail=ACCOUNT_MODE_DISABLED_DETAIL)
 
 
 def require_admin() -> dict[str, Any]:

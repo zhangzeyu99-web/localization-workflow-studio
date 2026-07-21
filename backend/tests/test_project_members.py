@@ -7,24 +7,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.auth as auth
+import app.config as config
 import app.db as db
 import app.main as main_module
 from conftest import reset_data_root
 
 ADMIN_PASSWORD = "Initial-Admin-Password!"
 USER_PASSWORD = "Sup3rSecret1!"
+LOCAL_OFF_PROFILE = config.RuntimeProfile("local", "off")
+LOCAL_REQUIRED_PROFILE = config.RuntimeProfile("local", "required")
 
 PROJECTS_URL = "/api/projects"
 USERS_URL = "/api/users"
 LOGIN_URL = "/api/auth/login"
 
 
-def _build_app():
-    profile = main_module.config.RuntimeProfile.from_environment(
-        os.environ,
-        data_root=main_module.config.DATA_ROOT,
-        app_root=main_module.config.REPO_ROOT,
-    )
+def _build_app(profile: config.RuntimeProfile = LOCAL_OFF_PROFILE):
     return main_module.create_app(profile)
 
 
@@ -44,10 +42,9 @@ def reset_auth_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _required_app(monkeypatch: pytest.MonkeyPatch, *, username: str = "root-admin"):
-    monkeypatch.setenv("LWS_AUTH_MODE", "required")
     monkeypatch.setenv("LWS_ADMIN_USER", username)
     monkeypatch.setenv("LWS_ADMIN_PASSWORD", ADMIN_PASSWORD)
-    return _build_app()
+    return _build_app(LOCAL_REQUIRED_PROFILE)
 
 
 def _login(client: TestClient, username: str, password: str):
@@ -307,19 +304,38 @@ def test_admin_can_manage_members_of_any_project_without_being_a_member(monkeypa
 
 
 # ---------------------------------------------------------------------------
-# auth-off (local) mode: zero regression promise
+# auth-off (local) mode: business API continuity and account API isolation
 # ---------------------------------------------------------------------------
 
 
-def test_auth_off_mode_project_visibility_and_membership_endpoints_unaffected() -> None:
+def test_auth_off_keeps_projects_visible_but_disables_membership_api() -> None:
     test_app = _build_app()
     with TestClient(test_app) as client:
         project = client.post(PROJECTS_URL, json={"name": "Local Members Regression", "type": "QA"}).json()
-        detail = client.get(f"/api/projects/{project['id']}")
+        user = db.create_user(
+            "dormant-member",
+            auth.hash_password(USER_PASSWORD),
+            "member",
+        )
+
+        detail = client.get(f"{PROJECTS_URL}/{project['id']}")
         listed = client.get(PROJECTS_URL)
-        members = client.get(f"/api/projects/{project['id']}/members")
+        membership_responses = [
+            client.get(f"{PROJECTS_URL}/{project['id']}/members"),
+            client.get(f"{PROJECTS_URL}/{project['id']}/members/addable"),
+            client.post(
+                f"{PROJECTS_URL}/{project['id']}/members",
+                json={"user_id": user["id"]},
+            ),
+            client.delete(
+                f"{PROJECTS_URL}/{project['id']}/members/{user['id']}",
+            ),
+        ]
 
     assert detail.status_code == 200, detail.text
     assert listed.status_code == 200, listed.text
-    assert any(p["id"] == project["id"] for p in listed.json())
-    assert members.status_code == 200, members.text
+    assert any(item["id"] == project["id"] for item in listed.json())
+    for response in membership_responses:
+        assert response.status_code == 403, response.text
+        assert response.json() == {"detail": "当前模式未启用账号功能"}
+    assert not db.is_project_member(project["id"], user["id"])

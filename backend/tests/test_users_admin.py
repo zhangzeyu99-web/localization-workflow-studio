@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.auth as auth
+import app.config as config
 import app.db as db
 import app.main as main_module
 from app.config import DATA_ROOT
@@ -19,6 +20,8 @@ from scripts.create_admin import create_or_reset_admin
 
 ADMIN_PASSWORD = "Initial-Admin-Password!"
 USER_PASSWORD = "Sup3rSecret1!"
+LOCAL_OFF_PROFILE = config.RuntimeProfile("local", "off")
+LOCAL_REQUIRED_PROFILE = config.RuntimeProfile("local", "required")
 
 USERS_URL = "/api/users"
 LOGIN_URL = "/api/auth/login"
@@ -27,12 +30,7 @@ CHANGE_PASSWORD_URL = "/api/auth/change-password"
 REGISTER_URL = "/api/auth/register"
 
 
-def _build_app():
-    profile = main_module.config.RuntimeProfile.from_environment(
-        os.environ,
-        data_root=main_module.config.DATA_ROOT,
-        app_root=main_module.config.REPO_ROOT,
-    )
+def _build_app(profile: config.RuntimeProfile = LOCAL_OFF_PROFILE):
     return main_module.create_app(profile)
 
 
@@ -52,10 +50,9 @@ def reset_auth_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _required_app(monkeypatch: pytest.MonkeyPatch, *, username: str = "root-admin"):
-    monkeypatch.setenv("LWS_AUTH_MODE", "required")
     monkeypatch.setenv("LWS_ADMIN_USER", username)
     monkeypatch.setenv("LWS_ADMIN_PASSWORD", ADMIN_PASSWORD)
-    return _build_app()
+    return _build_app(LOCAL_REQUIRED_PROFILE)
 
 
 def _login(client: TestClient, username: str, password: str):
@@ -104,15 +101,40 @@ def _create_user_via_api(
 # ---------------------------------------------------------------------------
 
 
-def test_users_api_allowed_when_auth_disabled_current_behavior_fixed() -> None:
-    """Local/off mode's synthetic admin identity must keep working exactly
-    as A1 batch 2 established -- this is the regression this whole plan
-    promises never to break."""
+def test_users_api_is_disabled_when_auth_is_off() -> None:
     test_app = _build_app()
     with TestClient(test_app) as client:
-        response = client.get(USERS_URL)
-    assert response.status_code == 200, response.text
-    assert response.json() == []
+        existing = db.create_user(
+            "dormant-user",
+            auth.hash_password(USER_PASSWORD),
+            "member",
+        )
+        responses = [
+            client.get(USERS_URL),
+            client.post(
+                USERS_URL,
+                json={
+                    "username": "new-off-user",
+                    "display_name": "New Off User",
+                    "role": "member",
+                    "initial_password": USER_PASSWORD,
+                },
+            ),
+            client.patch(
+                f"{USERS_URL}/{existing['id']}",
+                json={"role": "ops"},
+            ),
+            client.post(
+                f"{USERS_URL}/{existing['id']}/reset-password",
+                json={"initial_password": "Replacement-Pass1!"},
+            ),
+        ]
+
+    for response in responses:
+        assert response.status_code == 403, response.text
+        assert response.json() == {"detail": "当前模式未启用账号功能"}
+    assert db.get_user_by_username("new-off-user") is None
+    assert db.get_user(existing["id"])["role"] == "member"
 
 
 def test_anonymous_request_gets_401_on_users_api(monkeypatch: pytest.MonkeyPatch) -> None:

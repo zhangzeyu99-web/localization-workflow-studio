@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from .. import auth, authz, db, operator_context
 from ..config import DATA_ROOT, RuntimeProfile
@@ -58,12 +58,13 @@ def _me_payload(user: dict[str, Any], *, auth_enabled: bool) -> dict[str, Any]:
     }
 
 
-@router.post("/api/auth/register", status_code=201)
+@router.post(
+    "/api/auth/register",
+    status_code=201,
+    dependencies=[Depends(authz.require_account_mode)],
+)
 def register(payload: RegisterRequest, request: Request, response: Response) -> dict[str, Any]:
     runtime_profile = _runtime_profile(request)
-    if not runtime_profile.auth_required:
-        raise HTTPException(status_code=403, detail="当前模式不开放注册")
-
     retry_after = auth.registration_rate_limiter.check_and_record(_client_ip(request))
     if retry_after is not None:
         raise HTTPException(
@@ -93,10 +94,13 @@ def register(payload: RegisterRequest, request: Request, response: Response) -> 
         {"user_id": user["id"], "username": user["username"]},
         operator=user["username"],
     )
-    return _me_payload(user, auth_enabled=True)
+    return _me_payload(user, auth_enabled=runtime_profile.auth_required)
 
 
-@router.post("/api/auth/login")
+@router.post(
+    "/api/auth/login",
+    dependencies=[Depends(authz.require_account_mode)],
+)
 def login(payload: LoginRequest, request: Request, response: Response) -> dict[str, Any]:
     runtime_profile = _runtime_profile(request)
     username = payload.username.strip()
@@ -130,7 +134,7 @@ def login(payload: LoginRequest, request: Request, response: Response) -> dict[s
         {"username": user["username"]},
         operator=user.get("display_name") or user["username"],
     )
-    return _me_payload(user, auth_enabled=True)
+    return _me_payload(user, auth_enabled=runtime_profile.auth_required)
 
 
 @router.post("/api/auth/logout")
@@ -152,33 +156,29 @@ def logout(request: Request, response: Response) -> dict[str, Any]:
 def me(request: Request, response: Response) -> dict[str, Any]:
     """Report the caller's identity plus the frontend's permission-gate inputs.
 
-    Auth-off/local mode's dominant case is "no session cookie at all" (the
-    frontend never shows a login page here) -- that must resolve to the
-    synthetic local administrator, not 401, or the app-shell gate would
-    wrongly bounce every local deployment to a login screen. A *present*
-    session cookie is still honored either way (an operator can log in with
-    a real account even while enforcement happens to be off), and an
-    invalid/expired cookie remains a 401 while enforcement is on. When it is
-    off, clear the stale cookie and recover to the synthetic local admin so a
-    leftover cloud session cannot turn a local deployment into a login gate.
+    Auth-off always exposes the synthetic local administrator. Any cookie is
+    revoked and cleared so a required-mode identity cannot leak into this
+    profile or revive when authentication is enabled again.
     """
     auth_enabled = _runtime_profile(request).auth_required
+    cookie_present = auth.SESSION_COOKIE_NAME in request.cookies
     token = request.cookies.get(auth.SESSION_COOKIE_NAME, "")
-    if token:
-        user = auth.get_user_for_session_token(token)
-        if user is None:
-            if auth_enabled:
-                raise HTTPException(status_code=401, detail="未登录")
+    if not auth_enabled:
+        if cookie_present:
+            auth.revoke_session(token)
             _clear_session_cookie(response)
-            user = auth.LOCAL_ADMIN_USER
-    elif auth_enabled:
+        return _me_payload(auth.LOCAL_ADMIN_USER, auth_enabled=False)
+
+    user = auth.get_user_for_session_token(token) if token else None
+    if user is None:
         raise HTTPException(status_code=401, detail="未登录")
-    else:
-        user = auth.current_user() or auth.LOCAL_ADMIN_USER
     return _me_payload(user, auth_enabled=auth_enabled)
 
 
-@router.post("/api/auth/change-password")
+@router.post(
+    "/api/auth/change-password",
+    dependencies=[Depends(authz.require_account_mode)],
+)
 def change_password(payload: ChangePasswordRequest, request: Request, response: Response) -> dict[str, Any]:
     user = auth.current_user()
     if user is None:
