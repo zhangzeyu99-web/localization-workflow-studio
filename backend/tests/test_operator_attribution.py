@@ -14,10 +14,12 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import app.background_jobs as background_jobs
+import app.auth as auth
 import app.db as db
+import app.operator_context as operator_context
 import app.routers.qa as qa_router
 from app.config import DATA_ROOT, RuntimeProfile, bind_runtime_profile, reset_runtime_profile
-from app.main import app
+from app.main import app, create_app
 from app.operator_context import AUDIT_LOG_FILENAME, sanitize_operator_name
 from app.schemas import ManualFixRequest, ModelFixRequest, MultilingualQueueRequest, TranslateRequest
 from app.workflow.multilingual import start_multilingual_qa_queue, start_multilingual_translation_queue
@@ -103,15 +105,66 @@ def test_cloud_translation_start_requires_operator_before_status_change(
     )
     original_status = run["status"]
 
-    for _action in ("start", "resume"):
-        with pytest.raises(HTTPException) as exc_info:
-            background_jobs.start_translation(
-                run["id"],
-                TranslateRequest(provider="test-fake", batch_size=2),
-            )
-        assert exc_info.value.status_code == 400
-        assert exc_info.value.detail == "请先设置操作人昵称，再启动 AI 任务。"
-        assert db.get_run(run["id"])["status"] == original_status
+    with pytest.raises(HTTPException) as exc_info:
+        background_jobs.start_translation(
+            run["id"],
+            TranslateRequest(provider="test-fake", batch_size=2),
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "请先设置操作人昵称，再启动 AI 任务。"
+    assert db.get_run(run["id"])["status"] == original_status
+
+
+@pytest.mark.parametrize("action", ["start", "resume"])
+def test_cloud_translation_http_routes_use_authenticated_operator_nickname(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    workbook = tmp_path / "untranslated.xlsx"
+    _untranslated_workbook(workbook)
+    project = db.insert_project("Cloud HTTP Operator", "QA", "")
+    artifact = db.add_artifact(
+        project["id"],
+        "untranslated.xlsx",
+        workbook,
+        "language_table",
+    )
+    run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"input_artifact_id": artifact["id"], "batch_size": 2},
+    )
+    db.create_user(
+        "http-operator",
+        auth.hash_password("HTTP-Operator-Pass1!"),
+        "admin",
+        display_name="Alice",
+    )
+    test_app = create_app(RuntimeProfile("cloud", "required"))
+    observed: dict[str, str] = {}
+
+    def fake_start_translation(run_id: str, _payload: TranslateRequest) -> dict[str, object]:
+        observed["run_id"] = run_id
+        observed["operator"] = operator_context.current_operator()
+        return db.get_run(run_id)
+
+    monkeypatch.setattr(background_jobs, "start_translation", fake_start_translation)
+
+    with TestClient(test_app, base_url="https://testserver") as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "http-operator", "password": "HTTP-Operator-Pass1!"},
+        )
+        response = client.post(
+            f"/api/runs/{run['id']}/translate/{action}",
+            json={"provider": "test-fake", "batch_size": 2},
+        )
+
+    assert login.status_code == 200, login.text
+    assert response.status_code == 200, response.text
+    assert observed == {"run_id": run["id"], "operator": "Alice"}
 
 
 @pytest.mark.parametrize(
@@ -162,10 +215,8 @@ def test_cloud_qa_entry_points_require_operator_without_mutating_run(
     assert current["metadata"] == original["metadata"]
 
 
-@pytest.mark.parametrize("action", ["start", "resume"])
 def test_cloud_announcement_entry_points_require_operator_without_mutating_task(
     cloud_runtime_profile: None,
-    action: str,
 ) -> None:
     project = db.insert_project("Cloud Announcement Operator", "QA", "")
     task = db.insert_announcement_task(
@@ -191,6 +242,55 @@ def test_cloud_announcement_entry_points_require_operator_without_mutating_task(
     assert current["status"] == task["status"]
     assert current["current_step"] == task["current_step"]
     assert current["metadata"] == task["metadata"]
+
+
+@pytest.mark.parametrize("action", ["start", "resume"])
+def test_cloud_announcement_http_routes_use_authenticated_operator_nickname(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    project = db.insert_project("Cloud Announcement HTTP Operator", "QA", "")
+    task = db.insert_announcement_task(
+        project["id"],
+        {
+            "title": "Operator route coverage",
+            "selected_languages": ["en"],
+            "status": "prepared",
+            "current_step": 6,
+        },
+    )
+    db.create_user(
+        "announcement-operator",
+        auth.hash_password("Announcement-Operator-Pass1!"),
+        "admin",
+        display_name="Alice",
+    )
+    test_app = create_app(RuntimeProfile("cloud", "required"))
+    observed: dict[str, str] = {}
+
+    def fake_start_announcement(task_id: str, _payload: object) -> dict[str, object]:
+        observed["task_id"] = task_id
+        observed["operator"] = operator_context.current_operator()
+        return db.get_announcement_task(task_id)
+
+    monkeypatch.setattr(background_jobs, "start_announcement", fake_start_announcement)
+
+    with TestClient(test_app, base_url="https://testserver") as client:
+        login = client.post(
+            "/api/auth/login",
+            json={
+                "username": "announcement-operator",
+                "password": "Announcement-Operator-Pass1!",
+            },
+        )
+        response = client.post(
+            f"/api/announcement-tasks/{task['id']}/translate/{action}",
+            json={"languages": ["en"], "provider": "test-fake", "batch_size": 2},
+        )
+
+    assert login.status_code == 200, login.text
+    assert response.status_code == 200, response.text
+    assert observed == {"task_id": task["id"], "operator": "Alice"}
 
 
 @pytest.mark.parametrize("workflow", ["translate", "qa"])

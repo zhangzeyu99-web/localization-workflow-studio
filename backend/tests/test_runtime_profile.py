@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -12,6 +14,7 @@ import app.config as config
 import app.db as db
 import app.main as main_module
 import app.operator_context as operator_context
+import app.routers.system as system_router
 from conftest import reset_data_root
 
 
@@ -206,3 +209,99 @@ def test_cloud_profile_stays_fail_closed_and_uses_secure_cookie_after_env_change
         assert response.json()["runtime_profile"] == "cloud-required"
     assert login.status_code == 200, login.text
     assert "secure" in login.headers.get("set-cookie", "").lower()
+
+
+def test_two_apps_keep_independent_profiles_while_clients_overlap() -> None:
+    db.init_db()
+    db.create_user(
+        "profile-isolation-admin",
+        auth.hash_password("Profile-Isolation-Pass1!"),
+        "admin",
+    )
+    off_profile = config.RuntimeProfile("local", "off")
+    required_profile = config.RuntimeProfile("local", "required")
+    off_app = main_module.create_app(off_profile)
+    required_app = main_module.create_app(required_profile)
+
+    assert off_app.state.runtime_profile is off_profile
+    assert required_app.state.runtime_profile is required_profile
+    with TestClient(off_app) as off_client:
+        assert off_client.get("/api/projects").status_code == 200
+        with TestClient(required_app) as required_client:
+            assert required_client.get("/api/projects").status_code == 401
+            assert off_client.get("/api/projects").status_code == 200
+
+
+def test_request_bound_profile_is_distinct_from_unbound_startup_fallback() -> None:
+    startup_profile = config.STARTUP_RUNTIME_PROFILE
+    cloud_profile = config.RuntimeProfile("cloud", "required")
+    assert startup_profile.identifier != cloud_profile.identifier
+    db.init_db()
+    db.create_user(
+        "profile-binding-admin",
+        auth.hash_password("Profile-Binding-Pass1!"),
+        "admin",
+    )
+    cloud_app = main_module.create_app(cloud_profile)
+
+    @cloud_app.get("/runtime-profile/request-bound-direct-call")
+    def request_bound_direct_call() -> dict[str, object]:
+        return system_router.version()
+
+    unbound_before = system_router.version()
+    with TestClient(cloud_app, base_url="https://testserver") as client:
+        request_bound = client.get("/runtime-profile/request-bound-direct-call")
+    unbound_after = system_router.version()
+
+    assert request_bound.status_code == 200, request_bound.text
+    assert request_bound.json()["runtime_profile"] == "cloud-required"
+    assert unbound_before["runtime_profile"] == startup_profile.identifier
+    assert unbound_after["runtime_profile"] == startup_profile.identifier
+
+
+@pytest.mark.parametrize("module_name", ["app.config", "app.main"])
+@pytest.mark.parametrize(
+    ("profile_env", "message"),
+    [
+        (
+            {"LWS_DEPLOYMENT_MODE": "edge"},
+            "LWS_DEPLOYMENT_MODE must be 'local' or 'cloud'",
+        ),
+        (
+            {"LWS_DEPLOYMENT_MODE": "local", "LWS_AUTH_MODE": "optional"},
+            "LWS_AUTH_MODE must be 'off' or 'required'",
+        ),
+        (
+            {"LWS_DEPLOYMENT_MODE": "cloud", "LWS_AUTH_MODE": "off"},
+            "cloud deployment cannot use auth mode off",
+        ),
+    ],
+)
+def test_invalid_profile_fails_real_import_boundary_in_subprocess(
+    tmp_path: Path,
+    module_name: str,
+    profile_env: dict[str, str],
+    message: str,
+) -> None:
+    env = os.environ.copy()
+    env.pop("LWS_DEPLOYMENT_MODE", None)
+    env.pop("LWS_AUTH_MODE", None)
+    env.update(profile_env)
+    env["LWS_DATA_ROOT"] = str(tmp_path / "data")
+    backend_root = Path(__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module_name}"],
+        cwd=backend_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert message in output
