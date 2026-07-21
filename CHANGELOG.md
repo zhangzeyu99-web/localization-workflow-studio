@@ -2,6 +2,16 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.6.1 - 2026-07-21
+
+Unified runtime-profile release.
+
+- Converged the product on one source line, one commit, one production frontend build, and one universal release archive for both supported production profiles.
+- Defined `local/off` for local sign-in-free operation and `cloud/required` for authenticated online operation; `cloud/off` now fails closed as an invalid configuration.
+- Kept authentication-off behavior explicit: a synthetic local administrator owns operations while login, registration, user management, and project-member management are hidden. Authentication-required mode retains login, roles, membership, and self-registration.
+- Made profile transitions non-destructive for projects, business data, and files, while clearing incompatible server and browser sessions so old sessions cannot revive after a mode switch.
+- Added explicit Windows and Linux launch profiles plus dual source E2E and extracted-package smoke gates that verify both profiles against the same manifest version, Git SHA, frontend digest, and runtime payload digest.
+
 ## 1.6.0 - 2026-07-20
 
 Account self-registration release.
@@ -9,7 +19,7 @@ Account self-registration release.
 - Added public self-registration for account-enabled deployments. Anonymous visitors see only the login and registration screens; successful registrations create active `member` accounts without granting project membership automatically.
 - Stabilized login/registration transitions by canceling stale authentication requests and making successful login responses self-contained.
 - Expanded administrator user management with registration and last-login metadata, deterministic newest-first ordering, and independent loading states for list refreshes and account actions.
-- Kept existing users, projects, and data compatible without migration. This release updates only the account-enabled line; the no-account v1.5.2 line remains unchanged.
+- Kept existing users, projects, and data compatible without migration. This was the pre-unification account-line candidate and is superseded by v1.6.1's single-version, dual-profile model.
 - Documented fresh-directory deployment with external `LWS_DATA_ROOT` and `settings.local.json`, manifest-derived `LWS_GIT_SHA`, one worker, and an atomic `current` switch.
 
 ## 1.5.3 - 2026-07-17

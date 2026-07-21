@@ -2,7 +2,7 @@
 
 ## 结论
 
-线上版本采用“同域 Nginx + 单个 FastAPI worker + 独立持久数据目录”。前端只发布 Vite 构建产物，不运行开发服务器；SQLite、上传文件、任务产物和 `settings.local.json` 都放在版本目录之外。部署模板位于 `deploy/`。
+v1.6.1 只发布一个 `localization-workflow-studio-v1.6.1-g<sha12>-universal.zip`。同一个包通过运行配置用于本地 `local/off` 或线上 `cloud/required`；线上采用“同域 Nginx + 单个 FastAPI worker + 独立持久数据目录”。前端只使用包内已验证的 Vite 构建产物，不运行开发服务器；SQLite、上传文件、任务产物和 `settings.local.json` 都放在版本目录之外。部署模板位于 `deploy/`。
 
 ## 目录契约
 
@@ -43,7 +43,7 @@ test -f frontend/dist/index.html
 
 sudo chown -R root:root /srv/lwstudio/releases/<release-id>
 sudo ln -sfn /srv/lwstudio/releases/<release-id> /srv/lwstudio/current
-sudo cp deploy/lws.env.example /etc/lwstudio/lws.env
+sudo cp deploy/profiles/cloud-required.env.example /etc/lwstudio/lws.env
 sudo chown root:lwstudio /etc/lwstudio/lws.env
 sudo chmod 0640 /etc/lwstudio/lws.env
 ```
@@ -104,18 +104,18 @@ sudo systemctl restart lws.service
 
 ## 账号与认证
 
-认证开关语义：
+受支持的运行配置矩阵：
 
 ```text
-cloud 模式（LWS_DEPLOYMENT_MODE=cloud，未显式设置 LWS_AUTH_MODE）→ 强制登录
-local 模式（默认）                                              → 免登录，按内置管理员运行
-任意模式 + LWS_AUTH_MODE=required                               → 强制登录
-任意模式 + LWS_AUTH_MODE=off                                    → 关闭登录
+local + off（默认）       → 本地免登录生产配置
+cloud + required（默认） → 线上强制登录生产配置
+local + required         → 仅用于测试或开发
+cloud + off              → 配置错误，启动失败
 ```
 
-`LWS_AUTH_MODE` 只接受 `required` 或 `off`；其它值会让后端启动失败，不会静默降级。
+`LWS_DEPLOYMENT_MODE` 与 `LWS_AUTH_MODE` 必须组成合法 profile；`cloud/off` 和其它非法值都会让后端启动失败，不会静默降级。
 
-v1.6.0 只更新有账号版，无账号版保持 v1.5.2 不变。在有账号版中，未登录访客只能看到登录/注册页，不能进入工作台；自助注册成功后账号固定为启用状态的 `member`，不会自动加入既有项目，但可按现有流程新建项目并自动成为该项目成员。现有用户、项目和数据无需迁移，继续使用版本目录外的同一份 `LWS_DATA_ROOT` 和 `settings.local.json`。
+同一个 v1.6.1 通用包按环境配置启动。`local/off` 使用 synthetic local admin，免登录且不创建账号，并隐藏登录、注册、用户和项目成员管理入口；`cloud/required` 未登录时只能看到登录/注册页，自助注册创建启用状态的 `member`，不会自动加入既有项目。两个 profile 共用业务代码和数据模型；切换 profile 不迁移、不删除项目、业务数据或文件，继续使用版本目录外的同一份 `LWS_DATA_ROOT` 和 `settings.local.json`，但会清除不兼容的服务端和浏览器会话，防止旧会话复活。
 
 ### 首次管理员
 
@@ -159,12 +159,14 @@ curl -fsS https://ai-lwstudio.example.com/api/version
 curl -fsS https://ai-lwstudio.example.com/api/health
 curl -sSI https://ai-lwstudio.example.com/
 curl -sSI https://ai-lwstudio.example.com/api/projects
-PACKAGE_GIT_SHA="$(python3.11 -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
-python3.11 scripts/deployment_check.py \
+PACKAGE_GIT_SHA="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
+.venv/bin/python check.py \
   --base-url https://ai-lwstudio.example.com \
-  --require-cloud \
+  --expect-deployment-mode cloud \
+  --expect-auth-mode required \
+  --expect-runtime-profile cloud-required \
   --require-provider \
-  --expect-version "$(cat VERSION)" \
+  --expect-version 1.6.1 \
   --expect-git-sha "$PACKAGE_GIT_SHA" \
   --check-frontend-assets frontend/dist/assets \
   --auth-user admin \
@@ -176,7 +178,7 @@ python3.11 scripts/deployment_check.py \
 完整业务冒烟测试：
 
 ```bash
-python3.11 scripts/stability_check.py \
+.venv/bin/python scripts/stability_check.py \
   --base-url https://ai-lwstudio.example.com \
   --auth-user admin \
   --auth-password '管理员密码'

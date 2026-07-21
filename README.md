@@ -34,7 +34,7 @@ Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web �
 - 长文本翻译：由后端任务编排器拆批、限流、断点续跑和失败恢复；不依赖 Codex/Agent 才能运行。
 - Agent 本地大语言包任务：使用 `workflow/localization/scripts/run_large_text_multilingual_*.py` 做 preflight、API manifest、cache-lint、readback 和 retro；cache-lint 已覆盖机器型括号 token、富文本/换行占位、中文小数字和日期过滤、千/万/M/K 等跨语言数字单位、强术语命中，以及 skipped/waived gate 状态和超过一小时任务的 retro 复盘提示。详细流程见 `docs/LARGE_TEXT_MULTILINGUAL_WORKFLOW.md`。
 - 公告翻译：项目内 9 步外文本工作流，支持公告资料、约束来源、目标语言、术语提取、译文反查、翻译准备、AI 翻译/导入、校对回填和交付。
-- 账号与权限：管理员/项目运营/普通用户三档角色，按项目成员关系控制可见性；账号版未登录时只显示登录/注册页，自助注册固定创建启用的普通成员账号，不会自动加入既有项目，但可按现有流程新建项目并自动成为该项目成员。云端部署默认强制登录（fail-closed），本地部署默认零感知（免登录、不建号）。用户管理、项目成员管理和首次登录改密都是内置能力，详见 `docs/CLOUD_DEPLOYMENT.md`「账号与认证」一节。
+- 账号与权限：管理员/项目运营/普通用户三档角色，按项目成员关系控制可见性；`cloud/required` 运行配置下，未登录访客只显示登录/注册页，自助注册固定创建启用的普通成员账号，不会自动加入既有项目，但可按现有流程新建项目并自动成为该项目成员；`local/off` 运行配置免登录且不建号。两个生产配置共用同一套业务代码与数据模型。用户管理、项目成员管理和首次登录改密都是内置能力，详见 `docs/CLOUD_DEPLOYMENT.md`「账号与认证」一节。
 - 禁止路径：不使用 Google Translate、`deep_translator`、`googletrans` 或浏览器机翻。
 - GitHub Pages：只是公开静态 Demo。完整功能必须启动 FastAPI 后端并使用私有数据目录。
 
@@ -421,6 +421,7 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 - [存储模型](docs/STORAGE.md)
 - [用例说明](docs/USE_CASES.md)
 - [质量门槛](docs/QUALITY_GATES.md)
+- [游戏台词翻译与校对要求](docs/DIALOGUE_TRANSLATION_REQUIREMENTS.md)
 - [迭代方式](docs/ITERATION.md)
 - [GitHub 管理](docs/GITHUB_MANAGEMENT.md)
 - [更新日志](CHANGELOG.md)
@@ -430,17 +431,16 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 - [v1.5.0 正式版说明](docs/releases/v1.5.0.md)
 - [v1.5.1 正式版说明](docs/releases/v1.5.1.md)
 - [v1.5.3 正式版说明](docs/releases/v1.5.3.md)
-- [v1.6.0 账号版说明](docs/releases/v1.6.0.md)
+- [v1.6.0 历史候选说明](docs/releases/v1.6.0.md)
+- [v1.6.1 统一版说明](docs/releases/v1.6.1.md)
 - [许可证](LICENSE)
 
 ## 版本
 
 
-当前有账号版：`1.6.0`。本次只更新有账号版；无账号版保持 `v1.5.2` 不变。
+当前版本：`1.6.1`。同一版本、同一前端构建和同一通用发布包通过运行配置选择本地 `local/off` 或线上 `cloud/required`。
 
-- `VERSION`
-- `backend/app/main.py`
-- `frontend/package.json`
-- `frontend/package-lock.json`
+- `VERSION` 是产品版本的唯一真源；后端和生成的包清单/部署说明均从这里读取。
+- `frontend/package.json` 与 `frontend/package-lock.json` 是同步的前端版本镜像。
 
 发布和打 tag 前按 [GitHub 管理](docs/GITHUB_MANAGEMENT.md) 的 release checklist 执行。

@@ -2,30 +2,60 @@
 
 目标：确认工作台脱离 Codex/Agent 后，仍能只靠本地后端、内置 workflow 和已配置 API provider 完成核心流程。
 
-## 本地 / 局域网
+## 生产 profile 与通用包
+
+发布前只构建一次前端，再从 clean commit 生成一个通用包：
 
 ```powershell
-python scripts\deployment_check.py --base-url http://127.0.0.1:5174 --expect-version (Get-Content VERSION)
-python scripts\stability_check.py --base-url http://127.0.0.1:5174
+npm run build --prefix frontend
+python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend
+```
+
+输出名必须为 `localization-workflow-studio-v1.6.1-g<sha12>-universal.zip`，旁边有同名 `.sha256`；包内必须包含 `PACKAGE_MANIFEST.json`、`DEPLOY_README.zh-CN.md`、`deploy/profiles/local-off.env.example` 和 `deploy/profiles/cloud-required.env.example`。
+
+### 本地 `local/off`
+
+Windows 解压包入口显式固定为 `local/off`：
+
+```powershell
+$Manifest = Get-Content -Raw PACKAGE_MANIFEST.json | ConvertFrom-Json
+$DataRoot = Join-Path $env:LOCALAPPDATA 'LocalizationWorkflowStudio\data'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-workbench.ps1 -HostName 127.0.0.1 -FrontendPort 5173 -DataRoot $DataRoot -NoOpen
+python check.py --base-url http://127.0.0.1:5173 --expect-deployment-mode local --expect-auth-mode off --expect-runtime-profile local-off --expect-version $Manifest.version --expect-git-sha $Manifest.git_sha --check-frontend-assets frontend\dist\assets
+python scripts\stability_check.py --base-url http://127.0.0.1:5173
 python scripts\concurrency_smoke.py
 ```
 
+`check.py` 必须确认匿名业务 API 可用；UI 不显示登录、注册、用户和成员管理，设置入口对 synthetic local admin 可见。`stability_check.py` 的 `--base-url` 必须与本次实际 `-FrontendPort` 一致。
+
 `concurrency_smoke.py` 默认自建临时数据目录和独立 18800 端口，并实际重启该临时后端验证恢复。只有确认目标也是隔离实例时才使用 `--base-url`；该模式不接管进程，因此会跳过重启检查。
 
-## Linux / 线上
+### 线上 `cloud/required`
+
+使用 `deploy/profiles/cloud-required.env.example` 安装服务器环境；`start-lws.sh` 默认 `cloud/required`。部署检查使用包内 Python 环境和 manifest 身份：
 
 ```bash
-python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider --expect-version $(cat VERSION)
-python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
+VERSION="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["version"])')"
+GIT_SHA="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
+.venv/bin/python check.py --base-url https://ai-lwstudio.example.com \
+  --expect-deployment-mode cloud --expect-auth-mode required --expect-runtime-profile cloud-required \
+  --expect-version "$VERSION" --expect-git-sha "$GIT_SHA" --check-frontend-assets frontend/dist/assets \
+  --require-provider --auth-user admin --auth-password '管理员密码'
+.venv/bin/python scripts/stability_check.py --base-url https://ai-lwstudio.example.com --auth-user admin --auth-password '管理员密码'
 ```
 
-强制登录的部署（云端默认）需要额外带 `--auth-user/--auth-password`，见 `docs/CLOUD_DEPLOYMENT.md`「账号与认证」一节：
+该 profile 必须通过 HTTPS 验证 Secure `lws_session` cookie，并确认匿名业务 API 返回 401。
 
-```bash
-python3.11 check.py --base-url https://ai-lwstudio.example.com --require-cloud --require-provider \
-  --expect-version $(cat VERSION) --auth-user admin --auth-password '管理员密码'
-python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com --auth-user admin --auth-password '管理员密码'
+### Source E2E 与 extracted smoke
+
+Task 6 的 source browser gates 使用以下真实命令：
+
+```powershell
+npm run e2e --prefix frontend
+npm run e2e:auth --prefix frontend
 ```
+
+两个 extracted smoke 都必须运行 `frontend/e2e/runtime-profile-smoke.spec.ts`：设置 `LWS_EXPECT_RUNTIME_PROFILE=local-off` 或 `cloud-required` 后，执行 `npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line`。两次 smoke 必须下载同一个 `universal-release` artifact，并分别保存相同的 manifest 与 digest 身份证据。
 
 双 lane 队列场景务必在隔离实例（临时数据目录、独立端口）上跑，不要对生产库跑。Linux 验收机可直接运行 `python3.11 scripts/concurrency_smoke.py --port 18800`。
 
@@ -69,7 +99,9 @@ python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 ## 失败即阻断
 
 - 页面能打开但 `/api/version` 404。
-- `/api/health` 不是 `cloud`。
+- `/api/version` 或 `/api/health` 的 deployment/auth/runtime profile 与本次期望不一致，或两个响应互相不一致。
+- `cloud/off` 没有在启动阶段被拒绝。
+- 两个 extracted smoke 不是同一个 artifact，或 manifest `version`/`git_sha`、frontend digest、runtime payload digest、outer ZIP SHA 任一不一致。
 - 上传自检失败。
 - 数据目录不可写。
 - provider 未配置但尝试跑正式 AI 翻译。
@@ -78,3 +110,5 @@ python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 - 同一 lane 出现两个 `running`，或第三个正式任务仍因旧容量模型返回 409。
 - 重启后 queued 任务丢失/重复执行，或 canceled 任务仍被 worker 执行。
 - 云端/强制登录部署下，未登录访问业务 API 不是 401（fail-closed 失效）。
+- 任一生产 profile 的 deployment check、stability flow、runtime Playwright 或临时项目/active jobs 清理失败。
+- profile 切换导致项目、业务数据或文件丢失，或旧服务端/浏览器会话在切换后恢复有效。

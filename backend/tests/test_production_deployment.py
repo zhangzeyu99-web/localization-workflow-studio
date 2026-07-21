@@ -164,9 +164,11 @@ def test_public_release_docs_match_repository_version() -> None:
     github_guide = (REPO_ROOT / "docs" / "GITHUB_MANAGEMENT.md").read_text(encoding="utf-8")
     pages_index = (REPO_ROOT / "docs" / "index.html").read_text(encoding="utf-8")
 
-    assert f"当前有账号版：`{version}`" in github_guide
+    assert f"当前版本：`{version}`" in github_guide
+    assert "`local/off`" in github_guide
+    assert "`cloud/required`" in github_guide
     assert f"正式版 v{version}" in pages_index
-    assert f"<strong>{version}</strong><span>当前有账号版</span>" in pages_index
+    assert f"<strong>{version}</strong><span>单版本 · 双运行配置</span>" in pages_index
 
 
 def test_v160_release_commands_are_shell_safe_and_self_contained() -> None:

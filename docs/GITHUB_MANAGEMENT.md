@@ -9,8 +9,7 @@
 
 ## 分支策略
 
-- `master`：稳定分支。推送到该分支后应能通过 CI，并可作为 GitHub Pages 来源。
-- `codex/multilingual-announcement-workflow`：当前 1.0 开发与验证分支。
+- `master`：唯一稳定发布分支。推送到该分支后应能通过 CI，并可作为 GitHub Pages 来源。
 - `feature/<short-name>`：较大的功能改动。
 - `fix/<short-name>`：明确缺陷修复。
 - `docs/<short-name>`：文档、仓库治理、README、Pages 文案。
@@ -38,22 +37,26 @@ git ls-files | Select-String -Pattern "settings.local|sqlite|api_key|translated.
 
 GitHub Actions 覆盖：
 
-- 后端测试。
-- workflow baseline tests。
-- 前端 TypeScript/Vite build。
-- 浏览器 E2E。
+- 后端与 workflow baseline tests、compileall、Ruff。
+- 一次前端 TypeScript/Vite production build，并记录 canonical frontend tree digest。
+- `local/off` 与 `local/required` 两套 source Playwright E2E。
+- 由同一个 frontend dist 生成一个 universal ZIP，并在 Windows `local/off` 与 Ubuntu TLS `cloud/required` 中分别执行 extracted smoke。
+- 两个 extracted smoke 读回同一 artifact ID、manifest `version`/`git_sha`、frontend digest、runtime payload digest 和 outer ZIP SHA。
 
 发布前本地建议执行：
 
 ```powershell
 python -m pytest -q
-python -m compileall -q backend workflow
-python -m ruff check backend/app backend/tests --select E9,F
+python -m compileall -q backend scripts check.py
+python -m ruff check backend scripts check.py
 
 Push-Location frontend
 npm run build
-npm run e2e -- --workers=1
+npm run e2e
+npm run e2e:auth
 Pop-Location
+
+python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend
 
 rg -n -i "deep_translator|googletrans|GoogleTranslator|translate\.google|google translate|Google Translate|GOOGLE_TRANSLATE|google_trans" backend workflow frontend --glob "!frontend/node_modules/**"
 ```
@@ -98,17 +101,13 @@ PR 模板位于 `.github/pull_request_template.md`。
 
 ## 版本管理
 
-当前有账号版：`1.6.0`。无账号版保持 `v1.5.2` 不变，不随有账号版发布任务重建或覆盖。
+当前版本：`1.6.1`。稳定分支为 `master`；该版本发布时只对应一个 `v1.6.1` tag、一份 [v1.6.1 发布说明](releases/v1.6.1.md) 和一个 universal release artifact。本地 `local/off` 与线上 `cloud/required` 是同一版本的两种生产运行配置，不是两条产品线。
 
-版本号同步维护：
+版本来源：
 
-- `VERSION`
-- `backend/app/main.py`
-- `frontend/package.json`
-- `frontend/package-lock.json`
-- `README.md`
-- `CHANGELOG.md`
-- `docs/releases/vX.Y.Z.md`
+- `VERSION` 是产品版本的唯一真源；后端、包名、`PACKAGE_MANIFEST.json` 和生成的 `DEPLOY_README.zh-CN.md` 都从它派生。
+- `frontend/package.json` 与 `frontend/package-lock.json` 的根包版本是同步镜像。
+- `README.md`、`CHANGELOG.md`、`docs/index.html` 与 `docs/releases/vX.Y.Z.md` 必须同步当前公开入口。
 
 规则：
 
@@ -132,9 +131,10 @@ git push origin vX.Y.Z
 3. 本地核心测试通过，或明确说明未跑原因。
 4. GitHub Actions 通过。
 5. GitHub Pages Demo 可打开。
-6. Release note 写清账号/无账号版本边界、用户影响、迁移要求、部署状态和已知边界；没有线上验收证据时不得宣称已上线。
+6. Release note 写清同一 universal artifact 在 `local/off` 与 `cloud/required` 的验收结果、用户影响、数据/会话保证、部署状态和已知边界；没有线上验收证据时不得宣称已上线。
 7. 仓库内无真实项目数据、API key、SQLite、run 日志或交付文件。
 8. 文档无乱码、连续问号占位、U+FFFD 或历史版本误导。
+9. 两个 extracted smoke 的 artifact ID、manifest `version`/`git_sha`、frontend digest、runtime payload digest 和 outer ZIP SHA 一致，且 `cloud/off` fail-closed 测试通过。
 
 ## GitHub Pages 管理
 
