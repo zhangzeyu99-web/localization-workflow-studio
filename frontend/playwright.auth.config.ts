@@ -39,6 +39,7 @@ export default defineConfig({
             ...process.env,
             LWS_DATA_ROOT: dataRoot,
             PYTHONPATH: path.join(repoRoot, 'backend'),
+            LWS_DEPLOYMENT_MODE: 'local',
             LWS_AUTH_MODE: 'required',
             LWS_ADMIN_USER: 'e2e-admin',
             LWS_ADMIN_PASSWORD: adminPassword,

@@ -17,6 +17,22 @@ const selectWizardStep = async (page: any, step: number, scope?: string) => {
 
 test.use({ acceptDownloads: true })
 
+test('auth-off runtime reports local profile and exposes only local operator controls', async ({ page, request }) => {
+  const versionResponse = await request.get(`${baseURL}/api/version`)
+  expect(versionResponse.ok()).toBe(true)
+  expect(await versionResponse.json()).toMatchObject({
+    deployment_mode: 'local',
+    auth_mode: 'off',
+    runtime_profile: 'local-off',
+  })
+
+  await page.goto(baseURL)
+  await expect(page.getByTestId('login-submit')).toHaveCount(0)
+  await expect(page.getByTestId('show-register')).toHaveCount(0)
+  await expect(page.getByTestId('operator-identity-trigger')).toBeVisible()
+  await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible()
+})
+
 test('auth bootstrap network failure shows a recoverable error instead of loading forever', async ({ page }) => {
   await page.route('**/api/auth/me', (route) => route.abort())
   await page.goto(baseURL)

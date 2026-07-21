@@ -67,6 +67,20 @@ async function fillRegistration(page: Page, values: {
   await page.getByTestId('register-password-confirm').fill(values.passwordConfirm ?? values.password)
 }
 
+test('auth runtime reports local-required and exposes login and registration controls', async ({ page, request }) => {
+  const versionResponse = await request.get('/api/version')
+  expect(versionResponse.ok()).toBe(true)
+  expect(await versionResponse.json()).toMatchObject({
+    deployment_mode: 'local',
+    auth_mode: 'required',
+    runtime_profile: 'local-required',
+  })
+
+  await page.goto('/')
+  await expect(page.getByTestId('login-submit')).toBeVisible()
+  await expect(page.getByTestId('show-register')).toBeVisible()
+})
+
 test('自助注册只发送一次注册请求并直接以 member 进入应用', async ({ page }) => {
   const registrationPayloads: unknown[] = []
   let loginRequestCount = 0

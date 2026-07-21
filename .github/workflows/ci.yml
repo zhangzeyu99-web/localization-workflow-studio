@@ -3,21 +3,29 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
+  source-gates:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - name: Install Python dependencies
-        run: python -m pip install -r backend/requirements.txt
-      - name: Backend mock E2E
+        run: |
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r workflow/glossary/requirements.txt
+          python -m pip install -r workflow/localization/requirements.txt
+      - name: Backend and repository tests
         run: python -m pytest -q
       - name: Localization workflow baseline
         working-directory: workflow/localization
@@ -25,37 +33,449 @@ jobs:
       - name: Glossary workflow baseline
         working-directory: workflow/glossary
         run: python -m pytest -q
-      - name: Frontend build
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
-          npx playwright install chromium
-      - name: Browser E2E
-        env:
-          LWS_DATA_ROOT: ${{ runner.temp }}\localization-workflow-studio-data
-          E2E_BASE_URL: http://127.0.0.1:5173
+      - name: Compile Python sources
+        run: python -m compileall -q backend scripts check.py
+      - name: Ruff
+        run: python -m ruff check backend scripts check.py
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+      - name: Build production frontend once
+        run: npm run build --prefix frontend
+      - name: Record canonical frontend digest
         shell: pwsh
         run: |
-          $backend = Start-Process python -ArgumentList @('-m','uvicorn','app.main:app','--app-dir','backend','--host','127.0.0.1','--port','8000') -PassThru
-          $frontend = Start-Process npm.cmd -ArgumentList @('run','dev','--','--host','127.0.0.1','--port','5173') -WorkingDirectory 'frontend' -PassThru
-          try {
-            $ready = $false
-            for ($i = 0; $i -lt 60; $i++) {
-              try {
-                Invoke-RestMethod -Uri http://127.0.0.1:8000/api/health | Out-Null
-                Invoke-WebRequest -Uri http://127.0.0.1:5173 -UseBasicParsing | Out-Null
-                $ready = $true
-                break
-              } catch {
-                Start-Sleep -Seconds 1
-              }
-            }
-            if (-not $ready) {
-              throw 'local test servers did not become ready'
-            }
-            npm run e2e --prefix frontend
-          } finally {
-            Stop-Process -Id $backend.Id -ErrorAction SilentlyContinue
-            Stop-Process -Id $frontend.Id -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force release_archives | Out-Null
+          $digest = python -c "from pathlib import Path; from scripts.build_release_package import _tree_sha256; root=Path('frontend/dist'); print(_tree_sha256(root, (path for path in root.rglob('*') if path.is_file())))"
+          if ($LASTEXITCODE -ne 0 -or $digest -notmatch '^[0-9a-f]{64}$') { throw 'failed to compute canonical frontend digest' }
+          Set-Content -LiteralPath release_archives/frontend-dist.sha256 -Value $digest -Encoding ascii
+      - name: Upload production frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: |
+            frontend/dist
+            release_archives/frontend-dist.sha256
+          if-no-files-found: error
+          include-hidden-files: true
+
+  e2e-local-off:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r backend/requirements.txt
+          npm ci --prefix frontend
+          npx --prefix frontend playwright install chromium
+      - name: Local auth-off browser suite
+        env:
+          LWS_E2E_DATA_ROOT: ${{ runner.temp }}\lws-e2e-local-off
+          LWS_E2E_BACKEND_PORT: "18080"
+          LWS_E2E_FRONTEND_PORT: "15173"
+        run: npm run e2e --prefix frontend
+
+  e2e-local-required:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r backend/requirements.txt
+          npm ci --prefix frontend
+          npx --prefix frontend playwright install chromium
+      - name: Local auth-required browser suite
+        env:
+          LWS_AUTH_E2E_DATA_ROOT: ${{ runner.temp }}\lws-e2e-local-required
+          LWS_AUTH_E2E_BACKEND_PORT: "18081"
+          LWS_AUTH_E2E_FRONTEND_PORT: "15174"
+        run: npm run e2e:auth --prefix frontend
+
+  build-universal:
+    needs: [source-gates, e2e-local-off, e2e-local-required]
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload-release.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download exact production frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: .
+      - name: Verify checkout and canonical frontend digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          expected="$(tr -d '\r\n ' < release_archives/frontend-dist.sha256)"
+          actual="$(python -c "from pathlib import Path; from scripts.build_release_package import _tree_sha256; root=Path('frontend/dist'); print(_tree_sha256(root, (path for path in root.rglob('*') if path.is_file())))")"
+          test "$actual" = "$expected"
+      - name: Build universal ZIP without rebuilding frontend
+        run: python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend
+      - name: Verify release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          output = Path("release_archives")
+          archive = next(output.glob("*-universal.zip"))
+          sidecar = archive.with_name(f"{archive.name}.sha256")
+          expected_outer = sidecar.read_text(encoding="utf-8").split()[0]
+          actual_outer = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if actual_outer != expected_outer:
+              raise SystemExit("outer ZIP sidecar mismatch")
+          with zipfile.ZipFile(archive) as bundle:
+              manifest_name = next(name for name in bundle.namelist() if name.endswith("/PACKAGE_MANIFEST.json"))
+              manifest = json.loads(bundle.read(manifest_name))
+          expected_git_sha = os.environ["GITHUB_SHA"][:12]
+          if manifest["git_sha"] != expected_git_sha:
+              raise SystemExit(f"manifest git_sha {manifest['git_sha']} != {expected_git_sha}")
+          identity = {
+              "zip_name": archive.name,
+              "outer_zip_sha256": actual_outer,
+              "git_sha": manifest["git_sha"],
+              "frontend_dist_sha256": manifest["frontend_dist_sha256"],
+              "runtime_payload_sha256": manifest["runtime_payload_sha256"],
           }
+          (output / "release-identity.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
+          PY
+          (cd release_archives && sha256sum --check *-universal.zip.sha256)
+      - name: Upload universal release
+        id: upload-release
+        uses: actions/upload-artifact@v4
+        with:
+          name: universal-release
+          path: |
+            release_archives/*-universal.zip
+            release_archives/*-universal.zip.sha256
+            release_archives/release-identity.json
+          if-no-files-found: error
+
+  smoke-extracted-local-off:
+    needs: build-universal
+    runs-on: windows-latest
+    env:
+      EXPECTED_RELEASE_ARTIFACT_ID: ${{ needs.build-universal.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Download universal release
+        uses: actions/download-artifact@v4
+        with:
+          name: universal-release
+          path: ${{ runner.temp }}\release
+      - name: Install Playwright runner only
+        run: |
+          npm ci --prefix frontend
+          npx --prefix frontend playwright install chromium
+      - name: Smoke extracted local-off runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:EXPECTED_RELEASE_ARTIFACT_ID) { throw 'release artifact id is empty' }
+          $ReleaseRoot = Join-Path $env:RUNNER_TEMP 'release'
+          $Zip = Get-ChildItem $ReleaseRoot -Filter '*-universal.zip' | Select-Object -First 1
+          $Sidecar = Get-Item "$($Zip.FullName).sha256"
+          $Identity = Get-Content -Raw (Join-Path $ReleaseRoot 'release-identity.json') | ConvertFrom-Json
+          $OuterSha = (Get-FileHash -Algorithm SHA256 $Zip.FullName).Hash.ToLowerInvariant()
+          $SidecarSha = ((Get-Content -Raw $Sidecar.FullName) -split '\s+')[0].ToLowerInvariant()
+          if ($OuterSha -ne $SidecarSha -or $OuterSha -ne $Identity.outer_zip_sha256) { throw 'outer ZIP identity mismatch' }
+          $env:LWS_RELEASE_ZIP = $Zip.FullName
+          python -c "import os; from pathlib import Path; from scripts.build_release_package import _verify_archive; _verify_archive(Path(os.environ['LWS_RELEASE_ZIP']))"
+
+          $ExtractRoot = Join-Path $env:RUNNER_TEMP 'lws-smoke-local'
+          $DataRoot = Join-Path $env:RUNNER_TEMP 'lws-data-local'
+          Expand-Archive -LiteralPath $Zip.FullName -DestinationPath $ExtractRoot
+          $AppHome = (Get-ChildItem $ExtractRoot -Directory | Select-Object -First 1).FullName
+          $Manifest = Get-Content -Raw (Join-Path $AppHome 'PACKAGE_MANIFEST.json') | ConvertFrom-Json
+          if ($Manifest.git_sha -ne $env:GITHUB_SHA.Substring(0, 12)) { throw 'manifest SHA differs from checkout' }
+          foreach ($Field in @('git_sha', 'frontend_dist_sha256', 'runtime_payload_sha256')) {
+            if ($Manifest.$Field -ne $Identity.$Field) { throw "manifest identity mismatch: $Field" }
+          }
+          New-Item -ItemType Directory -Force $DataRoot | Out-Null
+          '{"provider":"test-fake","api_key":""}' | Set-Content -Encoding utf8 (Join-Path $DataRoot 'settings.local.json')
+          $env:LWS_ENABLE_TEST_PROVIDER = '1'
+          python -m pip install -r (Join-Path $AppHome 'backend\requirements.txt')
+          python -m pip install -r (Join-Path $AppHome 'workflow\glossary\requirements.txt')
+          python -m pip install -r (Join-Path $AppHome 'workflow\localization\requirements.txt')
+
+          try {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $AppHome 'scripts\start-workbench.ps1') `
+              -HostName 127.0.0.1 -FrontendPort 15175 -DataRoot $DataRoot -NoOpen
+            $RootHtml = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:15175/).Content
+            $DeepLinkHtml = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:15175/projects/smoke-deep-link).Content
+            if ($RootHtml -ne $DeepLinkHtml) { throw 'SPA deep link did not return the built index.html' }
+
+            python (Join-Path $AppHome 'check.py') `
+              --base-url http://127.0.0.1:15175 `
+              --expect-deployment-mode local `
+              --expect-auth-mode off `
+              --expect-runtime-profile local-off `
+              --expect-version $Manifest.version `
+              --expect-git-sha $Manifest.git_sha `
+              --check-frontend-assets (Join-Path $AppHome 'frontend\dist\assets') |
+              Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'local-deployment-check.jsonl')
+            if ($LASTEXITCODE -ne 0) { throw 'deployment check failed' }
+
+            python (Join-Path $AppHome 'scripts\stability_check.py') `
+              --base-url http://127.0.0.1:15175 |
+              Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'local-stability-check.jsonl')
+            if ($LASTEXITCODE -ne 0) { throw 'stability check failed' }
+            if (-not (Select-String -Quiet -Path (Join-Path $env:RUNNER_TEMP 'local-stability-check.jsonl') -Pattern '^deleted_project=')) { throw 'stability project was not deleted' }
+            if (@(Invoke-RestMethod http://127.0.0.1:15175/api/system/active-jobs).Count -ne 0) { throw 'active jobs remain after stability smoke' }
+            $Projects = @(Invoke-RestMethod http://127.0.0.1:15175/api/projects)
+            if ($Projects.Where({ $_.name -like 'STABILITY-*' }).Count -ne 0) { throw 'stability project remains after cleanup' }
+
+            $env:E2E_BASE_URL = 'http://127.0.0.1:15175'
+            $env:LWS_EXPECT_RUNTIME_PROFILE = 'local-off'
+            Push-Location frontend
+            try {
+              npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line
+              if ($LASTEXITCODE -ne 0) { throw 'runtime profile Playwright failed' }
+            } finally {
+              Pop-Location
+            }
+          } finally {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $AppHome 'scripts\stop-workbench.ps1') -Ports 15175
+          }
+          @{ artifact_id = $env:EXPECTED_RELEASE_ARTIFACT_ID; git_sha = $Manifest.git_sha; frontend_dist_sha256 = $Manifest.frontend_dist_sha256; runtime_payload_sha256 = $Manifest.runtime_payload_sha256; outer_zip_sha256 = $OuterSha } |
+            ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'local-release-identity.json')
+      - name: Upload local smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-local-off-evidence
+          path: |
+            ${{ runner.temp }}\local-*.jsonl
+            ${{ runner.temp }}\local-release-identity.json
+          if-no-files-found: warn
+
+  smoke-extracted-cloud-required:
+    needs: build-universal
+    runs-on: ubuntu-latest
+    env:
+      EXPECTED_RELEASE_ARTIFACT_ID: ${{ needs.build-universal.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Download universal release
+        uses: actions/download-artifact@v4
+        with:
+          name: universal-release
+          path: ${{ runner.temp }}/release
+      - name: Install Playwright runner only
+        run: |
+          npm ci --prefix frontend
+          npx --prefix frontend playwright install chromium
+      - name: Smoke extracted cloud-required runtime over TLS
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$EXPECTED_RELEASE_ARTIFACT_ID"
+          RELEASE_ROOT="$RUNNER_TEMP/release"
+          ZIP="$(find "$RELEASE_ROOT" -maxdepth 1 -name '*-universal.zip' -print -quit)"
+          SIDECAR="$ZIP.sha256"
+          (cd "$RELEASE_ROOT" && sha256sum --check "$(basename "$SIDECAR")")
+          export LWS_RELEASE_ZIP="$ZIP"
+          python -c "import os; from pathlib import Path; from scripts.build_release_package import _verify_archive; _verify_archive(Path(os.environ['LWS_RELEASE_ZIP']))"
+
+          EXTRACT_ROOT="$RUNNER_TEMP/lws-smoke-cloud"
+          DATA_ROOT="$RUNNER_TEMP/lws-data-cloud"
+          mkdir -p "$EXTRACT_ROOT" "$DATA_ROOT"
+          unzip -q "$ZIP" -d "$EXTRACT_ROOT"
+          APP_HOME="$(find "$EXTRACT_ROOT" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          MANIFEST="$APP_HOME/PACKAGE_MANIFEST.json"
+          IDENTITY="$RELEASE_ROOT/release-identity.json"
+          python - "$MANIFEST" "$IDENTITY" "$ZIP" <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          identity = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          outer = hashlib.sha256(Path(sys.argv[3]).read_bytes()).hexdigest()
+          if manifest["git_sha"] != os.environ["GITHUB_SHA"][:12]:
+              raise SystemExit("manifest SHA differs from checkout")
+          for field in ("git_sha", "frontend_dist_sha256", "runtime_payload_sha256"):
+              if manifest[field] != identity[field]:
+                  raise SystemExit(f"manifest identity mismatch: {field}")
+          if outer != identity["outer_zip_sha256"]:
+              raise SystemExit("outer ZIP identity mismatch")
+          PY
+          VERSION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$MANIFEST")"
+          GIT_SHA="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])' "$MANIFEST")"
+          printf '%s\n' '{"provider":"test-fake","api_key":""}' > "$DATA_ROOT/settings.local.json"
+
+          CERT="$RUNNER_TEMP/lws-smoke-cert.pem"
+          KEY="$RUNNER_TEMP/lws-smoke-key.pem"
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
+            -keyout "$KEY" -out "$CERT" -subj '/CN=localhost' \
+            -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,digitalSignature,keyEncipherment'
+
+          export LWS_DEPLOYMENT_MODE=cloud
+          export LWS_AUTH_MODE=required
+          export LWS_SERVE_FRONTEND=1
+          export LWS_DATA_ROOT="$DATA_ROOT"
+          export LWS_GIT_SHA="$GIT_SHA"
+          export LWS_ADMIN_USER=smoke-admin
+          export LWS_ADMIN_PASSWORD='Initial-Smoke-Password1!'
+          export LWS_ENABLE_TEST_PROVIDER=1
+          export NO_PROXY=localhost,127.0.0.1
+
+          cd "$APP_HOME"
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r workflow/glossary/requirements.txt
+          python -m pip install -r workflow/localization/requirements.txt
+          export SSL_CERT_FILE="$CERT"
+          python -m uvicorn app.main:app --app-dir backend \
+            --host 127.0.0.1 --port 18443 --workers 1 \
+            --ssl-keyfile "$KEY" --ssl-certfile "$CERT" \
+            > "$RUNNER_TEMP/lws-cloud-backend.log" 2>&1 &
+          BACKEND_PID=$!
+          trap 'kill "$BACKEND_PID" 2>/dev/null || true' EXIT
+
+          for attempt in $(seq 1 60); do
+            curl --silent --show-error --fail --cacert "$CERT" https://localhost:18443/api/health >/dev/null && break
+            test "$attempt" -lt 60 || { cat "$RUNNER_TEMP/lws-cloud-backend.log"; exit 1; }
+            sleep 1
+          done
+          anonymous_status="$(curl --silent --show-error --cacert "$CERT" -o /dev/null -w '%{http_code}' https://localhost:18443/api/projects)"
+          test "$anonymous_status" = 401
+
+          COOKIE_JAR="$RUNNER_TEMP/lws-smoke-cookie.jar"
+          curl --silent --show-error --fail --cacert "$CERT" -c "$COOKIE_JAR" \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"smoke-admin","password":"Initial-Smoke-Password1!"}' \
+            https://localhost:18443/api/auth/login >/dev/null
+          curl --silent --show-error --fail --cacert "$CERT" -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+            -H 'Content-Type: application/json' \
+            -d '{"current_password":"Initial-Smoke-Password1!","new_password":"Final-Smoke-Password1!"}' \
+            https://localhost:18443/api/auth/change-password >/dev/null
+
+          python check.py \
+            --base-url https://localhost:18443 \
+            --expect-deployment-mode cloud \
+            --expect-auth-mode required \
+            --expect-runtime-profile cloud-required \
+            --expect-version "$VERSION" \
+            --expect-git-sha "$GIT_SHA" \
+            --check-frontend-assets frontend/dist/assets \
+            --auth-user smoke-admin \
+            --auth-password 'Final-Smoke-Password1!' | tee "$RUNNER_TEMP/cloud-deployment-check.jsonl"
+
+          python scripts/stability_check.py \
+            --base-url https://localhost:18443 \
+            --auth-user smoke-admin \
+            --auth-password 'Final-Smoke-Password1!' | tee "$RUNNER_TEMP/cloud-stability-check.jsonl"
+          grep -q '^deleted_project=' "$RUNNER_TEMP/cloud-stability-check.jsonl"
+          curl --silent --show-error --fail --cacert "$CERT" -b "$COOKIE_JAR" https://localhost:18443/api/system/active-jobs > "$RUNNER_TEMP/cloud-active-jobs.json"
+          curl --silent --show-error --fail --cacert "$CERT" -b "$COOKIE_JAR" https://localhost:18443/api/projects > "$RUNNER_TEMP/cloud-projects.json"
+          python - "$RUNNER_TEMP/cloud-active-jobs.json" "$RUNNER_TEMP/cloud-projects.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          active_jobs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          projects = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          if active_jobs:
+              raise SystemExit("active jobs remain after stability smoke")
+          if any(project.get("name", "").startswith("STABILITY-") for project in projects):
+              raise SystemExit("stability project remains after cleanup")
+          PY
+
+          export E2E_BASE_URL=https://localhost:18443
+          export LWS_EXPECT_RUNTIME_PROFILE=cloud-required
+          export LWS_RUNTIME_SMOKE_USER=smoke-admin
+          export LWS_RUNTIME_SMOKE_PASSWORD='Final-Smoke-Password1!'
+          export NODE_EXTRA_CA_CERTS="$CERT"
+          cd "$GITHUB_WORKSPACE/frontend"
+          npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line
+          python - "$MANIFEST" "$IDENTITY" "$RUNNER_TEMP/cloud-release-identity.json" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          identity = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          result = {
+              "artifact_id": os.environ["EXPECTED_RELEASE_ARTIFACT_ID"],
+              "git_sha": manifest["git_sha"],
+              "frontend_dist_sha256": manifest["frontend_dist_sha256"],
+              "runtime_payload_sha256": manifest["runtime_payload_sha256"],
+              "outer_zip_sha256": identity["outer_zip_sha256"],
+          }
+          Path(sys.argv[3]).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Upload cloud smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-cloud-required-evidence
+          path: |
+            ${{ runner.temp }}/cloud-*.json
+            ${{ runner.temp }}/cloud-*.jsonl
+            ${{ runner.temp }}/lws-cloud-backend.log
+          if-no-files-found: warn
+
+  publish-gate:
+    needs: [smoke-extracted-local-off, smoke-extracted-cloud-required]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm universal artifact passed both runtime smokes
+        run: echo "universal-release passed local-off and cloud-required smoke gates"
