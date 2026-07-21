@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("start", "restart", "status", "stop", "monitor", "monitor-status", "monitor-stop", "install-autostart", "uninstall-autostart")]
+  [ValidateSet("start", "restart", "status", "stop", "monitor", "monitor-status", "monitor-stop", "install-shortcut", "install-autostart", "uninstall-autostart")]
   [string]$Action = "start"
 )
 
@@ -35,8 +35,44 @@ function Get-LanIps {
     ForEach-Object { $_.IPv4Address.IPAddress })
 }
 
-function Ensure-LanFirewall {
-  $ruleName = "LWS Frontend LAN 5174"
+function Get-WorkbenchTopology {
+  $sourceMarker = Join-Path $RepoRoot "frontend\package.json"
+  $packageMarker = Join-Path $RepoRoot "frontend\dist\index.html"
+  if (Test-Path $sourceMarker -PathType Leaf) {
+    return [pscustomobject]@{
+      Mode = "source"
+      Ports = @(8000, 5173, 5174)
+      Rows = @(
+        [pscustomobject]@{ Port = 8000; HealthUrl = "http://127.0.0.1:8000/api/health" },
+        [pscustomobject]@{ Port = 5173; HealthUrl = "http://127.0.0.1:5173/api/health" },
+        [pscustomobject]@{ Port = 5174; HealthUrl = "http://127.0.0.1:5174/api/health" }
+      )
+      HealthUrls = @(
+        "http://127.0.0.1:8000/api/health",
+        "http://127.0.0.1:5173/api/health",
+        "http://127.0.0.1:5174/api/health"
+      )
+      LocalUrl = "http://127.0.0.1:5173/"
+      LanPort = 5174
+    }
+  }
+  if (Test-Path $packageMarker -PathType Leaf) {
+    return [pscustomobject]@{
+      Mode = "package"
+      Ports = @(5173)
+      Rows = @(
+        [pscustomobject]@{ Port = 5173; HealthUrl = "http://127.0.0.1:5173/api/health" }
+      )
+      HealthUrls = @("http://127.0.0.1:5173/api/health")
+      LocalUrl = "http://127.0.0.1:5173/"
+      LanPort = 5173
+    }
+  }
+  throw "Invalid workbench tree: expected frontend/package.json or frontend/dist/index.html."
+}
+
+function Ensure-LanFirewall([int]$Port) {
+  $ruleName = if ($Port -eq 5174) { "LWS Frontend LAN 5174" } else { "LWS Packaged LAN 5173" }
   $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($existing -and $existing.Enabled -eq "True") {
     return
@@ -46,12 +82,14 @@ function Ensure-LanFirewall {
     Write-Host "Firewall rule enabled: $ruleName"
     return
   }
-  New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5174 | Out-Null
+  New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port | Out-Null
   Write-Host "Firewall rule created: $ruleName"
 }
 
 function Get-WorkbenchPortRows {
-  foreach ($port in 8000, 5173, 5174) {
+  $topology = Get-WorkbenchTopology
+  foreach ($row in $topology.Rows) {
+    $port = [int]$row.Port
     $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if (-not $connections) {
       [pscustomobject]@{ Port = $port; Pid = ""; Process = "not listening"; Url = ""; Health = "down" }
@@ -59,11 +97,7 @@ function Get-WorkbenchPortRows {
     }
     foreach ($connection in $connections) {
       $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
-      $url = switch ($port) {
-        8000 { "http://127.0.0.1:8000/api/health" }
-        5173 { "http://127.0.0.1:5173/api/health" }
-        5174 { "http://127.0.0.1:5174/api/health" }
-      }
+      $url = [string]$row.HealthUrl
       [pscustomobject]@{
         Port = $port
         Pid = $connection.OwningProcess
@@ -91,13 +125,18 @@ function Invoke-StartScriptWithRecovery([string[]]$Arguments, [string]$HealthUrl
   throw "$Label failed to start. Health check failed: $HealthUrl"
 }
 
-function Invoke-WorkbenchEnsure {
-  if (-not (Test-Path $StartScript)) {
-    throw "Missing start script: $StartScript"
+function Invoke-PackageWorkbenchEnsure {
+  Ensure-LanFirewall -Port 5173
+  if (-not (Test-ApiHealth "http://127.0.0.1:5173/api/health")) {
+    Write-Host "Starting packaged workbench on port 5173..."
+    Invoke-StartScriptWithRecovery @("-HostName", "0.0.0.0", "-FrontendPort", "5173", "-NoOpen") "http://127.0.0.1:5173/api/health" "Packaged workbench"
+  } else {
+    Write-Host "Packaged workbench already healthy: http://127.0.0.1:5173/"
   }
+}
 
-  Ensure-LanFirewall
-
+function Invoke-SourceWorkbenchEnsure {
+  Ensure-LanFirewall -Port 5174
   if (-not (Test-ApiHealth "http://127.0.0.1:8000/api/health")) {
     Write-Host "Starting backend on port 8000..."
     Invoke-StartScriptWithRecovery @("-NoOpen", "-FrontendPort", "5173") "http://127.0.0.1:8000/api/health" "Backend"
@@ -118,6 +157,19 @@ function Invoke-WorkbenchEnsure {
   } else {
     Write-Host "LAN frontend already healthy: http://0.0.0.0:5174/"
   }
+}
+
+function Invoke-WorkbenchEnsure {
+  if (-not (Test-Path $StartScript)) {
+    throw "Missing start script: $StartScript"
+  }
+
+  $topology = Get-WorkbenchTopology
+  if ($topology.Mode -eq "package") {
+    Invoke-PackageWorkbenchEnsure
+  } else {
+    Invoke-SourceWorkbenchEnsure
+  }
 
   if (-not (Test-WorkbenchHealthy)) {
     throw "One or more workbench services are still unhealthy after start."
@@ -128,16 +180,13 @@ function Invoke-WorkbenchStop {
   if (-not (Test-Path $StopScript)) {
     throw "Missing stop script: $StopScript"
   }
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $StopScript
+  $topology = Get-WorkbenchTopology
+  & $StopScript -Ports $topology.Ports
 }
 
 function Test-WorkbenchHealthy {
-  $urls = @(
-    "http://127.0.0.1:8000/api/health",
-    "http://127.0.0.1:5173/api/health",
-    "http://127.0.0.1:5174/api/health"
-  )
-  foreach ($url in $urls) {
+  $topology = Get-WorkbenchTopology
+  foreach ($url in $topology.HealthUrls) {
     if (-not (Test-ApiHealth $url)) {
       return $false
     }
@@ -199,13 +248,14 @@ function Stop-Monitor {
 }
 
 function Show-Status {
+  $topology = Get-WorkbenchTopology
   $rows = Get-WorkbenchPortRows
   $rows | Format-Table -AutoSize
   $lanIps = Get-LanIps
   Write-Host ""
-  Write-Host "Local UI: http://127.0.0.1:5173/"
+  Write-Host "Local UI: $($topology.LocalUrl)"
   foreach ($ip in $lanIps) {
-    Write-Host "LAN UI:   http://${ip}:5174/"
+    Write-Host "LAN UI:   http://${ip}:$($topology.LanPort)/"
   }
   $monitor = Get-MonitorProcess
   if ($monitor) {
@@ -244,18 +294,31 @@ function Invoke-MonitorLoop {
   }
 }
 
+function Install-DesktopShortcut {
+  $desktopDir = [Environment]::GetFolderPath("Desktop")
+  $shortcutName = "$([char]0x672C)$([char]0x5730)$([char]0x5316)$([char]0x5DE5)$([char]0x4F5C)$([char]0x53F0).lnk"
+  $shortcutPath = Join-Path $desktopDir $shortcutName
+  $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+  $shell = New-Object -ComObject WScript.Shell
+  $shortcut = $shell.CreateShortcut($shortcutPath)
+  $shortcut.TargetPath = $powershellPath
+  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ControlScript`" -Action start"
+  $shortcut.WorkingDirectory = $RepoRoot
+  $shortcut.WindowStyle = 1
+  $shortcut.Description = "Start Localization Workflow Studio (local + LAN)"
+  $shortcut.Save()
+  Write-Host "Desktop shortcut installed: $shortcutPath"
+}
+
 function Install-Autostart {
   $startupDir = [Environment]::GetFolderPath("Startup")
   $shortcutPath = Join-Path $startupDir "Localization Workbench.lnk"
-  $desktopCmd = Join-Path ([Environment]::GetFolderPath("Desktop")) "Start-Workbench.cmd"
-  if (-not (Test-Path $desktopCmd)) {
-    $desktopCmd = $ControlScript
-  }
+  $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
   $shell = New-Object -ComObject WScript.Shell
   $shortcut = $shell.CreateShortcut($shortcutPath)
-  $shortcut.TargetPath = $desktopCmd
-  $shortcut.Arguments = "start"
-  $shortcut.WorkingDirectory = Split-Path $desktopCmd
+  $shortcut.TargetPath = $powershellPath
+  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ControlScript`" -Action start"
+  $shortcut.WorkingDirectory = $RepoRoot
   $shortcut.WindowStyle = 7
   $shortcut.Description = "Start Localization Workflow Studio (local + LAN)"
   $shortcut.Save()
@@ -312,6 +375,9 @@ switch ($Action) {
   }
   "monitor-stop" {
     Stop-Monitor
+  }
+  "install-shortcut" {
+    Install-DesktopShortcut
   }
   "install-autostart" {
     Install-Autostart

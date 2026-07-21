@@ -137,6 +137,22 @@ def test_environment_example_uses_external_data_root_and_contains_no_secret() ->
     assert "SECRET" not in env_text.upper()
 
 
+def test_linux_launcher_sets_explicit_profile_and_manifest_sha_fallback() -> None:
+    launcher = (REPO_ROOT / "start-lws.sh").read_text(encoding="utf-8")
+
+    assert 'export LWS_DEPLOYMENT_MODE="${LWS_DEPLOYMENT_MODE:-cloud}"' in launcher
+    assert 'export LWS_AUTH_MODE="${LWS_AUTH_MODE:-required}"' in launcher
+    assert 'if [[ -z "${LWS_GIT_SHA:-}" && -f "$APP_HOME/PACKAGE_MANIFEST.json" ]]; then' in launcher
+    assert 'json.load(open(sys.argv[1], encoding="utf-8"))' in launcher
+    assert 'isinstance(value, str) and value.strip()' in launcher
+    assert 'export LWS_GIT_SHA="$manifest_git_sha"' in launcher
+    assert 'runtime profile' in launcher
+    assert 'auth mode' in launcher
+    assert 'git SHA' in launcher
+    assert '--workers 1' in launcher
+    assert 'mkdir -p "$LWS_DATA_ROOT"' in launcher
+
+
 def test_backend_requirements_include_argon2_password_hashing() -> None:
     requirements = (REPO_ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8")
 

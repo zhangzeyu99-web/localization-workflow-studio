@@ -12,12 +12,12 @@ from fastapi.responses import JSONResponse
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app import auth, background_jobs, config, db, job_queue, operator_context, route_capabilities
+    from app import auth, background_jobs, config, db, frontend_static, job_queue, operator_context, route_capabilities
     from app.errors import UserFacingError, http_status_for_user_facing_error
     from app.workflow import user_facing_error
     from app.routers.api import router as api_router
 else:
-    from . import auth, background_jobs, config, db, job_queue, operator_context, route_capabilities
+    from . import auth, background_jobs, config, db, frontend_static, job_queue, operator_context, route_capabilities
     from .errors import UserFacingError, http_status_for_user_facing_error
     from .workflow import user_facing_error
     from .routers.api import router as api_router
@@ -220,6 +220,11 @@ def create_app(
         dependencies=[Depends(route_capabilities.enforce_route_access)],
     )
     route_capabilities.assert_full_route_coverage(application)
+    frontend_static.install_frontend_routes(
+        application,
+        dist_root=Path(__file__).resolve().parents[2] / "frontend" / "dist",
+        enabled=frontend_static.frontend_serving_enabled(os.environ),
+    )
     application.middleware("http")(_no_store_api_responses)
     application.middleware("http")(_enforce_authentication)
     application.middleware("http")(_capture_operator_header)

@@ -3,13 +3,47 @@ param(
   [int]$BackendPort = 8000,
   [int]$FrontendPort = 5173,
   [string]$DataRoot = "",
+  [ValidateSet("local", "cloud")]
+  [string]$DeploymentMode = "local",
+  [ValidateSet("off", "required")]
+  [string]$AuthMode = "off",
   [switch]$NoOpen
 )
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+if ($DeploymentMode -ne "local" -or $AuthMode -ne "off") {
+  throw "Windows workbench launcher supports only DeploymentMode=local and AuthMode=off."
+}
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $frontendRoot = Join-Path $repoRoot "frontend"
+$sourceMarker = Join-Path $frontendRoot "package.json"
+$packageMarker = Join-Path $frontendRoot "dist\index.html"
+if (Test-Path $sourceMarker -PathType Leaf) {
+  $TreeMode = "source"
+} elseif (Test-Path $packageMarker -PathType Leaf) {
+  $TreeMode = "package"
+} else {
+  throw "Invalid workbench tree: expected frontend/package.json (source) or frontend/dist/index.html (package)."
+}
+
+$manifestPath = Join-Path $repoRoot "PACKAGE_MANIFEST.json"
+$GitSha = ""
+if (Test-Path $manifestPath -PathType Leaf) {
+  try {
+    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+  } catch {
+    throw "PACKAGE_MANIFEST.json is not valid JSON: $($_.Exception.Message)"
+  }
+  if ($manifest.git_sha -is [string]) {
+    $GitSha = $manifest.git_sha.Trim()
+  }
+  if (-not $GitSha) {
+    throw "PACKAGE_MANIFEST.json must contain a non-empty git_sha"
+  }
+}
+
 $runtimeDir = Join-Path $repoRoot ".tmp\runtime"
 $backendPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $backendPython)) {
@@ -24,7 +58,15 @@ if (-not $DataRoot) {
   $DataRoot = $env:LWS_DATA_ROOT
 }
 if (-not $DataRoot) {
-  $DataRoot = "D:\codex\localization-workflow-studio-data"
+  if ($TreeMode -eq "package") {
+    $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+    if (-not $localAppData) {
+      throw "Could not resolve the current user's LocalApplicationData directory. Pass -DataRoot explicitly."
+    }
+    $DataRoot = Join-Path $localAppData "LocalizationWorkflowStudio\data"
+  } else {
+    $DataRoot = "D:\codex\localization-workflow-studio-data"
+  }
 }
 
 function Get-ListeningProcessId([int]$Port) {
@@ -78,7 +120,39 @@ function Start-HiddenPowerShell([string]$Command) {
   ) -WindowStyle Hidden
 }
 
-function Start-Backend {
+function Start-PackageWorkbench {
+  $healthUrl = if ($HostName -eq "0.0.0.0" -or $HostName -eq "::") { "http://127.0.0.1:$FrontendPort/api/health" } else { "http://${HostName}:$FrontendPort/api/health" }
+  if (Test-ApiHealth $healthUrl) {
+    Write-Host "Packaged workbench already healthy: $healthUrl"
+    return
+  }
+
+  $owner = Get-ListeningProcessId $FrontendPort
+  if ($owner) {
+    throw "Workbench port $FrontendPort is occupied by PID $owner, but health check failed. Stop that process or change -FrontendPort."
+  }
+
+  $backendLog = Join-Path $runtimeDir "workbench-$FrontendPort.log"
+  $command = @"
+`$env:Path = "$fullPath"
+Set-Location "$repoRoot"
+`$env:LWS_DATA_ROOT = "$DataRoot"
+`$env:LWS_DEPLOYMENT_MODE = "$DeploymentMode"
+`$env:LWS_AUTH_MODE = "$AuthMode"
+`$env:LWS_SERVE_FRONTEND = "1"
+`$env:LWS_GIT_SHA = "$GitSha"
+& "$backendPython" -m uvicorn app.main:app --app-dir backend --host $HostName --port $FrontendPort *> "$backendLog"
+"@
+  Start-HiddenPowerShell $command
+
+  if (-not (Wait-ApiHealth $healthUrl 45)) {
+    $tail = if (Test-Path $backendLog) { Get-Content $backendLog -Tail 80 | Out-String } else { "" }
+    throw "Packaged workbench failed to start on $healthUrl.`n$tail"
+  }
+  Write-Host "Packaged workbench started: $healthUrl"
+}
+
+function Start-SourceBackend {
   $backendHealth = "http://127.0.0.1:$BackendPort/api/health"
   if (Test-ApiHealth $backendHealth) {
     Write-Host "Backend already healthy: $backendHealth"
@@ -95,6 +169,10 @@ function Start-Backend {
 `$env:Path = "$fullPath"
 Set-Location "$repoRoot"
 `$env:LWS_DATA_ROOT = "$DataRoot"
+`$env:LWS_DEPLOYMENT_MODE = "$DeploymentMode"
+`$env:LWS_AUTH_MODE = "$AuthMode"
+`$env:LWS_SERVE_FRONTEND = "0"
+`$env:LWS_GIT_SHA = "$GitSha"
 & "$backendPython" -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port $BackendPort *> "$backendLog"
 "@
   Start-HiddenPowerShell $command
@@ -106,7 +184,7 @@ Set-Location "$repoRoot"
   Write-Host "Backend started: $backendHealth"
 }
 
-function Start-Frontend {
+function Start-SourceFrontend {
   $frontendUrl = "http://${HostName}:$FrontendPort/"
   $frontendHealthUrl = if ($HostName -eq "0.0.0.0" -or $HostName -eq "::") { "http://127.0.0.1:$FrontendPort/" } else { $frontendUrl }
   if (Test-HttpOk $frontendHealthUrl) {
@@ -121,9 +199,12 @@ function Start-Frontend {
 
   $frontendLog = Join-Path $runtimeDir "frontend-$FrontendPort.log"
   $apiTarget = "http://127.0.0.1:$BackendPort"
-$command = @"
+  $command = @"
 `$env:Path = "$fullPath"
 Set-Location "$frontendRoot"
+`$env:LWS_DEPLOYMENT_MODE = "$DeploymentMode"
+`$env:LWS_AUTH_MODE = "$AuthMode"
+`$env:LWS_SERVE_FRONTEND = "0"
 `$env:LWS_API_TARGET = "$apiTarget"
 npx vite --host $HostName --port $FrontendPort *> "$frontendLog"
 "@
@@ -147,10 +228,17 @@ function Test-ApiThroughFrontend {
 Write-Host "Localization Workflow Studio"
 Write-Host "Repo: $repoRoot"
 Write-Host "Data: $DataRoot"
+Write-Host "Tree: $TreeMode"
+Write-Host "Runtime profile: $DeploymentMode/$AuthMode"
+if ($GitSha) { Write-Host "Git SHA: $GitSha" }
 
-Start-Backend
-Start-Frontend
-Test-ApiThroughFrontend
+if ($TreeMode -eq "package") {
+  Start-PackageWorkbench
+} else {
+  Start-SourceBackend
+  Start-SourceFrontend
+  Test-ApiThroughFrontend
+}
 
 $openUrl = "http://${HostName}:$FrontendPort/"
 Write-Host ""
