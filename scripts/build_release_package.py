@@ -556,6 +556,7 @@ def _relative_archive_files(archive: zipfile.ZipFile) -> tuple[str, dict[str, st
     root_prefix = package_root + "/"
     relative: dict[str, str] = {}
     seen_members: set[str] = set()
+    directories: set[str] = set()
     for info in infos:
         if not info.filename.startswith(root_prefix):
             raise RuntimeError(f"unsafe archive member: {info.filename}")
@@ -569,8 +570,17 @@ def _relative_archive_files(archive: zipfile.ZipFile) -> tuple[str, dict[str, st
             raise RuntimeError(f"duplicate archive member: {normalized_member}")
         seen_members.add(normalized_member)
         if info.is_dir():
+            directories.add(normalized_member)
             continue
         relative[normalized_member] = info.filename
+
+    allowed_files = {member for member in relative if _is_allowed_archive_member(Path(member)) and not _is_forbidden_relative(Path(member))}
+    for directory in directories - {""}:
+        if _is_forbidden_relative(Path(directory) / "__directory__"):
+            raise RuntimeError(f"release archive contains forbidden directory: {directory}")
+        prefix = directory + "/"
+        if not any(member.startswith(prefix) for member in allowed_files):
+            raise RuntimeError(f"release archive contains directory outside the universal allowlist: {directory}")
     return package_root, relative
 
 

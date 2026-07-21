@@ -419,6 +419,27 @@ def test_archive_verification_rejects_directory_symlink(tmp_path, monkeypatch):
         package._verify_archive(zip_path)
 
 
+@pytest.mark.parametrize("directory", ["unrelated-empty", ".git"])
+def test_archive_verification_rejects_unallowed_empty_directory(
+    tmp_path,
+    monkeypatch,
+    directory,
+):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    _configure_clean_git(package, monkeypatch)
+    zip_path = package.build(tmp_path / "out", rebuild_frontend=False)
+    package_root, _ = _archive_files(zip_path)
+
+    with zipfile.ZipFile(zip_path, "a") as archive:
+        archive.writestr(f"{package_root}/{directory}/", b"")
+
+    with pytest.raises(RuntimeError, match="directory|forbidden|allowlist"):
+        package._verify_archive(zip_path)
+
+
 def test_build_rechecks_clean_source_after_frontend_build(tmp_path, monkeypatch):
     package = _load_module()
     source = tmp_path / "source"
