@@ -135,26 +135,10 @@ function Invoke-PackageWorkbenchEnsure {
 
 function Invoke-SourceWorkbenchEnsure {
   Ensure-LanFirewall -Port 5174
-  if (-not (Test-ApiHealth "http://127.0.0.1:8000/api/health")) {
-    Write-Host "Starting backend on port 8000..."
-    Invoke-StartScriptWithRecovery @("-NoOpen", "-FrontendPort", "5173") "http://127.0.0.1:8000/api/health" "Backend"
-  } else {
-    Write-Host "Backend already healthy: http://127.0.0.1:8000/api/health"
-  }
-
-  if (-not (Test-ApiHealth "http://127.0.0.1:5173/api/health")) {
-    Write-Host "Starting local frontend on port 5173..."
-    Invoke-StartScriptWithRecovery @("-NoOpen") "http://127.0.0.1:5173/api/health" "Local frontend"
-  } else {
-    Write-Host "Local frontend already healthy: http://127.0.0.1:5173/"
-  }
-
-  if (-not (Test-ApiHealth "http://127.0.0.1:5174/api/health")) {
-    Write-Host "Starting LAN frontend on port 5174..."
-    Invoke-StartScriptWithRecovery @("-HostName", "0.0.0.0", "-FrontendPort", "5174", "-NoOpen") "http://127.0.0.1:5174/api/health" "LAN frontend"
-  } else {
-    Write-Host "LAN frontend already healthy: http://0.0.0.0:5174/"
-  }
+  Write-Host "Ensuring source backend and local frontend identity..."
+  Invoke-StartScriptWithRecovery @("-NoOpen") "http://127.0.0.1:5173/api/health" "Local source workbench"
+  Write-Host "Ensuring source LAN frontend identity..."
+  Invoke-StartScriptWithRecovery @("-HostName", "0.0.0.0", "-FrontendPort", "5174", "-NoOpen") "http://127.0.0.1:5174/api/health" "LAN source workbench"
 }
 
 function Invoke-WorkbenchEnsure {
@@ -184,10 +168,17 @@ function Invoke-WorkbenchStop {
 
 function Test-WorkbenchHealthy {
   $topology = Get-WorkbenchTopology
-  foreach ($url in $topology.HealthUrls) {
-    if (-not (Test-ApiHealth $url)) {
-      return $false
-    }
+  $checks = if ($topology.Mode -eq "package") {
+    @(,@("-HostName", "0.0.0.0", "-FrontendPort", "5173", "-CheckOnly", "-NoOpen"))
+  } else {
+    @(
+      ,@("-FrontendPort", "5173", "-CheckOnly", "-NoOpen"),
+      ,@("-HostName", "0.0.0.0", "-FrontendPort", "5174", "-CheckOnly", "-NoOpen")
+    )
+  }
+  foreach ($arguments in $checks) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $StartScript @arguments *> $null
+    if ($LASTEXITCODE -ne 0) { return $false }
   }
   return $true
 }

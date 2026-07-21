@@ -89,7 +89,7 @@ npm run e2e:auth --prefix frontend
 
 ## 账号与权限测试项（A1-A4）
 
-23. 云端/强制登录部署下，未登录访问 `GET /api/projects`（或任意业务 API）返回 401；`check.py` 的 `auth_fail_closed` 步骤覆盖这一项，`--require-cloud` 时是硬失败。
+23. 云端/强制登录部署下，未登录访问 `GET /api/projects`（或任意业务 API）返回 401；`check.py` 的 `anonymous_projects` 步骤覆盖这一项，`--require-cloud` 时是硬失败。
 24. `member` 角色账号能跑正式翻译、快速任务和公告任务；正式翻译按既有规则写归档，快速任务与公告不回写归档。手动 `DELETE`/`PATCH` 术语、归档、项目资料，以及删除项目、管理项目成员，全部返回 403。
 25. `member`/`ops` 账号访问自己不是成员的项目：列表中不出现该项目，直接按 id 访问返回 404（不是 403，防止项目存在性被枚举）。
 26. 管理员停用一个用户后，该用户所有已签发 session 立即失效（下一次任意 `/api/*` 请求 401），不需要等 cookie 过期。

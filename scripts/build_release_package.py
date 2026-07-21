@@ -508,7 +508,7 @@ release_sha="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_M
   --auth-password 'replace-with-admin-password'
 ```
 
-云端验收中的 `auth_fail_closed` 必须通过。
+云端验收中的 `anonymous_projects` 必须通过。
 """
     (target_root / "DEPLOY_README.zh-CN.md").write_text(text, encoding="utf-8")
 

@@ -316,7 +316,7 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert "scripts/create_admin.py" in readme
     assert "LWS_ADMIN_USER" in readme
     assert "LWS_ADMIN_PASSWORD" in readme
-    assert "auth_fail_closed" in readme
+    assert "anonymous_projects" in readme
     assert "--auth-user" in readme
     assert "--auth-password" in readme
     assert 'cd "$APP_HOME"' in readme

@@ -127,7 +127,6 @@ def test_controller_uses_mode_aware_ports_health_and_firewall() -> None:
     assert "8000" not in package_start
     assert "5174" not in package_start
 
-    assert "8000" in source_start
     assert "5173" in source_start
     assert "5174" in source_start
     assert 'Ensure-LanFirewall -Port 5174' in source_start
@@ -166,6 +165,9 @@ def test_packaged_launcher_reuses_only_the_current_lan_bound_uvicorn() -> None:
     assert 'Replace("/api/health", "/api/version")' in start_script
     assert 'runtime_profile -eq "local-off"' in start_script
     assert "$version.git_sha -eq $GitSha" in start_script
+    assert "Test-ExpectedDataRoot" in start_script
+    assert "$health.data_root" in start_script
+    assert "$version.data_root" in start_script
     assert "occupied by another or incompatible process" in package_start
 
     # The controller must delegate every package reuse decision to the strict
@@ -174,6 +176,40 @@ def test_packaged_launcher_reuses_only_the_current_lan_bound_uvicorn() -> None:
     assert "Invoke-StartScriptWithRecovery" in package_ensure
     assert "$exitCode -eq 0" in recovery
     assert recovery.index("$exitCode -eq 0") < recovery.index("Start-Sleep -Seconds 3")
+
+
+def test_source_launcher_reuses_only_matching_repo_profile_sha_and_data_root() -> None:
+    start_script = _script_text()
+    control_script = _control_script_text()
+    source_backend = _function_body(start_script, "Start-SourceBackend", "Start-SourceFrontend")
+    source_frontend = _function_body(start_script, "Start-SourceFrontend", "Test-ApiThroughFrontend")
+    source_ensure = _function_body(
+        control_script,
+        "Invoke-SourceWorkbenchEnsure",
+        "Invoke-WorkbenchEnsure",
+    )
+    healthy = _function_body(
+        control_script,
+        "Test-WorkbenchHealthy",
+        "Get-MonitorProcess",
+    )
+
+    assert 'rev-parse --short=12 HEAD' in start_script
+    assert "function Test-ExpectedApiIdentity" in start_script
+    assert "function Test-SourceBackendListenerIdentity" in start_script
+    assert "function Test-SourceFrontendListenerIdentity" in start_script
+    assert "Test-SourceBackendListenerIdentity" in source_backend
+    assert "Test-SourceFrontendListenerIdentity" in source_frontend
+    assert "occupied by another or incompatible process" in source_backend
+    assert "occupied by another or incompatible process" in source_frontend
+
+    # The controller must always delegate reuse decisions to the strict launcher.
+    assert "Test-ApiHealth" not in source_ensure
+    assert source_ensure.count("Invoke-StartScriptWithRecovery") == 2
+
+    # Status/monitor health must use the same non-mutating strict identity check.
+    assert '"-CheckOnly"' in healthy
+    assert "Test-ApiHealth" not in healthy
 
 
 def test_monitor_start_is_safe_when_control_script_path_contains_spaces() -> None:
@@ -203,7 +239,7 @@ def test_controller_reuses_topology_for_status_monitor_and_stop() -> None:
     assert "Get-WorkbenchTopology" in healthy
     assert "Get-WorkbenchTopology" in status
     assert "-Ports $topology.Ports" in stop
-    assert "$topology.HealthUrls" in healthy
+    assert '"-CheckOnly"' in healthy
     assert "$topology.LocalUrl" in status
     assert "$topology.LanPort" in status
 

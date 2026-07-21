@@ -173,7 +173,7 @@ PACKAGE_GIT_SHA="$(.venv/bin/python -c 'import json; print(json.load(open("PACKA
   --auth-password '管理员密码'
 ```
 
-验收时必须确认三方静态资源完全一致：公网 HTML 引用的哈希资源、`/api/version` 清单和本地 `frontend/dist` 来自同一发布包；`git_sha` 必须等于 `PACKAGE_MANIFEST.json` 中的本次发布提交。`auth_fail_closed` 必须确认未登录访问核心业务 API 返回 401，管理员登录后上传可读性探针必须通过。还需确认 API 最终响应头包含 `no-store`、HTML 最终响应头包含 `no-cache`、健康检查中的数据目录/上传目录/数据库均可用。
+验收时必须确认三方静态资源完全一致：公网 HTML 引用的哈希资源、`/api/version` 清单和本地 `frontend/dist` 来自同一发布包；`git_sha` 必须等于 `PACKAGE_MANIFEST.json` 中的本次发布提交。`anonymous_projects` 必须确认未登录访问核心业务 API 返回 401，管理员登录后上传可读性探针必须通过。还需确认 API 最终响应头包含 `no-store`、HTML 最终响应头包含 `no-cache`、健康检查中的数据目录/上传目录/数据库均可用。
 
 完整业务冒烟测试：
 
