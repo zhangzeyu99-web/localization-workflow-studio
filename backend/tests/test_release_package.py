@@ -320,7 +320,7 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert "--auth-user" in readme
     assert "--auth-password" in readme
     assert 'cd "$APP_HOME"' in readme
-    assert readme.index('cd "$APP_HOME"') < readme.index("python3.11 check.py")
+    assert readme.index('cd "$APP_HOME"') < readme.index(".venv/bin/python check.py")
     assert "deploy/lws.service" in readme
     assert "systemctl daemon-reload" in readme
     assert "systemctl enable --now lws" in readme
@@ -346,6 +346,11 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert "LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password" in readme
     assert "发布目录之外" in readme
     assert "/etc/lwstudio/lws.env" in readme
+    verification_commands = readme.split("部署后运行：", 1)[1]
+    assert "python3.11" not in verification_commands
+    assert "$(.venv/bin/python -c" in verification_commands
+    assert ".venv/bin/python check.py" in verification_commands
+    assert ".venv/bin/python scripts/stability_check.py" in verification_commands
     assert "scripts/create_admin.py" in files
     assert "scripts/deployment_auth.py" in files
     assert "scripts/start-workbench.ps1" in files

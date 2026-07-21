@@ -491,8 +491,8 @@ sudo systemctl reload nginx
 
 ```bash
 cd "$APP_HOME"
-release_sha="$(python3.11 -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
-python3.11 check.py \
+release_sha="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
+.venv/bin/python check.py \
   --base-url https://example.invalid \
   --expect-deployment-mode cloud \
   --expect-auth-mode required \
@@ -502,7 +502,7 @@ python3.11 check.py \
   --check-frontend-assets frontend/dist/assets \
   --auth-user admin \
   --auth-password 'replace-with-admin-password'
-python3.11 scripts/stability_check.py \
+.venv/bin/python scripts/stability_check.py \
   --base-url https://example.invalid \
   --auth-user admin \
   --auth-password 'replace-with-admin-password'
