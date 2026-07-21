@@ -1228,7 +1228,7 @@ function App() {
   )
 
   const isCloudDeployment = runtimeVersion?.deployment_mode === 'cloud'
-  const showSettingsButton = !__HIDE_SETTINGS__ && runtimeVersion?.deployment_mode === 'local' && can(ADMIN)
+  const showSettingsButton = runtimeVersion?.deployment_mode === 'local' && can(ADMIN)
   const bundleVersion = __APP_VERSION__
   const backendVersion = runtimeVersion?.version || ''
   const versionMismatch = Boolean(backendVersion) && backendVersion !== 'unknown' && backendVersion !== bundleVersion
