@@ -220,6 +220,13 @@ def _git_dirty() -> bool:
         return True
 
 
+def _assert_source_state(expected_sha: str, *, phase: str) -> None:
+    if _git_dirty():
+        raise RuntimeError(f"source tree became dirty during {phase}")
+    if _git_sha_full() != expected_sha:
+        raise RuntimeError(f"source HEAD changed during {phase}")
+
+
 def _version() -> str:
     try:
         return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
@@ -430,6 +437,7 @@ Windows 可运行 `start-workbench.cmd`，或调用 `scripts/start-workbench.ps1
 ```bash
 export APP_HOME=/srv/lwstudio/current
 export LWS_DATA_ROOT=/srv/lwstudio/data
+cd "$APP_HOME"
 sudo install -d -m 750 -o lwstudio -g lwstudio "$LWS_DATA_ROOT"
 sudo -u lwstudio cp "$APP_HOME/settings.example.json" "$LWS_DATA_ROOT/settings.local.json"
 sudo -u lwstudio chmod 600 "$LWS_DATA_ROOT/settings.local.json"
@@ -440,9 +448,25 @@ sudo -u lwstudio chmod 600 "$LWS_DATA_ROOT/settings.local.json"
 首次启动可用 `LWS_ADMIN_USER` 与 `LWS_ADMIN_PASSWORD` 引导管理员，也可运行
 `scripts/create_admin.py`。完成首次登录和改密后应移除引导密码。
 
+安装并启动 systemd 与 Nginx 接入链：
+
+```bash
+cd "$APP_HOME"
+sudo install -m 644 deploy/lws.service /etc/systemd/system/lws.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now lws
+sudo install -m 644 deploy/nginx.conf /etc/nginx/conf.d/lwstudio.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+部署前按实际路径检查 `deploy/lws.service` 的 `WorkingDirectory` 和
+`EnvironmentFile`，并检查 `deploy/nginx.conf` 的域名、证书和静态目录。
+
 部署后运行：
 
 ```bash
+cd "$APP_HOME"
 release_sha="$(python3.11 -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
 python3.11 check.py \
   --base-url https://example.invalid \
@@ -518,25 +542,35 @@ def _write_sha256sums(target_root: Path) -> None:
 
 
 def _relative_archive_files(archive: zipfile.ZipFile) -> tuple[str, dict[str, str]]:
-    infos = [info for info in archive.infolist() if not info.is_dir()]
+    infos = archive.infolist()
     if not infos:
         raise RuntimeError("release archive is empty")
+    for info in infos:
+        if stat.S_ISLNK(info.external_attr >> 16):
+            raise RuntimeError(f"release archive contains symlink: {info.filename}")
+
     roots = {info.filename.split("/", 1)[0] for info in infos}
-    if len(roots) != 1:
+    if len(roots) != 1 or not next(iter(roots)):
         raise RuntimeError("release archive must contain exactly one package root")
     package_root = next(iter(roots))
     root_prefix = package_root + "/"
     relative: dict[str, str] = {}
+    seen_members: set[str] = set()
     for info in infos:
-        if stat.S_ISLNK(info.external_attr >> 16):
-            raise RuntimeError(f"release archive contains symlink: {info.filename}")
-        member = info.filename.removeprefix(root_prefix)
-        member_path = Path(member)
-        if not member or member_path.is_absolute() or ".." in member_path.parts:
+        if not info.filename.startswith(root_prefix):
             raise RuntimeError(f"unsafe archive member: {info.filename}")
-        if member in relative:
-            raise RuntimeError(f"duplicate archive member: {member}")
-        relative[member] = info.filename
+        member = info.filename.removeprefix(root_prefix)
+        normalized_member = member.rstrip("/") if info.is_dir() else member
+        member_path = Path(normalized_member)
+        is_package_root_directory = info.is_dir() and not normalized_member
+        if not is_package_root_directory and (not normalized_member or member_path.is_absolute() or ".." in member_path.parts):
+            raise RuntimeError(f"unsafe archive member: {info.filename}")
+        if normalized_member in seen_members:
+            raise RuntimeError(f"duplicate archive member: {normalized_member}")
+        seen_members.add(normalized_member)
+        if info.is_dir():
+            continue
+        relative[normalized_member] = info.filename
     return package_root, relative
 
 
@@ -666,6 +700,7 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
     if rebuild_frontend:
         _build_frontend()
     _assert_required_source_members()
+    _assert_source_state(sha_full, phase="frontend build")
 
     root_name = f"localization-workflow-studio-v{version}-g{sha_full[:12]}-universal"
     staging_parent = ROOT.parent / "release-staging"
@@ -681,6 +716,7 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
             target = staging_root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+        _assert_source_state(sha_full, phase="source copy")
 
         frontend_root = staging_root / "frontend" / "dist"
         frontend_digest = _tree_sha256(
@@ -724,6 +760,7 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
         try:
             _verify_archive(zip_path)
             _write_archive_sidecar(zip_path)
+            _assert_source_state(sha_full, phase="archive packaging")
         except Exception:
             zip_path.unlink(missing_ok=True)
             sidecar_path.unlink(missing_ok=True)

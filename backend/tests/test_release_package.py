@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import stat
 import zipfile
 from pathlib import Path
 
@@ -318,6 +319,14 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert "auth_fail_closed" in readme
     assert "--auth-user" in readme
     assert "--auth-password" in readme
+    assert 'cd "$APP_HOME"' in readme
+    assert readme.index('cd "$APP_HOME"') < readme.index("python3.11 check.py")
+    assert "deploy/lws.service" in readme
+    assert "systemctl daemon-reload" in readme
+    assert "systemctl enable --now lws" in readme
+    assert "deploy/nginx.conf" in readme
+    assert "nginx -t" in readme
+    assert "systemctl reload nginx" in readme
     assert "scripts/create_admin.py" in files
     assert "scripts/deployment_auth.py" in files
     assert "scripts/start-workbench.ps1" in files
@@ -389,6 +398,73 @@ def test_archive_verification_rejects_modified_runtime_payload_digest(
 
     with pytest.raises(RuntimeError, match="runtime payload"):
         package._verify_archive(zip_path)
+
+
+def test_archive_verification_rejects_directory_symlink(tmp_path, monkeypatch):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    _configure_clean_git(package, monkeypatch)
+    zip_path = package.build(tmp_path / "out", rebuild_frontend=False)
+    package_root, _ = _archive_files(zip_path)
+
+    link = zipfile.ZipInfo(f"{package_root}/backend/app/linked-directory/")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(zip_path, "a") as archive:
+        archive.writestr(link, "../../outside")
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        package._verify_archive(zip_path)
+
+
+def test_build_rechecks_clean_source_after_frontend_build(tmp_path, monkeypatch):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    monkeypatch.setattr(
+        package,
+        "_git_sha_full",
+        lambda: "deadbeefcafebabefeedface0123456789abcdef",
+    )
+    dirty_states = iter([False, True])
+    monkeypatch.setattr(package, "_git_dirty", lambda: next(dirty_states))
+    frontend_builds = 0
+
+    def build_frontend() -> None:
+        nonlocal frontend_builds
+        frontend_builds += 1
+
+    monkeypatch.setattr(package, "_build_frontend", build_frontend)
+
+    with pytest.raises(RuntimeError, match="dirty"):
+        package.build(tmp_path / "out", rebuild_frontend=True)
+    assert frontend_builds == 1
+
+
+def test_build_deletes_artifact_if_head_changes_during_packaging(
+    tmp_path,
+    monkeypatch,
+):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    monkeypatch.setattr(package, "_git_dirty", lambda: False)
+    original_sha = "deadbeefcafebabefeedface0123456789abcdef"
+    changed_sha = "0123456789abcdefdeadbeefcafebabefeedface"
+    sha_states = iter([original_sha, original_sha, original_sha, changed_sha])
+    monkeypatch.setattr(package, "_git_sha_full", lambda: next(sha_states))
+    output_dir = tmp_path / "out"
+    artifact = output_dir / "localization-workflow-studio-v9.9.9-gdeadbeefcafe-universal.zip"
+
+    with pytest.raises(RuntimeError, match="HEAD changed"):
+        package.build(output_dir, rebuild_frontend=False)
+
+    assert not artifact.exists()
+    assert not artifact.with_name(f"{artifact.name}.sha256").exists()
 
 
 def test_package_rejects_symlinks_inside_allowed_runtime_paths(tmp_path, monkeypatch):
