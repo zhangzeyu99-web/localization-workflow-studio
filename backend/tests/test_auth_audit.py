@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import tempfile
@@ -45,7 +44,12 @@ def _required_app(monkeypatch: pytest.MonkeyPatch, *, username: str):
     monkeypatch.setenv("LWS_AUTH_MODE", "required")
     monkeypatch.setenv("LWS_ADMIN_USER", username)
     monkeypatch.setenv("LWS_ADMIN_PASSWORD", BOOTSTRAP_PASSWORD)
-    return importlib.reload(main_module).app
+    profile = main_module.config.RuntimeProfile.from_environment(
+        os.environ,
+        data_root=main_module.config.DATA_ROOT,
+        app_root=main_module.config.REPO_ROOT,
+    )
+    return main_module.create_app(profile)
 
 
 def _audit_entries() -> list[dict]:

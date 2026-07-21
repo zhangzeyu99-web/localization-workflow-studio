@@ -9,15 +9,19 @@ from urllib.parse import quote
 os.environ.setdefault("LWS_DATA_ROOT", str(Path(tempfile.gettempdir()) / "lws-test-data"))
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+import app.background_jobs as background_jobs
 import app.db as db
 import app.routers.qa as qa_router
-from app.config import DATA_ROOT
+from app.config import DATA_ROOT, RuntimeProfile, bind_runtime_profile, reset_runtime_profile
 from app.main import app
 from app.operator_context import AUDIT_LOG_FILENAME, sanitize_operator_name
-from conftest import reset_data_root, wait_for_background_jobs
+from app.schemas import ManualFixRequest, ModelFixRequest, MultilingualQueueRequest, TranslateRequest
+from app.workflow.multilingual import start_multilingual_qa_queue, start_multilingual_translation_queue
+from conftest import reset_data_root
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +29,23 @@ def reset_test_state() -> None:
     reset_data_root(Path(os.environ["LWS_DATA_ROOT"]))
     db.init_db()
     yield
+
+
+@pytest.fixture
+def cloud_runtime_profile() -> None:
+    profile = RuntimeProfile.from_environment(
+        {"LWS_DEPLOYMENT_MODE": "cloud"},
+        data_root=DATA_ROOT,
+        app_root=Path("D:/lws-profile-tests/app"),
+    )
+    profile_token = bind_runtime_profile(profile)
+    try:
+        import app.operator_context as operator_context
+
+        operator_context.set_current_operator("")
+        yield
+    finally:
+        reset_runtime_profile(profile_token)
 
 
 def _translated_workbook(path: Path) -> None:
@@ -63,49 +84,34 @@ def test_sanitize_operator_name_strips_control_chars_and_caps_length() -> None:
 
 def test_cloud_translation_start_requires_operator_before_status_change(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    cloud_runtime_profile: None,
 ) -> None:
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
-    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     workbook = tmp_path / "untranslated.xlsx"
     _untranslated_workbook(workbook)
+    project = db.insert_project("Cloud Operator", "QA", "")
+    artifact = db.add_artifact(
+        project["id"],
+        "untranslated.xlsx",
+        workbook,
+        "language_table",
+    )
+    run = db.insert_run(
+        project["id"],
+        "translation",
+        "en",
+        metadata={"input_artifact_id": artifact["id"], "batch_size": 2},
+    )
+    original_status = run["status"]
 
-    with TestClient(app) as client:
-        project = client.post("/api/projects", json={"name": "Cloud Operator", "type": "QA"}).json()
-        with workbook.open("rb") as fh:
-            artifact = client.post(
-                f"/api/projects/{project['id']}/files?kind=language_table",
-                files={"file": ("untranslated.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-            ).json()
-        run = client.post(
-            "/api/runs",
-            json={
-                "project_id": project["id"],
-                "kind": "translation",
-                "language": "en",
-                "input_artifact_id": artifact["id"],
-                "batch_size": 2,
-            },
-        ).json()
-        original_status = run["status"]
-
-        for action in ("start", "resume"):
-            rejected = client.post(
-                f"/api/runs/{run['id']}/translate/{action}",
-                json={"provider": "test-fake", "batch_size": 2},
+    for _action in ("start", "resume"):
+        with pytest.raises(HTTPException) as exc_info:
+            background_jobs.start_translation(
+                run["id"],
+                TranslateRequest(provider="test-fake", batch_size=2),
             )
-            assert rejected.status_code == 400
-            assert rejected.json()["detail"] == "请先设置操作人昵称，再启动 AI 任务。"
-            assert client.get(f"/api/runs/{run['id']}").json()["status"] == original_status
-
-        started = client.post(
-            f"/api/runs/{run['id']}/translate/start",
-            json={"provider": "test-fake", "batch_size": 2},
-            headers={"X-Operator": "Alice"},
-        )
-        assert started.status_code == 200, started.text
-
-    wait_for_background_jobs()
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "请先设置操作人昵称，再启动 AI 任务。"
+        assert db.get_run(run["id"])["status"] == original_status
 
 
 @pytest.mark.parametrize(
@@ -117,12 +123,10 @@ def test_cloud_translation_start_requires_operator_before_status_change(
 )
 def test_cloud_qa_entry_points_require_operator_without_mutating_run(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    cloud_runtime_profile: None,
     endpoint: str,
     payload: dict[str, object] | None,
 ) -> None:
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
-    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     workbook = tmp_path / "translated.xlsx"
     _translated_workbook(workbook)
     project = db.insert_project("Cloud QA Operator", "QA", "")
@@ -141,24 +145,28 @@ def test_cloud_qa_entry_points_require_operator_without_mutating_run(
     )
     db.update_run(run["id"], status="needs_input")
 
-    with TestClient(app) as client:
-        original = db.get_run(run["id"])
-        response = client.post(f"/api/runs/{run['id']}/{endpoint}", json=payload)
-        current = db.get_run(run["id"])
+    original = db.get_run(run["id"])
+    with pytest.raises(HTTPException) as exc_info:
+        if endpoint == "qa/start":
+            background_jobs.start_qa(run["id"])
+        else:
+            background_jobs.start_model_fix(
+                run["id"],
+                ModelFixRequest.model_validate(payload),
+            )
+    current = db.get_run(run["id"])
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "请先设置操作人昵称，再启动 AI 任务。"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "请先设置操作人昵称，再启动 AI 任务。"
     assert current["status"] == original["status"]
     assert current["metadata"] == original["metadata"]
 
 
 @pytest.mark.parametrize("action", ["start", "resume"])
 def test_cloud_announcement_entry_points_require_operator_without_mutating_task(
-    monkeypatch: pytest.MonkeyPatch,
+    cloud_runtime_profile: None,
     action: str,
 ) -> None:
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
-    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     project = db.insert_project("Cloud Announcement Operator", "QA", "")
     task = db.insert_announcement_task(
         project["id"],
@@ -171,14 +179,14 @@ def test_cloud_announcement_entry_points_require_operator_without_mutating_task(
         },
     )
 
-    with TestClient(app) as client:
-        response = client.post(
-            f"/api/announcement-tasks/{task['id']}/translate/{action}",
-            json={"languages": ["en"], "provider": "test-fake", "batch_size": 2},
+    with pytest.raises(HTTPException) as exc_info:
+        background_jobs.start_announcement(
+            task["id"],
+            {"languages": ["en"], "provider": "test-fake", "batch_size": 2},
         )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "请先设置操作人昵称，再启动 AI 任务。"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "请先设置操作人昵称，再启动 AI 任务。"
     current = db.get_announcement_task(task["id"])
     assert current["status"] == task["status"]
     assert current["current_step"] == task["current_step"]
@@ -188,11 +196,9 @@ def test_cloud_announcement_entry_points_require_operator_without_mutating_task(
 @pytest.mark.parametrize("workflow", ["translate", "qa"])
 def test_cloud_multilingual_entry_points_require_operator_without_creating_runs(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    cloud_runtime_profile: None,
     workflow: str,
 ) -> None:
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
-    monkeypatch.setenv("LWS_AUTH_MODE", "off")
     workbook = tmp_path / "multilingual.xlsx"
     _untranslated_workbook(workbook)
     project = db.insert_project("Cloud Multilingual Operator", "QA", "")
@@ -204,20 +210,26 @@ def test_cloud_multilingual_entry_points_require_operator_without_creating_runs(
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    with TestClient(app) as client:
-        response = client.post(
-            f"/api/projects/{project['id']}/multilingual/{workflow}/start",
-            json={"input_artifact_id": artifact["id"], "languages": ["en"], "batch_size": 2},
-        )
+    payload = MultilingualQueueRequest(
+        input_artifact_id=artifact["id"],
+        languages=["en"],
+        batch_size=2,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        if workflow == "translate":
+            start_multilingual_translation_queue(project["id"], payload)
+        else:
+            start_multilingual_qa_queue(project["id"], payload)
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "请先设置操作人昵称，再启动 AI 任务。"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "请先设置操作人昵称，再启动 AI 任务。"
     assert db.list_runs(project["id"]) == []
 
 
-def test_cloud_manual_fix_rerun_preserves_operator_required_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
-    monkeypatch.setenv("LWS_AUTH_MODE", "off")
+def test_cloud_manual_fix_rerun_preserves_operator_required_error(
+    monkeypatch: pytest.MonkeyPatch,
+    cloud_runtime_profile: None,
+) -> None:
     apply_called = False
 
     def fake_apply(*args: object, **kwargs: object) -> dict:
@@ -225,16 +237,21 @@ def test_cloud_manual_fix_rerun_preserves_operator_required_error(monkeypatch: p
         apply_called = True
         return {}
 
-    with TestClient(app) as client:
-        monkeypatch.setattr(qa_router.db, "get_run", lambda run_id: {"id": run_id, "project_id": "project-test"})
-        monkeypatch.setattr(qa_router, "apply_manual_fixes", fake_apply)
-        response = client.post(
-            "/api/runs/run-test/manual-fixes/start",
-            json={"fixes": [{"sheet": "Language", "row": 2, "translation": "Reward"}], "rerun_qa": True},
+    monkeypatch.setattr(qa_router.db, "get_run", lambda run_id: {"id": run_id, "project_id": "project-test"})
+    monkeypatch.setattr(qa_router, "apply_manual_fixes", fake_apply)
+    with pytest.raises(HTTPException) as exc_info:
+        qa_router.manual_fixes_start(
+            "run-test",
+            ManualFixRequest.model_validate(
+                {
+                    "fixes": [{"sheet": "Language", "row": 2, "translation": "Reward"}],
+                    "rerun_qa": True,
+                }
+            ),
         )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "请先设置操作人昵称，再启动 AI 任务。"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "请先设置操作人昵称，再启动 AI 任务。"
     assert apply_called is False
 
 

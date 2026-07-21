@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import importlib
 import os
 from pathlib import Path
 
@@ -21,7 +20,12 @@ PASSWORD = "Initial-Admin-Password!"
 
 
 def _build_app():
-    return importlib.reload(main_module).app
+    profile = main_module.config.RuntimeProfile.from_environment(
+        os.environ,
+        data_root=main_module.config.DATA_ROOT,
+        app_root=main_module.config.REPO_ROOT,
+    )
+    return main_module.create_app(profile)
 
 
 @pytest.fixture(autouse=True)
@@ -149,14 +153,12 @@ def test_cloud_mode_defaults_to_auth_required(monkeypatch: pytest.MonkeyPatch) -
     assert response.status_code == 401
 
 
-def test_explicit_auth_off_overrides_cloud_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_explicit_auth_off_is_rejected_in_cloud_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
     monkeypatch.setenv("LWS_AUTH_MODE", "off")
 
-    with TestClient(_build_app()) as client:
-        response = client.get("/api/projects")
-
-    assert response.status_code == 200, response.text
+    with pytest.raises(RuntimeError, match="cloud.*off"):
+        _build_app()
 
 
 def test_required_mode_bootstraps_initial_admin(monkeypatch: pytest.MonkeyPatch) -> None:

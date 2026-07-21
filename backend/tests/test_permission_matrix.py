@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import os
 from pathlib import Path
 from typing import Any
@@ -28,7 +27,12 @@ _AUTH_ENV_VARS = (
 
 
 def _build_app():
-    return importlib.reload(main_module).app
+    profile = main_module.config.RuntimeProfile.from_environment(
+        os.environ,
+        data_root=main_module.config.DATA_ROOT,
+        app_root=main_module.config.REPO_ROOT,
+    )
+    return main_module.create_app(profile)
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +45,6 @@ def reset_auth_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     auth.login_rate_limiter._state.clear()  # type: ignore[attr-defined]
     for name in _AUTH_ENV_VARS:
         os.environ.pop(name, None)
-    _build_app()
 
 
 def _required_app(monkeypatch: pytest.MonkeyPatch):

@@ -12,35 +12,35 @@ from fastapi.responses import JSONResponse
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app import auth, background_jobs, db, job_queue, operator_context, route_capabilities
+    from app import auth, background_jobs, config, db, job_queue, operator_context, route_capabilities
     from app.errors import UserFacingError, http_status_for_user_facing_error
     from app.workflow import user_facing_error
     from app.routers.api import router as api_router
 else:
-    from . import auth, background_jobs, db, job_queue, operator_context, route_capabilities
+    from . import auth, background_jobs, config, db, job_queue, operator_context, route_capabilities
     from .errors import UserFacingError, http_status_for_user_facing_error
     from .workflow import user_facing_error
     from .routers.api import router as api_router
 
 
-AUTH_REQUIRED = auth.auth_required()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _ = app
-    auth_required = auth.auth_required()
-    db.init_db()
-    db.purge_expired_sessions()
-    auth.bootstrap_initial_admin(required=auth_required)
-    background_jobs.register_handlers()
-    interrupted = job_queue.recover_interrupted_jobs()
-    background_jobs.reconcile_startup(interrupted)
-    job_queue.resume_dispatchers()
+    runtime_profile = app.state.runtime_profile
+    profile_token = config.bind_runtime_profile(runtime_profile)
     try:
-        yield
+        db.init_db()
+        db.purge_expired_sessions()
+        auth.bootstrap_initial_admin(required=runtime_profile.auth_required)
+        background_jobs.register_handlers()
+        interrupted = job_queue.recover_interrupted_jobs()
+        background_jobs.reconcile_startup(interrupted)
+        job_queue.resume_dispatchers()
+        try:
+            yield
+        finally:
+            job_queue.shutdown_dispatchers(cancel_running=False)
     finally:
-        job_queue.shutdown_dispatchers(cancel_running=False)
+        config.reset_runtime_profile(profile_token)
 
 
 def _cors_origins() -> list[str]:
@@ -57,19 +57,6 @@ def _app_version() -> str:
         return "unknown"
 
 
-app = FastAPI(title="Localization Workflow Studio", version=_app_version(), lifespan=lifespan)
-# A single, centrally-reviewable dependency guards every /api/ route's
-# capability + project-membership requirement -- see route_capabilities.py
-# for the (method, path) -> capability table and docs/ROUTE_CAPABILITIES.md
-# for the per-route rationale. assert_full_route_coverage() fails the app at
-# construction time (not just "on first request") if any /api/ route is not
-# explicitly registered there, so a forgotten new route can't default to
-# "allowed".
-app.include_router(api_router, dependencies=[Depends(route_capabilities.enforce_route_access)])
-route_capabilities.assert_full_route_coverage(app)
-
-
-@app.middleware("http")
 async def _no_store_api_responses(request: Request, call_next):
     """API responses must never be cached by browsers, proxies, or CDNs.
 
@@ -107,12 +94,29 @@ _FORCE_PASSWORD_CHANGE_ALLOWED_ENDPOINTS = {
 }
 
 
-@app.middleware("http")
 async def _enforce_authentication(request: Request, call_next):
+    runtime_profile = request.app.state.runtime_profile
+    request.state.runtime_profile = runtime_profile
+    profile_token = config.bind_runtime_profile(runtime_profile)
+    try:
+        return await _enforce_authentication_with_profile(
+            request,
+            call_next,
+            runtime_profile,
+        )
+    finally:
+        config.reset_runtime_profile(profile_token)
+
+
+async def _enforce_authentication_with_profile(
+    request: Request,
+    call_next,
+    runtime_profile: config.RuntimeProfile,
+):
     path = request.url.path
     operator_header = request.headers.get("x-operator")
 
-    if not AUTH_REQUIRED:
+    if not runtime_profile.auth_required:
         request.state.user = auth.LOCAL_ADMIN_USER
         auth.set_current_user(auth.LOCAL_ADMIN_USER)
         # Local/off mode intentionally preserves the legacy X-Operator audit
@@ -148,7 +152,6 @@ async def _enforce_authentication(request: Request, call_next):
     )
 
 
-@app.middleware("http")
 async def _capture_operator_header(request: Request, call_next):
     """Make the optional ``X-Operator`` nickname available to this request's
     handler (sync or async) via operator_context.current_operator(), without
@@ -159,16 +162,6 @@ async def _capture_operator_header(request: Request, call_next):
     return await call_next(request)
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.exception_handler(UserFacingError)
 async def _handle_user_facing_error(request: Request, exc: UserFacingError) -> JSONResponse:
     """Safety net: a UserFacingError escaping any route becomes a sanitized JSON error.
 
@@ -181,7 +174,6 @@ async def _handle_user_facing_error(request: Request, exc: UserFacingError) -> J
     )
 
 
-@app.exception_handler(db.ProjectNotActiveError)
 async def _handle_project_not_active(request: Request, exc: db.ProjectNotActiveError) -> JSONResponse:
     _ = request
     missing = exc.state == "missing"
@@ -189,6 +181,49 @@ async def _handle_project_not_active(request: Request, exc: db.ProjectNotActiveE
         status_code=404 if missing else 409,
         content={"detail": "项目不存在" if missing else "项目正在删除，请稍后重试"},
     )
+
+
+def create_app(
+    runtime_profile: config.RuntimeProfile | None = None,
+) -> FastAPI:
+    profile = runtime_profile or config.STARTUP_RUNTIME_PROFILE
+    application = FastAPI(
+        title="Localization Workflow Studio",
+        version=_app_version(),
+        lifespan=lifespan,
+    )
+    application.state.runtime_profile = profile
+    # A single, centrally-reviewable dependency guards every /api/ route's
+    # capability + project-membership requirement -- see route_capabilities.py
+    # for the (method, path) -> capability table and docs/ROUTE_CAPABILITIES.md
+    # for the per-route rationale. assert_full_route_coverage() fails the app at
+    # construction time (not just "on first request") if any /api/ route is not
+    # explicitly registered there, so a forgotten new route can't default to
+    # "allowed".
+    application.include_router(
+        api_router,
+        dependencies=[Depends(route_capabilities.enforce_route_access)],
+    )
+    route_capabilities.assert_full_route_coverage(application)
+    application.middleware("http")(_no_store_api_responses)
+    application.middleware("http")(_enforce_authentication)
+    application.middleware("http")(_capture_operator_header)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    application.add_exception_handler(UserFacingError, _handle_user_facing_error)
+    application.add_exception_handler(
+        db.ProjectNotActiveError,
+        _handle_project_not_active,
+    )
+    return application
+
+
+app = create_app()
 
 
 if __name__ == "__main__":

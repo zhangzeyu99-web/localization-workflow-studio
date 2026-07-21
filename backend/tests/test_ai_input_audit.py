@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import app.db as db
-import app.routers.system as system_router
-from app.config import DEFAULT_SETTINGS, SETTINGS_PATH, load_settings, save_settings
+import app.main as main_module
+from app.config import DEFAULT_SETTINGS, SETTINGS_PATH, RuntimeProfile, load_settings, save_settings
 from app.main import app
 from app.workflow.common import write_project_harness
 from app.workflow.prompt_snapshots import create_prompt_and_harness_snapshots
@@ -298,24 +298,36 @@ def test_announcement_ai_input_summary_handles_missing_prepared_artifacts(tmp_pa
 
 def test_health_reports_cloud_storage_and_provider_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
-    monkeypatch.setenv("LWS_AUTH_MODE", "off")
-    with TestClient(app) as client:
+    monkeypatch.setenv("LWS_ADMIN_USER", "health-cloud-admin")
+    monkeypatch.setenv("LWS_ADMIN_PASSWORD", "Health-Cloud-Pass1!")
+    profile = RuntimeProfile.from_environment(
+        os.environ,
+        data_root=main_module.config.DATA_ROOT,
+        app_root=main_module.config.REPO_ROOT,
+    )
+    test_app = main_module.create_app(profile)
+    with TestClient(test_app) as client:
         response = client.get("/api/health")
         assert response.status_code == 200
         payload = response.json()
         assert payload["deployment_mode"] == "cloud"
+        assert payload["auth_mode"] == "required"
+        assert payload["runtime_profile"] == "cloud-required"
         assert payload["storage"]["data_root_writable"] is True
         assert payload["storage"]["uploads_writable"] is True
         assert payload["database"]["connected"] is True
         assert "provider_configured" in payload["provider"]
 
 
-def test_deployment_mode_defaults_to_cloud_under_data_web(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LWS_DEPLOYMENT_MODE", raising=False)
-    monkeypatch.setattr(system_router, "DATA_ROOT", Path("/data/web/lwstudio/lws-data"))
-    monkeypatch.setattr(system_router, "APP_ROOT", Path("/data/web/lwstudio"))
+def test_deployment_mode_defaults_to_cloud_under_data_web() -> None:
+    profile = RuntimeProfile.from_environment(
+        {},
+        data_root=Path("/data/web/lwstudio/lws-data"),
+        app_root=Path("/data/web/lwstudio"),
+    )
 
-    assert system_router._deployment_mode() == "cloud"
+    assert profile.deployment_mode == "cloud"
+    assert profile.auth_mode == "required"
 
 
 def test_saved_project_prompt_overrides_stale_prompt_file(tmp_path: Path) -> None:

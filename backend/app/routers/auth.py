@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import auth, authz, db, operator_context
-from ..config import DATA_ROOT, deployment_mode
+from ..config import DATA_ROOT, RuntimeProfile
 from ..schemas import ChangePasswordRequest, LoginRequest, RegisterRequest
 
 router = APIRouter()
@@ -26,13 +26,21 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
+def _runtime_profile(request: Request) -> RuntimeProfile:
+    return request.app.state.runtime_profile
+
+
+def _set_session_cookie(
+    response: Response,
+    token: str,
+    runtime_profile: RuntimeProfile,
+) -> None:
     response.set_cookie(
         key=auth.SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
         samesite="lax",
-        secure=deployment_mode() == "cloud",
+        secure=runtime_profile.secure_cookies,
         path="/",
         max_age=auth.SESSION_TTL_DAYS * 24 * 3600,
     )
@@ -52,7 +60,8 @@ def _me_payload(user: dict[str, Any], *, auth_enabled: bool) -> dict[str, Any]:
 
 @router.post("/api/auth/register", status_code=201)
 def register(payload: RegisterRequest, request: Request, response: Response) -> dict[str, Any]:
-    if not auth.auth_required():
+    runtime_profile = _runtime_profile(request)
+    if not runtime_profile.auth_required:
         raise HTTPException(status_code=403, detail="当前模式不开放注册")
 
     retry_after = auth.registration_rate_limiter.check_and_record(_client_ip(request))
@@ -77,7 +86,7 @@ def register(payload: RegisterRequest, request: Request, response: Response) -> 
         raise HTTPException(status_code=409, detail="用户名已存在") from exc
 
     token, _session = auth.issue_session(user["id"])
-    _set_session_cookie(response, token)
+    _set_session_cookie(response, token, runtime_profile)
     operator_context.record_operator_audit(
         DATA_ROOT,
         "self_register",
@@ -89,6 +98,7 @@ def register(payload: RegisterRequest, request: Request, response: Response) -> 
 
 @router.post("/api/auth/login")
 def login(payload: LoginRequest, request: Request, response: Response) -> dict[str, Any]:
+    runtime_profile = _runtime_profile(request)
     username = payload.username.strip()
     rate_key = auth.login_rate_limiter.key(username, _client_ip(request))
 
@@ -109,7 +119,7 @@ def login(payload: LoginRequest, request: Request, response: Response) -> dict[s
     auth.login_rate_limiter.record_success(rate_key)
     token, _session = auth.issue_session(user["id"])
     db.update_user(user["id"], {"last_login_at": db.now_iso()})
-    _set_session_cookie(response, token)
+    _set_session_cookie(response, token, runtime_profile)
     # The login request itself has no session yet, so the authentication
     # middleware cannot have populated operator_context's contextvar with
     # this user's identity for this request -- pass it explicitly instead of
@@ -152,7 +162,7 @@ def me(request: Request, response: Response) -> dict[str, Any]:
     off, clear the stale cookie and recover to the synthetic local admin so a
     leftover cloud session cannot turn a local deployment into a login gate.
     """
-    auth_enabled = auth.auth_required()
+    auth_enabled = _runtime_profile(request).auth_required
     token = request.cookies.get(auth.SESSION_COOKIE_NAME, "")
     if token:
         user = auth.get_user_for_session_token(token)
@@ -169,7 +179,7 @@ def me(request: Request, response: Response) -> dict[str, Any]:
 
 
 @router.post("/api/auth/change-password")
-def change_password(payload: ChangePasswordRequest, response: Response) -> dict[str, Any]:
+def change_password(payload: ChangePasswordRequest, request: Request, response: Response) -> dict[str, Any]:
     user = auth.current_user()
     if user is None:
         raise HTTPException(status_code=401, detail="未登录")
@@ -196,6 +206,6 @@ def change_password(payload: ChangePasswordRequest, response: Response) -> dict[
     # gives the same guarantee: the pre-change-password token is dead, and
     # exactly one valid session (this browser's) survives.
     token, _session = auth.issue_session(user["id"])
-    _set_session_cookie(response, token)
+    _set_session_cookie(response, token, _runtime_profile(request))
     operator_context.record_operator_audit(DATA_ROOT, "change_password", {"username": user["username"]})
     return {"ok": True}

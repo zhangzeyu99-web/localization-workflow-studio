@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import sys
@@ -29,7 +28,12 @@ REGISTER_URL = "/api/auth/register"
 
 
 def _build_app():
-    return importlib.reload(main_module).app
+    profile = main_module.config.RuntimeProfile.from_environment(
+        os.environ,
+        data_root=main_module.config.DATA_ROOT,
+        app_root=main_module.config.REPO_ROOT,
+    )
+    return main_module.create_app(profile)
 
 
 _AUTH_ENV_VARS = ("LWS_AUTH_MODE", "LWS_DEPLOYMENT_MODE", "LWS_ADMIN_USER", "LWS_ADMIN_PASSWORD")
@@ -43,18 +47,8 @@ def reset_auth_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     auth.login_rate_limiter._state.clear()  # type: ignore[attr-defined]
     yield
     auth.login_rate_limiter._state.clear()  # type: ignore[attr-defined]
-    # `app.main.AUTH_REQUIRED` is a plain module global that ``lifespan()``
-    # re-reads by name on every call -- it is NOT captured per-app-instance,
-    # so a reload() done by this test (via _build_app/_required_app) mutates
-    # it for every FastAPI app object anyone holds, including ones other test
-    # modules built earlier with a plain ``from app.main import app``. Pop
-    # the env vars (bypassing monkeypatch, whose own revert only runs after
-    # this fixture's teardown) and reload once more so this test never
-    # leaves the shared module in "auth required" mode for whichever test
-    # file/order runs next.
     for name in _AUTH_ENV_VARS:
         os.environ.pop(name, None)
-    _build_app()
 
 
 def _required_app(monkeypatch: pytest.MonkeyPatch, *, username: str = "root-admin"):

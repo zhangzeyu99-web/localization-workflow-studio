@@ -22,7 +22,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 from . import db
-from .config import deployment_mode
+from .config import RuntimeProfile, current_runtime_profile
 
 SESSION_COOKIE_NAME = "lws_session"
 SESSION_TTL_DAYS = 14
@@ -52,22 +52,9 @@ LOCAL_ADMIN_USER: dict[str, Any] = {
 }
 
 
-def auth_required() -> bool:
-    """Resolve the authentication switch on every call so tests and operators
-    can select it before application startup.
-
-    An invalid explicit value is a configuration error rather than silently
-    falling back to unauthenticated local mode.
-    """
-    raw_mode = os.environ.get("LWS_AUTH_MODE")
-    if raw_mode is not None:
-        mode = raw_mode.strip().lower()
-        if mode == "required":
-            return True
-        if mode == "off":
-            return False
-        raise RuntimeError("LWS_AUTH_MODE 必须设置为 required 或 off")
-    return deployment_mode() == "cloud"
+def auth_required(profile: RuntimeProfile | None = None) -> bool:
+    """Return the immutable startup profile's authentication policy."""
+    return (profile or current_runtime_profile()).auth_required
 
 
 def set_current_user(user: dict[str, Any] | None) -> None:

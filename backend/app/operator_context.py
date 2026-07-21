@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import contextvars
 import json
-import os
 import re
 import time
 from pathlib import Path
@@ -26,6 +25,8 @@ from typing import Any
 from urllib.parse import unquote
 
 from fastapi import HTTPException
+
+from .config import current_runtime_profile
 
 _MAX_OPERATOR_LENGTH = 40
 _CONTROL_CHARS = re.compile(r"[\r\n\t\x00-\x1f]")
@@ -54,16 +55,7 @@ def current_operator() -> str:
 
 
 def require_operator_for_cloud() -> str:
-    from .config import DATA_ROOT
-
-    app_root = Path(__file__).resolve().parents[2]
-    raw_mode = os.environ.get("LWS_DEPLOYMENT_MODE")
-    if raw_mode is None and (
-        str(DATA_ROOT).replace("\\", "/").startswith("/data/web/")
-        or str(app_root).replace("\\", "/").startswith("/data/web/")
-    ):
-        raw_mode = "cloud"
-    if (raw_mode or "local").strip().lower() == "cloud" and not current_operator():
+    if current_runtime_profile().deployment_mode == "cloud" and not current_operator():
         raise HTTPException(status_code=400, detail="请先设置操作人昵称，再启动 AI 任务。")
     return current_operator()
 

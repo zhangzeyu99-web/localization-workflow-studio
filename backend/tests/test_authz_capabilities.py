@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 import os
 from pathlib import Path
@@ -26,7 +25,12 @@ REGISTER_URL = "/api/auth/register"
 
 
 def _build_app():
-    return importlib.reload(main_module).app
+    profile = main_module.config.RuntimeProfile.from_environment(
+        os.environ,
+        data_root=main_module.config.DATA_ROOT,
+        app_root=main_module.config.REPO_ROOT,
+    )
+    return main_module.create_app(profile)
 
 
 _AUTH_ENV_VARS = ("LWS_AUTH_MODE", "LWS_DEPLOYMENT_MODE", "LWS_ADMIN_USER", "LWS_ADMIN_PASSWORD")
@@ -40,13 +44,8 @@ def reset_auth_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     auth.login_rate_limiter._state.clear()  # type: ignore[attr-defined]
     yield
     auth.login_rate_limiter._state.clear()  # type: ignore[attr-defined]
-    # See test_users_admin.py's identical teardown comment: app.main.AUTH_REQUIRED
-    # is a bare module global re-read by lifespan() on every call, not captured
-    # per-app-instance, so a reload() here must be undone before the next test
-    # file runs or it leaks "auth required" into unrelated test modules.
     for name in _AUTH_ENV_VARS:
         os.environ.pop(name, None)
-    _build_app()
 
 
 def _required_app(monkeypatch: pytest.MonkeyPatch, *, username: str = "root-admin"):

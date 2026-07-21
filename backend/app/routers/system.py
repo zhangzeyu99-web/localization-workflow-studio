@@ -10,7 +10,8 @@ from .. import auth, background_jobs, db, job_queue
 from ..authz import require_project_access
 from ..config import (
     DATA_ROOT,
-    deployment_mode,
+    RuntimeProfile,
+    current_runtime_profile,
     load_settings,
     public_settings,
     save_settings,
@@ -25,6 +26,7 @@ from fastapi import (
     APIRouter,
     File,
     HTTPException,
+    Request,
     UploadFile,
 )
 from fastapi.responses import FileResponse
@@ -37,9 +39,13 @@ LATEST_UPLOAD_READABILITY = DIAGNOSTICS_ROOT / "latest_upload_readability.json"
 APP_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _deployment_mode() -> str:
+def _runtime_profile(request: Request | None = None) -> RuntimeProfile:
+    return request.app.state.runtime_profile if request is not None else current_runtime_profile()
+
+
+def _deployment_mode(profile: RuntimeProfile | None = None) -> str:
     """Compatibility wrapper retained for tests and existing router callers."""
-    return deployment_mode(data_root=DATA_ROOT, app_root=APP_ROOT)
+    return (profile or current_runtime_profile()).deployment_mode
 
 
 def _is_writable(path: Path) -> bool:
@@ -109,22 +115,28 @@ def _frontend_assets() -> list[str]:
 
 
 @router.get("/api/version")
-def version() -> dict[str, Any]:
+def version(request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
+    runtime_profile = _runtime_profile(request)
     return {
         "version": _version_text(),
         "git_sha": _git_sha(),
-        "deployment_mode": _deployment_mode(),
+        "deployment_mode": runtime_profile.deployment_mode,
+        "auth_mode": runtime_profile.auth_mode,
+        "runtime_profile": runtime_profile.identifier,
         "data_root": str(DATA_ROOT),
         "frontend_assets": _frontend_assets(),
     }
 
 @router.get("/api/health")
-def health() -> dict[str, Any]:
+def health(request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
+    runtime_profile = _runtime_profile(request)
     settings = load_settings()
     provider = str(settings.get("provider") or "")
     return {
         "ok": True,
-        "deployment_mode": _deployment_mode(),
+        "deployment_mode": runtime_profile.deployment_mode,
+        "auth_mode": runtime_profile.auth_mode,
+        "runtime_profile": runtime_profile.identifier,
         "instance_id": INSTANCE_ID,
         "data_root": str(DATA_ROOT),
         "storage": {
@@ -283,8 +295,8 @@ def get_languages() -> dict[str, Any]:
 
 
 @router.patch("/api/settings")
-def patch_settings(payload: SettingsUpdate) -> dict[str, Any]:
-    if _deployment_mode() == "cloud":
+def patch_settings(payload: SettingsUpdate, request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
+    if _runtime_profile(request).deployment_mode == "cloud":
         raise HTTPException(status_code=403, detail="\u7ebf\u4e0a\u73af\u5883\u4e0d\u652f\u6301\u524d\u7aef\u4fee\u6539 API \u914d\u7f6e\uff0c\u8bf7\u7f16\u8f91 settings.local.json \u540e\u91cd\u542f\u540e\u7aef\u3002")
     current = load_settings()
     updates = payload.model_dump(exclude_none=True)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import tempfile
@@ -33,7 +32,12 @@ _AUTH_ENV_VARS = ("LWS_AUTH_MODE", "LWS_DEPLOYMENT_MODE", "LWS_ADMIN_USER", "LWS
 
 
 def _build_app():
-    return importlib.reload(main_module).app
+    profile = main_module.config.RuntimeProfile.from_environment(
+        os.environ,
+        data_root=main_module.config.DATA_ROOT,
+        app_root=main_module.config.REPO_ROOT,
+    )
+    return main_module.create_app(profile)
 
 
 def _required_app(monkeypatch: pytest.MonkeyPatch):
@@ -60,7 +64,6 @@ def _clear_registration_limiter() -> None:
 def reset_test_state(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _AUTH_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
-    _build_app()
     reset_data_root(Path(os.environ["LWS_DATA_ROOT"]))
     db.init_db()
     auth.login_rate_limiter._state.clear()  # type: ignore[attr-defined]
@@ -70,7 +73,6 @@ def reset_test_state(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_registration_limiter()
     for name in _AUTH_ENV_VARS:
         os.environ.pop(name, None)
-    _build_app()
 
 
 def _create_user(username: str, password: str = "Sup3rSecret!", role: str = "admin", status: str = "active") -> dict:
@@ -366,8 +368,8 @@ def test_login_success_returns_same_me_payload_with_capabilities(
 
 def test_login_cookie_is_secure_in_cloud_deployment_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     _create_user("cloud-user")
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
-    with TestClient(app) as client:
+    test_app = _cloud_app(monkeypatch)
+    with TestClient(test_app) as client:
         response = client.post(LOGIN_URL, json={"username": "cloud-user", "password": "Sup3rSecret!"})
         assert response.status_code == 200, response.text
         set_cookie = response.headers.get("set-cookie", "")

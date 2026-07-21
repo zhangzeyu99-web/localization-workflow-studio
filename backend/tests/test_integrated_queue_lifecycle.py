@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 import app.db as db
+from app.config import DATA_ROOT, RuntimeProfile, bind_runtime_profile, reset_runtime_profile
 from app.schemas import AnnouncementTaskTranslateRequest, MultilingualQueueRequest
 
 
@@ -195,12 +196,19 @@ def test_task_cancel_requires_cloud_operator_before_persisting_terminal_state(
         signaled.append(job_id)
         operator_context.require_operator_for_cloud()
 
-    monkeypatch.setenv("LWS_DEPLOYMENT_MODE", "cloud")
     operator_context.set_current_operator("")
     monkeypatch.setattr(background_jobs, "_cancel", require_identity_after_signal)
-
-    with pytest.raises(HTTPException) as exc_info:
-        background_jobs.cancel_announcement_task(task["id"], ["source_ready", "failed"])
+    profile = RuntimeProfile.from_environment(
+        {"LWS_DEPLOYMENT_MODE": "cloud"},
+        data_root=DATA_ROOT,
+        app_root=Path("D:/lws-profile-tests/app"),
+    )
+    profile_token = bind_runtime_profile(profile)
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            background_jobs.cancel_announcement_task(task["id"], ["source_ready", "failed"])
+    finally:
+        reset_runtime_profile(profile_token)
 
     assert exc_info.value.status_code == 400
     persisted = db.get_announcement_task(task["id"])

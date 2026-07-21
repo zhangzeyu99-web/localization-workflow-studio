@@ -5,18 +5,130 @@ import os
 import re
 import tempfile
 from collections.abc import Mapping
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+DeploymentMode = Literal["local", "cloud"]
+AuthMode = Literal["off", "required"]
 
-def _resolve_data_root(env: Mapping[str, str]) -> Path:
+
+def _uses_cloud_layout(path: Path) -> bool:
+    return str(path).replace("\\", "/").startswith("/data/web/")
+
+
+def _resolve_deployment_mode(
+    env: Mapping[str, str],
+    *,
+    data_root: Path,
+    app_root: Path,
+) -> DeploymentMode:
+    raw_mode = env.get("LWS_DEPLOYMENT_MODE")
+    if raw_mode is None:
+        return "cloud" if _uses_cloud_layout(data_root) or _uses_cloud_layout(app_root) else "local"
+    mode = str(raw_mode).strip().lower()
+    if mode not in {"local", "cloud"}:
+        raise RuntimeError("LWS_DEPLOYMENT_MODE must be 'local' or 'cloud'")
+    return mode  # type: ignore[return-value]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProfile:
+    deployment_mode: DeploymentMode
+    auth_mode: AuthMode
+
+    def __post_init__(self) -> None:
+        if self.deployment_mode not in {"local", "cloud"}:
+            raise RuntimeError("LWS_DEPLOYMENT_MODE must be 'local' or 'cloud'")
+        if self.auth_mode not in {"off", "required"}:
+            raise RuntimeError("LWS_AUTH_MODE must be 'off' or 'required'")
+        if self.deployment_mode == "cloud" and self.auth_mode == "off":
+            raise RuntimeError("cloud deployment cannot use auth mode off")
+
+    @classmethod
+    def from_environment(
+        cls,
+        env: Mapping[str, str],
+        *,
+        data_root: Path,
+        app_root: Path,
+    ) -> RuntimeProfile:
+        deployment_mode = _resolve_deployment_mode(
+            env,
+            data_root=data_root,
+            app_root=app_root,
+        )
+        raw_auth_mode = env.get("LWS_AUTH_MODE")
+        auth_mode = (
+            str(raw_auth_mode).strip().lower()
+            if raw_auth_mode is not None
+            else ("required" if deployment_mode == "cloud" else "off")
+        )
+        return cls(
+            deployment_mode=deployment_mode,
+            auth_mode=auth_mode,  # type: ignore[arg-type]
+        )
+
+    @property
+    def identifier(self) -> str:
+        return f"{self.deployment_mode}-{self.auth_mode}"
+
+    @property
+    def auth_required(self) -> bool:
+        return self.auth_mode == "required"
+
+    @property
+    def secure_cookies(self) -> bool:
+        return self.deployment_mode == "cloud"
+
+
+def _configured_data_root(env: Mapping[str, str]) -> Path:
     raw_data_root = str(env.get("LWS_DATA_ROOT") or "").strip()
-    deployment_mode = str(env.get("LWS_DEPLOYMENT_MODE") or "local").strip().lower()
-    data_root = Path(raw_data_root or r"D:\codex\localization-workflow-studio-data")
-    if deployment_mode == "cloud":
+    return Path(raw_data_root or r"D:\codex\localization-workflow-studio-data")
+
+
+STARTUP_RUNTIME_PROFILE = RuntimeProfile.from_environment(
+    os.environ,
+    data_root=_configured_data_root(os.environ),
+    app_root=REPO_ROOT,
+)
+
+
+_runtime_profile_var: ContextVar[RuntimeProfile | None] = ContextVar(
+    "lws_runtime_profile",
+    default=None,
+)
+
+
+def bind_runtime_profile(profile: RuntimeProfile) -> Token[RuntimeProfile | None]:
+    return _runtime_profile_var.set(profile)
+
+
+def reset_runtime_profile(token: Token[RuntimeProfile | None]) -> None:
+    _runtime_profile_var.reset(token)
+
+
+def current_runtime_profile() -> RuntimeProfile:
+    return _runtime_profile_var.get() or STARTUP_RUNTIME_PROFILE
+
+
+def _resolve_data_root(
+    env: Mapping[str, str],
+    *,
+    runtime_profile: RuntimeProfile | None = None,
+) -> Path:
+    raw_data_root = str(env.get("LWS_DATA_ROOT") or "").strip()
+    data_root = _configured_data_root(env)
+    profile = runtime_profile or RuntimeProfile.from_environment(
+        env,
+        data_root=data_root,
+        app_root=REPO_ROOT,
+    )
+    if profile.deployment_mode == "cloud":
         if not raw_data_root:
             raise RuntimeError("LWS_DATA_ROOT is required when LWS_DEPLOYMENT_MODE=cloud")
         if not (
@@ -36,7 +148,10 @@ def _resolve_data_root(env: Mapping[str, str]) -> Path:
     return data_root
 
 
-DATA_ROOT = _resolve_data_root(os.environ)
+DATA_ROOT = _resolve_data_root(
+    os.environ,
+    runtime_profile=STARTUP_RUNTIME_PROFILE,
+)
 LOCALIZATION_ROOT = REPO_ROOT / "workflow" / "localization"
 GLOSSARY_ROOT = REPO_ROOT / "workflow" / "glossary"
 SETTINGS_PATH = DATA_ROOT / "settings.local.json"
@@ -49,14 +164,8 @@ def deployment_mode(
     data_root: Path = DATA_ROOT,
     app_root: Path = REPO_ROOT,
 ) -> str:
-    raw_mode = os.environ.get("LWS_DEPLOYMENT_MODE")
-    if raw_mode is None and (
-        str(data_root).replace("\\", "/").startswith("/data/web/")
-        or str(app_root).replace("\\", "/").startswith("/data/web/")
-    ):
-        raw_mode = "cloud"
-    mode = (raw_mode or "local").strip().lower()
-    return mode if mode in {"local", "cloud"} else "local"
+    _ = (data_root, app_root)
+    return current_runtime_profile().deployment_mode
 
 
 REAL_PROVIDERS = {"openai", "openai-chat", "anthropic"}
