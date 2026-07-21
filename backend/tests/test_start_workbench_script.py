@@ -210,6 +210,8 @@ def test_source_launcher_reuses_only_matching_repo_profile_sha_and_data_root() -
     # Status/monitor health must use the same non-mutating strict identity check.
     assert '"-CheckOnly"' in healthy
     assert "Test-ApiHealth" not in healthy
+    assert "$checks = @()" in healthy
+    assert healthy.count("$checks += ,@(") == 3
 
 
 def test_monitor_start_is_safe_when_control_script_path_contains_spaces() -> None:

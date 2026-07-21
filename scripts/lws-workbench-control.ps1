@@ -168,13 +168,12 @@ function Invoke-WorkbenchStop {
 
 function Test-WorkbenchHealthy {
   $topology = Get-WorkbenchTopology
-  $checks = if ($topology.Mode -eq "package") {
-    @(,@("-HostName", "0.0.0.0", "-FrontendPort", "5173", "-CheckOnly", "-NoOpen"))
+  $checks = @()
+  if ($topology.Mode -eq "package") {
+    $checks += ,@("-HostName", "0.0.0.0", "-FrontendPort", "5173", "-CheckOnly", "-NoOpen")
   } else {
-    @(
-      ,@("-FrontendPort", "5173", "-CheckOnly", "-NoOpen"),
-      ,@("-HostName", "0.0.0.0", "-FrontendPort", "5174", "-CheckOnly", "-NoOpen")
-    )
+    $checks += ,@("-FrontendPort", "5173", "-CheckOnly", "-NoOpen")
+    $checks += ,@("-HostName", "0.0.0.0", "-FrontendPort", "5174", "-CheckOnly", "-NoOpen")
   }
   foreach ($arguments in $checks) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $StartScript @arguments *> $null
