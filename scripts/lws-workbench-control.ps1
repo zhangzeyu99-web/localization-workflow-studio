@@ -112,14 +112,16 @@ function Get-WorkbenchPortRows {
 function Invoke-StartScriptWithRecovery([string[]]$Arguments, [string]$HealthUrl, [string]$Label) {
   $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $StartScript @Arguments 2>&1
   $exitCode = $LASTEXITCODE
-  if ($exitCode -eq 0 -and (Test-ApiHealth $HealthUrl)) {
-    $output | ForEach-Object { Write-Host $_ }
-    return
-  }
-  Start-Sleep -Seconds 3
-  if (Test-ApiHealth $HealthUrl) {
-    Write-Host "$Label is healthy after retry: $HealthUrl"
-    return
+  if ($exitCode -eq 0) {
+    if (Test-ApiHealth $HealthUrl) {
+      $output | ForEach-Object { Write-Host $_ }
+      return
+    }
+    Start-Sleep -Seconds 3
+    if (Test-ApiHealth $HealthUrl) {
+      Write-Host "$Label is healthy after retry: $HealthUrl"
+      return
+    }
   }
   $output | ForEach-Object { Write-Host $_ }
   throw "$Label failed to start. Health check failed: $HealthUrl"
@@ -127,12 +129,8 @@ function Invoke-StartScriptWithRecovery([string[]]$Arguments, [string]$HealthUrl
 
 function Invoke-PackageWorkbenchEnsure {
   Ensure-LanFirewall -Port 5173
-  if (-not (Test-ApiHealth "http://127.0.0.1:5173/api/health")) {
-    Write-Host "Starting packaged workbench on port 5173..."
-    Invoke-StartScriptWithRecovery @("-HostName", "0.0.0.0", "-FrontendPort", "5173", "-NoOpen") "http://127.0.0.1:5173/api/health" "Packaged workbench"
-  } else {
-    Write-Host "Packaged workbench already healthy: http://127.0.0.1:5173/"
-  }
+  Write-Host "Ensuring packaged workbench identity on port 5173..."
+  Invoke-StartScriptWithRecovery @("-HostName", "0.0.0.0", "-FrontendPort", "5173", "-NoOpen") "http://127.0.0.1:5173/api/health" "Packaged workbench"
 }
 
 function Invoke-SourceWorkbenchEnsure {
@@ -194,6 +192,12 @@ function Test-WorkbenchHealthy {
   return $true
 }
 
+function Get-MonitorEncodedCommand {
+  $escapedControlScript = $ControlScript.Replace("'", "''")
+  $monitorCommand = "& '$escapedControlScript' -Action monitor"
+  return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($monitorCommand))
+}
+
 function Get-MonitorProcess {
   if (-not (Test-Path $MonitorPidFile)) {
     return $null
@@ -208,8 +212,11 @@ function Get-MonitorProcess {
     return $null
   }
   $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
-  $scriptName = Split-Path -Leaf $ControlScript
-  if ($cim -and ([string]$cim.CommandLine) -like "*$scriptName*" -and ([string]$cim.CommandLine) -like "*monitor*") {
+  $expectedEncodedCommand = Get-MonitorEncodedCommand
+  if (
+    $cim -and
+    ([string]$cim.CommandLine).IndexOf($expectedEncodedCommand, [StringComparison]::Ordinal) -ge 0
+  ) {
     return $process
   }
   return $null
@@ -221,11 +228,11 @@ function Start-Monitor {
     Write-Host "Monitor already running: PID $($existing.Id)"
     return
   }
+  $encodedMonitorCommand = Get-MonitorEncodedCommand
   $args = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
-    "-File", $ControlScript,
-    "-Action", "monitor"
+    "-EncodedCommand", $encodedMonitorCommand
   )
   $process = Start-Process -FilePath "powershell.exe" -ArgumentList $args -WindowStyle Hidden -PassThru
   Start-Sleep -Milliseconds 500

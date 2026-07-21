@@ -49,6 +49,8 @@ $backendPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $backendPython)) {
   $backendPython = (Get-Command python -ErrorAction Stop).Source
 }
+$backendPython = (Resolve-Path $backendPython).Path
+$backendRoot = (Resolve-Path (Join-Path $repoRoot "backend")).Path
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $fullPath = if ($userPath) { "$machinePath;$userPath" } else { $machinePath }
@@ -93,6 +95,75 @@ function Test-ApiHealth([string]$Url) {
   }
 }
 
+function Test-PackageApiIdentity([string]$Url) {
+  try {
+    $health = Invoke-RestMethod -Uri $Url -TimeoutSec 2
+    $versionUrl = $Url.Replace("/api/health", "/api/version")
+    $version = Invoke-RestMethod -Uri $versionUrl -TimeoutSec 2
+    return (
+      $null -ne $health -and
+      $health.ok -eq $true -and
+      $health.deployment_mode -eq "local" -and
+      $health.auth_mode -eq "off" -and
+      $health.runtime_profile -eq "local-off" -and
+      $null -ne $version -and
+      $version.deployment_mode -eq "local" -and
+      $version.auth_mode -eq "off" -and
+      $version.runtime_profile -eq "local-off" -and
+      $version.git_sha -eq $GitSha
+    )
+  } catch {
+    return $false
+  }
+}
+
+function Test-PackageListenerIdentity($Connections, [string]$HealthUrl) {
+  $listeners = @($Connections)
+  if ($listeners.Count -eq 0) { return $false }
+
+  $ownerPids = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
+  if ($ownerPids.Count -ne 1) { return $false }
+
+  $coversRequestedHost = $false
+  foreach ($listener in $listeners) {
+    $address = [string]$listener.LocalAddress
+    if (
+      ($HostName -eq "0.0.0.0" -and $address -eq "0.0.0.0") -or
+      ($HostName -eq "::" -and $address -eq "::") -or
+      ($HostName -in @("127.0.0.1", "localhost") -and $address -in @("127.0.0.1", "0.0.0.0")) -or
+      ($HostName -notin @("0.0.0.0", "::", "127.0.0.1", "localhost") -and $address -in @($HostName, "0.0.0.0", "::"))
+    ) {
+      $coversRequestedHost = $true
+      break
+    }
+  }
+  if (-not $coversRequestedHost) { return $false }
+
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($ownerPids[0])" -ErrorAction SilentlyContinue
+  if (-not $process -or -not $process.ExecutablePath -or -not $process.CommandLine) {
+    return $false
+  }
+  $actualExecutable = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+  if (-not $actualExecutable.Equals($backendPython, [StringComparison]::OrdinalIgnoreCase)) {
+    return $false
+  }
+
+  $normalizedCommandLine = ([string]$process.CommandLine).Replace('"', '')
+  $requiredFragments = @(
+    "-m uvicorn app.main:app",
+    "--app-dir $backendRoot",
+    "--host $HostName",
+    "--port $FrontendPort"
+  )
+  foreach ($fragment in $requiredFragments) {
+    if ($normalizedCommandLine.IndexOf($fragment, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+      return $false
+    }
+  }
+
+  return Test-PackageApiIdentity $HealthUrl
+}
+
 function Wait-HttpOk([string]$Url, [int]$Seconds) {
   $deadline = (Get-Date).AddSeconds($Seconds)
   while ((Get-Date) -lt $deadline) {
@@ -122,14 +193,14 @@ function Start-HiddenPowerShell([string]$Command) {
 
 function Start-PackageWorkbench {
   $healthUrl = if ($HostName -eq "0.0.0.0" -or $HostName -eq "::") { "http://127.0.0.1:$FrontendPort/api/health" } else { "http://${HostName}:$FrontendPort/api/health" }
-  if (Test-ApiHealth $healthUrl) {
-    Write-Host "Packaged workbench already healthy: $healthUrl"
-    return
-  }
-
-  $owner = Get-ListeningProcessId $FrontendPort
-  if ($owner) {
-    throw "Workbench port $FrontendPort is occupied by PID $owner, but health check failed. Stop that process or change -FrontendPort."
+  $connections = @(Get-NetTCPConnection -LocalPort $FrontendPort -State Listen -ErrorAction SilentlyContinue)
+  if ($connections.Count -gt 0) {
+    if (Test-PackageListenerIdentity $connections $healthUrl) {
+      Write-Host "Packaged workbench already healthy and belongs to this package: $healthUrl"
+      return
+    }
+    $owners = (($connections | Select-Object -ExpandProperty OwningProcess -Unique) -join ", ")
+    throw "Workbench port $FrontendPort is occupied by another or incompatible process (PID: $owners). Stop it before starting this package."
   }
 
   $backendLog = Join-Path $runtimeDir "workbench-$FrontendPort.log"
@@ -141,13 +212,17 @@ Set-Location "$repoRoot"
 `$env:LWS_AUTH_MODE = "$AuthMode"
 `$env:LWS_SERVE_FRONTEND = "1"
 `$env:LWS_GIT_SHA = "$GitSha"
-& "$backendPython" -m uvicorn app.main:app --app-dir backend --host $HostName --port $FrontendPort *> "$backendLog"
+& "$backendPython" -m uvicorn app.main:app --app-dir "$backendRoot" --host $HostName --port $FrontendPort *> "$backendLog"
 "@
   Start-HiddenPowerShell $command
 
   if (-not (Wait-ApiHealth $healthUrl 45)) {
     $tail = if (Test-Path $backendLog) { Get-Content $backendLog -Tail 80 | Out-String } else { "" }
     throw "Packaged workbench failed to start on $healthUrl.`n$tail"
+  }
+  $startedConnections = @(Get-NetTCPConnection -LocalPort $FrontendPort -State Listen -ErrorAction SilentlyContinue)
+  if (-not (Test-PackageListenerIdentity $startedConnections $healthUrl)) {
+    throw "Packaged workbench responded, but listener identity did not match this package."
   }
   Write-Host "Packaged workbench started: $healthUrl"
 }

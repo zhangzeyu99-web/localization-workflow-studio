@@ -75,7 +75,7 @@ def test_start_workbench_selects_source_or_dist_only_topology() -> None:
     assert "Invalid workbench tree" in script
 
     assert '`$env:LWS_SERVE_FRONTEND = "1"' in package_body
-    assert "-m uvicorn app.main:app --app-dir backend --host $HostName --port $FrontendPort" in package_body
+    assert '-m uvicorn app.main:app --app-dir "$backendRoot" --host $HostName --port $FrontendPort' in package_body
     assert package_body.count("Start-HiddenPowerShell") == 1
     assert "npx" not in package_body.lower()
     assert "npm" not in package_body.lower()
@@ -132,6 +132,62 @@ def test_controller_uses_mode_aware_ports_health_and_firewall() -> None:
     assert "5174" in source_start
     assert 'Ensure-LanFirewall -Port 5174' in source_start
     assert 'Ensure-LanFirewall -Port 5173' in package_start
+
+
+def test_packaged_launcher_reuses_only_the_current_lan_bound_uvicorn() -> None:
+    start_script = _script_text()
+    control_script = _control_script_text()
+    package_start = _function_body(
+        start_script,
+        "Start-PackageWorkbench",
+        "Start-SourceBackend",
+    )
+    package_ensure = _function_body(
+        control_script,
+        "Invoke-PackageWorkbenchEnsure",
+        "Invoke-SourceWorkbenchEnsure",
+    )
+    recovery = _function_body(
+        control_script,
+        "Invoke-StartScriptWithRecovery",
+        "Invoke-PackageWorkbenchEnsure",
+    )
+
+    assert "function Test-PackageListenerIdentity" in start_script
+    assert "Get-NetTCPConnection -LocalPort $FrontendPort -State Listen" in package_start
+    assert "LocalAddress" in start_script
+    assert "Get-CimInstance Win32_Process" in start_script
+    assert "ExecutablePath" in start_script
+    assert '"-m uvicorn app.main:app"' in start_script
+    assert '"--app-dir $backendRoot"' in start_script
+    assert '"--host $HostName"' in start_script
+    assert '"--port $FrontendPort"' in start_script
+    assert "function Test-PackageApiIdentity" in start_script
+    assert 'Replace("/api/health", "/api/version")' in start_script
+    assert 'runtime_profile -eq "local-off"' in start_script
+    assert "$version.git_sha -eq $GitSha" in start_script
+    assert "occupied by another or incompatible process" in package_start
+
+    # The controller must delegate every package reuse decision to the strict
+    # launcher instead of treating an arbitrary healthy 5173 service as ours.
+    assert "Test-ApiHealth" not in package_ensure
+    assert "Invoke-StartScriptWithRecovery" in package_ensure
+    assert "$exitCode -eq 0" in recovery
+    assert recovery.index("$exitCode -eq 0") < recovery.index("Start-Sleep -Seconds 3")
+
+
+def test_monitor_start_is_safe_when_control_script_path_contains_spaces() -> None:
+    script = _control_script_text()
+    start_monitor = _function_body(script, "Start-Monitor", "Stop-Monitor")
+    get_monitor = _function_body(script, "Get-MonitorProcess", "Start-Monitor")
+
+    assert "function Get-MonitorEncodedCommand" in script
+    assert "Get-MonitorEncodedCommand" in start_monitor
+    assert "Get-MonitorEncodedCommand" in get_monitor
+    assert 'Replace("\'", "\'\'")' in script
+    assert "-EncodedCommand" in start_monitor
+    assert "expectedEncodedCommand" in get_monitor
+    assert '"-File", $ControlScript' not in start_monitor
 
 
 def test_controller_reuses_topology_for_status_monitor_and_stop() -> None:
