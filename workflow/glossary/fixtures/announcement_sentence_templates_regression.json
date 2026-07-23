@@ -1,0 +1,36 @@
+{
+  "mode": "announcement_lookup",
+  "announcement": "萝莉炮手每进行5次普攻，展开10秒【狂鲨海岸】，期间每秒对领域内的敌人造成1600%攻击力的大范围伤害，并降低30%生命回复，并提高领域内的敌人受到的40%直接伤害。",
+  "strict_terms": false,
+  "language_tables": [
+    {
+      "language": "EN",
+      "rows": [
+        [
+          "9233",
+          "萝莉炮手每进行<@1>次普攻,展开<@2>秒【狂鲨海岸】,期间每秒对领域内的敌人造成<@3>%攻击力的大范围伤害,并降低<@4>%生命回复,并提高领域内的敌人受到的<@5>%直接伤害",
+          "For every <@1> BATKs launched by Cannon Girl, summons Shore of Sharks for <@2>s, dealing <@3>% ATK DMG per second to enemies in a large area within the field, reducing their HP Regen by <@4>%, and increasing their Direct DMG taken by <@5>%."
+        ]
+      ]
+    },
+    {
+      "language": "TH",
+      "rows": [
+        [
+          "9233",
+          "萝莉炮手每进行<@1>次普攻,展开<@2>秒【狂鲨海岸】,期间每秒对领域内的敌人造成<@3>%攻击力的大范围伤害,并降低<@4>%生命回复,并提高领域内的敌人受到的<@5>%直接伤害",
+          "ทุกการโจมตีปกติ <@1> ครั้งของ Cannon Girl จะเรียก Shore of Sharks เป็นเวลา <@2> วินาที สร้าง DMG <@3>% ATK ต่อวินาที ลด HP Regen <@4>% และเพิ่ม Direct DMG ที่ได้รับ <@5>%"
+        ]
+      ]
+    }
+  ],
+  "expected_rows": [],
+  "expected_templates": [
+    {
+      "ID": "9233",
+      "MatchType": "official_exact",
+      "EN": "For every 5 BATKs launched by Cannon Girl, summons Shore of Sharks for 10s, dealing 1600% ATK DMG per second to enemies in a large area within the field, reducing their HP Regen by 30%, and increasing their Direct DMG taken by 40%.",
+      "TH": "ทุกการโจมตีปกติ 5 ครั้งของ Cannon Girl จะเรียก Shore of Sharks เป็นเวลา 10 วินาที สร้าง DMG 1600% ATK ต่อวินาที ลด HP Regen 30% และเพิ่ม Direct DMG ที่ได้รับ 40%"
+    }
+  ]
+}

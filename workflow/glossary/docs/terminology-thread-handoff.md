@@ -13,6 +13,7 @@
 - `ID / CN / EN / EN2 / 分类` 术语表整理
 - 公告术语 lookup
 - 多语言公告术语合并
+- 公告官方句式模板提取与译文沿用警告
 - AI supplement packet / response 接口
 - 项目 brief / translation prompt 生成，仅限术语提取流程附带能力
 - 本仓库 README / CHANGELOG / VERSION / docs / tests / fixtures / harness 维护
@@ -49,6 +50,8 @@ https://github.com/zhangzeyu99-web/glossary-extraction-workflow
 - branch: `main`
 - upstream: `origin/main`
 - 当前维护版本：`v0.4.0`
+- 最近核验日期：`2026-07-14`
+- 最近核验提交：`00b78b0`
 - 当前功能已拆分为 `glossary_extraction/` 包，`scripts/extract_glossary.py` 只作为 CLI 入口
 - `D:\codex\localization-workflow-studio` 只消费本仓库的同步副本，不是本线程的主维护仓库
 
@@ -90,7 +93,7 @@ python scripts/sync_workflow_sources.py glossary
 1. 先读真实文件和目录，不凭记忆猜。
 2. Excel 用 `openpyxl` 本地处理。
 3. 大语言表必须本地脚本解析，不把完整语言表塞进模型上下文。
-4. 模型只看统计、样本、候选摘要或 AI supplement packet。
+4. 脚本先做确定性提取；Codex 再对公告文本、候选摘要、少量句内双语证据做 AI 补充检查，不直接扫描完整语言包。
 5. 输出默认放回原目录。
 6. 默认只交付最终 Excel 或 Markdown，不交付过程文件。
 7. 交付前必须读回校验。
@@ -117,39 +120,40 @@ python scripts/sync_workflow_sources.py glossary
 6. EN 默认只保留主译文；不要写 `A / B`。
 7. EN2 只有用户明确要求双译法或历史工作流需要时才保留。
 8. 分类默认放最后一列。
+9. 频次只用于排序和取证，不是术语准入条件；低频专名可以保留，高频句子和配置短语仍要剔除。
+10. 脚本结果生成后，线程内必须由 Codex 对精简候选做一次 AI 补充检查，重点检查漏词、句内基础术语和分类错误。
 
 优先保留：
 
 - 系统名、活动名、玩法名
-- 装备、道具、资源、品质
-- 技能、属性、战斗效果
+- 装备、道具、资源、品质阶梯
+- 技能基础名、属性名、可独立复用的战斗概念
 - 纹章、铭文、宝石
 - 副本、秘境、首领
 - 英雄、职业、怪物、世界观专名
+- 为统一 UI 和系统提示译法所需的高频动作词，例如 `获得`、`获取`、`领取`、`使用`、`激活`、`解锁`、`购买`、`兑换`、`前往`、`重置`、`查看`、`发送`
 
 优先排除：
 
 - 完整句子
-- 临时提示句
-- 普通动词泛词
-- 数字礼包流水项
-- 明显 UI 状态短句，除非用户明确要 UI 词
+- 奖励、状态、提示和段说明短句，例如 `排行奖励`、`获得奖励`、`进度奖励`、`后解锁`、`已领取`、`可领取`、`个人奖励`
+- `技能名/系统名 + 数值效果` 的组合短语，例如 `冰封扩散伤害提高`、`冰封集中伤害提高`、`冰霜陷阱伤害提高`
+- `等级/颜色/投放批次 + 武器/装备` 的配置型名称，例如 `10级红色愤怒武器`、`活动投放40级武器`、`随机红色装备`
+- 带变量、加号、占位符或明显程序配置语义的短语，例如 `成员上限+1`、`{0}`、`#{...}`
+- 只因出现次数高、但不能独立约束译法的泛词或拼接短句
+
+条件保留：
+
+- `奖励`、`活动`、`系统`、`任务`、`等级`、`世界`、`匹配`、`挑战` 等泛名词，只有在项目内是固定概念、客户指定词或反复需要统一译法时才保留。
+- 普通动词不是一概保留；只有能降低多译风险、可独立复用的动作词才进入术语表，分类统一为 `动作`。
 
 ## 6. 分类规则
 
-默认可用复合分类，例如：
-
-- `活动/商城/奖励`
-- `技能/战斗效果`
-- `装备/道具`
-- `纹章/铭文/宝石`
-- `副本/秘境/首领`
-
-如果用户要求“分类只保留一个词”，用单词分类：
+默认只保留一个最重要的主分类，不使用复合分类：
 
 - `活动`
 - `UI`
-- `操作`
+- `动作`
 - `装备`
 - `道具`
 - `资源`
@@ -165,9 +169,11 @@ python scripts/sync_workflow_sources.py glossary
 - `世界观`
 - `邮件`
 
+无法判断时按“该术语主要约束什么”归类。例如 `领取` 归 `动作`，`排行奖励` 不因包含“奖励”而默认保留。
+
 如果用户说“顺序不要变”，绝对不要排序，只改对应列。
 
-如果用户说“补在最后面”，保留原表，新增术语追加到底部。
+如果用户说“补在最后面”，原表全部保留，新增术语沿最后有效行向下追加；只检查新增项是否与原表 CN 重复，不擅自删除或合并原有行。
 
 ## 7. 译文处理规则
 
@@ -196,21 +202,35 @@ python scripts/sync_workflow_sources.py glossary
 
 1. 找公告文件：`docx / txt / md / xlsx`。
 2. 找完整语言表，可以是一份或多份语言表。
-3. 从语言表本地提取候选术语。
-4. 只输出公告中实际出现的术语及译文。
-5. 输出列与语言表交付格式保持一致，常见为 `ID / CN / EN` 或 `ID / CN / EN / FR...`。
+3. 从语言表本地匹配官方完整句式，再提取候选术语和相似句证据。
+4. 只输出公告中实际出现的术语、官方句式及译文。
+5. `Glossary` 列与语言表交付格式保持一致；同一 Excel 的 `SentenceTemplates` 保存官方完整句式和相似句证据。
 6. 不把完整语言表交给模型。
+
+如果语言包以 `中文key` 为第一列表头，且紧邻第二列保存译文但表头为空，显式传入语言码后自动识别第二列；原表无 ID 时使用 `工作表名:行号` 作为追溯标识。
+
+多语言模式以第一个 `--language-table` 为术语和句式主源，后续语言表只补齐相同 CN 的译文；实际执行时应把英语或项目指定的主语言放在第一位。
+
+固定翻译优先级：
+
+1. 官方完整句式：匹配后只替换占位符或数值，固定措辞和大小写完整沿用。
+2. 官方相似句中的表达：只作上下文证据，不冒充完整官方译文。
+3. 单个术语：作为约束输入，不机械拼接整句。
+4. 模型自行翻译：只处理前三层未覆盖的内容。
+
+如果用户同时提供翻译成品，使用 `--translated-material LANG=path` 做官方句式沿用检查。当前策略为 warning-only：不一致时退出码仍为 0，但必须在控制台和校验报告中显示严重警告。没有译文输入时，状态必须写 `not_run`，不得声称通过。
 
 AI 补充规则：
 
 - AI 只看公告文本、已命中术语、少量本地摘取证据。
 - AI 不能扫描完整语言包。
+- 在线程内执行术语提取时，Codex 直接完成补充检查；packet / response 文件是可复用接口，不是线程内 AI 检查的前置条件。
 - AI 补充项必须满足：
   - 公告中出现
   - 有语言表译文证据
   - 置信度至少 medium
   - 有可追溯 ID 或句内证据
-- 主 Excel 保持干净，不写置信度、证据、来源列。
+- `Glossary` 保持干净，不写置信度、证据、来源列；官方句式证据只写 `SentenceTemplates`。
 - 验收报告默认不交付，只在最终回复说明命中数和风险。
 
 ## 9. 项目 brief 工作流
@@ -245,8 +265,10 @@ AI 补充规则：
 常见术语表列：
 
 ```text
-ID / CN / EN / EN2 / 分类
+ID / CN / 目标语言主译 / 分类
 ```
+
+默认只保留一个目标语言主译。只有用户明确要求示例译文与手动适配译文并列时，才输出 `EN / EN2`。
 
 用户要求“干净交付表”时：
 
@@ -258,6 +280,13 @@ ID / CN / EN / EN2 / 分类
 用户要求“只保留中文”时：
 
 - 输出 `ID / CN`，或保留原表但只填 CN，按上下文判断。
+
+用户要求“补充已有术语表”时：
+
+- 原有行和顺序默认不动。
+- 新增项从原表最后有效行继续向下排列。
+- 新增项按 CN 与原表及新增候选去重。
+- 已有译文与语言表实际译文冲突时，以语言表已上线或已验收主译为准，但只修改用户授权范围内的行。
 
 推荐命名：
 
@@ -285,6 +314,13 @@ ID / CN / EN / EN2 / 分类
 - 分类空值数
 - 如果要求顺序不变，校验 ID/CN/EN 顺序完全不变
 - 如果要求 EN2 清空，校验 EN2 非空为 0
+- 组合效果短语命中数为 0
+- 等级/颜色/投放批次配置名命中数为 0
+- 奖励/状态/说明短句命中数为 0，明确保留项除外
+- 新增项与原表 CN 重复数为 0
+- 公告文件存在 `SentenceTemplates`，且完整句式优先级为 1、相似句证据优先级为 2
+- 提供翻译成品时，读回检查 `official_template_mismatches` 和 `unverifiable_placeholders`
+- 未提供翻译成品时，确认 `official_template_qa: not_run`
 
 最终回复示例：
 
@@ -303,7 +339,7 @@ python -m pytest -q
 Harness 回归：
 
 ```bash
-python scripts/run_glossary_harness.py fixtures/core_regression.json fixtures/observation_feedback_regression.json fixtures/announcement_lookup_regression.json fixtures/announcement_ai_supplement_regression.json
+python scripts/run_glossary_harness.py fixtures/core_regression.json fixtures/observation_feedback_regression.json fixtures/announcement_lookup_regression.json fixtures/announcement_ai_supplement_regression.json fixtures/announcement_sentence_templates_regression.json
 ```
 
 文档交付前：
@@ -342,7 +378,7 @@ python D:\codex\codex\tools\output_quality_gate.py README.md CHANGELOG.md docs\t
 新线程可直接粘贴：
 
 ```text
-你是术语提取执行线程，只负责 D:\codex\glossary-extraction-workflow，不负责 localization-workflow-studio 工作台更新。先阅读 docs/terminology-thread-handoff.md，再按里面的执行边界处理任务。用户通常会给本地目录或 Excel 文件，要求跑术语提取、公告术语 lookup、项目 brief、术语表分类和译文校验。执行时先扫描真实文件，用本地脚本/openpyxl 处理大表，不把完整语言包塞进模型上下文；交付前读回校验；最终只汇报交付路径、处理数量、校验结果和必要风险。
+你是术语提取执行线程，只负责 D:\codex\glossary-extraction-workflow，不负责 localization-workflow-studio 工作台更新。启动后先阅读 docs/terminology-thread-handoff.md，并以该文档为执行边界。用户通常会给本地目录或 Excel 文件，要求跑完整术语提取、公告术语 lookup、项目 brief、术语表分类、译文填充和术语价值筛选。执行时先扫描真实文件；大语言表必须用本地脚本/openpyxl 解析，不把完整语言包塞进模型上下文；脚本提取后由 Codex 对精简候选、公告文本和少量句内证据做 AI 补充检查。交付表默认只保留 ID/CN/目标语言主译/分类；分类只留一个最重要类别。保留职业、系统、玩法、副本、技能基础名、装备/道具基础名、属性、品质、怪物/角色名，以及必要的高频动作词；剔除技能名加数值效果、等级/颜色/投放批次加武器装备、奖励/状态/提示短句、变量/加号/配置短语。补充已有术语表时保留原表和原顺序，只把去重后的新增项追加到底部。交付前读回校验行数、空值、重复、分类、顺序和低价值短语命中；最终只汇报路径、数量、校验结果和风险。
 ```
 
 ## 15. 沟通风格

@@ -122,7 +122,8 @@ def announcement_candidate_rows_from_sheet_rows(
     for row_number, row in enumerate(rows[layout.header_row_index + 1 :], start=layout.header_row_index + 2):
         row_values = list(row)
         raw_source = value_at(row_values, layout.source_index)
-        row_id = "" if layout.id_index >= len(row_values) or row_values[layout.id_index] is None else str(row_values[layout.id_index])
+        raw_id = value_at(row_values, layout.id_index)
+        row_id = "" if raw_id is None else str(raw_id)
         if not row_id:
             row_id = f"{sheet_title}:{row_number}"
         raw_target = "" if layout.target_index is None else value_at(row_values, layout.target_index)
@@ -265,6 +266,8 @@ def write_announcement_glossary_workbook(
     source_header: str,
     target_header: str,
     headers: list[str] | None = None,
+    sentence_template_matches: list[dict[str, object]] | None = None,
+    template_languages: list[str] | None = None,
 ) -> None:
     workbook = Workbook()
     glossary_sheet = workbook.active
@@ -291,6 +294,32 @@ def write_announcement_glossary_workbook(
                     values.append(row.get(header, ""))
             glossary_sheet.append(values)
     style_sheet(glossary_sheet)
+
+    template_sheet = workbook.create_sheet("SentenceTemplates")
+    languages = template_languages or output_headers[2:]
+    template_headers = [
+        "Priority",
+        "MatchType",
+        "ID",
+        "AnnouncementCN",
+        "OfficialCNTemplate",
+        *languages,
+    ]
+    template_sheet.append(template_headers)
+    for row in sentence_template_matches or []:
+        translations = row.get("translations", {})
+        translations = translations if isinstance(translations, dict) else {}
+        template_sheet.append(
+            [
+                row.get("Priority", ""),
+                row.get("MatchType", ""),
+                row.get("ID", ""),
+                row.get("AnnouncementCN", ""),
+                row.get("OfficialCNTemplate", ""),
+                *[translations.get(language, "") for language in languages],
+            ]
+        )
+    style_sheet(template_sheet)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
@@ -333,9 +362,10 @@ def build_multilingual_announcement_rows(
 ) -> tuple[list[dict[str, object]], dict[str, int]]:
     candidate_by_cn: dict[str, dict[str, object]] = {}
     translations_by_language: dict[str, dict[str, str]] = {spec.language: {} for spec in language_table_specs}
+    primary_terms: set[str] = set()
     duplicate_source_terms = 0
 
-    for spec in language_table_specs:
+    for spec_index, spec in enumerate(language_table_specs):
         _headers, candidate_rows = build_announcement_candidate_rows_from_workbook(
             input_path=spec.path,
             sheet_name=sheet_name,
@@ -350,6 +380,8 @@ def build_multilingual_announcement_rows(
             cn = clean_text(row.get("CN"))
             if not cn:
                 continue
+            if spec_index == 0:
+                primary_terms.add(cn)
             target = clean_text(row.get("EN")) or clean_text(row.get("EN2"))
             if target:
                 translations_by_language[spec.language][cn] = target
@@ -367,7 +399,7 @@ def build_multilingual_announcement_rows(
                     candidate["EN"] = target
 
     matched_terms = select_announcement_term_rows(
-        term_rows=list(candidate_by_cn.values()),
+        term_rows=[candidate_by_cn[cn] for cn in candidate_by_cn if cn in primary_terms],
         announcement_text=announcement_text,
         include_empty=include_empty,
     )
@@ -384,7 +416,7 @@ def build_multilingual_announcement_rows(
         rows.append(row)
 
     stats = {
-        "candidate_terms": len(candidate_by_cn),
+        "candidate_terms": len(primary_terms),
         "duplicate_source_terms": duplicate_source_terms,
     }
     return rows, stats
@@ -413,8 +445,19 @@ def build_announcement_validation_markdown(
     rows: list[dict[str, object]],
     headers: list[str],
     stats: dict[str, int] | None = None,
+    sentence_template_matches: list[dict[str, object]] | None = None,
+    template_qa: dict[str, object] | None = None,
 ) -> str:
     stats = stats or {}
+    sentence_template_matches = sentence_template_matches or []
+    template_qa = template_qa or {
+        "status": "not_run",
+        "checked": 0,
+        "matches": 0,
+        "mismatches": 0,
+        "unverifiable_placeholders": 0,
+        "issues": [],
+    }
     cn_values = [clean_text(row.get("CN")) for row in rows if clean_text(row.get("CN"))]
     duplicate_cn = len(cn_values) - len(set(cn_values))
     language_headers = headers[2:]
@@ -429,7 +472,7 @@ def build_announcement_validation_markdown(
     lines = [
         "# Announcement Glossary Validation",
         "",
-        "status: ok",
+        f"status: {'warning' if template_qa.get('status') == 'warning' else 'ok'}",
         f"term_count: {len(rows)}",
         f"languages: {', '.join(language_headers) if language_headers else 'none'}",
         f"duplicate_cn: {duplicate_cn}",
@@ -438,6 +481,14 @@ def build_announcement_validation_markdown(
         f"missing_language_values: {empty_translation_cells}",
         f"low_value_terms: {low_value_terms}",
         f"candidate_terms: {int(stats.get('candidate_terms', len(rows)))}",
+        f"sentence_template_count: {len(sentence_template_matches)}",
+        f"official_exact_templates: {sum(1 for row in sentence_template_matches if row.get('MatchType') == 'official_exact')}",
+        f"official_similar_evidence: {sum(1 for row in sentence_template_matches if row.get('MatchType') == 'official_similar')}",
+        f"official_template_qa: {template_qa.get('status', 'not_run')}",
+        f"official_template_checked: {int(template_qa.get('checked', 0))}",
+        f"official_template_matches: {int(template_qa.get('matches', 0))}",
+        f"official_template_mismatches: {int(template_qa.get('mismatches', 0))}",
+        f"unverifiable_placeholders: {int(template_qa.get('unverifiable_placeholders', 0))}",
         f"output: {glossary_output_path}",
         "",
         "## Announcement Materials",
@@ -447,6 +498,17 @@ def build_announcement_validation_markdown(
     lines.append("## Language Tables")
     lines.extend(f"- {source}" for source in language_tables)
     lines.append("")
+    issues = template_qa.get("issues", [])
+    if isinstance(issues, list) and issues:
+        lines.extend(["## Official Template Warnings", ""])
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            lines.append(
+                f"- ID={issue.get('ID', '')} | language={issue.get('language', '')} | "
+                f"reason={issue.get('reason', '')} | expected={issue.get('expected', '')}"
+            )
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -458,6 +520,8 @@ def write_announcement_validation_report(
     rows: list[dict[str, object]],
     headers: list[str],
     stats: dict[str, int] | None = None,
+    sentence_template_matches: list[dict[str, object]] | None = None,
+    template_qa: dict[str, object] | None = None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -468,6 +532,8 @@ def write_announcement_validation_report(
             rows=rows,
             headers=headers,
             stats=stats,
+            sentence_template_matches=sentence_template_matches,
+            template_qa=template_qa,
         ),
         encoding="utf-8",
     )

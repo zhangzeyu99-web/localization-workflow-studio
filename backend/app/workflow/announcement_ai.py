@@ -227,7 +227,14 @@ def _apply_announcement_ai_supplement(
     return merged_rows, ai_summary
 
 
-def _save_announcement_terms(task_id: str, rows: list[dict[str, Any]], languages: list[str], *, run_kind: str) -> dict[str, Any]:
+def _save_announcement_terms(
+    task_id: str,
+    rows: list[dict[str, Any]],
+    languages: list[str],
+    *,
+    run_kind: str,
+    sentence_adaptations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     task = db.get_announcement_task(task_id)
     project_id = task["project_id"]
     metadata = _announcement_task_metadata(task)
@@ -241,9 +248,25 @@ def _save_announcement_terms(task_id: str, rows: list[dict[str, Any]], languages
     workbook_path = output / f"{base}_announcement_terms_{stamp}.xlsx"
     manifest_path = output / f"{base}_announcement_terms_manifest_{stamp}.json"
     validation_path = output / f"{base}_announcement_terms_validation_{stamp}.md"
-    _write_announcement_terms_workbook(workbook_path, rows, languages)
-    summary = {"terms": len(rows), "languages": languages, "source_chars": len(source_text)}
-    manifest = {"kind": "announcement_terms", "task_id": task_id, "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
+    sentence_adaptations = list(sentence_adaptations or [])
+    _write_announcement_terms_workbook(workbook_path, rows, languages, sentence_adaptations=sentence_adaptations)
+    summary = {
+        "terms": len(rows),
+        "languages": languages,
+        "source_chars": len(source_text),
+        "sentence_templates": len(sentence_adaptations),
+        "official_exact_sentence_hits": sum(1 for item in sentence_adaptations if item.get("match_type") == "official_exact"),
+        "official_similar_sentence_hits": sum(1 for item in sentence_adaptations if item.get("match_type") == "official_similar"),
+    }
+    manifest = {
+        "kind": "announcement_terms",
+        "task_id": task_id,
+        "project_id": project_id,
+        "languages": languages,
+        "summary": summary,
+        "terms": rows,
+        "sentence_adaptations": sentence_adaptations,
+    }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     validation_path.write_text(_announcement_terms_validation(summary, rows, languages), encoding="utf-8")
     artifacts = [
@@ -251,7 +274,7 @@ def _save_announcement_terms(task_id: str, rows: list[dict[str, Any]], languages
         db.add_artifact(project_id, "公告术语 manifest", manifest_path, "announcement_terms_manifest", run_id=run["id"], mime="application/json", metadata={"task_id": task_id, "languages": languages}),
         db.add_artifact(project_id, "公告术语 validation", validation_path, "announcement_terms_validation", run_id=run["id"], mime="text/markdown", metadata={"task_id": task_id, "languages": languages}),
     ]
-    metadata.update({"languages": languages, "terms": rows, "terms_artifact_id": artifacts[0]["id"], "terms_manifest_artifact_id": artifacts[1]["id"], "terms_validation_artifact_id": artifacts[2]["id"], "terms_summary": summary})
+    metadata.update({"languages": languages, "terms": rows, "sentence_adaptations": sentence_adaptations, "terms_artifact_id": artifacts[0]["id"], "terms_manifest_artifact_id": artifacts[1]["id"], "terms_validation_artifact_id": artifacts[2]["id"], "terms_summary": summary})
     task = db.update_announcement_task(task_id, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], selected_languages=languages, metadata=metadata)
     for language in languages:
         missing = sum(1 for row in rows if not str((row.get("translations") or {}).get(language) or "").strip())
@@ -313,7 +336,13 @@ def _filter_announcement_terms_languages(rows: list[dict[str, Any]], languages: 
     return output
 
 
-def _write_announcement_terms_workbook(path: Path, rows: list[dict[str, Any]], languages: list[str]) -> None:
+def _write_announcement_terms_workbook(
+    path: Path,
+    rows: list[dict[str, Any]],
+    languages: list[str],
+    *,
+    sentence_adaptations: list[dict[str, Any]] | None = None,
+) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
@@ -331,6 +360,21 @@ def _write_announcement_terms_workbook(path: Path, rows: list[dict[str, Any]], l
             source_label,
             row.get("note", ""),
         ])
+    if sentence_adaptations:
+        sentence_ws = wb.create_sheet("SentenceTemplates")
+        sentence_ws.append(["Priority", "MatchType", "ID", "AnnouncementCN", "OfficialCNTemplate", *[_visible_language_code(language) for language in languages]])
+        for item in sentence_adaptations:
+            translations = item.get("translations") or {}
+            sentence_ws.append(
+                [
+                    int(item.get("priority") or 0),
+                    item.get("match_type", ""),
+                    item.get("id", ""),
+                    item.get("announcement_cn", ""),
+                    item.get("official_cn_template", ""),
+                    *[translations.get(language, "") for language in languages],
+                ]
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
     wb.close()

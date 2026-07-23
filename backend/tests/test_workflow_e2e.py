@@ -174,6 +174,17 @@ def _announcement_language_table_with_generic_hits(path: Path) -> None:
     wb.close()
 
 
+def _announcement_language_table_with_sentence_template(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["ID", "CN", "EN"])
+    ws.append(["sentence_level_up", "恭喜主公，技能等级提升至<@1>级！", "Congratulations, My Lord! The skill level has reached Lv. <@1>!"])
+    ws.append(["term_skill_level", "技能等级", "Skill Level"])
+    wb.save(path)
+    wb.close()
+
+
 def _announcement_language_table_with_empty_first_sheet(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -454,6 +465,157 @@ def test_announcement_terms_filter_generic_language_table_hits_before_workpack(t
         targets = [hit["target"] for row in rows for hit in row["term_hits"]]
         assert targets == ["Infinity Train Event", "Puncher", "Artifact"]
         assert not {"Notice", "Game", "Use", "Issue", "Enter", "Enter Game", "Get"} & set(targets)
+
+
+def test_announcement_sentence_template_flows_from_language_table_to_workpack_and_qa(tmp_path: Path) -> None:
+    table_path = tmp_path / "language_with_sentence_template.xlsx"
+    notice_path = tmp_path / "notice.txt"
+    response_path = tmp_path / "ai_response_en.jsonl"
+    _announcement_language_table_with_sentence_template(table_path)
+    notice_path.write_text("恭喜主公，技能等级提升至5级！", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Sentence adaptation", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": (table_path.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": (notice_path.name, fh, "text/plain")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={
+                "source_artifact_id": notice_artifact["id"],
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en"],
+                "include_project_archive": False,
+            },
+        ).json()
+
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en"],
+                "include_project_archive": False,
+                "ai_supplement": False,
+            },
+        )
+        assert extracted.status_code == 200, extracted.text
+        extracted_payload = extracted.json()
+        assert extracted_payload["summary"]["sentence_templates"] == 1
+        assert extracted_payload["summary"]["official_exact_sentence_hits"] == 1
+        assert extracted_payload["task"]["metadata"]["sentence_adaptations"][0]["translations"]["en"] == (
+            "Congratulations, My Lord! The skill level has reached Lv. 5!"
+        )
+        terms_workbook = next(
+            artifact for artifact in extracted_payload["artifacts"] if artifact["kind"] == "announcement_terms_workbook"
+        )
+        workbook = load_workbook(terms_workbook["path"], read_only=True, data_only=True)
+        try:
+            assert workbook.sheetnames == ["Glossary", "SentenceTemplates"]
+            sentence_rows = list(workbook["SentenceTemplates"].iter_rows(values_only=True))
+            assert sentence_rows[0] == ("Priority", "MatchType", "ID", "AnnouncementCN", "OfficialCNTemplate", "EN")
+            assert sentence_rows[1][0:3] == (1, "official_exact", "sentence_level_up")
+            assert sentence_rows[1][5] == "Congratulations, My Lord! The skill level has reached Lv. 5!"
+        finally:
+            workbook.close()
+
+        lookup = client.post(
+            f"/api/announcement-tasks/{task['id']}/lookup-translations",
+            json={"languages": ["en"], "include_project_archive": False},
+        )
+        assert lookup.status_code == 200, lookup.text
+        prepared = client.post(f"/api/announcement-tasks/{task['id']}/prepare", json={"languages": ["en"]})
+        assert prepared.status_code == 200, prepared.text
+        workpack = next(artifact for artifact in prepared.json()["artifacts"] if artifact["kind"] == "announcement_workpack")
+        rows = [json.loads(line) for line in Path(workpack["path"]).read_text(encoding="utf-8").splitlines()]
+        assert rows[0]["term_hits"] == [{"source": "技能等级", "target": "Skill Level"}]
+        assert rows[0]["sentence_adaptations"] == [
+            {
+                "priority": 1,
+                "match_type": "official_exact",
+                "id": "sentence_level_up",
+                "announcement_cn": "恭喜主公,技能等级提升至5级!",
+                "official_cn_template": "恭喜主公，技能等级提升至<@1>级！",
+                "target": "Congratulations, My Lord! The skill level has reached Lv. 5!",
+            }
+        ]
+
+        response_path.write_text(
+            json.dumps(
+                {"para_id": rows[0]["para_id"], "translation": "Congratulations, My Lord! The skill level has reached Lv. 5!"},
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        with response_path.open("rb") as fh:
+            response_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": (response_path.name, fh, "application/jsonl")},
+            ).json()
+        imported = client.post(
+            f"/api/announcement-tasks/{task['id']}/import-ai",
+            json={"languages": ["en"], "response_artifact_ids": [response_artifact["id"]]},
+        )
+        assert imported.status_code == 200, imported.text
+        applied = client.post(f"/api/announcement-tasks/{task['id']}/apply", json={"languages": ["en"]})
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["summary"]["hard_blockers"] == 0
+
+
+def test_announcement_sentence_template_supports_headerless_selected_language_table(tmp_path: Path) -> None:
+    table_path = tmp_path / "language_th_headerless.xlsx"
+    notice_path = tmp_path / "notice.txt"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(["中文key", None, None, None, None, "所属模块"])
+    worksheet.append(["自身增伤+<@1>%", "DMG INC ตัวเอง +<@1>%", None, None, None, "属性说明-TD"])
+    worksheet.append(["自身增伤", "DMG INC ตัวเอง", None, None, None, "属性说明-TD"])
+    workbook.save(table_path)
+    workbook.close()
+    notice_path.write_text("皮肤属性：自身增伤+40%", encoding="utf-8")
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Headerless sentence adaptation", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": (table_path.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": (notice_path.name, fh, "text/plain")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={
+                "source_artifact_id": notice_artifact["id"],
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["th"],
+                "include_project_archive": False,
+            },
+        ).json()
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["th"],
+                "include_project_archive": False,
+                "ai_supplement": False,
+            },
+        )
+
+        assert extracted.status_code == 200, extracted.text
+        payload = extracted.json()
+        assert payload["summary"]["official_exact_sentence_hits"] == 1
+        assert payload["task"]["metadata"]["sentence_adaptations"][0]["translations"]["th"] == "DMG INC ตัวเอง +40%"
 
 
 def test_announcement_lookup_allows_completed_empty_term_extraction() -> None:

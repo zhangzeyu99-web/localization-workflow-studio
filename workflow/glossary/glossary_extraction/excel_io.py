@@ -191,7 +191,8 @@ def records_from_rows(
     records: list[Record] = []
     for row_number, row in enumerate(data_rows, start=first_data_row_number):
         row_values = list(row)
-        row_id = "" if id_index >= len(row_values) or row_values[id_index] is None else str(row_values[id_index])
+        raw_id = value_at(row_values, id_index)
+        row_id = "" if raw_id is None else str(raw_id)
         if not row_id:
             row_id = f"{sheet_title}:{row_number}"
         source = "" if source_index >= len(row_values) else clean_text(row_values[source_index])
@@ -322,6 +323,41 @@ def auto_sheet_column_layout(
     )
 
 
+def adjacent_unnamed_target_layout(
+    rows: list[list[object]],
+    headers: list[str],
+    header_row_index: int,
+    id_column: str,
+    source_column: str,
+    target_column: str,
+    source_only: bool = False,
+) -> SheetColumnLayout | None:
+    if source_only:
+        return None
+    source_index = first_matching_header_fuzzy(headers, [source_column, *AUTO_SOURCE_HEADERS])
+    explicit_target_index = first_matching_header_fuzzy(headers, [target_column, *AUTO_TARGET_HEADERS])
+    if source_index is None or explicit_target_index is not None:
+        return None
+    target_index = source_index + 1
+    if target_index >= len(headers) or clean_text(headers[target_index]):
+        return None
+    has_source_target_pair = any(
+        clean_text(value_at(list(row), source_index)) and clean_text(value_at(list(row), target_index))
+        for row in rows[header_row_index + 1 :]
+    )
+    if not has_source_target_pair:
+        return None
+    id_index = first_matching_header_fuzzy(headers, [id_column, *AUTO_ID_HEADERS])
+    return SheetColumnLayout(
+        header_row_index=header_row_index,
+        headers=["ID", "CN", canonical_output_header(target_column, "EN")],
+        id_index=id_index,
+        source_index=source_index,
+        target_index=target_index,
+        output_indexes=[id_index, source_index, target_index],
+    )
+
+
 def language_table_layout_from_rows(
     rows: list[list[object]],
     id_column: str,
@@ -353,6 +389,17 @@ def language_table_layout_from_rows(
         )
         if auto_layout is not None:
             return auto_layout
+        adjacent_layout = adjacent_unnamed_target_layout(
+            rows=rows,
+            headers=headers,
+            header_row_index=header_row_index,
+            id_column=id_column,
+            source_column=source_column,
+            target_column=target_column,
+            source_only=source_only,
+        )
+        if adjacent_layout is not None:
+            return adjacent_layout
     return None
 
 

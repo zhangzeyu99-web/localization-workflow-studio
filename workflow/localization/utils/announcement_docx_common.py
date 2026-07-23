@@ -47,6 +47,8 @@ FIXED_COLUMNS = (
     "protected_tokens",
     "term_hits_json",
 )
+SENTENCE_ADAPTATIONS_COLUMN = "sentence_adaptations_json"
+PREPARED_COLUMNS = (*FIXED_COLUMNS, SENTENCE_ADAPTATIONS_COLUMN)
 TRANSLATION_WORKBOOK_NAME = "announcement_translation_workbook.xlsx"
 MANIFEST_NAME = "manifest.json"
 QA_SUMMARY_NAME = "QA摘要.xlsx"

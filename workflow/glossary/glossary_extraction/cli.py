@@ -52,6 +52,13 @@ from glossary_extraction.experience import (
 from glossary_extraction.heuristics import build_term_rows, clean_text
 from glossary_extraction.models import Record
 from glossary_extraction.reporting import build_project_brief
+from glossary_extraction.sentence_templates import (
+    build_sentence_template_candidates_from_workbook,
+    build_sentence_template_matches,
+    load_translated_material_text,
+    merge_sentence_template_candidates,
+    validate_official_template_usage,
+)
 
 
 def default_output_paths(input_path: Path, detail_output: str | None, final_output: str | None) -> tuple[Path, Path]:
@@ -85,9 +92,14 @@ def default_announcement_output_path(material_paths: list[Path], announcement_ou
 def default_announcement_validation_output_path(
     material_paths: list[Path],
     announcement_validation_output: str | None,
+    enable_default: bool = False,
 ) -> Path | None:
     if announcement_validation_output:
         return Path(announcement_validation_output)
+    if enable_default and material_paths:
+        date_suffix = datetime.now().strftime("%Y%m%d")
+        first_material = material_paths[0]
+        return first_material.with_name(f"{first_material.stem}_announcement_validation_{date_suffix}.md")
     return None
 
 
@@ -142,6 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Announcement lookup language table in LANG=path form. Can be repeated, for example EN=table.xlsx.",
+    )
+    parser.add_argument(
+        "--translated-material",
+        action="append",
+        default=[],
+        help="Translated announcement material in LANG=path form. Can be repeated; exact official-template mismatches are reported as warnings.",
     )
     parser.add_argument(
         "--source-only",
@@ -281,10 +299,18 @@ def run_announcement_glossary_outputs(
     ai_supplement_report_output_path: Path | None,
     ai_supplement_response_path: Path | None,
     ai_supplement_provider: AiSupplementProvider | None,
-) -> tuple[list[dict[str, object]], dict[str, object] | None]:
+    sentence_template_candidates: list[dict[str, object]],
+    template_languages: list[str],
+    translated_texts: dict[str, str],
+) -> tuple[list[dict[str, object]], dict[str, object] | None, list[dict[str, object]], dict[str, object]]:
     # Shared by the multilingual, announcement-only, and full-extraction CLI
     # branches: optional AI supplement, glossary workbook, validation report.
     ai_supplement_report: dict[str, object] | None = None
+    sentence_template_matches = build_sentence_template_matches(
+        candidate_rows=sentence_template_candidates,
+        announcement_text=announcement_text,
+        matched_terms=[clean_text(row.get("CN")) for row in announcement_rows if clean_text(row.get("CN"))],
+    )
     if args.ai_supplement:
         if ai_supplement_packet_output_path is None or ai_supplement_report_output_path is None:
             parser.error("--ai-supplement output paths could not be resolved.")
@@ -298,7 +324,12 @@ def run_announcement_glossary_outputs(
             report_output_path=ai_supplement_report_output_path,
             response_path=ai_supplement_response_path,
             provider=ai_supplement_provider or PacketOnlyAiSupplementProvider(),
+            sentence_template_matches=sentence_template_matches,
         )
+    template_qa = validate_official_template_usage(
+        template_matches=sentence_template_matches,
+        translated_texts=translated_texts,
+    )
     write_announcement_glossary_workbook(
         output_path=announcement_output_path,
         matched_rows=announcement_rows,
@@ -306,6 +337,8 @@ def run_announcement_glossary_outputs(
         source_header=args.source_column,
         target_header=args.target_column,
         headers=headers,
+        sentence_template_matches=sentence_template_matches,
+        template_languages=template_languages,
     )
     if announcement_validation_output_path is not None:
         write_announcement_validation_report(
@@ -316,8 +349,10 @@ def run_announcement_glossary_outputs(
             rows=announcement_rows,
             headers=headers,
             stats=validation_stats,
+            sentence_template_matches=sentence_template_matches,
+            template_qa=template_qa,
         )
-    return announcement_rows, ai_supplement_report
+    return announcement_rows, ai_supplement_report, sentence_template_matches, template_qa
 
 
 def run_single_table_announcement_flow(
@@ -335,7 +370,8 @@ def run_single_table_announcement_flow(
     ai_supplement_report_output_path: Path | None,
     ai_supplement_response_path: Path | None,
     ai_supplement_provider: AiSupplementProvider | None,
-) -> tuple[list[dict[str, object]], dict[str, object] | None]:
+    translated_texts: dict[str, str],
+) -> tuple[list[dict[str, object]], dict[str, object] | None, list[dict[str, object]], dict[str, object]]:
     # Shared single-workbook announcement lookup used by the announcement-only
     # branch and the full extraction + announcement branch.
     announcement_headers, announcement_candidate_rows = build_announcement_candidate_rows_from_workbook(
@@ -366,6 +402,14 @@ def run_single_table_announcement_flow(
         display_header_name(args.source_column, "CN"),
         display_header_name(args.target_column, "EN"),
     ]
+    template_languages, sentence_template_candidates = build_sentence_template_candidates_from_workbook(
+        input_path=input_path,
+        sheet_name=args.sheet,
+        id_column=args.id_column,
+        source_column=args.source_column,
+        target_column=args.target_column,
+        source_only=args.source_only,
+    )
 
     def build_ai_candidate_rows() -> list[dict[str, object]]:
         return build_ai_evidence_candidate_rows_from_workbook(
@@ -395,6 +439,9 @@ def run_single_table_announcement_flow(
         ai_supplement_report_output_path=ai_supplement_report_output_path,
         ai_supplement_response_path=ai_supplement_response_path,
         ai_supplement_provider=ai_supplement_provider,
+        sentence_template_candidates=sentence_template_candidates,
+        template_languages=template_languages or output_headers[2:],
+        translated_texts=translated_texts,
     )
 
 
@@ -416,12 +463,24 @@ def print_ai_supplement_summary(
         print(f"PROJECT_NAME_TRANSLATION_MISSING={clean_text(project_name)}")
 
 
+def print_sentence_template_summary(
+    sentence_template_matches: list[dict[str, object]],
+    template_qa: dict[str, object],
+) -> None:
+    print(f"ANNOUNCEMENT_TEMPLATES={len(sentence_template_matches)}")
+    print(f"OFFICIAL_TEMPLATE_QA={template_qa.get('status', 'not_run')}")
+    print(f"OFFICIAL_TEMPLATE_MATCHES={int(template_qa.get('matches', 0))}")
+    print(f"OFFICIAL_TEMPLATE_MISMATCHES={int(template_qa.get('mismatches', 0))}")
+    print(f"UNVERIFIABLE_PLACEHOLDERS={int(template_qa.get('unverifiable_placeholders', 0))}")
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         language_table_specs = parse_language_table_specs(args.language_table)
+        translated_material_specs = parse_language_table_specs(args.translated_material)
     except ValueError as exc:
         parser.error(str(exc))
     if args.input_path and language_table_specs:
@@ -430,6 +489,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("input_path or at least one --language-table LANG=path is required.")
 
     announcement_material_paths = [Path(path) for path in args.announcement_material]
+    if translated_material_specs and not announcement_material_paths:
+        parser.error("--translated-material is only supported with --announcement-material.")
+    for spec in [*language_table_specs, *translated_material_specs]:
+        if not spec.path.exists():
+            parser.error(f"Missing material file: {spec.path}")
+    translated_texts = {
+        spec.language: load_translated_material_text(spec.path)
+        for spec in translated_material_specs
+    }
     announcement_output_path = default_announcement_output_path(
         material_paths=announcement_material_paths,
         announcement_output=args.announcement_output,
@@ -437,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
     announcement_validation_output_path = default_announcement_validation_output_path(
         material_paths=announcement_material_paths,
         announcement_validation_output=args.announcement_validation_output,
+        enable_default=bool(translated_material_specs),
     )
     ai_supplement_packet_output_path = default_ai_supplement_packet_output_path(
         material_paths=announcement_material_paths,
@@ -488,7 +557,23 @@ def main(argv: list[str] | None = None) -> int:
             include_empty=args.include_empty_final_terms,
         )
         announcement_headers = ["ID", "CN", *[spec.language for spec in language_table_specs]]
-        announcement_rows, ai_supplement_report = run_announcement_glossary_outputs(
+        multilingual_template_candidates: list[dict[str, object]] = []
+        for spec in language_table_specs:
+            _languages, candidates = build_sentence_template_candidates_from_workbook(
+                input_path=spec.path,
+                sheet_name=args.sheet,
+                id_column=args.id_column,
+                source_column=args.source_column,
+                target_column=spec.language,
+                language=spec.language,
+                source_only=args.source_only,
+            )
+            multilingual_template_candidates.extend(candidates)
+        sentence_template_candidates = merge_sentence_template_candidates(
+            multilingual_template_candidates,
+            required_language=language_table_specs[0].language,
+        )
+        announcement_rows, ai_supplement_report, sentence_template_matches, template_qa = run_announcement_glossary_outputs(
             parser=parser,
             args=args,
             announcement_rows=announcement_rows,
@@ -513,6 +598,9 @@ def main(argv: list[str] | None = None) -> int:
             ai_supplement_report_output_path=ai_supplement_report_output_path,
             ai_supplement_response_path=ai_supplement_response_path,
             ai_supplement_provider=ai_supplement_provider,
+            sentence_template_candidates=sentence_template_candidates,
+            template_languages=[spec.language for spec in language_table_specs],
+            translated_texts=translated_texts,
         )
 
         print("INPUT=multi-language")
@@ -527,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"LANGUAGE_TABLES={len(language_table_specs)}")
         print(f"CURATED_RULES={curated_rules_path or 'disabled'}")
         print(f"OBSERVATIONS_STORE={observations_store_path or 'disabled'}")
+        print_sentence_template_summary(sentence_template_matches, template_qa)
         print_ai_supplement_summary(
             args=args,
             ai_supplement_packet_output_path=ai_supplement_packet_output_path,
@@ -561,7 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         source_only=args.source_only,
     )
     if announcement_only and announcement_output_path is not None:
-        announcement_rows, ai_supplement_report = run_single_table_announcement_flow(
+        announcement_rows, ai_supplement_report, sentence_template_matches, template_qa = run_single_table_announcement_flow(
             parser=parser,
             args=args,
             input_path=input_path,
@@ -575,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
             ai_supplement_report_output_path=ai_supplement_report_output_path,
             ai_supplement_response_path=ai_supplement_response_path,
             ai_supplement_provider=ai_supplement_provider,
+            translated_texts=translated_texts,
         )
 
         print(f"INPUT={input_path}")
@@ -590,6 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"OBSERVATIONS_STORE={observations_store_path or 'disabled'}")
         print(f"SHEET={sheet_name}")
         print(f"RECORDS={len(records)}")
+        print_sentence_template_summary(sentence_template_matches, template_qa)
         print_ai_supplement_summary(
             args=args,
             ai_supplement_packet_output_path=ai_supplement_packet_output_path,
@@ -645,8 +736,15 @@ def main(argv: list[str] | None = None) -> int:
 
     announcement_rows: list[dict[str, object]] = []
     ai_supplement_report: dict[str, object] | None = None
+    sentence_template_matches: list[dict[str, object]] = []
+    template_qa: dict[str, object] = {
+        "status": "not_run",
+        "matches": 0,
+        "mismatches": 0,
+        "unverifiable_placeholders": 0,
+    }
     if announcement_material_paths and announcement_output_path is not None:
-        announcement_rows, ai_supplement_report = run_single_table_announcement_flow(
+        announcement_rows, ai_supplement_report, sentence_template_matches, template_qa = run_single_table_announcement_flow(
             parser=parser,
             args=args,
             input_path=input_path,
@@ -660,6 +758,7 @@ def main(argv: list[str] | None = None) -> int:
             ai_supplement_report_output_path=ai_supplement_report_output_path,
             ai_supplement_response_path=ai_supplement_response_path,
             ai_supplement_provider=ai_supplement_provider,
+            translated_texts=translated_texts,
         )
 
     save_curated_rules(curated_rules_path, curated_rules)
@@ -683,6 +782,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"GLOSSARY_ROWS={len(glossary_rows)}")
     print(f"HIGH_RISK_ROWS={len(high_risk_rows)}")
     print(f"MANUAL_ADAPTATION_ROWS={len(manual_rows)}")
+    print_sentence_template_summary(sentence_template_matches, template_qa)
     print_ai_supplement_summary(
         args=args,
         ai_supplement_packet_output_path=ai_supplement_packet_output_path,

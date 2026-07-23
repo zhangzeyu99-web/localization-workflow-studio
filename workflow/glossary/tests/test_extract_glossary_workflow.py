@@ -1329,7 +1329,15 @@ class CliIntegrationTests(unittest.TestCase):
 
             for workbook_path, translations in [
                 (en_path, {"\u79d8\u5883": "Trial Realm", "\u7eb9\u7ae0": "Emblem", "\u73a9\u5bb6": "Player"}),
-                (fr_path, {"\u79d8\u5883": "Royaume d'epreuve", "\u7eb9\u7ae0": "Embleme", "\u73a9\u5bb6": "Joueur"}),
+                (
+                    fr_path,
+                    {
+                        "\u79d8\u5883": "Royaume d'epreuve",
+                        "\u7eb9\u7ae0": "Embleme",
+                        "\u73a9\u5bb6": "Joueur",
+                        "\u5956\u52b1": "Recompense",
+                    },
+                ),
             ]:
                 workbook = Workbook()
                 worksheet = workbook.active

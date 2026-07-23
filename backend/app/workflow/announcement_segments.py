@@ -275,6 +275,7 @@ _SOURCE_HEADER_ALIASES = [
     "source",
     "chinese",
     "中文",
+    "中文key",
     "原文",
     "简体中文",
     "term",
@@ -392,6 +393,74 @@ def _announcement_constraint_rows(project_id: str, metadata: dict[str, Any], lan
                 row.setdefault("sources", []).append({"type": "qa_archive", "language": language, "entry_id": entry.get("id")})
         rows = list(by_source.values())
     return rows
+
+
+def _announcement_sentence_template_matches(
+    project_id: str,
+    metadata: dict[str, Any],
+    languages: list[str],
+    source_text: str,
+    matched_terms: list[str],
+) -> list[dict[str, Any]]:
+    extractor = _glossary_extractor_module()
+    candidates: list[dict[str, Any]] = []
+    for artifact_id in _announcement_constraint_artifact_ids(metadata):
+        artifact = db.get_artifact(artifact_id)
+        if artifact["project_id"] != project_id:
+            raise KeyError(artifact_id)
+        if _is_generated_announcement_terms_artifact(artifact):
+            continue
+        path = Path(artifact["path"])
+        if path.suffix.lower() not in _XLSX_SUFFIXES:
+            continue
+        for language in languages:
+            visible_code = _visible_language_code(language)
+            _found_languages, artifact_candidates = extractor.build_sentence_template_candidates_from_workbook(
+                input_path=path,
+                sheet_name=None,
+                id_column="ID",
+                source_column="CN",
+                target_column=visible_code,
+                language=visible_code,
+                source_only=False,
+            )
+            candidates.extend(artifact_candidates)
+    merged = extractor.merge_sentence_template_candidates(candidates)
+    raw_matches = extractor.build_sentence_template_matches(
+        candidate_rows=merged,
+        announcement_text=source_text,
+        matched_terms=matched_terms,
+    )
+    matches: list[dict[str, Any]] = []
+    selected = set(languages)
+    for row in raw_matches:
+        translations: dict[str, str] = {}
+        render_status: dict[str, str] = {}
+        raw_status = row.get("_render_status") if isinstance(row.get("_render_status"), dict) else {}
+        for raw_language, raw_target in (row.get("translations") or {}).items():
+            try:
+                language = require_supported_language(str(raw_language))
+            except ValueError:
+                continue
+            target = str(raw_target or "").strip()
+            if language not in selected or not target:
+                continue
+            translations[language] = target
+            render_status[language] = str(raw_status.get(raw_language) or "").strip()
+        if not translations:
+            continue
+        matches.append(
+            {
+                "priority": int(row.get("Priority") or 0),
+                "match_type": str(row.get("MatchType") or "").strip(),
+                "id": str(row.get("ID") or "").strip(),
+                "announcement_cn": str(row.get("AnnouncementCN") or "").strip(),
+                "official_cn_template": str(row.get("OfficialCNTemplate") or "").strip(),
+                "translations": translations,
+                "render_status": render_status,
+            }
+        )
+    return matches
 
 
 def _language_table_rows_from_artifacts(project_id: str, artifact_ids: list[str], languages: list[str]) -> list[dict[str, Any]]:
@@ -536,6 +605,60 @@ def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str
     return rows
 
 
+def _read_announcement_sentence_adaptations(path: Path, languages: list[str]) -> list[dict[str, Any]]:
+    if path.suffix.lower() not in _XLSX_SUFFIXES:
+        return []
+    sheets, close = _load_xlsx_sheets(path)
+    try:
+        worksheet = next((sheet for sheet in sheets if str(sheet.title).strip().casefold() == "sentencetemplates"), None)
+        if worksheet is None:
+            return []
+        values = list(worksheet.iter_rows(min_row=1, max_row=1, values_only=True))
+        if not values:
+            return []
+        headers = [str(value or "").strip() for value in values[0]]
+        normalized = _header_index(headers)
+        priority_idx = _column_by_alias(normalized, ["priority", "优先级"])
+        match_type_idx = _column_by_alias(normalized, ["matchtype", "match_type", "匹配类型"])
+        id_idx = _column_by_alias(normalized, ["id", "key", "编号"])
+        announcement_idx = _column_by_alias(normalized, ["announcementcn", "announcement_cn", "公告中文"])
+        official_idx = _column_by_alias(normalized, ["officialcntemplate", "official_cn_template", "官方中文模板"])
+        if None in {priority_idx, match_type_idx, id_idx, announcement_idx, official_idx}:
+            raise ValueError("SentenceTemplates missing required columns")
+        language_indices = {
+            language: _language_column_index(_header_index(headers, prefer_last=True), language)
+            for language in languages
+        }
+        output: list[dict[str, Any]] = []
+        for row in worksheet.iter_rows(min_row=2, values_only=True):
+            match_type = str(row[match_type_idx] or "").strip() if match_type_idx < len(row) else ""
+            if not match_type:
+                continue
+            if match_type not in {"official_exact", "official_similar"}:
+                raise ValueError(f"unsupported SentenceTemplates match type: {match_type}")
+            translations = {
+                language: str(row[index] or "").strip()
+                for language, index in language_indices.items()
+                if index is not None and index < len(row) and str(row[index] or "").strip()
+            }
+            if not translations:
+                continue
+            output.append(
+                {
+                    "priority": int(row[priority_idx] or 0),
+                    "match_type": match_type,
+                    "id": str(row[id_idx] or "").strip(),
+                    "announcement_cn": str(row[announcement_idx] or "").strip(),
+                    "official_cn_template": str(row[official_idx] or "").strip(),
+                    "translations": translations,
+                    "render_status": {language: "imported" for language in translations},
+                }
+            )
+        return output
+    finally:
+        close()
+
+
 def _language_table_header_layout(ws: Any, languages: list[str], *, max_scan_rows: int = 12) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None
     max_row = min(int(ws.max_row or max_scan_rows), max_scan_rows)
@@ -554,6 +677,23 @@ def _language_table_header_layout(ws: Any, languages: list[str], *, max_scan_row
             for index in [_language_column_index(normalized_last, language)]
         }
         language_count = sum(1 for index in language_indices.values() if index is not None)
+        if language_count <= 0 and len(languages) == 1:
+            adjacent_index = source_idx + 1
+            if adjacent_index < len(headers) and not headers[adjacent_index]:
+                has_adjacent_values = any(
+                    source_idx < len(data_row)
+                    and adjacent_index < len(data_row)
+                    and str(data_row[source_idx] or "").strip()
+                    and str(data_row[adjacent_index] or "").strip()
+                    for data_row in ws.iter_rows(
+                        min_row=row_number + 1,
+                        max_row=min(int(ws.max_row or row_number + 20), row_number + 20),
+                        values_only=True,
+                    )
+                )
+                if has_adjacent_values:
+                    language_indices[languages[0]] = adjacent_index
+                    language_count = 1
         if language_count <= 0:
             continue
         score = language_count * 10 + (1 if id_idx is not None else 0) + row_number / 100

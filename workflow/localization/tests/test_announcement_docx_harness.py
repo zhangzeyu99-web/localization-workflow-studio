@@ -166,6 +166,43 @@ def _write_kr_terms(path: Path) -> None:
     wb.save(path)
 
 
+def _write_terms_with_sentence_adaptations(path: Path) -> None:
+    wb = Workbook()
+    glossary = wb.active
+    glossary.title = "Glossary"
+    glossary.append(["ID", "CN", "EN", "FR"])
+    glossary.append(["term_trainer", "\u8bad\u7ec3\u5e08", "Trainer", "Dresseur"])
+    glossary.append(["term_maintenance", "\u7ef4\u62a4", "Maintenance", "Maintenance"])
+
+    templates = wb.create_sheet("SentenceTemplates")
+    templates.append(
+        ["Priority", "MatchType", "ID", "AnnouncementCN", "OfficialCNTemplate", "EN", "FR"]
+    )
+    templates.append(
+        [
+            1,
+            "official_exact",
+            "sentence_exact",
+            "\u7ef4\u62a4\u671f\u95f4\uff0c\u8bad\u7ec3\u5e08\u53ef\u9886\u53d62\u4efd\u5956\u52b1\u3002",
+            "\u7ef4\u62a4\u671f\u95f4\uff0c\u8bad\u7ec3\u5e08\u53ef\u9886\u53d6<@1>\u4efd\u5956\u52b1\u3002",
+            "During maintenance, coaches can claim <@1> rewards.",
+            "Pendant la maintenance, les coaches peuvent obtenir <@1> recompenses.",
+        ]
+    )
+    templates.append(
+        [
+            2,
+            "official_similar",
+            "sentence_similar",
+            "\u8bad\u7ec3\u5e08",
+            "\u8bad\u7ec3\u5e08\u8bf7\u7559\u610f\u6d3b\u52a8\u65f6\u95f4\u3002",
+            "Trainers, please note the event schedule.",
+            "Dresseurs, consultez les horaires de l'evenement.",
+        ]
+    )
+    wb.save(path)
+
+
 def _term_targets(term_hits_json: str, lang_header: str) -> str:
     hits = json.loads(term_hits_json)
     return " ".join(hit["targets"][lang_header] for hit in hits if hit["targets"].get(lang_header))
@@ -175,7 +212,16 @@ def _fill_translation_workbook(path: Path) -> None:
     wb = load_workbook(path)
     ws = wb["Translations"]
     headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
-    fixed_headers = {"source_file", "para_id", "para_index", "style", "CN", "protected_tokens", "term_hits_json"}
+    fixed_headers = {
+        "source_file",
+        "para_id",
+        "para_index",
+        "style",
+        "CN",
+        "protected_tokens",
+        "term_hits_json",
+        "sentence_adaptations_json",
+    }
     language_headers = [str(header) for header in headers if header not in fixed_headers]
     lang_cols = {header: headers.index(header) + 1 for header in language_headers}
     term_hits_col = headers.index("term_hits_json") + 1
@@ -272,6 +318,7 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
                         "CN",
                         "protected_tokens",
                         "term_hits_json",
+                        "sentence_adaptations_json",
                         "EN",
                         "KR",
                         "JP",
@@ -295,6 +342,109 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
                 self.assertEqual(ws.max_row, 4)
             finally:
                 wb.close()
+
+    def test_load_terms_reads_optional_sentence_adaptation_sheet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            term_path = Path(tmp) / "sample_announcement_terms_20260526.xlsx"
+            _write_terms_with_sentence_adaptations(term_path)
+
+            terms = load_announcement_terms(term_path)
+
+            self.assertEqual(len(terms.sentence_adaptations), 2)
+            exact = terms.sentence_adaptations[0]
+            self.assertEqual(exact.priority, 1)
+            self.assertEqual(exact.match_type, "official_exact")
+            self.assertEqual(exact.entry_id, "sentence_exact")
+            self.assertEqual(exact.targets["EN"], "During maintenance, coaches can claim <@1> rewards.")
+
+    def test_load_terms_rejects_invalid_sentence_adaptation_match_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            term_path = Path(tmp) / "sample_announcement_terms_20260526.xlsx"
+            _write_terms_with_sentence_adaptations(term_path)
+            wb = load_workbook(term_path)
+            wb["SentenceTemplates"].cell(2, 2).value = "copy_anyway"
+            wb.save(term_path)
+            wb.close()
+
+            with self.assertRaisesRegex(ValueError, "unsupported MatchType"):
+                load_announcement_terms(term_path)
+
+    def test_inspect_reads_languages_from_glossary_when_sentence_sheet_is_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            (task_dir / "notice.txt").write_text("\u8bad\u7ec3\u5e08\u8bf7\u7559\u610f\n", encoding="utf-8")
+            term_path = task_dir / "notice_announcement_terms_20260526.xlsx"
+            _write_terms_with_sentence_adaptations(term_path)
+            wb = load_workbook(term_path)
+            wb.active = wb.sheetnames.index("SentenceTemplates")
+            wb.save(term_path)
+            wb.close()
+
+            inspection = inspect_announcement_task_dir(task_dir)
+
+            self.assertEqual(inspection.languages, [("EN", "en"), ("FR", "fr")])
+
+    def test_prepare_retrieves_exact_template_with_dynamic_value_before_similar_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            doc = Document()
+            doc.add_paragraph("\u7ef4\u62a4\u671f\u95f4,\u8bad\u7ec3\u5e08\u53ef\u9886\u53d63\u4efd\u5956\u52b1\u3002")
+            doc.save(task_dir / "sample.docx")
+            _write_terms_with_sentence_adaptations(task_dir / "sample_announcement_terms_20260526.xlsx")
+
+            prepared = prepare_announcement_docx_harness(task_dir, languages=["en"])
+            workpack = json.loads(
+                (prepared.work_dir / "workpack_en.jsonl").read_text(encoding="utf-8").splitlines()[0]
+            )
+
+            self.assertEqual(
+                [item["match_type"] for item in workpack["sentence_adaptations"]],
+                ["official_exact", "official_similar"],
+            )
+            self.assertEqual(workpack["sentence_adaptations"][0]["target"], "During maintenance, coaches can claim <@1> rewards.")
+            wb = load_workbook(prepared.translation_workbook, read_only=True, data_only=True)
+            ws = wb["Translations"]
+            headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
+            adaptations = json.loads(ws.cell(2, headers.index("sentence_adaptations_json") + 1).value)
+            wb.close()
+            self.assertEqual([item["match_type"] for item in adaptations], ["official_exact", "official_similar"])
+
+    def test_exact_sentence_adaptation_avoids_mechanical_term_rejection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            doc = Document()
+            doc.add_paragraph("\u7ef4\u62a4\u671f\u95f4\uff0c\u8bad\u7ec3\u5e08\u53ef\u9886\u53d62\u4efd\u5956\u52b1\u3002")
+            doc.save(task_dir / "sample.docx")
+            _write_terms_with_sentence_adaptations(task_dir / "sample_announcement_terms_20260526.xlsx")
+            prepared = prepare_announcement_docx_harness(task_dir, languages=["en"])
+            row = json.loads((prepared.work_dir / "workpack_en.jsonl").read_text(encoding="utf-8").strip())
+            response_dir = task_dir / "responses"
+            response_dir.mkdir()
+            (response_dir / "ai_response_en.jsonl").write_text(
+                json.dumps(
+                    {
+                        "para_id": row["para_id"],
+                        "translation": "During maintenance, coaches can claim 2 rewards.",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            imported = import_announcement_ai_responses(
+                task_dir,
+                response_dir=response_dir,
+                languages=["en"],
+            )
+            applied = apply_announcement_translations(task_dir, imported.translation_workbook)
+
+            self.assertEqual(applied.hard_blockers, 0)
+            qa = load_workbook(applied.qa_summary_path, read_only=True, data_only=True)
+            summary = dict(qa["Summary"].iter_rows(min_row=2, values_only=True))
+            qa.close()
+            self.assertEqual(summary["sentence_adaptation_hit_rows"], 1)
+            self.assertEqual(summary["official_exact_sentence_hits"], 1)
+            self.assertEqual(summary["official_similar_sentence_hits"], 1)
 
     def test_prepare_filters_generic_terms_before_term_hits(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -497,6 +647,45 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
                     languages=["EN"],
                 )
 
+    def test_import_ai_responses_writes_issue_report_for_translation_qa_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            doc = Document()
+            doc.add_paragraph("\u8bad\u7ec3\u5e08\u8bf7\u7559\u610f")
+            doc.save(task_dir / "sample.docx")
+            _write_en_fr_terms(task_dir / "sample_announcement_terms_20260526.xlsx")
+            prepared = prepare_announcement_docx_harness(task_dir, languages=["en"])
+            workpack = json.loads((prepared.work_dir / "workpack_en.jsonl").read_text(encoding="utf-8").strip())
+            response_dir = task_dir / "responses"
+            response_dir.mkdir()
+            (response_dir / "ai_response_en.jsonl").write_text(
+                json.dumps({"para_id": workpack["para_id"], "translation": "Please note."}) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "qa_report="):
+                import_announcement_ai_responses(
+                    task_dir,
+                    response_dir=response_dir,
+                    languages=["en"],
+                )
+
+            report_path = prepared.work_dir / "ai_response_qa_en.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["issue_count"], 1)
+            self.assertEqual(report["issues"][0]["check_type"], "term_missing")
+
+            (response_dir / "ai_response_en.jsonl").write_text(
+                json.dumps({"para_id": workpack["para_id"], "translation": "Trainer, please note."}) + "\n",
+                encoding="utf-8",
+            )
+            import_announcement_ai_responses(
+                task_dir,
+                response_dir=response_dir,
+                languages=["en"],
+            )
+            self.assertFalse(report_path.exists())
+
     def test_prepare_does_not_require_chinese_bracket_text_as_protected_token(self):
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = Path(tmp)
@@ -515,6 +704,53 @@ class AnnouncementDocxHarnessTests(unittest.TestCase):
             self.assertEqual(json.loads(ws.cell(2, protected_col).value), [])
             self.assertIn("[VIP]", json.loads(ws.cell(3, protected_col).value))
             wb.close()
+
+    def test_prepare_does_not_protect_numeric_month_when_chinese_date_is_localized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            doc = Document()
+            doc.add_paragraph("7\u670831\u65e5~8\u67085\u65e5\uff08\u5f00\u670d\u7b2c8\u5929\u53ca\u4ee5\u4e0a\uff09")
+            doc.save(task_dir / "sample.docx")
+            _write_en_fr_terms(task_dir / "sample_announcement_terms_20260526.xlsx")
+
+            prepared = prepare_announcement_docx_harness(task_dir, languages=["en"])
+            row = json.loads((prepared.work_dir / "workpack_en.jsonl").read_text(encoding="utf-8").strip())
+
+            self.assertEqual(row["protected_tokens"], ["31", "5", "8"])
+
+    def test_import_accepts_localized_bracket_shape_and_hyphenated_term(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            doc = Document()
+            doc.add_paragraph("\u76ae\u80a4\u6280\u80fd\uff08Lv.1\uff09\uff1a\u7d2f\u8ba1\u5145\u503c")
+            doc.save(task_dir / "sample.docx")
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN"])
+            ws.append(["term_top_up", "\u5145\u503c", "Top Up"])
+            wb.save(task_dir / "sample_announcement_terms_20260526.xlsx")
+            prepared = prepare_announcement_docx_harness(task_dir, languages=["en"])
+            row = json.loads((prepared.work_dir / "workpack_en.jsonl").read_text(encoding="utf-8").strip())
+            response_dir = task_dir / "responses"
+            response_dir.mkdir()
+            (response_dir / "ai_response_en.jsonl").write_text(
+                json.dumps(
+                    {
+                        "para_id": row["para_id"],
+                        "translation": "Skin Skill (Lv.1): cumulative top-up",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            imported = import_announcement_ai_responses(
+                task_dir,
+                response_dir=response_dir,
+                languages=["en"],
+            )
+
+            self.assertEqual(imported.row_count, 1)
 
     def test_apply_rejects_workbook_protocol_and_source_drift(self):
         cases = ("missing", "duplicate", "extra", "empty", "drift")

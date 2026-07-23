@@ -47,6 +47,13 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(report["ai_added_to_main"], 1)
         self.assertTrue(report["project_name_translation_missing"])
 
+    def test_evaluate_announcement_sentence_template_fixture_reports_pass(self):
+        fixture_path = ROOT / "fixtures" / "announcement_sentence_templates_regression.json"
+        report = MODULE.evaluate_fixture(fixture_path)
+        self.assertTrue(report["pass"], msg=report)
+        self.assertEqual(report["template_match_count"], 1)
+        self.assertEqual(report["template_mismatches"], [])
+
     def test_harness_cli_writes_report(self):
         fixture_path = ROOT / "fixtures" / "core_regression.json"
         with tempfile.TemporaryDirectory() as temp_dir:

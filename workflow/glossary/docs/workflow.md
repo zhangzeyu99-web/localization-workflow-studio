@@ -132,7 +132,7 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
   --announcement-min-hit 1
 ```
 
-多语言公告术语表使用显式语言码传入，输出一张合并后的 `Glossary`：
+多语言公告术语表使用显式语言码传入，输出一张合并后的 `Glossary`，并在同一文件增加 `SentenceTemplates`：
 
 ```bash
 python scripts/extract_glossary.py \
@@ -142,7 +142,27 @@ python scripts/extract_glossary.py \
   --announcement-output /path/to/announcement_terms.xlsx
 ```
 
-AI 补充层用于提高召回率，但不把完整语言包放进上下文。脚本只导出公告文本、已命中术语和少量相关句内证据给模型。
+`SentenceTemplates` 用于保存公告命中的官方完整句式和相似句证据。翻译时固定优先级为：官方完整句式、官方相似句表达、单个术语、模型自行翻译。完整句式中的 `<@1>`、`{0}`、`{0,Num}`、`%s`、`%d` 等占位符会按公告实际值回填；无法安全对应时保留原模板并给出警告。
+
+部分语言包使用 `中文key` 作为第一列表头，紧邻的第二列直接保存译文但表头为空。通过 `--language-table LANG=path` 传入这类文件时，脚本会自动识别该相邻译文列，并在原表没有 ID 时使用 `工作表名:行号` 作为追溯标识。
+
+多语言合并以第一个 `--language-table` 作为术语和句式主源，其余语言表只补齐相同 CN 的目标语，避免次要语言包的额外工作表把泛词或单语句式带入交付表。
+
+如果已经有翻译后的公告，可重复传入 `--translated-material LANG=path`。脚本会检查命中的官方完整句式是否被沿用；不一致时命令仍返回成功，但控制台和 validation Markdown 会记录严重警告：
+
+```bash
+python scripts/extract_glossary.py \
+  --language-table EN=/path/to/language_en.xlsx \
+  --language-table TH=/path/to/language_th.xlsx \
+  --announcement-material /path/to/update_notice.txt \
+  --translated-material EN=/path/to/update_notice_en.docx \
+  --translated-material TH=/path/to/update_notice_th.docx \
+  --announcement-output /path/to/announcement_terms.xlsx
+```
+
+提供 `--translated-material` 时，即使未显式指定 `--announcement-validation-output`，也会自动生成 `*_announcement_validation_YYYYMMDD.md`。未提供翻译成品时，官方句式 QA 状态为 `not_run`，不能视为已校验。
+
+AI 补充层用于提高召回率，但不把完整语言包放进上下文。packet 按完整句式、相似句证据、已命中术语和未覆盖文本的顺序提供精简信息。
 
 Codex 线程内执行术语任务时，标准流程是先生成 packet，由当前 Codex 模型直接做漏词补充、句内术语拆分和置信检查，再把结构化 response 回填给脚本：
 
@@ -175,10 +195,10 @@ Codex 线程内执行检查清单见 [codex-thread-ai-supplement.md](codex-threa
 
 处理口径：
 
-- 先从完整语言表中按术语级候选提取，不直接输出整句语言表行
+- 先在本地语言表中匹配官方完整句式；完整句未命中时才提供相似句证据和术语级候选
 - 用中文公告文本做精确包含匹配，按公告首次出现位置排序，同位置长词优先
 - AI 补充只用于漏词补充、句内术语拆分和置信提示，不直接决定标准译文
-- 输出单 sheet `Glossary`，列结构沿用完整语言表表头，例如 `ID / CN / EN / FR / DE / RU / IT / ES / PT / ...`
+- 输出 `Glossary` 与 `SentenceTemplates` 两个 sheet；`Glossary` 的列结构和顺序保持不变，模板页记录匹配优先级、类型、官方中文模板和各语言译文
 - 多语言模式输出 `ID / CN / EN / FR...`，以 CN 精确合并；同一 CN 多个 ID 时使用第一个语言表的首个命中 ID
 - 低价值通用词只降级排序，不默认删除，避免漏掉固定 UI 译法
 - 默认只生成术语译文交付表；如需内部审计，可显式传 `--announcement-validation-output /path/to/announcement_validation.md` 生成 validation Markdown
@@ -249,7 +269,8 @@ python scripts/run_glossary_harness.py \
   fixtures/core_regression.json \
   fixtures/observation_feedback_regression.json \
   fixtures/announcement_lookup_regression.json \
-  fixtures/announcement_ai_supplement_regression.json
+  fixtures/announcement_ai_supplement_regression.json \
+  fixtures/announcement_sentence_templates_regression.json
 ```
 
 通过后再跑真实语言表。

@@ -43,6 +43,7 @@ def write_announcement_language_table(path: Path, table: dict[str, Any]) -> None
 
 def evaluate_announcement_fixture(fixture_path: Path, fixture: dict[str, Any]) -> dict[str, Any]:
     expected_rows = fixture.get("expected_rows", [])
+    expected_templates = fixture.get("expected_templates", [])
     expected_absent = set(fixture.get("expected_absent", []))
     strict_terms = bool(fixture.get("strict_terms", True))
     announcement = fixture["announcement"]
@@ -71,6 +72,23 @@ def evaluate_announcement_fixture(fixture_path: Path, fixture: dict[str, Any]) -
             include_empty=False,
         )
         headers = ["ID", "CN", *[spec.language for spec in language_specs]]
+        template_candidates: list[dict[str, Any]] = []
+        for spec in language_specs:
+            _languages, candidates = extractor.build_sentence_template_candidates_from_workbook(
+                input_path=spec.path,
+                sheet_name=None,
+                id_column="ID",
+                source_column="CN",
+                target_column=spec.language,
+                language=spec.language,
+                source_only=False,
+            )
+            template_candidates.extend(candidates)
+        template_matches = extractor.build_sentence_template_matches(
+            candidate_rows=extractor.merge_sentence_template_candidates(template_candidates),
+            announcement_text=announcement,
+            matched_terms=[str(row.get("CN", "")) for row in rows if row.get("CN")],
+        )
         ai_report: dict[str, Any] | None = None
         if "ai_response" in fixture:
             ai_candidate_rows = extractor.build_multilingual_ai_candidate_rows(
@@ -104,11 +122,14 @@ def evaluate_announcement_fixture(fixture_path: Path, fixture: dict[str, Any]) -
             source_header="CN",
             target_header=language_specs[0].language if language_specs else "EN",
             headers=headers,
+            sentence_template_matches=template_matches,
+            template_languages=[spec.language for spec in language_specs],
         )
 
         validation_candidates = list(temp_root.glob("*_announcement_validation_*.md"))
         workbook = load_workbook(output_path, read_only=True, data_only=True)
         sheet_rows = list(workbook["Glossary"].iter_rows(values_only=True))
+        template_sheet_rows = list(workbook["SentenceTemplates"].iter_rows(values_only=True))
         workbook.close()
 
     produced_headers = list(sheet_rows[0]) if sheet_rows else []
@@ -139,11 +160,34 @@ def evaluate_announcement_fixture(fixture_path: Path, fixture: dict[str, Any]) -
     exact_matches = len(expected) - len(missing_terms) - len(mismatched_terms)
     expected_count = len(expected)
     produced_count = len(produced)
+    template_headers = list(template_sheet_rows[0]) if template_sheet_rows else []
+    produced_templates = [dict(zip(template_headers, row)) for row in template_sheet_rows[1:]]
+    templates_by_identity = {
+        (row.get("ID", ""), row.get("MatchType", "")): row
+        for row in produced_templates
+    }
+    template_mismatches: list[dict[str, Any]] = []
+    for expected_template in expected_templates:
+        identity = (expected_template.get("ID", ""), expected_template.get("MatchType", ""))
+        predicted = templates_by_identity.get(identity)
+        if predicted is None:
+            template_mismatches.append({"identity": identity, "reason": "missing"})
+            continue
+        for header, expected_value in expected_template.items():
+            if predicted.get(header, "") != expected_value:
+                template_mismatches.append(
+                    {
+                        "identity": identity,
+                        "header": header,
+                        "expected": expected_value,
+                        "actual": predicted.get(header, ""),
+                    }
+                )
 
     return {
         "fixture": fixture_path.name,
         "mode": "announcement_lookup",
-        "pass": not missing_terms and not mismatched_terms and not absent_hits and not unexpected_terms and not validation_candidates,
+        "pass": not missing_terms and not mismatched_terms and not absent_hits and not unexpected_terms and not validation_candidates and not template_mismatches,
         "expected_count": expected_count,
         "produced_count": produced_count,
         "exact_match_count": exact_matches,
@@ -162,6 +206,8 @@ def evaluate_announcement_fixture(fixture_path: Path, fixture: dict[str, Any]) -
             if isinstance(term, dict) and term.get("status") == "added_to_main"
         ),
         "project_name_translation_missing": bool((ai_report or {}).get("project_name_translation_missing")),
+        "template_match_count": len(produced_templates),
+        "template_mismatches": template_mismatches,
     }
 
 

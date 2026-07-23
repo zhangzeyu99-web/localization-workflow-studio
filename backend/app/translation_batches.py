@@ -151,6 +151,7 @@ def batch_input_fingerprint(
                 "id": normalize_translation_id(row.get("id")),
                 "source": str(row.get("source") or ""),
                 "term_hits": row.get("term_hits") or [],
+                "sentence_adaptations": row.get("sentence_adaptations") or [],
                 "reference_hits": row.get("reference_hits") or row.get("translation_hits") or [],
             }
             for row in rows

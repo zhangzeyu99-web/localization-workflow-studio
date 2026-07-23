@@ -369,6 +369,7 @@ def build_ai_supplement_packet(
     project_name: str = "",
     evidence_limit: int = AI_SUPPLEMENT_EVIDENCE_LIMIT,
     evidence_per_term: int = AI_SUPPLEMENT_EVIDENCE_PER_TERM,
+    sentence_template_matches: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     normalized_notice = clean_text(announcement_text)
     matched_terms = {clean_text(row.get("CN")) for row in matched_rows if clean_text(row.get("CN"))}
@@ -409,10 +410,18 @@ def build_ai_supplement_packet(
     uncovered_text = normalized_notice
     for term in sorted(matched_terms, key=len, reverse=True):
         uncovered_text = uncovered_text.replace(term, "")
+    sentence_template_matches = sentence_template_matches or []
+    official_sentence_matches = [
+        row for row in sentence_template_matches if row.get("MatchType") == "official_exact"
+    ]
+    official_context_evidence = [
+        row for row in sentence_template_matches if row.get("MatchType") == "official_similar"
+    ]
     packet = {
         "schema_version": AI_SUPPLEMENT_SCHEMA_VERSION,
         "task": "announcement_ai_supplement",
         "instructions": [
+            "Reuse official sentence matches first, then official similar-context evidence, then matched atomic terms, and only then use model reasoning for uncovered text.",
             "Only propose terms that appear in announcement_text.",
             "Prefer game-specific system, event, item, mode, character, and proper-name terms.",
             "Use evidence_rows only; do not invent translations without language-table evidence.",
@@ -422,6 +431,8 @@ def build_ai_supplement_packet(
         "announcement_text": normalized_notice,
         "uncovered_announcement_text": clean_text(uncovered_text),
         "headers": headers,
+        "official_sentence_matches": official_sentence_matches,
+        "official_context_evidence": official_context_evidence,
         "matched_terms": [compact_announcement_row(row, headers) for row in matched_rows],
         "evidence_rows": evidence_rows,
         "response_schema": {
@@ -660,6 +671,7 @@ def run_ai_supplement_flow(
     report_output_path: Path,
     response_path: Path | None,
     provider: AiSupplementProvider,
+    sentence_template_matches: list[dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object], Path, Path]:
     packet = build_ai_supplement_packet(
         announcement_text=announcement_text,
@@ -667,6 +679,7 @@ def run_ai_supplement_flow(
         candidate_rows=announcement_candidate_rows,
         headers=headers,
         project_name=project_name,
+        sentence_template_matches=sentence_template_matches,
     )
     write_json_output(packet_output_path, packet)
     response: dict[str, object] = {"supplement_terms": []}

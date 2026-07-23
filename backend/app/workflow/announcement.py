@@ -53,6 +53,8 @@ from .announcement_segments import (
     _detect_announcement_constraint_languages,
     _detect_language_columns,
     _normalize_announcement_languages,
+    _announcement_sentence_template_matches,
+    _read_announcement_sentence_adaptations,
     _read_language_table_rows,
     _select_announcement_constraint_rows,
 )
@@ -423,14 +425,28 @@ def extract_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
         request=request,
         project_name=db.get_project(project_id).get("name", ""),
     )
-    _write_announcement_terms_workbook(workbook_path, rows, languages)
-    summary = {"terms": len(rows), "languages": languages, "source_chars": len(source_text)}
+    sentence_adaptations = _announcement_sentence_template_matches(
+        project_id,
+        metadata,
+        languages,
+        source_text,
+        [str(row.get("source") or "") for row in rows],
+    )
+    _write_announcement_terms_workbook(workbook_path, rows, languages, sentence_adaptations=sentence_adaptations)
+    summary = {
+        "terms": len(rows),
+        "languages": languages,
+        "source_chars": len(source_text),
+        "sentence_templates": len(sentence_adaptations),
+        "official_exact_sentence_hits": sum(1 for item in sentence_adaptations if item.get("match_type") == "official_exact"),
+        "official_similar_sentence_hits": sum(1 for item in sentence_adaptations if item.get("match_type") == "official_similar"),
+    }
     if ai_summary:
         summary["ai_supplement"] = {
             key: ai_summary[key]
             for key in ("enabled", "response_artifact_id", "provider", "provider_status", "provider_error", "term_count", "added_to_main", "report_only", "project_name_translation_missing")
         }
-    manifest = {"kind": "announcement_terms", "task_id": task_id, "project_id": project_id, "languages": languages, "summary": summary, "terms": rows}
+    manifest = {"kind": "announcement_terms", "task_id": task_id, "project_id": project_id, "languages": languages, "summary": summary, "terms": rows, "sentence_adaptations": sentence_adaptations}
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     validation_path.write_text(_announcement_terms_validation(summary, rows, languages), encoding="utf-8")
     artifacts = [
@@ -449,7 +465,7 @@ def extract_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
         if response_artifact:
             summary["ai_supplement"]["response_artifact_id"] = response_artifact["id"]
         summary["ai_supplement"]["report_artifact_id"] = report_artifact["id"]
-    metadata.update({"languages": languages, "terms": rows, "terms_artifact_id": artifacts[0]["id"], "terms_manifest_artifact_id": artifacts[1]["id"], "terms_validation_artifact_id": artifacts[2]["id"], "terms_summary": summary})
+    metadata.update({"languages": languages, "terms": rows, "sentence_adaptations": sentence_adaptations, "terms_artifact_id": artifacts[0]["id"], "terms_manifest_artifact_id": artifacts[1]["id"], "terms_validation_artifact_id": artifacts[2]["id"], "terms_summary": summary})
     if ai_summary:
         metadata["ai_supplement"] = summary["ai_supplement"]
     task = db.update_announcement_task(task_id, status="terms_ready", current_step=ANNOUNCEMENT_STEP["lookup"], selected_languages=languages, metadata=metadata)
@@ -470,6 +486,7 @@ def import_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
     raw_terms = list(getattr(request, "terms", []) or [])
 
     rows: list[dict[str, Any]] = []
+    sentence_adaptations: list[dict[str, Any]] = []
     detected_languages: list[str] = []
     if source_artifact_id:
         artifact = db.get_artifact(source_artifact_id)
@@ -478,6 +495,7 @@ def import_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
         detected_languages = _detect_language_columns(Path(artifact["path"]))
         languages = _normalize_announcement_languages(requested_languages, fallback=detected_languages or task.get("selected_languages") or metadata.get("languages") or [])
         rows = _read_language_table_rows(Path(artifact["path"]), languages)
+        sentence_adaptations = _read_announcement_sentence_adaptations(Path(artifact["path"]), languages)
         metadata["imported_terms_artifact_id"] = source_artifact_id
     else:
         rows = _normalize_announcement_terms_payload(raw_terms)
@@ -492,7 +510,13 @@ def import_announcement_terms(task_id: str, request: Any) -> dict[str, Any]:
     if not languages:
         raise ValueError("announcement terms contain no target languages")
 
-    return _save_announcement_terms(task_id, rows, languages, run_kind="announcement_terms_import")
+    return _save_announcement_terms(
+        task_id,
+        rows,
+        languages,
+        run_kind="announcement_terms_import",
+        sentence_adaptations=sentence_adaptations,
+    )
 
 
 def lookup_announcement_translations(task_id: str, request: Any) -> dict[str, Any]:
@@ -501,6 +525,7 @@ def lookup_announcement_translations(task_id: str, request: Any) -> dict[str, An
     metadata = _merge_announcement_constraint_request(_announcement_task_metadata(task), request)
     languages = _normalize_announcement_languages(getattr(request, "languages", []) or task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
     terms = list(metadata.get("terms") or [])
+    sentence_adaptations = list(metadata.get("sentence_adaptations") or [])
     if not metadata.get("terms_artifact_id"):
         raise ValueError("extract terms before lookup")
     archive_by_language = _project_archive_by_language(task["project_id"], languages)
@@ -531,9 +556,32 @@ def lookup_announcement_translations(task_id: str, request: Any) -> dict[str, An
         context_path = output / f"{_announcement_task_source_stem(task)}_prompt_context_{_visible_language_code(language)}.txt"
         context_path.write_text(prompt_context, encoding="utf-8")
         artifacts.append(db.add_artifact(task["project_id"], f"公告 prompt context ({_visible_language_code(language)})", context_path, "announcement_lookup_prompt_context", run_id=run["id"], mime="text/plain", metadata={"task_id": task_id, "language": language}))
-        lookup[language] = {"terms": rows, "missing_terms": [{"source": row.get("source", ""), "id": row.get("id", "")} for row in missing], "prompt_context_artifact_id": artifacts[-1]["id"]}
+        language_sentence_adaptations = [
+            {
+                "priority": int(item.get("priority") or 0),
+                "match_type": item.get("match_type", ""),
+                "id": item.get("id", ""),
+                "announcement_cn": item.get("announcement_cn", ""),
+                "official_cn_template": item.get("official_cn_template", ""),
+                "target": str((item.get("translations") or {}).get(language) or "").strip(),
+            }
+            for item in sentence_adaptations
+            if str((item.get("translations") or {}).get(language) or "").strip()
+        ]
+        lookup[language] = {
+            "terms": rows,
+            "sentence_adaptations": language_sentence_adaptations,
+            "missing_terms": [{"source": row.get("source", ""), "id": row.get("id", "")} for row in missing],
+            "prompt_context_artifact_id": artifacts[-1]["id"],
+        }
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status="lookup_ready", current_step=ANNOUNCEMENT_STEP["prepare"], metadata={"terms": len(rows), "missing_terms": len(missing), "prompt_context_artifact_id": artifacts[-1]["id"]})
-    summary = {"languages": languages, "terms": len(terms), "missing_terms": sum(len(lookup[language]["missing_terms"]) for language in languages)}
+    summary = {
+        "languages": languages,
+        "terms": len(terms),
+        "missing_terms": sum(len(lookup[language]["missing_terms"]) for language in languages),
+    }
+    if sentence_adaptations:
+        summary["sentence_templates"] = len(sentence_adaptations)
     manifest_path = output / "announcement_lookup_manifest.json"
     manifest = {"kind": "announcement_translation_lookup", "task_id": task_id, "project_id": task["project_id"], "summary": summary, "lookup": lookup}
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -635,7 +683,15 @@ async def _translate_announcement_task(task_id: str, request: Any, cancel_event:
         db.upsert_announcement_task_language(task_id, task["project_id"], language, status="running", current_step=ANNOUNCEMENT_STEP["translate"])
         workpack_artifact = db.get_artifact(metadata["workpack_artifact_ids"][language])
         rows = read_jsonl(Path(workpack_artifact["path"]))
-        provider_rows = [{"id": row["id"], "source": row["source"], "term_hits": row.get("term_hits") or []} for row in rows]
+        provider_rows = [
+            {
+                "id": row["id"],
+                "source": row["source"],
+                "term_hits": row.get("term_hits") or [],
+                "sentence_adaptations": row.get("sentence_adaptations") or [],
+            }
+            for row in rows
+        ]
         prompt = Path(db.get_artifact(metadata.get("prompt_artifact_ids", {}).get(language, ""))["path"]).read_text(encoding="utf-8") if metadata.get("prompt_artifact_ids", {}).get(language) else ""
         translated = await _translate_rows_with_orchestration(
             run_id=run["id"],

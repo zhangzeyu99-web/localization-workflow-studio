@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,7 @@ def _announcement_translation_prompt(project: dict[str, Any], language: str, pro
     return (
         f"{project_prompt.strip()}\n\n"
         f"Announcement translation task: translate Chinese game external announcement text into {spec.prompt_name}.\n"
-        "Use the provided term_hits when present. Preserve IDs, placeholders, tags, dates, numbers, line breaks and JSONL row order.\n"
+        "Use sentence_adaptations before term_hits when present: official_exact is the preferred full-sentence wording, while official_similar is context evidence that must be adapted to the current source. Preserve IDs, placeholders, tags, dates, numbers, line breaks and JSONL row order.\n"
         "Return JSONL only: {\"id\": string, \"translation\": string}. Do not use browser translation, online MT, or machine-translation aggregators.\n"
         f"Terms missing target translation and requiring human review: {json.dumps(missing_for_prompt, ensure_ascii=False)}\n"
     ).strip()
@@ -56,12 +57,13 @@ def _write_announcement_translation_workbook(path: Path, task: dict[str, Any], s
     wb = Workbook()
     ws = wb.active
     ws.title = "Translations"
-    headers = ["source_file", "segment_id", "segment_index", "location", "CN", "protected_tokens", "term_hits_json", *[language_spec(language).target_header for language in languages]]
+    headers = ["source_file", "segment_id", "segment_index", "location", "CN", "protected_tokens", "term_hits_json", "sentence_adaptations_json", *[language_spec(language).target_header for language in languages]]
     ws.append(headers)
     for segment in segments:
         location = segment.get("coordinate") or segment.get("kind") or ""
         protected_tokens = _announcement_protected_tokens(str(segment.get("source") or ""))
         term_hits = {language: _announcement_segment_term_hits(segment, language, lookup) for language in languages}
+        sentence_adaptations = {language: _announcement_segment_sentence_adaptations(segment, language, lookup) for language in languages}
         ws.append(
             [
                 segment.get("source_file", ""),
@@ -71,6 +73,7 @@ def _write_announcement_translation_workbook(path: Path, task: dict[str, Any], s
                 segment.get("source", ""),
                 json.dumps(protected_tokens, ensure_ascii=False),
                 json.dumps(term_hits, ensure_ascii=False),
+                json.dumps(sentence_adaptations, ensure_ascii=False),
                 *["" for _ in languages],
             ]
         )
@@ -89,6 +92,7 @@ def _announcement_workpack_rows(segments: list[dict[str, Any]], language: str, l
                 "source_file": segment.get("source_file", ""),
                 "source": segment.get("source", ""),
                 "term_hits": _announcement_segment_term_hits(segment, language, lookup),
+                "sentence_adaptations": _announcement_segment_sentence_adaptations(segment, language, lookup),
                 "protected_tokens": _announcement_protected_tokens(str(segment.get("source") or "")),
             }
         )
@@ -106,6 +110,34 @@ def _announcement_segment_term_hits(segment: dict[str, Any], language: str, look
             hits.append({"source": term_source, "target": target, "first_position": first_position, "hit_count": hit_count})
     selected = _suppress_overlapping_lookup_hits(hits)
     return [{"source": hit["source"], "target": hit["target"]} for hit in selected]
+
+
+def _normalize_sentence_adaptation_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).translate(
+        str.maketrans({"，": ",", "。": ".", "：": ":", "；": ";", "！": "!", "？": "?", "（": "(", "）": ")"})
+    )
+    return re.sub(r"\s+", "", text)
+
+
+def _announcement_segment_sentence_adaptations(segment: dict[str, Any], language: str, lookup: dict[str, Any]) -> list[dict[str, Any]]:
+    source = _normalize_sentence_adaptation_text(segment.get("source"))
+    matches: list[dict[str, Any]] = []
+    for item in (lookup.get(language) or {}).get("sentence_adaptations", []):
+        cue = _normalize_sentence_adaptation_text(item.get("announcement_cn"))
+        target = str(item.get("target") or "").strip()
+        if not cue or cue not in source or not target:
+            continue
+        matches.append(
+            {
+                "priority": int(item.get("priority") or 0),
+                "match_type": str(item.get("match_type") or ""),
+                "id": str(item.get("id") or ""),
+                "announcement_cn": str(item.get("announcement_cn") or ""),
+                "official_cn_template": str(item.get("official_cn_template") or ""),
+                "target": target,
+            }
+        )
+    return sorted(matches, key=lambda item: (item["priority"], item["id"]))
 
 
 def _announcement_protected_tokens(text: str) -> list[str]:
@@ -195,6 +227,7 @@ def _read_announcement_translation_workbook(path: Path, languages: list[str]) ->
                 "source": str(ws.cell(row_idx, header_index["CN"]).value or ""),
                 "protected_tokens": json.loads(str(ws.cell(row_idx, header_index["protected_tokens"]).value or "[]")),
                 "term_hits": json.loads(str(ws.cell(row_idx, header_index["term_hits_json"]).value or "{}")),
+                "sentence_adaptations": json.loads(str(ws.cell(row_idx, header_index["sentence_adaptations_json"]).value or "{}")) if "sentence_adaptations_json" in header_index else {},
                 "translations": translations,
             }
     finally:
@@ -308,11 +341,26 @@ def _validate_announcement_translation_rows(segments: list[dict[str, Any]], rows
                 if token and token not in translation:
                     issues.append({**base, "check_type": "protected_token_missing", "message": f"Missing protected token: {token}"})
             lang_hits = (row.get("term_hits") or {}).get(language) or []
+            lang_sentence_adaptations = (row.get("sentence_adaptations") or {}).get(language) or []
             for hit in lang_hits:
                 target = str(hit.get("target") or "").strip()
+                if _term_is_covered_by_exact_sentence_adaptation(str(hit.get("source") or ""), lang_sentence_adaptations):
+                    continue
                 if target and target not in translation:
                     issues.append({**base, "check_type": "term_missing", "message": f"Missing term target: {target}"})
     return issues
+
+
+def _term_is_covered_by_exact_sentence_adaptation(source_term: str, sentence_adaptations: list[dict[str, Any]]) -> bool:
+    normalized_term = _normalize_sentence_adaptation_text(source_term)
+    if not normalized_term:
+        return False
+    return any(
+        item.get("match_type") == "official_exact"
+        and str(item.get("target") or "").strip()
+        and normalized_term in _normalize_sentence_adaptation_text(item.get("official_cn_template"))
+        for item in sentence_adaptations
+    )
 
 
 def _write_announcement_outputs(task: dict[str, Any], segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str], output_dir: Path) -> list[tuple[str, Path]]:

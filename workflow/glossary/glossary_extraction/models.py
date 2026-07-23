@@ -17,10 +17,10 @@ class Record:
 class SheetColumnLayout:
     header_row_index: int
     headers: list[str]
-    id_index: int
+    id_index: int | None
     source_index: int
     target_index: int | None
-    output_indexes: list[int]
+    output_indexes: list[int | None]
 
 
 @dataclass
