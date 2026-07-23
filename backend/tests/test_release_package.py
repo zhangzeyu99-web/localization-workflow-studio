@@ -26,11 +26,29 @@ def _write_required_tree(root: Path) -> None:
         "VERSION": "9.9.9\n",
         "frontend/dist/index.html": "<!doctype html><title>LWS</title>",
         "frontend/dist/assets/app.js": "console.log('runtime-profile')\n",
-        "deploy/lws.service": "[Service]\nExecStart=/opt/lws/start-lws.sh\n",
+        "deploy/lws.service": (
+            "[Service]\n"
+            "EnvironmentFile=/etc/lwstudio/lws.env\n"
+            "ExecStart=/opt/lws/start-lws.sh\n"
+        ),
         "deploy/nginx.conf": "server {}\n",
-        "deploy/lws.env.example": "LWS_DATA_ROOT=/var/lib/lws\n",
+        "deploy/lws.env.example": (
+            "LWS_DEPLOYMENT_MODE=cloud\n"
+            "LWS_AUTH_MODE=required\n"
+            "LWS_DATA_ROOT=/var/lib/lws\n"
+            "# Bootstrap only: remove after first login.\n"
+            "LWS_ADMIN_USER=admin\n"
+            "LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password\n"
+        ),
         "deploy/profiles/local-off.env.example": (
             "LWS_DEPLOYMENT_MODE=local\nLWS_AUTH_MODE=off\nLWS_SERVE_FRONTEND=1\nLWS_DATA_ROOT=C:\\ProgramData\\LocalizationWorkflowStudio\\data\n"
+        ),
+        "deploy/profiles/cloud-off.env.example": (
+            "LWS_DEPLOYMENT_MODE=cloud\n"
+            "LWS_AUTH_MODE=off\n"
+            "LWS_SERVE_FRONTEND=0\n"
+            "LWS_DATA_ROOT=/srv/lwstudio/data\n"
+            "LWS_GIT_SHA=replace-with-package-manifest-git-sha\n"
         ),
         "deploy/profiles/cloud-required.env.example": (
             "LWS_DEPLOYMENT_MODE=cloud\n"
@@ -41,7 +59,12 @@ def _write_required_tree(root: Path) -> None:
             "LWS_ADMIN_USER=admin\n"
             "LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password\n"
         ),
-        "start-lws.sh": "#!/usr/bin/env bash\n",
+        "start-lws.sh": (
+            "#!/usr/bin/env bash\n"
+            'export LWS_DEPLOYMENT_MODE="${LWS_DEPLOYMENT_MODE:-cloud}"\n'
+            'export LWS_AUTH_MODE="${LWS_AUTH_MODE:-required}"\n'
+            "exec python -m uvicorn app.main:app\n"
+        ),
         "start-workbench.cmd": "@echo off\n",
         "check.py": "def main():\n    return 0\n",
         "backend/app/main.py": "app = object()\n",
@@ -239,6 +262,7 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert zip_path.name == f"{package_root}.zip"
 
     sidecar = zip_path.with_name(f"{zip_path.name}.sha256")
+    assert b"\r\n" not in sidecar.read_bytes()
     digest, filename = sidecar.read_text(encoding="utf-8").strip().split("  ", 1)
     assert filename == zip_path.name
     assert digest == hashlib.sha256(zip_path.read_bytes()).hexdigest()
@@ -267,7 +291,7 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
         "source_git_dirty": False,
         "source_state": "clean_git_commit",
         "frontend_configuration": "runtime_profile",
-        "supported_runtime_profiles": ["local-off", "cloud-required"],
+        "supported_runtime_profiles": ["local-off", "cloud-off", "cloud-required"],
         "contains_settings_local": False,
         "archive_verified": True,
     }
@@ -294,6 +318,7 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
         runtime_members,
     )
 
+    assert b"\r\n" not in files["SHA256SUMS.txt"]
     rows = files["SHA256SUMS.txt"].decode("utf-8").splitlines()
     hashes = {name: digest for digest, name in (row.split("  ", 1) for row in rows)}
     assert set(hashes) == set(files) - {"SHA256SUMS.txt"}
@@ -358,6 +383,7 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert "scripts/stop-workbench.ps1" in files
     assert "start-workbench.cmd" in files
     assert files["deploy/profiles/local-off.env.example"].decode("utf-8").splitlines()[:2] == ["LWS_DEPLOYMENT_MODE=local", "LWS_AUTH_MODE=off"]
+    assert files["deploy/profiles/cloud-off.env.example"].decode("utf-8").splitlines()[:2] == ["LWS_DEPLOYMENT_MODE=cloud", "LWS_AUTH_MODE=off"]
     assert files["deploy/profiles/cloud-required.env.example"].decode("utf-8").splitlines()[:2] == ["LWS_DEPLOYMENT_MODE=cloud", "LWS_AUTH_MODE=required"]
     assert not any(name.startswith("frontend/src/") for name in files)
     assert "frontend/package.json" not in files
@@ -371,6 +397,251 @@ def test_cli_no_longer_accepts_settings_file_option(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         package.main()
     assert exc.value.code == 2
+
+
+def test_no_account_package_forces_cloud_off_and_records_profile_identity(
+    tmp_path,
+    monkeypatch,
+):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    _configure_clean_git(package, monkeypatch)
+
+    zip_path = package.build(
+        tmp_path / "out",
+        rebuild_frontend=False,
+        no_account=True,
+    )
+    package_root, files = _archive_files(zip_path)
+
+    assert zip_path.name == "无账号-v9.9.9.zip"
+    assert package_root == "localization-workflow-studio-v9.9.9-gdeadbeefcafe-cloud-off"
+    manifest = json.loads(files["PACKAGE_MANIFEST.json"])
+    assert manifest["artifact_kind"] == "profile"
+    assert manifest["default_runtime_profile"] == "cloud-off"
+    assert manifest["supported_runtime_profiles"] == ["cloud-off"]
+    assert manifest["version"] == "9.9.9"
+    assert manifest["git_sha"] == "deadbeefcafe"
+    assert manifest["git_sha_full"] == "deadbeefcafebabefeedface0123456789abcdef"
+    assert manifest["source_git_dirty"] is False
+    assert manifest["source_state"] == "clean_git_commit"
+    assert manifest["contains_settings_local"] is False
+    assert manifest["entrypoints"] == {
+        "linux_backend": "start-lws.sh",
+        "backend_app": "backend/app/main.py",
+        "deployment_check": "check.py",
+        "stability_check": "scripts/stability_check.py",
+    }
+
+    for excluded_member in (
+        "start-workbench.cmd",
+        "scripts/start-workbench.ps1",
+        "scripts/lws-workbench-control.ps1",
+        "scripts/stop-workbench.ps1",
+        "scripts/create_admin.py",
+        "deploy/profiles/local-off.env.example",
+        "deploy/profiles/cloud-required.env.example",
+    ):
+        assert excluded_member not in files
+
+    launcher = files["start-lws.sh"]
+    assert b"\r\n" not in launcher
+    assert b"export LWS_DEPLOYMENT_MODE=cloud\n" in launcher
+    assert b"export LWS_AUTH_MODE=off\n" in launcher
+    assert b"${LWS_DEPLOYMENT_MODE:-cloud}" not in launcher
+    assert b"${LWS_AUTH_MODE:-required}" not in launcher
+
+    service = files["deploy/lws.service"].decode("utf-8")
+    assert (
+        "ExecStart=/usr/bin/env LWS_DEPLOYMENT_MODE=cloud "
+        "LWS_AUTH_MODE=off /opt/lws/start-lws.sh"
+    ) in service
+
+    env_text = files["deploy/lws.env.example"].decode("utf-8")
+    assert "LWS_DEPLOYMENT_MODE=cloud" in env_text
+    assert "LWS_AUTH_MODE=off" in env_text
+    assert "LWS_AUTH_MODE=required" not in env_text
+    assert "LWS_ADMIN_USER" not in env_text
+    assert "LWS_ADMIN_PASSWORD" not in env_text
+    assert "Bootstrap" not in env_text
+
+    readme = files["DEPLOY_README.zh-CN.md"].decode("utf-8")
+    assert "无账号" in readme
+    assert "cloud-off" in readme
+    assert "--expect-deployment-mode cloud" in readme
+    assert "--expect-auth-mode off" in readme
+    assert "--expect-runtime-profile cloud-off" in readme
+    assert "local-off" not in readme
+    assert "cloud-required" not in readme
+    assert "LWS_ADMIN_USER" not in readme
+    assert "LWS_ADMIN_PASSWORD" not in readme
+    assert "--auth-user" not in readme
+    assert "--auth-password" not in readme
+    assert "settings.local.json" in readme
+
+
+def test_no_account_archive_readback_rejects_legacy_profile_entrypoint(
+    tmp_path,
+    monkeypatch,
+):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    _configure_clean_git(package, monkeypatch)
+    zip_path = package.build(
+        tmp_path / "out",
+        rebuild_frontend=False,
+        no_account=True,
+    )
+    package_root, files = _archive_files(zip_path)
+
+    files["start-workbench.cmd"] = b"@echo off\n"
+    manifest = json.loads(files["PACKAGE_MANIFEST.json"])
+    runtime_members = set(files) - package.GENERATED_MEMBERS
+    manifest["runtime_payload_sha256"] = _canonical_tree_digest(
+        files,
+        runtime_members,
+    )
+    manifest["file_count"] += 1
+    files["PACKAGE_MANIFEST.json"] = (
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
+    hashes = {
+        name: hashlib.sha256(content).hexdigest()
+        for name, content in files.items()
+        if name != "SHA256SUMS.txt"
+    }
+    files["SHA256SUMS.txt"] = (
+        "".join(f"{digest}  {name}\n" for name, digest in sorted(hashes.items()))
+    ).encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in sorted(files.items()):
+            archive.writestr(f"{package_root}/{name}", content)
+
+    with pytest.raises(RuntimeError, match="profile allowlist|no-account"):
+        package._verify_archive(zip_path)
+
+
+def test_no_account_archive_readback_rejects_launcher_profile_tampering(
+    tmp_path,
+    monkeypatch,
+):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    _configure_clean_git(package, monkeypatch)
+    zip_path = package.build(
+        tmp_path / "out",
+        rebuild_frontend=False,
+        no_account=True,
+    )
+    package_root, files = _archive_files(zip_path)
+
+    files["start-lws.sh"] = files["start-lws.sh"].replace(
+        b"export LWS_AUTH_MODE=off\n",
+        b"export LWS_AUTH_MODE=required\n",
+    )
+    manifest = json.loads(files["PACKAGE_MANIFEST.json"])
+    runtime_members = set(files) - package.GENERATED_MEMBERS
+    manifest["runtime_payload_sha256"] = _canonical_tree_digest(
+        files,
+        runtime_members,
+    )
+    files["PACKAGE_MANIFEST.json"] = (
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
+    hashes = {
+        name: hashlib.sha256(content).hexdigest()
+        for name, content in files.items()
+        if name != "SHA256SUMS.txt"
+    }
+    files["SHA256SUMS.txt"] = (
+        "".join(f"{digest}  {name}\n" for name, digest in sorted(hashes.items()))
+    ).encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in sorted(files.items()):
+            archive.writestr(f"{package_root}/{name}", content)
+
+    with pytest.raises(RuntimeError, match="cloud-off|auth mode|launcher"):
+        package._verify_archive(zip_path)
+
+
+def test_no_account_archive_readback_rejects_conflicting_environment_profile(
+    tmp_path,
+    monkeypatch,
+):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    _configure_clean_git(package, monkeypatch)
+    zip_path = package.build(
+        tmp_path / "out",
+        rebuild_frontend=False,
+        no_account=True,
+    )
+    package_root, files = _archive_files(zip_path)
+
+    files["deploy/lws.env.example"] += b"LWS_AUTH_MODE=required\n"
+    manifest = json.loads(files["PACKAGE_MANIFEST.json"])
+    runtime_members = set(files) - package.GENERATED_MEMBERS
+    manifest["runtime_payload_sha256"] = _canonical_tree_digest(
+        files,
+        runtime_members,
+    )
+    files["PACKAGE_MANIFEST.json"] = (
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
+    hashes = {
+        name: hashlib.sha256(content).hexdigest()
+        for name, content in files.items()
+        if name != "SHA256SUMS.txt"
+    }
+    files["SHA256SUMS.txt"] = (
+        "".join(f"{digest}  {name}\n" for name, digest in sorted(hashes.items()))
+    ).encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in sorted(files.items()):
+            archive.writestr(f"{package_root}/{name}", content)
+
+    with pytest.raises(RuntimeError, match="cloud-off|environment"):
+        package._verify_archive(zip_path)
+
+
+def test_cli_forwards_no_account_profile(monkeypatch, tmp_path):
+    package = _load_module()
+    captured: dict[str, object] = {}
+
+    def fake_build(output_dir, *, rebuild_frontend, no_account):
+        captured.update(
+            output_dir=output_dir,
+            rebuild_frontend=rebuild_frontend,
+            no_account=no_account,
+        )
+        return output_dir / "无账号-v9.9.9.zip"
+
+    monkeypatch.setattr(package, "build", fake_build)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "build_release_package.py",
+            "--output-dir",
+            str(tmp_path),
+            "--no-rebuild-frontend",
+            "--no-account",
+        ],
+    )
+
+    assert package.main() == 0
+    assert captured == {
+        "output_dir": tmp_path,
+        "rebuild_frontend": False,
+        "no_account": True,
+    }
 
 
 def test_frontend_settings_visibility_is_runtime_only():

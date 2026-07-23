@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .. import db
+from .. import db, operator_context
 from ..archive_pagination import (
     ArchiveRevisionConflict,
     ArchiveSourceConflict,
@@ -43,6 +43,7 @@ from .shared import (
 )
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
     Query,
 )
@@ -182,7 +183,10 @@ def accept_project_glossary_candidates(project_id: str, batch_id: str, payload: 
     return db.accept_glossary_candidates(project_id, batch_id, payload.candidate_ids or None)
 
 
-@router.post("/api/projects/{project_id}/glossary/batches/{batch_id}/translate-missing")
+@router.post(
+    "/api/projects/{project_id}/glossary/batches/{batch_id}/translate-missing",
+    dependencies=[Depends(operator_context.require_operator_for_cloud)],
+)
 def translate_missing_project_glossary_candidates(project_id: str, batch_id: str) -> dict[str, Any]:
     _require_project_batch(project_id, batch_id)
     try:
@@ -317,6 +321,8 @@ def export_project_glossary(project_id: str, format: str = "xlsx", language: str
 
 @router.post("/api/projects/{project_id}/glossary/extract")
 def extract_project_glossary(project_id: str, payload: GlossaryExtractRequest) -> dict[str, Any]:
+    if payload.ai_candidate_supplement:
+        operator_context.require_operator_for_cloud()
     try:
         db.get_project(project_id)
         artifact = db.get_artifact(payload.input_artifact_id)

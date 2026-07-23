@@ -137,6 +137,24 @@ def test_environment_example_uses_external_data_root_and_contains_no_secret() ->
     assert "SECRET" not in env_text.upper()
 
 
+def test_cloud_off_profile_template_is_explicit_and_has_no_admin_bootstrap() -> None:
+    env_file = REPO_ROOT / "deploy" / "profiles" / "cloud-off.env.example"
+    env_text = env_file.read_text(encoding="utf-8")
+    values = dict(
+        line.split("=", 1)
+        for line in env_text.splitlines()
+        if line and not line.startswith("#")
+    )
+
+    assert values["LWS_DEPLOYMENT_MODE"] == "cloud"
+    assert values["LWS_AUTH_MODE"] == "off"
+    assert values["LWS_SERVE_FRONTEND"] == "0"
+    assert values["LWS_DATA_ROOT"] == "/srv/lwstudio/data"
+    assert values["LWS_GIT_SHA"] == "replace-with-package-manifest-git-sha"
+    assert "LWS_ADMIN_USER" not in values
+    assert "LWS_ADMIN_PASSWORD" not in values
+
+
 def test_linux_launcher_sets_explicit_profile_and_manifest_sha_fallback() -> None:
     launcher = (REPO_ROOT / "start-lws.sh").read_text(encoding="utf-8")
 
@@ -166,9 +184,10 @@ def test_public_release_docs_match_repository_version() -> None:
 
     assert f"当前版本：`{version}`" in github_guide
     assert "`local/off`" in github_guide
+    assert "`cloud/off`" in github_guide
     assert "`cloud/required`" in github_guide
     assert f"正式版 v{version}" in pages_index
-    assert f"<strong>{version}</strong><span>单版本 · 双运行配置</span>" in pages_index
+    assert f"<strong>{version}</strong><span>可信内网 · 无账号云端包</span>" in pages_index
 
 
 def test_v160_release_commands_are_shell_safe_and_self_contained() -> None:
@@ -200,7 +219,7 @@ def test_cloud_acceptance_checks_git_sha_and_exact_frontend_assets() -> None:
     assert "PACKAGE_MANIFEST.json" in guide
     assert "--expect-git-sha" in guide
     assert "--check-frontend-assets frontend/dist/assets" in guide
-    assert "公网 HTML 引用" in guide
+    assert "线上 HTML 引用" in guide
     assert "`/api/version` 清单" in guide
     assert "本地 `frontend/dist`" in guide
 

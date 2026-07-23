@@ -50,6 +50,7 @@ def _create_app():
         ({}, "local", "off", "local-off"),
         ({"LWS_DEPLOYMENT_MODE": "local", "LWS_AUTH_MODE": "required"}, "local", "required", "local-required"),
         ({"LWS_DEPLOYMENT_MODE": "cloud"}, "cloud", "required", "cloud-required"),
+        ({"LWS_DEPLOYMENT_MODE": "cloud", "LWS_AUTH_MODE": "off"}, "cloud", "off", "cloud-off"),
         ({"LWS_DEPLOYMENT_MODE": " CLOUD ", "LWS_AUTH_MODE": " REQUIRED "}, "cloud", "required", "cloud-required"),
     ],
 )
@@ -73,10 +74,6 @@ def test_runtime_profile_accepts_supported_modes_and_defaults(
     [
         ({"LWS_DEPLOYMENT_MODE": "edge"}, "LWS_DEPLOYMENT_MODE"),
         ({"LWS_AUTH_MODE": "optional"}, "LWS_AUTH_MODE"),
-        (
-            {"LWS_DEPLOYMENT_MODE": "cloud", "LWS_AUTH_MODE": "off"},
-            "cloud.*off",
-        ),
     ],
 )
 def test_runtime_profile_rejects_invalid_or_unsafe_combinations(
@@ -99,7 +96,6 @@ def test_runtime_profile_is_immutable() -> None:
     [
         ("edge", "off"),
         ("local", "optional"),
-        ("cloud", "off"),
     ],
 )
 def test_runtime_profile_constructor_cannot_bypass_validation(
@@ -212,6 +208,58 @@ def test_cloud_profile_stays_fail_closed_and_uses_secure_cookie_after_env_change
     assert "secure" in login.headers.get("set-cookie", "").lower()
 
 
+def test_cloud_off_profile_keeps_cloud_boundaries_without_account_endpoints() -> None:
+    cloud_off_profile = config.RuntimeProfile("cloud", "off")
+    test_app = main_module.create_app(cloud_off_profile)
+
+    @test_app.get("/runtime-profile/operator-probe")
+    def operator_probe() -> dict[str, str]:
+        return {"operator": operator_context.require_operator_for_cloud()}
+
+    with TestClient(test_app, base_url="https://testserver") as client:
+        health = client.get("/api/health")
+        version = client.get("/api/version")
+        identity = client.get("/api/auth/me")
+        projects = client.get("/api/projects")
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "unused", "password": "Unused-Pass1!"},
+        )
+        register = client.post(
+            "/api/auth/register",
+            json={"username": "unused", "password": "Unused-Pass1!"},
+        )
+        settings_update = client.patch(
+            "/api/settings",
+            json={"provider": "test-fake"},
+        )
+        unsigned_operator = client.get("/runtime-profile/operator-probe")
+        signed_operator = client.get(
+            "/runtime-profile/operator-probe",
+            headers={"X-Operator": "Cloud Off Operator"},
+        )
+
+    for response in (health, version):
+        assert response.status_code == 200, response.text
+        assert response.json()["deployment_mode"] == "cloud"
+        assert response.json()["auth_mode"] == "off"
+        assert response.json()["runtime_profile"] == "cloud-off"
+    assert identity.status_code == 200, identity.text
+    assert identity.json()["id"] == auth.LOCAL_ADMIN_USER["id"]
+    assert identity.json()["auth_enabled"] is False
+    assert projects.status_code == 200, projects.text
+    for response in (login, register):
+        assert response.status_code == 403, response.text
+        assert response.json() == {"detail": "当前模式未启用账号功能"}
+    assert settings_update.status_code == 403, settings_update.text
+    assert unsigned_operator.status_code == 400, unsigned_operator.text
+    assert unsigned_operator.json() == {
+        "detail": "请先设置操作人昵称，再启动 AI 任务。"
+    }
+    assert signed_operator.status_code == 200, signed_operator.text
+    assert signed_operator.json() == {"operator": "Cloud Off Operator"}
+
+
 def test_two_apps_keep_independent_profiles_while_clients_overlap() -> None:
     db.init_db()
     db.create_user(
@@ -271,10 +319,6 @@ def test_request_bound_profile_is_distinct_from_unbound_startup_fallback() -> No
         (
             {"LWS_DEPLOYMENT_MODE": "local", "LWS_AUTH_MODE": "optional"},
             "LWS_AUTH_MODE must be 'off' or 'required'",
-        ),
-        (
-            {"LWS_DEPLOYMENT_MODE": "cloud", "LWS_AUTH_MODE": "off"},
-            "cloud deployment cannot use auth mode off",
         ),
     ],
 )

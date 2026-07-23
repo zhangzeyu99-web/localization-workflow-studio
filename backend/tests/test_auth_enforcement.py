@@ -152,9 +152,12 @@ def test_cloud_required_profile_rejects_unauthenticated_business_api(
     assert response.status_code == 401
 
 
-def test_explicit_auth_off_is_rejected_in_cloud_mode() -> None:
-    with pytest.raises(RuntimeError, match="cloud.*off"):
-        config.RuntimeProfile("cloud", "off")
+def test_explicit_auth_off_is_supported_in_cloud_mode() -> None:
+    profile = config.RuntimeProfile("cloud", "off")
+
+    assert profile.identifier == "cloud-off"
+    assert profile.auth_required is False
+    assert profile.secure_cookies is True
 
 
 def test_required_mode_bootstraps_initial_admin(monkeypatch: pytest.MonkeyPatch) -> None:

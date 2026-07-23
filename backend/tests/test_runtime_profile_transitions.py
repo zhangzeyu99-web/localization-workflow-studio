@@ -140,8 +140,10 @@ def test_pre_account_database_upgrade_preserves_business_rows_and_files() -> Non
     assert account_tables_after == _ACCOUNT_TABLES
 
 
+@pytest.mark.parametrize("off_deployment_mode", ["local", "cloud"])
 def test_required_off_required_transition_preserves_data_visibility_and_revokes_sessions(
     monkeypatch: pytest.MonkeyPatch,
+    off_deployment_mode: str,
 ) -> None:
     db.init_db()
     visible_project = db.insert_project("Member Project", "QA", "")
@@ -193,7 +195,7 @@ def test_required_off_required_transition_preserves_data_visibility_and_revokes_
 
     off_app = _profile_app(
         monkeypatch,
-        deployment_mode="local",
+        deployment_mode=off_deployment_mode,
         auth_mode="off",
     )
     with TestClient(off_app) as client:
@@ -251,7 +253,7 @@ def test_required_off_required_transition_preserves_data_visibility_and_revokes_
 
     final_off_app = _profile_app(
         monkeypatch,
-        deployment_mode="local",
+        deployment_mode=off_deployment_mode,
         auth_mode="off",
     )
     with TestClient(final_off_app) as client:

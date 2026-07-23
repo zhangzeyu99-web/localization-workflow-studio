@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .. import background_jobs, db
+from .. import background_jobs, db, operator_context
 from ..ai_input_audit import announcement_ai_input_summary
 from ..jobs import cancel_singleton_job
 from ..schemas import (
@@ -44,6 +44,7 @@ from ..workflow import (
 from .shared import _query_language
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
 )
 from typing import Any
@@ -65,6 +66,8 @@ def create_announcement_lookup(project_id: str, payload: AnnouncementLookupReque
 
 @router.post("/api/projects/{project_id}/announcement-terms")
 def create_announcement_terms(project_id: str, payload: AnnouncementTermsRequest) -> dict[str, Any]:
+    if payload.ai_supplement and not payload.ai_supplement_response_artifact_id:
+        operator_context.require_operator_for_cloud()
     try:
         return generate_announcement_terms_package(project_id, payload)
     except KeyError as exc:
@@ -201,6 +204,8 @@ def inspect_project_announcement_constraints(task_id: str, payload: Announcement
 
 @router.post("/api/announcement-tasks/{task_id}/extract-terms")
 def extract_project_announcement_terms(task_id: str, payload: AnnouncementTaskActionRequest) -> dict[str, Any]:
+    if payload.ai_supplement and not payload.ai_supplement_response_artifact_id:
+        operator_context.require_operator_for_cloud()
     try:
         return extract_announcement_terms(task_id, payload)
     except KeyError as exc:
@@ -247,7 +252,10 @@ def prepare_project_announcement_translation(task_id: str, payload: Announcement
         raise HTTPException(status_code=500, detail=user_facing_error(exc)) from exc
 
 
-@router.post("/api/announcement-tasks/{task_id}/translate")
+@router.post(
+    "/api/announcement-tasks/{task_id}/translate",
+    dependencies=[Depends(operator_context.require_operator_for_cloud)],
+)
 def translate_project_announcement(task_id: str, payload: AnnouncementTaskTranslateRequest) -> dict[str, Any]:
     try:
         return translate_announcement_task(task_id, payload)

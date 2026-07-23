@@ -29,6 +29,7 @@ from .shared import (
 )
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
 )
 from fastapi.responses import FileResponse
@@ -174,7 +175,10 @@ def get_run_ai_input_summary(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="run not found") from exc
 
 
-@router.post("/api/runs/{run_id}/translate")
+@router.post(
+    "/api/runs/{run_id}/translate",
+    dependencies=[Depends(operator_context.require_operator_for_cloud)],
+)
 def translate(run_id: str, payload: TranslateRequest) -> dict[str, Any]:
     try:
         return run_translate_sync(run_id, payload)

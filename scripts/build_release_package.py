@@ -64,6 +64,7 @@ REQUIRED_SOURCE_MEMBERS = {
     "deploy/nginx.conf",
     "deploy/lws.env.example",
     "deploy/profiles/local-off.env.example",
+    "deploy/profiles/cloud-off.env.example",
     "deploy/profiles/cloud-required.env.example",
     "start-lws.sh",
     "start-workbench.cmd",
@@ -97,6 +98,7 @@ DEPLOY_RELEASE_FILES = {
     "deploy/lws.service",
     "deploy/nginx.conf",
     "deploy/profiles/local-off.env.example",
+    "deploy/profiles/cloud-off.env.example",
     "deploy/profiles/cloud-required.env.example",
 }
 SCRIPT_RELEASE_FILES = {
@@ -188,7 +190,26 @@ ENTRYPOINTS = {
     "deployment_check": "check.py",
     "stability_check": "scripts/stability_check.py",
 }
-SUPPORTED_RUNTIME_PROFILES = ["local-off", "cloud-required"]
+SUPPORTED_RUNTIME_PROFILES = ["local-off", "cloud-off", "cloud-required"]
+NO_ACCOUNT_RUNTIME_PROFILE = "cloud-off"
+NO_ACCOUNT_ARTIFACT_KIND = "profile"
+NO_ACCOUNT_PACKAGE_POLICY = "profile_runtime_allowlist"
+NO_ACCOUNT_ENTRYPOINTS = {
+    "linux_backend": "start-lws.sh",
+    "backend_app": "backend/app/main.py",
+    "deployment_check": "check.py",
+    "stability_check": "scripts/stability_check.py",
+}
+NO_ACCOUNT_EXCLUDED_MEMBERS = {
+    "start-workbench.cmd",
+    "scripts/start-workbench.ps1",
+    "scripts/lws-workbench-control.ps1",
+    "scripts/stop-workbench.ps1",
+    "scripts/create_admin.py",
+    "deploy/profiles/local-off.env.example",
+    "deploy/profiles/cloud-required.env.example",
+}
+NO_ACCOUNT_REQUIRED_MEMBERS = REQUIRED_MEMBERS - NO_ACCOUNT_EXCLUDED_MEMBERS
 
 
 def _git_sha_full() -> str:
@@ -296,8 +317,15 @@ def _is_allowed_source_member(relative: Path) -> bool:
     return False
 
 
-def _is_allowed_archive_member(relative: Path) -> bool:
-    return relative.as_posix() in GENERATED_MEMBERS or _is_allowed_source_member(relative)
+def _is_allowed_archive_member(
+    relative: Path,
+    *,
+    no_account: bool = False,
+) -> bool:
+    member = relative.as_posix()
+    if no_account and member in NO_ACCOUNT_EXCLUDED_MEMBERS:
+        return False
+    return member in GENERATED_MEMBERS or _is_allowed_source_member(relative)
 
 
 def _is_text_candidate(relative: Path) -> bool:
@@ -381,7 +409,9 @@ def _tree_sha256(root: Path, files: Iterable[Path]) -> str:
 
 def _write_archive_sidecar(zip_path: Path) -> Path:
     sidecar = zip_path.with_name(f"{zip_path.name}.sha256")
-    sidecar.write_text(f"{_sha256(zip_path)}  {zip_path.name}\n", encoding="utf-8")
+    sidecar.write_bytes(
+        f"{_sha256(zip_path)}  {zip_path.name}\n".encode("utf-8")
+    )
     _verify_archive_sidecar(zip_path)
     return sidecar
 
@@ -411,7 +441,72 @@ def _assert_required_source_members() -> None:
         raise RuntimeError("release package is missing required source members: " + ", ".join(missing))
 
 
-def _write_install_doc(target_root: Path, version: str, sha: str) -> None:
+def _write_install_doc(
+    target_root: Path,
+    version: str,
+    sha: str,
+    *,
+    no_account: bool = False,
+) -> None:
+    if no_account:
+        text = f"""# 本地化工作台无账号线上部署说明
+
+版本：{version}
+源码提交：{sha}
+打包时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+本发布物固定使用 `cloud-off`：`LWS_DEPLOYMENT_MODE=cloud`、`LWS_AUTH_MODE=off`。启动脚本、systemd 命令和环境文件模板会同时强制该配置。
+
+包内不含 `settings.local.json`、凭据、数据库、上传文件、日志、测试、CI、前端源码或包管理器文件。运行数据必须放在发布目录之外。
+
+## 安装
+
+```bash
+export APP_HOME=/srv/lwstudio/current
+export LWS_DATA_ROOT=/srv/lwstudio/data
+cd "$APP_HOME"
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
+.venv/bin/python -m pip install -r workflow/glossary/requirements.txt
+.venv/bin/python -m pip install -r workflow/localization/requirements.txt
+sudo install -d -m 750 -o root -g lwstudio /etc/lwstudio
+sudo install -m 640 -o root -g lwstudio deploy/lws.env.example /etc/lwstudio/lws.env
+sudo install -d -m 750 -o lwstudio -g lwstudio /srv/lwstudio/data
+sudo -u lwstudio cp "$APP_HOME/settings.example.json" "$LWS_DATA_ROOT/settings.local.json"
+sudo -u lwstudio chmod 600 "$LWS_DATA_ROOT/settings.local.json"
+sudo install -m 644 deploy/lws.service /etc/systemd/system/lws.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now lws
+sudo install -m 644 deploy/nginx.conf /etc/nginx/conf.d/lwstudio.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+只在 `$LWS_DATA_ROOT/settings.local.json` 中填写私有 API 配置。把 `/etc/lwstudio/lws.env` 中的 `LWS_GIT_SHA` 替换为包内 manifest 的 `git_sha`。
+
+部署后运行：
+
+```bash
+cd "$APP_HOME"
+release_sha="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
+.venv/bin/python check.py \
+  --base-url https://example.invalid \
+  --expect-deployment-mode cloud \
+  --expect-auth-mode off \
+  --expect-runtime-profile cloud-off \
+  --expect-version {version} \
+  --expect-git-sha "$release_sha" \
+  --check-frontend-assets frontend/dist/assets
+.venv/bin/python scripts/stability_check.py \
+  --base-url https://example.invalid
+```
+"""
+        (target_root / "DEPLOY_README.zh-CN.md").write_text(
+            text,
+            encoding="utf-8",
+        )
+        return
+
     text = f"""# 本地化工作台通用部署说明
 
 版本：{version}
@@ -423,6 +518,7 @@ def _write_install_doc(target_root: Path, version: str, sha: str) -> None:
 ## 支持的精确运行配置
 
 - `local-off`：`LWS_DEPLOYMENT_MODE=local`、`LWS_AUTH_MODE=off`，参考 `deploy/profiles/local-off.env.example`。
+- `cloud-off`：`LWS_DEPLOYMENT_MODE=cloud`、`LWS_AUTH_MODE=off`，参考 `deploy/profiles/cloud-off.env.example`。
 - `cloud-required`：`LWS_DEPLOYMENT_MODE=cloud`、`LWS_AUTH_MODE=required`，参考 `deploy/profiles/cloud-required.env.example`。
 
 包内不含 `settings.local.json`、凭据、数据库、上传文件、日志、测试、CI、前端源码或包管理器文件。运行数据必须放在发布目录外。
@@ -521,12 +617,19 @@ def _write_manifest(
     build_id: str,
     frontend_dist_sha256: str,
     runtime_payload_sha256: str,
+    no_account: bool = False,
 ) -> None:
     current_files = sum(1 for path in target_root.rglob("*") if path.is_file())
+    artifact_kind = NO_ACCOUNT_ARTIFACT_KIND if no_account else "universal"
+    supported_runtime_profiles = (
+        [NO_ACCOUNT_RUNTIME_PROFILE]
+        if no_account
+        else SUPPORTED_RUNTIME_PROFILES
+    )
     manifest = {
         "schema_version": 2,
         "name": "localization-workflow-studio",
-        "artifact_kind": "universal",
+        "artifact_kind": artifact_kind,
         "version": version,
         "git_sha": sha_full[:12],
         "git_sha_full": sha_full,
@@ -538,15 +641,21 @@ def _write_manifest(
         "frontend_configuration": "runtime_profile",
         "frontend_dist_sha256": frontend_dist_sha256,
         "runtime_payload_sha256": runtime_payload_sha256,
-        "supported_runtime_profiles": SUPPORTED_RUNTIME_PROFILES,
+        "supported_runtime_profiles": supported_runtime_profiles,
         "contains_frontend_dist": True,
         "contains_settings_local": False,
         "excluded_runtime_data": True,
         "archive_verified": True,
-        "package_policy": "universal_runtime_allowlist",
+        "package_policy": (
+            NO_ACCOUNT_PACKAGE_POLICY
+            if no_account
+            else "universal_runtime_allowlist"
+        ),
         "credential_scan": "source_and_archive_text",
-        "entrypoints": ENTRYPOINTS,
+        "entrypoints": NO_ACCOUNT_ENTRYPOINTS if no_account else ENTRYPOINTS,
     }
+    if no_account:
+        manifest["default_runtime_profile"] = NO_ACCOUNT_RUNTIME_PROFILE
     (target_root / "PACKAGE_MANIFEST.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -559,9 +668,8 @@ def _write_sha256sums(target_root: Path) -> None:
         if path.is_file() and path.name != "SHA256SUMS.txt":
             relative = path.relative_to(target_root).as_posix()
             rows.append(f"{_sha256(path)}  {relative}")
-    (target_root / "SHA256SUMS.txt").write_text(
-        "\n".join(rows) + "\n",
-        encoding="utf-8",
+    (target_root / "SHA256SUMS.txt").write_bytes(
+        ("\n".join(rows) + "\n").encode("utf-8")
     )
 
 
@@ -608,36 +716,186 @@ def _relative_archive_files(archive: zipfile.ZipFile) -> tuple[str, dict[str, st
     return package_root, relative
 
 
-def _verify_manifest_identity(manifest: dict[str, object], package_root: str) -> None:
+def _verify_manifest_identity(
+    manifest: dict[str, object],
+    package_root: str,
+    archive_name: str,
+) -> None:
     sha_full = manifest.get("git_sha_full")
     sha = manifest.get("git_sha")
     if not isinstance(sha_full, str) or not re.fullmatch(r"[0-9a-f]{40}", sha_full):
         raise RuntimeError("manifest git_sha_full must be 40 lowercase hex characters")
     if sha != sha_full[:12]:
         raise RuntimeError("manifest short and full Git SHA values do not match")
-    expected_root = f"localization-workflow-studio-v{manifest.get('version')}-g{sha}-universal"
+    artifact_kind = manifest.get("artifact_kind")
+    if artifact_kind == "universal":
+        root_suffix = "universal"
+        expected_archive_name = f"{package_root}.zip"
+        expected_profiles = SUPPORTED_RUNTIME_PROFILES
+        expected_policy = "universal_runtime_allowlist"
+    elif artifact_kind == NO_ACCOUNT_ARTIFACT_KIND:
+        root_suffix = NO_ACCOUNT_RUNTIME_PROFILE
+        expected_archive_name = f"无账号-v{manifest.get('version')}.zip"
+        expected_profiles = [NO_ACCOUNT_RUNTIME_PROFILE]
+        expected_policy = NO_ACCOUNT_PACKAGE_POLICY
+        if manifest.get("default_runtime_profile") != NO_ACCOUNT_RUNTIME_PROFILE:
+            raise RuntimeError("manifest default runtime profile mismatch")
+    else:
+        raise RuntimeError("manifest artifact kind is unsupported")
+    expected_root = (
+        f"localization-workflow-studio-v{manifest.get('version')}-g{sha}-"
+        f"{root_suffix}"
+    )
     if package_root != expected_root:
         raise RuntimeError("archive root does not match manifest identity")
+    if archive_name != expected_archive_name:
+        raise RuntimeError("archive filename does not match manifest identity")
     expected = {
         "schema_version": 2,
         "name": "localization-workflow-studio",
-        "artifact_kind": "universal",
+        "artifact_kind": artifact_kind,
         "source_git_dirty": False,
         "source_state": "clean_git_commit",
         "build_id": package_root,
         "frontend_configuration": "runtime_profile",
-        "supported_runtime_profiles": SUPPORTED_RUNTIME_PROFILES,
+        "supported_runtime_profiles": expected_profiles,
         "contains_frontend_dist": True,
         "contains_settings_local": False,
         "excluded_runtime_data": True,
         "archive_verified": True,
-        "package_policy": "universal_runtime_allowlist",
+        "package_policy": expected_policy,
         "credential_scan": "source_and_archive_text",
-        "entrypoints": ENTRYPOINTS,
+        "entrypoints": (
+            NO_ACCOUNT_ENTRYPOINTS
+            if artifact_kind == NO_ACCOUNT_ARTIFACT_KIND
+            else ENTRYPOINTS
+        ),
     }
     for key, value in expected.items():
         if manifest.get(key) != value:
             raise RuntimeError(f"manifest identity mismatch for {key}")
+
+
+def _require_exact_bytes(
+    content: bytes,
+    expected: bytes,
+    *,
+    origin: str,
+) -> None:
+    if content.count(expected) != 1:
+        raise RuntimeError(
+            f"{origin} does not force the cloud-off runtime profile"
+        )
+
+
+def _verify_no_account_archive_contract(
+    archive: zipfile.ZipFile,
+    relative: dict[str, str],
+) -> None:
+    launcher = archive.read(relative["start-lws.sh"])
+    if b"\r\n" in launcher:
+        raise RuntimeError("no-account launcher must retain LF line endings")
+    _require_exact_bytes(
+        launcher,
+        b"export LWS_DEPLOYMENT_MODE=cloud\n",
+        origin="no-account launcher",
+    )
+    _require_exact_bytes(
+        launcher,
+        b"export LWS_AUTH_MODE=off\n",
+        origin="no-account launcher",
+    )
+    if b"${LWS_DEPLOYMENT_MODE:-cloud}" in launcher or b"${LWS_AUTH_MODE:-required}" in launcher:
+        raise RuntimeError("no-account launcher must not allow a profile override")
+
+    service = archive.read(relative["deploy/lws.service"])
+    service_exec = [
+        line
+        for line in service.splitlines()
+        if line.startswith(b"ExecStart=")
+    ]
+    if (
+        len(service_exec) != 1
+        or not service_exec[0].startswith(
+            b"ExecStart=/usr/bin/env LWS_DEPLOYMENT_MODE=cloud "
+            b"LWS_AUTH_MODE=off "
+        )
+    ):
+        raise RuntimeError(
+            "no-account systemd service does not force cloud-off"
+        )
+
+    env_text = archive.read(relative["deploy/lws.env.example"]).decode("utf-8")
+    env_lines = env_text.splitlines()
+    if (
+        [
+            line
+            for line in env_lines
+            if line.startswith("LWS_DEPLOYMENT_MODE=")
+        ]
+        != ["LWS_DEPLOYMENT_MODE=cloud"]
+        or [
+            line
+            for line in env_lines
+            if line.startswith("LWS_AUTH_MODE=")
+        ]
+        != ["LWS_AUTH_MODE=off"]
+        or any(
+            line.startswith(("LWS_ADMIN_USER=", "LWS_ADMIN_PASSWORD="))
+            or "Bootstrap" in line
+            for line in env_lines
+        )
+    ):
+        raise RuntimeError("no-account environment does not enforce cloud-off")
+
+    profile_text = archive.read(
+        relative["deploy/profiles/cloud-off.env.example"]
+    ).decode("utf-8")
+    profile_lines = profile_text.splitlines()
+    if (
+        [
+            line
+            for line in profile_lines
+            if line.startswith("LWS_DEPLOYMENT_MODE=")
+        ]
+        != ["LWS_DEPLOYMENT_MODE=cloud"]
+        or [
+            line
+            for line in profile_lines
+            if line.startswith("LWS_AUTH_MODE=")
+        ]
+        != ["LWS_AUTH_MODE=off"]
+        or any(
+            line.startswith(("LWS_ADMIN_USER=", "LWS_ADMIN_PASSWORD="))
+            for line in profile_lines
+        )
+    ):
+        raise RuntimeError("cloud-off profile template is inconsistent")
+
+    readme = archive.read(relative["DEPLOY_README.zh-CN.md"]).decode("utf-8")
+    for required in (
+        "无账号",
+        "--expect-deployment-mode cloud",
+        "--expect-auth-mode off",
+        "--expect-runtime-profile cloud-off",
+        "settings.local.json",
+    ):
+        if required not in readme:
+            raise RuntimeError(
+                f"no-account deployment README is missing {required}"
+            )
+    for forbidden in (
+        "local-off",
+        "cloud-required",
+        "LWS_ADMIN_USER",
+        "LWS_ADMIN_PASSWORD",
+        "--auth-user",
+        "--auth-password",
+    ):
+        if forbidden in readme:
+            raise RuntimeError(
+                f"no-account deployment README contains {forbidden}"
+            )
 
 
 def _verify_archive(zip_path: Path) -> None:
@@ -648,17 +906,41 @@ def _verify_archive(zip_path: Path) -> None:
                 raise RuntimeError(f"corrupt archive member: {bad_member}")
 
             package_root, relative = _relative_archive_files(archive)
-            if zip_path.name != f"{package_root}.zip":
-                raise RuntimeError("archive filename does not match its package root")
-            missing = sorted(REQUIRED_MEMBERS - set(relative))
+            manifest_member = relative.get("PACKAGE_MANIFEST.json")
+            if manifest_member is None:
+                raise RuntimeError(
+                    "release archive is missing required members: "
+                    "PACKAGE_MANIFEST.json"
+                )
+            manifest = json.loads(archive.read(manifest_member))
+            no_account = (
+                manifest.get("artifact_kind") == NO_ACCOUNT_ARTIFACT_KIND
+            )
+            required_members = (
+                NO_ACCOUNT_REQUIRED_MEMBERS
+                if no_account
+                else REQUIRED_MEMBERS
+            )
+            missing = sorted(required_members - set(relative))
             if missing:
                 raise RuntimeError("release archive is missing required members: " + ", ".join(missing))
             forbidden = sorted(member for member in relative if _is_forbidden_relative(Path(member)))
             if forbidden:
                 raise RuntimeError("release archive contains forbidden members: " + ", ".join(forbidden))
-            unexpected = sorted(member for member in relative if not _is_allowed_archive_member(Path(member)))
+            unexpected = sorted(
+                member
+                for member in relative
+                if not _is_allowed_archive_member(
+                    Path(member),
+                    no_account=no_account,
+                )
+            )
             if unexpected:
-                raise RuntimeError("release archive contains members outside the universal allowlist: " + ", ".join(unexpected))
+                policy = "profile" if no_account else "universal"
+                raise RuntimeError(
+                    f"release archive contains members outside the {policy} "
+                    f"allowlist: {', '.join(unexpected)}"
+                )
             for member, archive_name in relative.items():
                 if _is_text_candidate(Path(member)):
                     _scan_text_bytes(
@@ -666,8 +948,9 @@ def _verify_archive(zip_path: Path) -> None:
                         origin=f"archive:{member}",
                     )
 
-            manifest = json.loads(archive.read(relative["PACKAGE_MANIFEST.json"]))
-            _verify_manifest_identity(manifest, package_root)
+            _verify_manifest_identity(manifest, package_root, zip_path.name)
+            if manifest.get("artifact_kind") == NO_ACCOUNT_ARTIFACT_KIND:
+                _verify_no_account_archive_contract(archive, relative)
 
             rows = archive.read(relative["SHA256SUMS.txt"]).decode("utf-8").splitlines()
             expected_hashes: dict[str, str] = {}
@@ -710,20 +993,125 @@ def _verify_archive(zip_path: Path) -> None:
         raise RuntimeError(f"release archive is not readable: {zip_path}") from exc
 
 
-def _validate_staging(staging_root: Path) -> None:
+def _validate_staging(
+    staging_root: Path,
+    *,
+    no_account: bool = False,
+) -> None:
     members = {path.relative_to(staging_root).as_posix() for path in staging_root.rglob("*") if path.is_file()}
-    missing = sorted(REQUIRED_MEMBERS - members)
+    required_members = (
+        NO_ACCOUNT_REQUIRED_MEMBERS
+        if no_account
+        else REQUIRED_MEMBERS
+    )
+    missing = sorted(required_members - members)
     if missing:
         raise RuntimeError("staged release is missing required members: " + ", ".join(missing))
     forbidden = sorted(member for member in members if _is_forbidden_relative(Path(member)))
     if forbidden:
         raise RuntimeError("staged release contains forbidden members: " + ", ".join(forbidden))
-    unexpected = sorted(member for member in members if not _is_allowed_archive_member(Path(member)))
+    unexpected = sorted(
+        member
+        for member in members
+        if not _is_allowed_archive_member(
+            Path(member),
+            no_account=no_account,
+        )
+    )
     if unexpected:
-        raise RuntimeError("staged release contains members outside the universal allowlist: " + ", ".join(unexpected))
+        policy = "profile" if no_account else "universal"
+        raise RuntimeError(
+            f"staged release contains members outside the {policy} allowlist: "
+            + ", ".join(unexpected)
+        )
 
 
-def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
+def _replace_staged_line(
+    path: Path,
+    old: bytes,
+    new: bytes,
+) -> None:
+    content = path.read_bytes().replace(b"\r\n", b"\n")
+    if content.count(old) != 1:
+        raise RuntimeError(f"unable to configure no-account package: {path.name}")
+    path.write_bytes(content.replace(old, new))
+
+
+def _configure_no_account_staging(staging_root: Path) -> None:
+    _replace_staged_line(
+        staging_root / "start-lws.sh",
+        b'export LWS_DEPLOYMENT_MODE="${LWS_DEPLOYMENT_MODE:-cloud}"\n',
+        b"export LWS_DEPLOYMENT_MODE=cloud\n",
+    )
+    _replace_staged_line(
+        staging_root / "start-lws.sh",
+        b'export LWS_AUTH_MODE="${LWS_AUTH_MODE:-required}"\n',
+        b"export LWS_AUTH_MODE=off\n",
+    )
+
+    service_path = staging_root / "deploy" / "lws.service"
+    service = service_path.read_bytes()
+    marker = b"ExecStart="
+    if service.count(marker) != 1:
+        raise RuntimeError(
+            "unable to configure no-account package: lws.service"
+        )
+    service_path.write_bytes(
+        service.replace(
+            marker,
+            (
+                b"ExecStart=/usr/bin/env LWS_DEPLOYMENT_MODE=cloud "
+                b"LWS_AUTH_MODE=off "
+            ),
+            1,
+        )
+    )
+
+    env_path = staging_root / "deploy" / "lws.env.example"
+    env_lines = env_path.read_bytes().splitlines(keepends=True)
+    deployment_lines = sum(
+        line.rstrip(b"\r\n") == b"LWS_DEPLOYMENT_MODE=cloud"
+        for line in env_lines
+    )
+    auth_lines = sum(
+        line.rstrip(b"\r\n") == b"LWS_AUTH_MODE=required"
+        for line in env_lines
+    )
+    if deployment_lines != 1 or auth_lines != 1:
+        raise RuntimeError(
+            "unable to configure no-account package: lws.env.example"
+        )
+    configured_lines = []
+    for line in env_lines:
+        stripped = line.rstrip(b"\r\n")
+        if stripped == b"LWS_AUTH_MODE=required":
+            newline = line[len(stripped):] or b"\n"
+            configured_lines.append(b"LWS_AUTH_MODE=off" + newline)
+        elif (
+            stripped.startswith(b"LWS_ADMIN_USER=")
+            or stripped.startswith(b"LWS_ADMIN_PASSWORD=")
+            or b"Bootstrap" in stripped
+        ):
+            continue
+        else:
+            configured_lines.append(line)
+    env_path.write_bytes(b"".join(configured_lines))
+
+    for member in NO_ACCOUNT_EXCLUDED_MEMBERS:
+        path = staging_root / member
+        if not path.is_file():
+            raise RuntimeError(
+                f"unable to configure no-account package: missing {member}"
+            )
+        path.unlink()
+
+
+def build(
+    output_dir: Path,
+    *,
+    rebuild_frontend: bool = True,
+    no_account: bool = False,
+) -> Path:
     if _git_dirty():
         raise RuntimeError("refusing to package a dirty or untracked source tree; commit or stash it first")
 
@@ -736,7 +1124,11 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
     _assert_required_source_members()
     _assert_source_state(sha_full, phase="frontend build")
 
-    root_name = f"localization-workflow-studio-v{version}-g{sha_full[:12]}-universal"
+    root_suffix = NO_ACCOUNT_RUNTIME_PROFILE if no_account else "universal"
+    root_name = (
+        f"localization-workflow-studio-v{version}-g{sha_full[:12]}-"
+        f"{root_suffix}"
+    )
     staging_parent = ROOT.parent / "release-staging"
     staging_root = staging_parent / root_name
     output_dir = output_dir.resolve()
@@ -752,6 +1144,9 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
             shutil.copy2(source, target)
         _assert_source_state(sha_full, phase="source copy")
 
+        if no_account:
+            _configure_no_account_staging(staging_root)
+
         frontend_root = staging_root / "frontend" / "dist"
         frontend_digest = _tree_sha256(
             frontend_root,
@@ -761,7 +1156,12 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
             staging_root,
             (path for path in staging_root.rglob("*") if path.is_file()),
         )
-        _write_install_doc(staging_root, version, sha_full[:12])
+        _write_install_doc(
+            staging_root,
+            version,
+            sha_full[:12],
+            no_account=no_account,
+        )
         _write_manifest(
             staging_root,
             version,
@@ -769,12 +1169,18 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
             build_id=root_name,
             frontend_dist_sha256=frontend_digest,
             runtime_payload_sha256=runtime_digest,
+            no_account=no_account,
         )
         _write_sha256sums(staging_root)
-        _validate_staging(staging_root)
+        _validate_staging(staging_root, no_account=no_account)
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = output_dir / f"{root_name}.zip"
+        archive_name = (
+            f"无账号-v{version}.zip"
+            if no_account
+            else f"{root_name}.zip"
+        )
+        zip_path = output_dir / archive_name
         sidecar_path = zip_path.with_name(f"{zip_path.name}.sha256")
         try:
             zip_path.unlink(missing_ok=True)
@@ -805,17 +1211,29 @@ def build(output_dir: Path, *, rebuild_frontend: bool = True) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=("Build and read back one sanitized, runtime-configured universal Localization Workflow Studio release zip."))
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build and read back a sanitized Localization Workflow Studio "
+            "release zip (universal by default, or cloud-off with "
+            "--no-account)."
+        )
+    )
     parser.add_argument("--output-dir", default=str(Path.home() / "Desktop"))
     parser.add_argument(
         "--no-rebuild-frontend",
         action="store_true",
         help="Package the existing frontend/dist without rebuilding it.",
     )
+    parser.add_argument(
+        "--no-account",
+        action="store_true",
+        help="Build the dedicated cloud-off no-account release artifact.",
+    )
     args = parser.parse_args()
     zip_path = build(
         Path(args.output_dir),
         rebuild_frontend=not args.no_rebuild_frontend,
+        no_account=args.no_account,
     )
     print(zip_path)
     return 0

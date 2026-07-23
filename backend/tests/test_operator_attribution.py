@@ -17,7 +17,11 @@ import app.background_jobs as background_jobs
 import app.auth as auth
 import app.db as db
 import app.operator_context as operator_context
+import app.routers.announcement as announcement_router
+import app.routers.glossary as glossary_router
+import app.routers.projects as projects_router
 import app.routers.qa as qa_router
+import app.routers.runs as runs_router
 from app.config import DATA_ROOT, RuntimeProfile, bind_runtime_profile, reset_runtime_profile
 from app.main import app, create_app
 from app.operator_context import AUDIT_LOG_FILENAME, sanitize_operator_name
@@ -113,6 +117,241 @@ def test_cloud_translation_start_requires_operator_before_status_change(
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "请先设置操作人昵称，再启动 AI 任务。"
     assert db.get_run(run["id"])["status"] == original_status
+
+
+@pytest.mark.parametrize(
+    ("route", "payload", "router_module", "workflow_name"),
+    [
+        ("/api/runs/run-probe/translate", {"provider": "test-fake"}, runs_router, "run_translate_sync"),
+        ("/api/runs/run-probe/qa", None, qa_router, "run_qa_sync"),
+        (
+            "/api/runs/run-probe/model-fixes",
+            {"max_issues": 20, "rerun_qa": True},
+            qa_router,
+            "apply_model_fixes",
+        ),
+        (
+            "/api/runs/run-probe/manual-fixes",
+            {
+                "fixes": [{"sheet": "Language", "row": 2, "translation": "Reward"}],
+                "rerun_qa": True,
+            },
+            qa_router,
+            "apply_manual_fixes",
+        ),
+        (
+            "/api/announcement-tasks/task-probe/translate",
+            {"languages": ["en"], "provider": "test-fake"},
+            announcement_router,
+            "translate_announcement_task",
+        ),
+        (
+            "/api/projects/{project_id}/glossary/batches/batch-probe/translate-missing",
+            None,
+            glossary_router,
+            "translate_missing_glossary_candidates_sync",
+        ),
+        (
+            "/api/projects/{project_id}/glossary/extract",
+            {"input_artifact_id": "{artifact_id}", "ai_candidate_supplement": True},
+            glossary_router,
+            "extract_glossary",
+        ),
+        (
+            "/api/projects/{project_id}/announcement-terms",
+            {"text": "公告", "languages": ["en"], "ai_supplement": True},
+            announcement_router,
+            "generate_announcement_terms_package",
+        ),
+        (
+            "/api/announcement-tasks/task-probe/extract-terms",
+            {"languages": ["en"], "ai_supplement": True},
+            announcement_router,
+            "extract_announcement_terms",
+        ),
+    ],
+)
+def test_cloud_off_sync_ai_routes_require_operator_before_workflow_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    payload: dict[str, object] | None,
+    router_module: object,
+    workflow_name: str,
+) -> None:
+    project = db.insert_project("Cloud Off Sync AI Guard", "QA", "")
+    source_path = tmp_path / "source.txt"
+    source_path.write_text("公告", encoding="utf-8")
+    artifact = db.add_artifact(project["id"], "source.txt", source_path, "upload")
+    route = route.format(project_id=project["id"])
+    if isinstance(payload, dict):
+        payload = {
+            key: (value.format(artifact_id=artifact["id"]) if isinstance(value, str) else value)
+            for key, value in payload.items()
+        }
+
+    if workflow_name == "translate_missing_glossary_candidates_sync":
+        monkeypatch.setattr(glossary_router, "_require_project_batch", lambda *_args: None)
+
+    calls: list[str] = []
+
+    def workflow_probe(*_args: object, **_kwargs: object) -> dict[str, bool]:
+        calls.append(workflow_name)
+        return {"called": True}
+
+    monkeypatch.setattr(router_module, workflow_name, workflow_probe)
+    test_app = create_app(RuntimeProfile("cloud", "off"))
+
+    with TestClient(test_app, base_url="https://testserver") as client:
+        unsigned = client.post(route, json=payload) if payload is not None else client.post(route)
+        signed = (
+            client.post(route, json=payload, headers={"X-Operator": "Cloud Operator"})
+            if payload is not None
+            else client.post(route, headers={"X-Operator": "Cloud Operator"})
+        )
+
+    assert unsigned.status_code == 400, unsigned.text
+    assert calls == [workflow_name]
+    assert signed.status_code == 200, signed.text
+
+
+@pytest.mark.parametrize(
+    ("route", "payload", "router_module", "workflow_name"),
+    [
+        (
+            "/api/runs/run-probe/manual-fixes",
+            {
+                "fixes": [{"sheet": "Language", "row": 2, "translation": "Reward"}],
+                "rerun_qa": False,
+            },
+            qa_router,
+            "apply_manual_fixes",
+        ),
+        (
+            "/api/projects/project-probe/glossary/extract",
+            {
+                "input_artifact_id": "artifact-probe",
+                "ai_candidate_supplement": False,
+                "ai_supplement": False,
+            },
+            glossary_router,
+            "extract_glossary",
+        ),
+        (
+            "/api/projects/project-probe/announcement-terms",
+            {"text": "公告", "languages": ["en"], "ai_supplement": False},
+            announcement_router,
+            "generate_announcement_terms_package",
+        ),
+        (
+            "/api/announcement-tasks/task-probe/extract-terms",
+            {"languages": ["en"], "ai_supplement": False},
+            announcement_router,
+            "extract_announcement_terms",
+        ),
+        (
+            "/api/runs/run-probe/semantic-qa",
+            None,
+            qa_router,
+            "create_semantic_qa_context",
+        ),
+    ],
+)
+def test_cloud_off_non_ai_sync_routes_do_not_require_operator(
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    payload: dict[str, object] | None,
+    router_module: object,
+    workflow_name: str,
+) -> None:
+    if workflow_name == "extract_glossary":
+        monkeypatch.setattr(glossary_router.db, "get_project", lambda *_args: {"id": "project-probe"})
+        monkeypatch.setattr(
+            glossary_router.db,
+            "get_artifact",
+            lambda *_args: {"id": "artifact-probe", "project_id": "project-probe"},
+        )
+    calls: list[str] = []
+
+    def workflow_probe(*_args: object, **_kwargs: object) -> dict[str, bool]:
+        calls.append(workflow_name)
+        return {"called": True}
+
+    monkeypatch.setattr(router_module, workflow_name, workflow_probe)
+    test_app = create_app(RuntimeProfile("cloud", "off"))
+
+    with TestClient(test_app, base_url="https://testserver") as client:
+        response = client.post(route, json=payload) if payload is not None else client.post(route)
+
+    assert response.status_code == 200, response.text
+    assert calls == [workflow_name]
+
+
+def test_cloud_off_project_analysis_requires_operator_before_provider_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = db.insert_project("Cloud Off Project Analysis Guard", "QA", "")
+    output_paths = [tmp_path / name for name in ("profile.json", "prompt.txt", "brief.md", "packet.json", "report.md")]
+    for path in output_paths:
+        path.write_text("probe", encoding="utf-8")
+    calls: list[str] = []
+
+    def build_packet_probe(*_args: object, **_kwargs: object) -> dict[str, object]:
+        calls.append("build_project_material_packet")
+        return {"materials": [], "summary": {}}
+
+    monkeypatch.setattr(projects_router, "build_project_material_packet", build_packet_probe)
+    monkeypatch.setattr(
+        projects_router,
+        "write_project_prompt",
+        lambda *_args, **_kwargs: (*output_paths, "prompt"),
+    )
+    test_app = create_app(RuntimeProfile("cloud", "off"))
+    route = f"/api/projects/{project['id']}/analyze"
+
+    with TestClient(test_app, base_url="https://testserver") as client:
+        unsigned = client.post(route, json={})
+        signed = client.post(route, json={}, headers={"X-Operator": "Cloud Operator"})
+
+    assert unsigned.status_code == 400, unsigned.text
+    assert calls == ["build_project_material_packet"]
+    assert signed.status_code == 200, signed.text
+
+
+def test_sync_ai_route_uses_cloud_login_identity_and_leaves_local_off_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+
+    def translate_probe(*_args: object, **_kwargs: object) -> dict[str, bool]:
+        observed.append(operator_context.current_operator())
+        return {"called": True}
+
+    monkeypatch.setattr(runs_router, "run_translate_sync", translate_probe)
+    db.create_user(
+        "sync-ai-operator",
+        auth.hash_password("Sync-AI-Operator-Pass1!"),
+        "admin",
+        display_name="Authenticated Operator",
+    )
+
+    cloud_required_app = create_app(RuntimeProfile("cloud", "required"))
+    with TestClient(cloud_required_app, base_url="https://testserver") as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "sync-ai-operator", "password": "Sync-AI-Operator-Pass1!"},
+        )
+        cloud_response = client.post("/api/runs/run-probe/translate", json={"provider": "test-fake"})
+
+    local_off_app = create_app(RuntimeProfile("local", "off"))
+    with TestClient(local_off_app) as client:
+        local_response = client.post("/api/runs/run-probe/translate", json={"provider": "test-fake"})
+
+    assert login.status_code == 200, login.text
+    assert cloud_response.status_code == 200, cloud_response.text
+    assert local_response.status_code == 200, local_response.text
+    assert observed == ["Authenticated Operator", ""]
 
 
 @pytest.mark.parametrize("action", ["start", "resume"])

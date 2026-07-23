@@ -477,6 +477,7 @@ def test_run_reports_non_object_version_or_health_json_as_failure(
     ),
     [
         ("cloud", "required", "cloud-required", 200, 401),
+        ("cloud", "off", "cloud-off", 401, 200),
         ("local", "off", "local-off", 401, 200),
     ],
 )
@@ -559,7 +560,7 @@ def test_run_accepts_local_required_with_credentials(
     assert steps["auth_login"]["ok"] is True
 
 
-def test_run_rejects_invalid_reported_runtime_pair(
+def test_run_accepts_cloud_off_profile_without_credentials(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
@@ -579,14 +580,24 @@ def test_run_rejects_invalid_reported_runtime_pair(
 
     result = module.run(
         "https://studio.example.test",
+        require_cloud=True,
+        expect_auth_mode="off",
+        expect_runtime_profile="cloud-off",
         expect_version="1.3.1",
         frontend_assets_dir=_local_assets(tmp_path, "index-built.js"),
     )
 
-    assert result == 1
-    profile_step = _printed_steps(capsys)["runtime_profile"]
-    assert profile_step["ok"] is False
-    assert "invalid runtime profile" in profile_step["result"]["error"]
+    assert result == 0
+    steps = _printed_steps(capsys)
+    assert steps["runtime_profile"]["ok"] is True
+    assert steps["anonymous_projects"]["ok"] is True
+    assert steps["anonymous_projects"]["result"]["expected_status"] == 200
+    assert steps["auth_login"] == {
+        "step": "auth_login",
+        "ok": True,
+        "result": {"mode": "synthetic_local_admin"},
+    }
+    assert steps["upload_readability"]["ok"] is True
 
 
 def test_required_mode_requires_credentials_before_business_probes(
@@ -669,7 +680,6 @@ def test_run_rejects_contradictory_require_cloud_alias() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"require_cloud": True, "expect_auth_mode": "off"},
         {"require_cloud": True, "expect_runtime_profile": "local-required"},
         {
             "expect_deployment_mode": "local",
@@ -730,16 +740,16 @@ def test_main_forwards_runtime_profile_cli_expectations(
             "--expect-deployment-mode",
             "cloud",
             "--expect-auth-mode",
-            "required",
+            "off",
             "--expect-runtime-profile",
-            "cloud-required",
+            "cloud-off",
         ],
     )
 
     assert module.main() == 0
     assert captured["expect_deployment_mode"] == "cloud"
-    assert captured["expect_auth_mode"] == "required"
-    assert captured["expect_runtime_profile"] == "cloud-required"
+    assert captured["expect_auth_mode"] == "off"
+    assert captured["expect_runtime_profile"] == "cloud-off"
 
 
 def test_run_rejects_public_html_asset_not_reported_by_version(

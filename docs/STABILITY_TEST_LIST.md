@@ -2,16 +2,21 @@
 
 目标：确认工作台脱离 Codex/Agent 后，仍能只靠本地后端、内置 workflow 和已配置 API provider 完成核心流程。
 
-## 生产 profile 与通用包
+## 生产 profile 与发布包
 
-发布前只构建一次前端，再从 clean commit 生成一个通用包：
+发布前只构建一次前端，再从 clean commit 生成所需制品。默认命令保留 universal 包；本次内网无账号交付使用 `--no-account`：
 
 ```powershell
 npm run build --prefix frontend
 python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend
+python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend --no-account
 ```
 
-输出名必须为 `localization-workflow-studio-v1.6.1-g<sha12>-universal.zip`，旁边有同名 `.sha256`；包内必须包含 `PACKAGE_MANIFEST.json`、`DEPLOY_README.zh-CN.md`、`deploy/profiles/local-off.env.example` 和 `deploy/profiles/cloud-required.env.example`。
+默认输出名为 `localization-workflow-studio-v1.6.2-g<sha12>-universal.zip`；无账号输出名必须为 `无账号-v1.6.2.zip`，包内根目录为 `localization-workflow-studio-v1.6.2-g<sha12>-cloud-off`。每个 ZIP 旁边必须有同名 `.sha256`，包内必须包含 `PACKAGE_MANIFEST.json`、`SHA256SUMS.txt` 和 `DEPLOY_README.zh-CN.md`。
+
+无账号 manifest 必须是 `artifact_kind=profile`、`default_runtime_profile=cloud-off`、`supported_runtime_profiles=["cloud-off"]`。包内 `start-lws.sh`、`deploy/lws.service` 和 `deploy/lws.env.example` 必须同时锁定 `cloud/off`；启用的环境模板和 `DEPLOY_README.zh-CN.md` 不得要求 `LWS_ADMIN_USER`、`LWS_ADMIN_PASSWORD`、`--auth-user` 或 `--auth-password`。
+
+专用包的 manifest 只声明 Linux backend、backend app、deployment check 和 stability check 四个入口。包内不得携带 Windows `local/off` 启动器、`create_admin.py`、`local-off.env.example` 或 `cloud-required.env.example`，避免出现 manifest 只声明 `cloud-off`、制品却仍提供其它 profile 入口的旁路。
 
 ### 本地 `local/off`
 
@@ -30,7 +35,23 @@ python scripts\concurrency_smoke.py
 
 `concurrency_smoke.py` 默认自建临时数据目录和独立 18800 端口，并实际重启该临时后端验证恢复。只有确认目标也是隔离实例时才使用 `--base-url`；该模式不接管进程，因此会跳过重启检查。
 
-### 线上 `cloud/required`
+### 内网无账号 `cloud/off`
+
+使用 `无账号-v1.6.2.zip` 内已锁定的 `deploy/lws.env.example` 安装服务器环境。部署检查不传登录凭据：
+
+```bash
+VERSION="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["version"])')"
+GIT_SHA="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
+.venv/bin/python check.py --base-url https://ai-lwstudio.example.com \
+  --expect-deployment-mode cloud --expect-auth-mode off --expect-runtime-profile cloud-off \
+  --expect-version "$VERSION" --expect-git-sha "$GIT_SHA" --check-frontend-assets frontend/dist/assets \
+  --require-provider
+.venv/bin/python scripts/stability_check.py --base-url https://ai-lwstudio.example.com
+```
+
+该 profile 必须确认匿名业务 API 返回 200、`/api/auth/me` 为 `auth_enabled=false` synthetic admin、登录和注册返回 403、网页设置修改返回 403、设置入口隐藏，并且启动 AI 任务前仍要求操作人昵称。它没有账号隔离，只能部署在外层已经限制访问者的可信公司内网。
+
+### 线上有账号 `cloud/required`
 
 使用 `deploy/profiles/cloud-required.env.example` 安装服务器环境；`start-lws.sh` 默认 `cloud/required`。部署检查使用包内 Python 环境和 manifest 身份：
 
@@ -55,7 +76,7 @@ npm run e2e --prefix frontend
 npm run e2e:auth --prefix frontend
 ```
 
-两个 extracted smoke 都必须运行 `frontend/e2e/runtime-profile-smoke.spec.ts`：设置 `LWS_EXPECT_RUNTIME_PROFILE=local-off` 或 `cloud-required` 后，执行 `npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line`。两次 smoke 必须下载同一个 `universal-release` artifact，并分别保存相同的 manifest 与 digest 身份证据。
+各 extracted smoke 都必须运行 `frontend/e2e/runtime-profile-smoke.spec.ts`：按目标制品设置 `LWS_EXPECT_RUNTIME_PROFILE=local-off`、`cloud-off` 或 `cloud-required` 后，执行 `npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line`。universal 的 profile smoke 必须核对同一份 manifest 与 digest；专用无账号包的 `cloud-off` smoke 还必须核对 manifest 只声明 `cloud-off`。
 
 双 lane 队列场景务必在隔离实例（临时数据目录、独立端口）上跑，不要对生产库跑。Linux 验收机可直接运行 `python3.11 scripts/concurrency_smoke.py --port 18800`。
 

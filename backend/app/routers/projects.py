@@ -45,6 +45,7 @@ from .shared import (
 )
 from fastapi import (
     APIRouter,
+    Depends,
     File,
     Form,
     HTTPException,
@@ -340,7 +341,10 @@ def patch_project_harness(project_id: str, payload: ProjectHarnessUpdate) -> dic
         raise HTTPException(status_code=404, detail="project not found") from exc
 
 
-@router.post("/api/projects/{project_id}/analyze")
+@router.post(
+    "/api/projects/{project_id}/analyze",
+    dependencies=[Depends(operator_context.require_operator_for_cloud)],
+)
 def analyze_project(project_id: str, payload: ProjectAnalysisRequest) -> dict[str, Any]:
     try:
         project = db.get_project(project_id)

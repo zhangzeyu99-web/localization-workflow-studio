@@ -46,8 +46,6 @@ class RuntimeProfile:
             raise RuntimeError("LWS_DEPLOYMENT_MODE must be 'local' or 'cloud'")
         if self.auth_mode not in {"off", "required"}:
             raise RuntimeError("LWS_AUTH_MODE must be 'off' or 'required'")
-        if self.deployment_mode == "cloud" and self.auth_mode == "off":
-            raise RuntimeError("cloud deployment cannot use auth mode off")
 
     @classmethod
     def from_environment(

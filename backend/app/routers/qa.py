@@ -23,13 +23,17 @@ from ..workflow import (
 )
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
 )
 from typing import Any
 
 router = APIRouter()
 
-@router.post("/api/runs/{run_id}/qa")
+@router.post(
+    "/api/runs/{run_id}/qa",
+    dependencies=[Depends(operator_context.require_operator_for_cloud)],
+)
 def qa(run_id: str) -> dict[str, Any]:
     try:
         return run_qa_sync(run_id)
@@ -95,6 +99,8 @@ def quality_issues(run_id: str) -> dict[str, Any]:
 
 @router.post("/api/runs/{run_id}/manual-fixes")
 def manual_fixes(run_id: str, payload: ManualFixRequest) -> dict[str, Any]:
+    if payload.rerun_qa:
+        operator_context.require_operator_for_cloud()
     try:
         return apply_manual_fixes(run_id, payload)
     except KeyError as exc:
@@ -144,7 +150,10 @@ def manual_fixes_start(run_id: str, payload: ManualFixRequest) -> dict[str, Any]
     return response
 
 
-@router.post("/api/runs/{run_id}/model-fixes")
+@router.post(
+    "/api/runs/{run_id}/model-fixes",
+    dependencies=[Depends(operator_context.require_operator_for_cloud)],
+)
 def model_fixes(run_id: str, payload: ModelFixRequest) -> dict[str, Any]:
     try:
         return apply_model_fixes(run_id, payload)

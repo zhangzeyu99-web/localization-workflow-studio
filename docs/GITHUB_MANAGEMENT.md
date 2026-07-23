@@ -43,6 +43,8 @@ GitHub Actions 覆盖：
 - 由同一个 frontend dist 生成一个 universal ZIP，并在 Windows `local/off` 与 Ubuntu TLS `cloud/required` 中分别执行 extracted smoke。
 - 两个 extracted smoke 读回同一 artifact ID、manifest `version`/`git_sha`、frontend digest、runtime payload digest 和 outer ZIP SHA。
 
+当前 CI 不构建 `--no-account` 专用制品。本次 `无账号-v1.6.2.zip` 必须在本地从 clean commit 生成，并把 archive readback、外部 SHA-256、Linux 脚本语法和 extracted HTTPS `cloud/off` smoke 作为独立发布证据；现有 universal publish gate 不能代替这组验收。
+
 发布前本地建议执行：
 
 ```powershell
@@ -101,7 +103,7 @@ PR 模板位于 `.github/pull_request_template.md`。
 
 ## 版本管理
 
-当前版本：`1.6.1`。稳定分支为 `master`；该版本发布时只对应一个 `v1.6.1` tag、一份 [v1.6.1 发布说明](releases/v1.6.1.md) 和一个 universal release artifact。本地 `local/off` 与线上 `cloud/required` 是同一版本的两种生产运行配置，不是两条产品线。
+当前版本：`1.6.2`。稳定分支为 `master`；该版本发布说明见 [v1.6.2 无账号云端版说明](releases/v1.6.2.md)。源码支持 `local/off`、`cloud/off` 与 `cloud/required`，其中本次交付的独立无账号制品锁定为 `cloud/off`；默认 universal 构建和云端默认值仍兼容有账号的 `cloud/required`。
 
 版本来源：
 
@@ -131,10 +133,10 @@ git push origin vX.Y.Z
 3. 本地核心测试通过，或明确说明未跑原因。
 4. GitHub Actions 通过。
 5. GitHub Pages Demo 可打开。
-6. Release note 写清同一 universal artifact 在 `local/off` 与 `cloud/required` 的验收结果、用户影响、数据/会话保证、部署状态和已知边界；没有线上验收证据时不得宣称已上线。
+6. Release note 写清目标制品的验收结果、用户影响、数据/会话保证、部署状态和已知边界；没有线上验收证据时不得宣称已上线。
 7. 仓库内无真实项目数据、API key、SQLite、run 日志或交付文件。
 8. 文档无乱码、连续问号占位、U+FFFD 或历史版本误导。
-9. 两个 extracted smoke 的 artifact ID、manifest `version`/`git_sha`、frontend digest、runtime payload digest 和 outer ZIP SHA 一致，且 `cloud/off` fail-closed 测试通过。
+9. universal 的两个 extracted smoke 必须核对同一 artifact 身份；专用无账号包必须另行核对 `artifact_kind=profile`、唯一 `cloud-off` profile、精简入口、外部 SHA、包内哈希和 extracted HTTPS 验收结果。
 
 ## GitHub Pages 管理
 

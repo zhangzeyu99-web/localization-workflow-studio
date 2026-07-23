@@ -161,6 +161,7 @@ _PROFILE_FIELDS = ("deployment_mode", "auth_mode", "runtime_profile")
 _VALID_RUNTIME_PROFILES = {
     ("local", "off"): "local-off",
     ("local", "required"): "local-required",
+    ("cloud", "off"): "cloud-off",
     ("cloud", "required"): "cloud-required",
 }
 
@@ -179,7 +180,7 @@ def _normalize_profile_expectations(
     valid_identifiers = set(_VALID_RUNTIME_PROFILES.values())
     if expect_runtime_profile not in {None, *valid_identifiers}:
         raise ValueError(
-            "expect_runtime_profile must be local-off, local-required, or cloud-required"
+            "expect_runtime_profile must be local-off, local-required, cloud-off, or cloud-required"
         )
     if require_cloud and expect_deployment_mode == "local":
         raise ValueError("--require-cloud contradicts expect_deployment_mode=local")
@@ -604,7 +605,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--expect-runtime-profile",
-        choices=("local-off", "local-required", "cloud-required"),
+        choices=("local-off", "local-required", "cloud-off", "cloud-required"),
         default=None,
     )
     parser.add_argument(
@@ -629,7 +630,7 @@ def main() -> int:
         help=(
             "Log in as this user before running checks that need a session "
             "(e.g. the upload-readability probe, which requires ADMIN). "
-            "Required once the deployment enforces login (LWS_AUTH_MODE=required / cloud)."
+            "Required once the deployment enforces login (LWS_AUTH_MODE=required)."
         ),
     )
     parser.add_argument("--auth-password", default=None, help="Password for --auth-user.")

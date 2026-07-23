@@ -2,6 +2,16 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.6.2 - 2026-07-23
+
+Cloud no-account and official sentence-template release.
+
+- Added the production `cloud/off` runtime profile for trusted intranet deployments that need the online workbench without login, registration, user, role, or project-member administration.
+- Added a dedicated no-account release artifact locked to `cloud/off`, with external data/settings requirements, no administrator bootstrap credentials, and profile-aware package readback checks.
+- Kept `cloud/required` as the default cloud profile and preserved the authenticated account, role, membership, and self-registration behavior in the universal build.
+- Integrated official sentence-template extraction, placeholder-safe sentence adaptation, and translation consistency warnings into announcement terminology preparation and delivery.
+- Extended source and extracted-package checks for cloud safeguards, nickname attribution, settings write protection, anonymous API access, and disabled account endpoints.
+
 ## 1.6.1 - 2026-07-21
 
 Unified runtime-profile release.

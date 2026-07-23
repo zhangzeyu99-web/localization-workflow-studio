@@ -2,7 +2,9 @@
 
 ## 结论
 
-v1.6.1 只发布一个 `localization-workflow-studio-v1.6.1-g<sha12>-universal.zip`。同一个包通过运行配置用于本地 `local/off` 或线上 `cloud/required`；线上采用“同域 Nginx + 单个 FastAPI worker + 独立持久数据目录”。前端只使用包内已验证的 Vite 构建产物，不运行开发服务器；SQLite、上传文件、任务产物和 `settings.local.json` 都放在版本目录之外。部署模板位于 `deploy/`。
+v1.6.2 本次交付 `无账号-v1.6.2.zip`，制品的 manifest、Linux 启动脚本、systemd 服务和环境模板都锁定为内网无账号 `cloud/off`。它只适用于已有网络访问控制的可信公司内网；任何能够访问站点的人都拥有 synthetic admin 的业务能力，禁止直接暴露到公网。源码和默认 universal 构建仍保留 `cloud/required`，云端未显式选择时也默认强制账号登录。
+
+线上采用“同域 Nginx + 单个 FastAPI worker + 独立持久数据目录”。前端只使用包内已验证的 Vite 构建产物，不运行开发服务器；SQLite、上传文件、任务产物和 `settings.local.json` 都放在版本目录之外。部署模板位于 `deploy/`。
 
 ## 目录契约
 
@@ -43,10 +45,13 @@ test -f frontend/dist/index.html
 
 sudo chown -R root:root /srv/lwstudio/releases/<release-id>
 sudo ln -sfn /srv/lwstudio/releases/<release-id> /srv/lwstudio/current
-sudo cp deploy/profiles/cloud-required.env.example /etc/lwstudio/lws.env
+# 无账号-v1.6.2.zip 内的 deploy/lws.env.example 已锁定为 cloud/off。
+sudo cp deploy/lws.env.example /etc/lwstudio/lws.env
 sudo chown root:lwstudio /etc/lwstudio/lws.env
 sudo chmod 0640 /etc/lwstudio/lws.env
 ```
+
+如果部署有账号的 universal 制品，则改用 `deploy/profiles/cloud-required.env.example`，并按下文配置初始管理员。不要把两种模板混用。
 
 发布包必须携带已经在构建环境完成验证的 `frontend/dist`。服务器不得重新执行 `npm ci` 或 `npm run build`，否则现场生成的前端可能与包内后端版本不一致。
 
@@ -86,7 +91,7 @@ sudo chmod 0600 /srv/lwstudio/data/settings.local.json
 sudo systemctl restart lws.service
 ```
 
-应用后续通过 API 保存配置时会在同目录原子替换文件，并在 POSIX 系统上保持 `0600`。
+cloud 模式禁止从网页修改 provider 设置。后续变更仍由运维编辑外置 `settings.local.json` 并重启服务；文件权限保持 `0600`。
 
 ## 缓存、上传与边缘层
 
@@ -100,7 +105,7 @@ sudo systemctl restart lws.service
 
 如果域名前还有 CDN、WAF 或其他边缘代理，必须配置为：不缓存 `/api/*`；不覆盖源站的 `no-store`/`no-cache`；发布后主动刷新 `/` 和 `/index.html`。不能只看源站 Nginx 配置，必须从公网域名检查最终响应头。
 
-公网部署由应用自身强制登录并按账号、角色和项目成员关系鉴权。`X-Operator` 仍用于任务操作人留痕，但不代替登录身份。
+`cloud/required` 由应用自身强制登录并按账号、角色和项目成员关系鉴权。`cloud/off` 没有应用层账号边界，必须由公司内网、VPN、网关白名单等外层能力限制访问。两个 cloud profile 都要求用 `X-Operator` 昵称记录 AI 任务操作人；昵称只用于留痕，不是身份认证。
 
 ## 账号与认证
 
@@ -109,15 +114,19 @@ sudo systemctl restart lws.service
 ```text
 local + off（默认）       → 本地免登录生产配置
 cloud + required（默认） → 线上强制登录生产配置
+cloud + off              → 可信内网无账号生产配置
 local + required         → 仅用于测试或开发
-cloud + off              → 配置错误，启动失败
 ```
 
-`LWS_DEPLOYMENT_MODE` 与 `LWS_AUTH_MODE` 必须组成合法 profile；`cloud/off` 和其它非法值都会让后端启动失败，不会静默降级。
+`LWS_DEPLOYMENT_MODE` 与 `LWS_AUTH_MODE` 必须组成合法 profile；其它非法值会让后端启动失败，不会静默降级。直接从源码或 universal 制品启动 cloud 时，未指定 `LWS_AUTH_MODE` 仍默认为 `required`；专用无账号制品则在启动脚本、systemd 和环境模板三处固定为 `cloud/off`。
 
-同一个 v1.6.1 通用包按环境配置启动。`local/off` 使用 synthetic local admin，免登录且不创建账号，并隐藏登录、注册、用户和项目成员管理入口；`cloud/required` 未登录时只能看到登录/注册页，自助注册创建启用状态的 `member`，不会自动加入既有项目。两个 profile 共用业务代码和数据模型；切换 profile 不迁移、不删除项目、业务数据或文件，继续使用版本目录外的同一份 `LWS_DATA_ROOT` 和 `settings.local.json`，但会清除不兼容的服务端和浏览器会话，防止旧会话复活。
+`local/off` 与 `cloud/off` 都使用 synthetic local admin，免登录且不创建账号，并隐藏登录、注册、用户和项目成员管理入口。区别是 `cloud/off` 继续强制外置数据目录、锁定网页设置修改并要求 AI 任务操作人昵称；`cloud/required` 未登录时只能看到登录/注册页，自助注册创建启用状态的 `member`，不会自动加入既有项目。
+
+三个 profile 共用业务代码和数据模型；切换 profile 不迁移、不删除项目、业务数据或文件，继续使用版本目录外的同一份 `LWS_DATA_ROOT` 和 `settings.local.json`，但会清除不兼容的服务端和浏览器会话，防止旧会话复活。
 
 ### 首次管理员
+
+本节只适用于 `cloud/required`。无账号制品不得配置管理员引导变量。
 
 首次以强制登录模式启动且用户表为空时，必须在 `/etc/lwstudio/lws.env` 中提供：
 
@@ -138,9 +147,10 @@ python3.11 scripts/create_admin.py --username admin
 
 ### Cookie、HTTPS 与权限
 
-- 会话保存在服务端，浏览器使用 `HttpOnly` cookie；cloud 模式带 `Secure`，因此公网入口必须是 HTTPS。
+- `cloud/required` 会话保存在服务端，浏览器使用带 `Secure` 的 `HttpOnly` cookie，因此公网入口必须是 HTTPS；`cloud/off` 不创建登录会话，但线上入口仍应使用 HTTPS。
 - Nginx/CDN 必须原样转发请求 `Cookie` 和响应 `Set-Cookie`，并禁止缓存带 `Set-Cookie` 或 `Cache-Control: no-store` 的响应。
 - 全局角色为 `admin`、`ops`、`member`；非管理员只能看到自己所属项目。管理员管理用户，管理员或有权限的运营人员管理项目成员。
+- `cloud/off` 不执行上述账号和项目成员隔离；所有可访问者共享 synthetic admin 业务权限，因此只能用于可信内网。
 - 完整路由能力表见 `docs/ROUTE_CAPABILITIES.md`。
 
 ## 发布
@@ -163,25 +173,21 @@ PACKAGE_GIT_SHA="$(.venv/bin/python -c 'import json; print(json.load(open("PACKA
 .venv/bin/python check.py \
   --base-url https://ai-lwstudio.example.com \
   --expect-deployment-mode cloud \
-  --expect-auth-mode required \
-  --expect-runtime-profile cloud-required \
+  --expect-auth-mode off \
+  --expect-runtime-profile cloud-off \
   --require-provider \
-  --expect-version 1.6.1 \
+  --expect-version 1.6.2 \
   --expect-git-sha "$PACKAGE_GIT_SHA" \
-  --check-frontend-assets frontend/dist/assets \
-  --auth-user admin \
-  --auth-password '管理员密码'
+  --check-frontend-assets frontend/dist/assets
 ```
 
-验收时必须确认三方静态资源完全一致：公网 HTML 引用的哈希资源、`/api/version` 清单和本地 `frontend/dist` 来自同一发布包；`git_sha` 必须等于 `PACKAGE_MANIFEST.json` 中的本次发布提交。`anonymous_projects` 必须确认未登录访问核心业务 API 返回 401，管理员登录后上传可读性探针必须通过。还需确认 API 最终响应头包含 `no-store`、HTML 最终响应头包含 `no-cache`、健康检查中的数据目录/上传目录/数据库均可用。
+验收时必须确认三方静态资源完全一致：线上 HTML 引用的哈希资源、`/api/version` 清单和本地 `frontend/dist` 来自同一发布包；`git_sha` 必须等于 `PACKAGE_MANIFEST.json` 中的本次发布提交。无账号制品的 `anonymous_projects` 必须确认未登录访问核心业务 API 返回 200，登录和注册接口返回 403，上传可读性探针通过。还需确认 API 最终响应头包含 `no-store`、HTML 最终响应头包含 `no-cache`、健康检查中的数据目录/上传目录/数据库均可用。
 
 完整业务冒烟测试：
 
 ```bash
 .venv/bin/python scripts/stability_check.py \
-  --base-url https://ai-lwstudio.example.com \
-  --auth-user admin \
-  --auth-password '管理员密码'
+  --base-url https://ai-lwstudio.example.com
 ```
 
 该脚本会保留 `X-Operator: stability-check` 留痕，并用同一登录会话创建临时项目，覆盖上传、分析、术语导入、翻译、QA、归档和公告准备，结束后删除测试项目。

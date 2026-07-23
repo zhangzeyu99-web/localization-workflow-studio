@@ -4,11 +4,13 @@ const expectedProfile = process.env.LWS_EXPECT_RUNTIME_PROFILE
 
 test('extracted runtime matches its declared profile and UI boundary', async ({ page, request, context }) => {
   test.skip(!expectedProfile, 'LWS_EXPECT_RUNTIME_PROFILE is only set by extracted-package smoke jobs')
-  expect(['local-off', 'cloud-required']).toContain(expectedProfile)
+  expect(['local-off', 'cloud-off', 'cloud-required']).toContain(expectedProfile)
 
-  const expected = expectedProfile === 'local-off'
-    ? { deployment_mode: 'local', auth_mode: 'off', runtime_profile: 'local-off' }
-    : { deployment_mode: 'cloud', auth_mode: 'required', runtime_profile: 'cloud-required' }
+  const expected = {
+    'local-off': { deployment_mode: 'local', auth_mode: 'off', runtime_profile: 'local-off' },
+    'cloud-off': { deployment_mode: 'cloud', auth_mode: 'off', runtime_profile: 'cloud-off' },
+    'cloud-required': { deployment_mode: 'cloud', auth_mode: 'required', runtime_profile: 'cloud-required' },
+  }[expectedProfile!]
   const versionResponse = await request.get('/api/version')
   expect(versionResponse.ok()).toBe(true)
   expect(await versionResponse.json()).toMatchObject(expected)
@@ -17,12 +19,18 @@ test('extracted runtime matches its declared profile and UI boundary', async ({ 
   expect(await healthResponse.json()).toMatchObject(expected)
 
   const anonymousProjects = await request.get('/api/projects')
-  if (expectedProfile === 'local-off') {
+  if (expectedProfile !== 'cloud-required') {
     expect(anonymousProjects.ok()).toBe(true)
     await page.goto('/')
     await expect(page.getByTestId('login-submit')).toHaveCount(0)
     await expect(page.getByTestId('show-register')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible()
+    await expect(page.getByTestId('operator-identity-trigger')).toBeVisible()
+    const settingsButton = page.getByRole('button', { name: '设置', exact: true })
+    if (expectedProfile === 'local-off') {
+      await expect(settingsButton).toBeVisible()
+    } else {
+      await expect(settingsButton).toHaveCount(0)
+    }
     return
   }
 
