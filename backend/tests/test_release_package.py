@@ -26,8 +26,18 @@ def _write_required_tree(root: Path) -> None:
         "frontend/dist/index.html": "<!doctype html><title>LWS</title>",
         "deploy/lws.service": "[Service]\nExecStart=/opt/lws/start-lws.sh\n",
         "deploy/nginx.conf": "server {}\n",
-        "deploy/lws.env.example": "LWS_DATA_ROOT=/var/lib/lws\n",
-        "start-lws.sh": "#!/usr/bin/env bash\n",
+        "deploy/lws.env.example": (
+            "LWS_DEPLOYMENT_MODE=cloud\n"
+            "LWS_AUTH_MODE=required\n"
+            "LWS_DATA_ROOT=/var/lib/lws\n"
+            "# Bootstrap only: remove after first login.\n"
+            "LWS_ADMIN_USER=admin\n"
+            "LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password\n"
+        ),
+        "start-lws.sh": (
+            "#!/usr/bin/env bash\n"
+            'export LWS_DEPLOYMENT_MODE="${LWS_DEPLOYMENT_MODE:-cloud}"\n'
+        ),
         "backend/app/main.py": "app = object()\n",
         "scripts/create_admin.py": "def main():\n    return 0\n",
         "scripts/deployment_auth.py": "def login(*args, **kwargs):\n    return {}\n",
@@ -36,7 +46,7 @@ def _write_required_tree(root: Path) -> None:
     for name, content in required.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_bytes(content.encode("utf-8"))
 
 
 def _archive_files(zip_path: Path) -> tuple[str, dict[str, bytes]]:
@@ -225,6 +235,10 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     manifest = json.loads(files["PACKAGE_MANIFEST.json"])
     assert manifest["contains_settings_local"] is False
     assert manifest["archive_verified"] is True
+    assert manifest["auth_mode"] == "required"
+    assert b"LWS_AUTH_MODE=required" in files["deploy/lws.env.example"]
+    assert b"LWS_AUTH_MODE=off" not in files["start-lws.sh"]
+    assert b"/usr/bin/env LWS_AUTH_MODE=off" not in files["deploy/lws.service"]
 
     rows = files["SHA256SUMS.txt"].decode("utf-8").splitlines()
     hashes = {name: digest for digest, name in (row.split("  ", 1) for row in rows)}
@@ -248,6 +262,89 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     assert "scripts/deployment_auth.py" in files
     assert "/opt/lwstudio" not in readme
     assert "/var/lib/lwstudio" not in readme
+
+
+def test_no_account_variant_defaults_auth_off_and_documents_deployment(
+    tmp_path,
+    monkeypatch,
+):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    monkeypatch.setattr(package, "ROOT", source)
+    monkeypatch.setattr(package, "_git_dirty", lambda: False)
+    monkeypatch.setattr(package, "_git_sha", lambda: "deadbeef")
+
+    zip_path = package.build(
+        tmp_path / "out",
+        "无账号",
+        auth_mode="off",
+        rebuild_frontend=False,
+    )
+    _, files = _archive_files(zip_path)
+
+    manifest = json.loads(files["PACKAGE_MANIFEST.json"])
+    assert manifest["auth_mode"] == "off"
+
+    start_script = files["start-lws.sh"].decode("utf-8")
+    assert "export LWS_AUTH_MODE=off" in start_script
+    assert "\r\n" not in start_script
+
+    service = files["deploy/lws.service"].decode("utf-8")
+    assert "ExecStart=/usr/bin/env LWS_AUTH_MODE=off " in service
+
+    env_example = files["deploy/lws.env.example"].decode("utf-8")
+    assert "LWS_AUTH_MODE=off" in env_example
+    assert "LWS_AUTH_MODE=required" not in env_example
+    assert "LWS_ADMIN_USER" not in env_example
+    assert "LWS_ADMIN_PASSWORD" not in env_example
+    assert "Bootstrap" not in env_example
+
+    readme = files["ONLINE_DEPLOY_README.zh-CN.md"].decode("utf-8")
+    assert "无账号模式" in readme
+    assert "LWS_AUTH_MODE=off" in readme
+    assert "--expect-auth-mode off" in readme
+    assert "--auth-user" not in readme
+    assert "--auth-password" not in readme
+
+
+def test_account_variant_rejects_conflicting_auth_off_config(tmp_path, monkeypatch):
+    package = _load_module()
+    source = tmp_path / "source"
+    _write_required_tree(source)
+    env_path = source / "deploy" / "lws.env.example"
+    env_path.write_bytes(env_path.read_bytes() + b"LWS_AUTH_MODE=off\n")
+    monkeypatch.setattr(package, "ROOT", source)
+    monkeypatch.setattr(package, "_git_dirty", lambda: False)
+    monkeypatch.setattr(package, "_git_sha", lambda: "deadbeef")
+
+    with pytest.raises(RuntimeError, match="authentication-off"):
+        package.build(tmp_path / "out", "account", rebuild_frontend=False)
+
+
+def test_cli_no_account_selects_off_auth_mode(tmp_path, monkeypatch):
+    package = _load_module()
+    calls = []
+
+    def fake_build(output_dir, package_label, **kwargs):
+        calls.append((output_dir, package_label, kwargs))
+        return tmp_path / "无账号-v9.9.9.zip"
+
+    monkeypatch.setattr(package, "build", fake_build)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "build_release_package.py",
+            "--output-dir",
+            str(tmp_path),
+            "--label",
+            "无账号",
+            "--no-account",
+        ],
+    )
+
+    assert package.main() == 0
+    assert calls[0][2]["auth_mode"] == "off"
 
 
 def test_cli_no_longer_accepts_settings_file_option(monkeypatch):

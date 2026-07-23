@@ -368,12 +368,149 @@ def _assert_required_source_members() -> None:
         raise RuntimeError("release package is missing required source members: " + ", ".join(missing))
 
 
-def _write_install_doc(target_root: Path, version: str, sha: str) -> None:
+def _configure_staged_auth_mode(target_root: Path, auth_mode: str) -> None:
+    if auth_mode not in {"required", "off"}:
+        raise ValueError(f"unsupported auth mode: {auth_mode}")
+    if auth_mode == "required":
+        return
+
+    start_path = target_root / "start-lws.sh"
+    start_bytes = start_path.read_bytes()
+    deployment_line = b'export LWS_DEPLOYMENT_MODE="${LWS_DEPLOYMENT_MODE:-cloud}"\n'
+    auth_line = b"export LWS_AUTH_MODE=off\n"
+    if start_bytes.count(deployment_line) != 1:
+        raise RuntimeError(
+            "start-lws.sh must define the deployment mode export exactly once"
+        )
+    if b"export LWS_AUTH_MODE=" in start_bytes:
+        raise RuntimeError("start-lws.sh already defines LWS_AUTH_MODE")
+    start_path.write_bytes(
+        start_bytes.replace(deployment_line, deployment_line + auth_line, 1)
+    )
+
+    env_path = target_root / "deploy" / "lws.env.example"
+    env_lines = env_path.read_bytes().splitlines(keepends=True)
+    required_line = b"LWS_AUTH_MODE=required\n"
+    if env_lines.count(required_line) != 1:
+        raise RuntimeError(
+            "deploy/lws.env.example must define LWS_AUTH_MODE=required exactly once"
+        )
+    admin_prefixes = (b"LWS_ADMIN_USER=", b"LWS_ADMIN_PASSWORD=")
+    removed_admin = {
+        prefix: sum(line.startswith(prefix) for line in env_lines)
+        for prefix in admin_prefixes
+    }
+    if any(count != 1 for count in removed_admin.values()):
+        raise RuntimeError(
+            "deploy/lws.env.example must define each bootstrap admin variable exactly once"
+        )
+    env_path.write_bytes(
+        b"".join(
+            b"LWS_AUTH_MODE=off\n"
+            if line == required_line
+            else b""
+            if line.startswith(admin_prefixes) or line.startswith(b"# Bootstrap")
+            else line
+            for line in env_lines
+        )
+    )
+
+    service_path = target_root / "deploy" / "lws.service"
+    service_lines = service_path.read_bytes().splitlines(keepends=True)
+    exec_prefix = b"ExecStart="
+    if sum(line.startswith(exec_prefix) for line in service_lines) != 1:
+        raise RuntimeError("deploy/lws.service must define ExecStart exactly once")
+    service_path.write_bytes(
+        b"".join(
+            b"ExecStart=/usr/bin/env LWS_AUTH_MODE=off " + line[len(exec_prefix) :]
+            if line.startswith(exec_prefix)
+            else line
+            for line in service_lines
+        )
+    )
+
+
+def _write_install_doc(
+    target_root: Path,
+    version: str,
+    sha: str,
+    *,
+    auth_mode: str,
+) -> None:
+    if auth_mode == "off":
+        auth_summary = (
+            "本包为无账号模式，`start-lws.sh`、`deploy/lws.service` 和 "
+            "`deploy/lws.env.example` 强制设置 `LWS_AUTH_MODE=off`。"
+            "访问者无需登录即可进入工作台。"
+        )
+        auth_setup = """## 无账号模式
+
+安装本包随附的 `deploy/lws.service`，并保持 `/etc/lwstudio/lws.env` 中的
+`LWS_AUTH_MODE=off`。不要沿用有账号包的 service 模板，也不要配置
+`LWS_ADMIN_USER` 或 `LWS_ADMIN_PASSWORD`；本包不需要初始化管理员。"""
+        deployment_check_command = f"""python3.11 check.py \\
+  --base-url https://ai-lwstudio.gz4399.com \\
+  --require-cloud \\
+  --require-provider \\
+  --expect-auth-mode off \\
+  --expect-version {version} \\
+  --expect-git-sha "$release_sha" \\
+  --check-frontend-assets frontend/dist/assets"""
+        stability_check_command = """python3.11 scripts/stability_check.py \\
+  --base-url https://ai-lwstudio.gz4399.com"""
+        auth_acceptance = (
+            "部署检查中的 `auth_mode` 必须为 `ok=true`，确认无会话访问核心业务 API "
+            "返回 200，页面直接进入工作台。"
+        )
+    else:
+        auth_summary = "本包为有账号模式，cloud 部署默认强制登录。"
+        auth_setup = """## 初始化管理员
+
+cloud 模式默认强制登录。首次启动且用户表为空时，在受限权限的
+`/etc/lwstudio/lws.env` 中临时配置：
+
+```bash
+LWS_AUTH_MODE=required
+LWS_ADMIN_USER=admin
+LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password
+```
+
+也可以在启动服务前直接创建或重置管理员：
+
+```bash
+LWS_DATA_ROOT=/srv/lwstudio/data \\
+LWS_ADMIN_PASSWORD='replace-with-strong-bootstrap-password' \\
+.venv/bin/python scripts/create_admin.py --username admin
+```
+
+初始管理员首次登录后必须修改密码。引导完成后，从环境文件移除
+`LWS_ADMIN_PASSWORD` 并重启服务。"""
+        deployment_check_command = f"""python3.11 check.py \\
+  --base-url https://ai-lwstudio.gz4399.com \\
+  --require-cloud \\
+  --require-provider \\
+  --expect-auth-mode required \\
+  --expect-version {version} \\
+  --expect-git-sha "$release_sha" \\
+  --check-frontend-assets frontend/dist/assets \\
+  --auth-user admin \\
+  --auth-password '管理员密码'"""
+        stability_check_command = """python3.11 scripts/stability_check.py \\
+  --base-url https://ai-lwstudio.gz4399.com \\
+  --auth-user admin \\
+  --auth-password '管理员密码'"""
+        auth_acceptance = (
+            "部署检查中的 `auth_fail_closed` 必须为 `ok=true`，确认未登录访问核心"
+            "业务 API 会返回 401；随后还必须用管理员会话通过上传可读性探针。"
+        )
+
     text = f"""# 本地化工作台线上部署说明
 
 版本：{version}
 源码提交：{sha}
 打包时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+{auth_summary}
 
 ## 包内内容
 
@@ -419,27 +556,7 @@ python3.11 -m venv .venv
 .venv/bin/python -m pip install -r workflow/localization/requirements.txt
 ```
 
-## 初始化管理员
-
-cloud 模式默认强制登录。首次启动且用户表为空时，在受限权限的
-`/etc/lwstudio/lws.env` 中临时配置：
-
-```bash
-LWS_AUTH_MODE=required
-LWS_ADMIN_USER=admin
-LWS_ADMIN_PASSWORD=replace-with-strong-bootstrap-password
-```
-
-也可以在启动服务前直接创建或重置管理员：
-
-```bash
-LWS_DATA_ROOT=/srv/lwstudio/data \
-LWS_ADMIN_PASSWORD='replace-with-strong-bootstrap-password' \
-.venv/bin/python scripts/create_admin.py --username admin
-```
-
-初始管理员首次登录后必须修改密码。引导完成后，从环境文件移除
-`LWS_ADMIN_PASSWORD` 并重启服务。
+{auth_setup}
 
 ## 启动与接入
 
@@ -452,23 +569,11 @@ LWS_ADMIN_PASSWORD='replace-with-strong-bootstrap-password' \
 
 ```bash
 release_sha="$(python3.11 -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["git_sha"])')"
-python3.11 check.py \
-  --base-url https://ai-lwstudio.gz4399.com \
-  --require-cloud \
-  --require-provider \
-  --expect-version {version} \
-  --expect-git-sha "$release_sha" \
-  --check-frontend-assets frontend/dist/assets \
-  --auth-user admin \
-  --auth-password '管理员密码'
-python3.11 scripts/stability_check.py \
-  --base-url https://ai-lwstudio.gz4399.com \
-  --auth-user admin \
-  --auth-password '管理员密码'
+{deployment_check_command}
+{stability_check_command}
 ```
 
-部署检查中的 `auth_fail_closed` 必须为 `ok=true`，确认未登录访问核心
-业务 API 会返回 401；随后还必须用管理员会话通过上传可读性探针。
+{auth_acceptance}
 """
     (target_root / "ONLINE_DEPLOY_README.zh-CN.md").write_text(text, encoding="utf-8")
 
@@ -480,6 +585,7 @@ def _write_manifest(
     *,
     dirty: bool,
     hide_settings: bool,
+    auth_mode: str,
 ) -> None:
     current_files = sum(1 for path in target_root.rglob("*") if path.is_file())
     manifest = {
@@ -493,6 +599,7 @@ def _write_manifest(
         "contains_frontend_dist": True,
         "contains_settings_local": False,
         "frontend_settings_button_hidden": hide_settings,
+        "auth_mode": auth_mode,
         "excluded_runtime_data": True,
         "archive_verified": True,
         "package_policy": "production_runtime_allowlist",
@@ -540,6 +647,57 @@ def _relative_archive_files(archive: zipfile.ZipFile) -> dict[str, str]:
     return relative
 
 
+def _verify_archive_auth_mode(
+    archive: zipfile.ZipFile,
+    relative: dict[str, str],
+    *,
+    auth_mode: str,
+) -> None:
+    start_script = archive.read(relative["start-lws.sh"])
+    service = archive.read(relative["deploy/lws.service"])
+    env_example = archive.read(relative["deploy/lws.env.example"])
+    readme = archive.read(relative["ONLINE_DEPLOY_README.zh-CN.md"])
+
+    if b"\r\n" in start_script:
+        raise RuntimeError("start-lws.sh must use LF line endings")
+
+    forced_start = b"export LWS_AUTH_MODE=off\n"
+    forced_service = b"ExecStart=/usr/bin/env LWS_AUTH_MODE=off "
+    if auth_mode == "off":
+        if start_script.count(forced_start) != 1:
+            raise RuntimeError(
+                "no-account archive must force LWS_AUTH_MODE=off in start-lws.sh"
+            )
+        if service.count(forced_service) != 1:
+            raise RuntimeError(
+                "no-account archive must force LWS_AUTH_MODE=off in deploy/lws.service"
+            )
+        if env_example.count(b"LWS_AUTH_MODE=off\n") != 1:
+            raise RuntimeError(
+                "no-account archive must set LWS_AUTH_MODE=off in deploy/lws.env.example"
+            )
+        if b"LWS_AUTH_MODE=required" in env_example:
+            raise RuntimeError("no-account archive contains required authentication config")
+        if b"LWS_ADMIN_USER=" in env_example or b"LWS_ADMIN_PASSWORD=" in env_example:
+            raise RuntimeError("no-account archive contains bootstrap admin config")
+        if b"--expect-auth-mode off" not in readme:
+            raise RuntimeError("no-account deployment guide must verify off authentication")
+        if b"--auth-user" in readme or b"--auth-password" in readme:
+            raise RuntimeError("no-account deployment guide must not require credentials")
+        return
+
+    if env_example.count(b"LWS_AUTH_MODE=required\n") != 1:
+        raise RuntimeError(
+            "account archive must set LWS_AUTH_MODE=required exactly once in deploy/lws.env.example"
+        )
+    if b"LWS_AUTH_MODE=off" in env_example:
+        raise RuntimeError("account archive contains authentication-off config")
+    if b"export LWS_AUTH_MODE=" in start_script or b"LWS_AUTH_MODE=off" in service:
+        raise RuntimeError("account archive must not force authentication off")
+    if b"--expect-auth-mode required" not in readme:
+        raise RuntimeError("account deployment guide must verify required authentication")
+
+
 def _verify_archive(zip_path: Path, *, dirty: bool) -> None:
     try:
         with zipfile.ZipFile(zip_path) as archive:
@@ -579,6 +737,13 @@ def _verify_archive(zip_path: Path, *, dirty: bool) -> None:
                 raise RuntimeError("manifest is missing archive verification state")
             if manifest.get("source_git_dirty") is not dirty:
                 raise RuntimeError("manifest dirty state does not match the source tree")
+            if manifest.get("auth_mode") not in {"required", "off"}:
+                raise RuntimeError("manifest auth_mode must be required or off")
+            _verify_archive_auth_mode(
+                archive,
+                relative,
+                auth_mode=manifest["auth_mode"],
+            )
 
             rows = archive.read(relative["SHA256SUMS.txt"]).decode("utf-8").splitlines()
             expected_hashes: dict[str, str] = {}
@@ -611,9 +776,12 @@ def build(
     package_label: str,
     *,
     hide_settings: bool = False,
+    auth_mode: str = "required",
     rebuild_frontend: bool = True,
     allow_dirty: bool = False,
 ) -> Path:
+    if auth_mode not in {"required", "off"}:
+        raise ValueError(f"unsupported auth mode: {auth_mode}")
     dirty = _git_dirty()
     if dirty and not allow_dirty:
         raise RuntimeError(
@@ -643,13 +811,15 @@ def build(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
 
-        _write_install_doc(staging_root, version, sha)
+        _configure_staged_auth_mode(staging_root, auth_mode)
+        _write_install_doc(staging_root, version, sha, auth_mode=auth_mode)
         _write_manifest(
             staging_root,
             version,
             sha,
             dirty=dirty,
             hide_settings=hide_settings,
+            auth_mode=auth_mode,
         )
         _write_sha256sums(staging_root)
 
@@ -716,6 +886,11 @@ def main() -> int:
         help="Build the frontend with the settings button hidden (LWS_HIDE_SETTINGS=1).",
     )
     parser.add_argument(
+        "--no-account",
+        action="store_true",
+        help="Build a no-account variant that forces LWS_AUTH_MODE=off.",
+    )
+    parser.add_argument(
         "--no-rebuild-frontend",
         action="store_true",
         help="Package the existing frontend/dist without rebuilding it.",
@@ -730,6 +905,7 @@ def main() -> int:
         Path(args.output_dir),
         args.label,
         hide_settings=args.hide_settings,
+        auth_mode="off" if args.no_account else "required",
         rebuild_frontend=not args.no_rebuild_frontend,
         allow_dirty=args.allow_dirty,
     )

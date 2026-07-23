@@ -159,12 +159,15 @@ def run(
     *,
     require_cloud: bool = False,
     require_provider: bool = False,
+    expect_auth_mode: str | None = None,
     expect_version: str | None = None,
     expect_git_sha: str | None = None,
     frontend_assets_dir: Path | None = None,
     auth_user: str | None = None,
     auth_password: str | None = None,
 ) -> int:
+    if expect_auth_mode not in {None, "required", "off"}:
+        raise ValueError(f"unsupported expected auth mode: {expect_auth_mode}")
     failed = False
     reported_assets: list[str] | None = None
     version_fetched = False
@@ -287,27 +290,47 @@ def run(
             failed = True
             _print_step("health", False, str(exc))
 
-        # Fail-closed self-check: a session-less request to a core business
-        # endpoint must be rejected once the deployment enforces login. Only
-        # meaningful when deployment_mode is cloud (LWS_AUTH_MODE defaults to
-        # required there); --require-cloud is what turns a failure here into
-        # a hard exit-1, mirroring how the health step above already gates
-        # its own deployment_mode/provider assertions on the same flags.
+        # Probe a core business endpoint without a session. Explicit
+        # --expect-auth-mode supports both account and no-account packages;
+        # otherwise preserve the legacy cloud fail-closed check.
         try:
             status_code = unauthenticated_probe_status(base_url, "/api/projects")
-            fail_closed_ok = status_code == 401
-            result: dict[str, Any] = {"deployment_mode": deployment_mode, "status_code": status_code}
-            if deployment_mode != "cloud":
-                result["note"] = "deployment_mode 不是 cloud，本项仅供参考，不影响本地/认证关闭部署"
-            elif not fail_closed_ok:
-                result["error"] = "未登录访问 GET /api/projects 未返回 401；fail-closed 鉴权可能失效"
-                if require_cloud:
+            if expect_auth_mode == "off":
+                auth_mode_ok = status_code == 200
+                result = {
+                    "deployment_mode": deployment_mode,
+                    "expected_auth_mode": "off",
+                    "status_code": status_code,
+                }
+                if not auth_mode_ok:
+                    result["error"] = "无账号模式下 GET /api/projects 未返回 200"
                     failed = True
-            _print_step("auth_fail_closed", fail_closed_ok or deployment_mode != "cloud", result)
+                _print_step("auth_mode", auth_mode_ok, result)
+                fail_closed_ok = False
+            else:
+                fail_closed_ok = status_code == 401
+                result = {"deployment_mode": deployment_mode, "status_code": status_code}
+                if expect_auth_mode == "required":
+                    result["expected_auth_mode"] = "required"
+                if deployment_mode != "cloud" and expect_auth_mode is None:
+                    result["note"] = "deployment_mode 不是 cloud，本项仅供参考，不影响本地/认证关闭部署"
+                elif not fail_closed_ok:
+                    result["error"] = "未登录访问 GET /api/projects 未返回 401；fail-closed 鉴权可能失效"
+                    if require_cloud or expect_auth_mode == "required":
+                        failed = True
+                _print_step(
+                    "auth_fail_closed",
+                    fail_closed_ok or (deployment_mode != "cloud" and expect_auth_mode is None),
+                    result,
+                )
         except Exception as exc:
-            if require_cloud:
+            if require_cloud or expect_auth_mode is not None:
                 failed = True
-            _print_step("auth_fail_closed", False, str(exc))
+            _print_step(
+                "auth_mode" if expect_auth_mode == "off" else "auth_fail_closed",
+                False,
+                str(exc),
+            )
 
         authenticated = False
         if auth_user:
@@ -365,6 +388,12 @@ def main() -> int:
     parser.add_argument("--base-url", required=True, help="Example: https://ai-lwstudio.example.com")
     parser.add_argument("--require-cloud", action="store_true", help="Fail if /api/health deployment_mode is not cloud.")
     parser.add_argument("--require-provider", action="store_true", help="Fail if provider API key is not configured.")
+    parser.add_argument(
+        "--expect-auth-mode",
+        choices=("required", "off"),
+        default=None,
+        help="Require anonymous business API access to be rejected (required) or allowed (off).",
+    )
     parser.add_argument("--expect-version", default=None, help="Expected /api/version value. Defaults to local VERSION file.")
     parser.add_argument("--expect-git-sha", default=None, help="Expected /api/version git_sha. Checked only when provided.")
     parser.add_argument(
@@ -390,6 +419,7 @@ def main() -> int:
         args.base_url,
         require_cloud=args.require_cloud,
         require_provider=args.require_provider,
+        expect_auth_mode=args.expect_auth_mode,
         expect_version=args.expect_version,
         expect_git_sha=args.expect_git_sha,
         frontend_assets_dir=Path(args.check_frontend_assets),

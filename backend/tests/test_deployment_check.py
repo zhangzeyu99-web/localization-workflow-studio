@@ -268,6 +268,85 @@ def test_run_combines_git_asset_and_authenticated_cloud_checks(
     assert steps["upload_readability"]["ok"] is True
 
 
+def test_run_accepts_explicit_no_account_cloud_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    module = _load_deployment_check()
+    _install_client(
+        monkeypatch,
+        module,
+        html='<script src="/assets/index-built.js"></script>',
+        html_cache_control="no-cache",
+        api_cache_control="no-store",
+        git_sha="release-sha",
+    )
+    monkeypatch.setattr(module, "unauthenticated_probe_status", lambda *args, **kwargs: 200)
+
+    result = module.run(
+        "https://studio.example.test",
+        require_cloud=True,
+        expect_auth_mode="off",
+        expect_version="1.3.1",
+        expect_git_sha="release-sha",
+        frontend_assets_dir=_local_assets(tmp_path, "index-built.js"),
+    )
+
+    assert result == 0
+    steps = _printed_steps(capsys)
+    assert steps["auth_mode"]["ok"] is True
+    assert steps["auth_mode"]["result"] == {
+        "deployment_mode": "cloud",
+        "expected_auth_mode": "off",
+        "status_code": 200,
+    }
+    assert "auth_fail_closed" not in steps
+
+
+@pytest.mark.parametrize(
+    ("expect_auth_mode", "status_code", "expected_result", "step_name"),
+    [
+        ("off", 401, 1, "auth_mode"),
+        ("required", 401, 0, "auth_fail_closed"),
+    ],
+)
+def test_run_enforces_explicit_auth_mode_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    expect_auth_mode: str,
+    status_code: int,
+    expected_result: int,
+    step_name: str,
+) -> None:
+    module = _load_deployment_check()
+    _install_client(
+        monkeypatch,
+        module,
+        html='<script src="/assets/index-built.js"></script>',
+        html_cache_control="no-cache",
+        api_cache_control="no-store",
+    )
+    monkeypatch.setattr(
+        module,
+        "unauthenticated_probe_status",
+        lambda *args, **kwargs: status_code,
+    )
+
+    result = module.run(
+        "https://studio.example.test",
+        require_cloud=True,
+        expect_auth_mode=expect_auth_mode,
+        expect_version="1.3.1",
+        frontend_assets_dir=_local_assets(tmp_path, "index-built.js"),
+    )
+
+    assert result == expected_result
+    steps = _printed_steps(capsys)
+    assert steps[step_name]["ok"] is (expected_result == 0)
+
+
 def test_run_rejects_public_html_asset_not_reported_by_version(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
