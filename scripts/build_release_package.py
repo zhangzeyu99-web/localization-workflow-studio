@@ -730,7 +730,7 @@ def _verify_manifest_identity(
     artifact_kind = manifest.get("artifact_kind")
     if artifact_kind == "universal":
         root_suffix = "universal"
-        expected_archive_name = f"{package_root}.zip"
+        expected_archive_name = f"有账号-v{manifest.get('version')}.zip"
         expected_profiles = SUPPORTED_RUNTIME_PROFILES
         expected_policy = "universal_runtime_allowlist"
     elif artifact_kind == NO_ACCOUNT_ARTIFACT_KIND:
@@ -1178,7 +1178,7 @@ def build(
         archive_name = (
             f"无账号-v{version}.zip"
             if no_account
-            else f"{root_name}.zip"
+            else f"有账号-v{version}.zip"
         )
         zip_path = output_dir / archive_name
         sidecar_path = zip_path.with_name(f"{zip_path.name}.sha256")

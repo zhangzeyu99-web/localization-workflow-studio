@@ -9,7 +9,7 @@ Security fixes target the latest version on the default branch and the latest pu
 Current version:
 
 ```text
-0.4.9
+1.6.3
 ```
 
 ## Sensitive Data Boundary

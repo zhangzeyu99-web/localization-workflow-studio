@@ -259,7 +259,7 @@ def test_completed_archive_is_readable_complete_and_hash_verified(tmp_path, monk
     package_root, files = _archive_files(zip_path)
 
     assert package_root == "localization-workflow-studio-v9.9.9-gdeadbeefcafe-universal"
-    assert zip_path.name == f"{package_root}.zip"
+    assert zip_path.name == "有账号-v9.9.9.zip"
 
     sidecar = zip_path.with_name(f"{zip_path.name}.sha256")
     assert b"\r\n" not in sidecar.read_bytes()
@@ -774,7 +774,7 @@ def test_build_deletes_artifact_if_head_changes_during_packaging(
     sha_states = iter([original_sha, original_sha, original_sha, changed_sha])
     monkeypatch.setattr(package, "_git_sha_full", lambda: next(sha_states))
     output_dir = tmp_path / "out"
-    artifact = output_dir / "localization-workflow-studio-v9.9.9-gdeadbeefcafe-universal.zip"
+    artifact = output_dir / "有账号-v9.9.9.zip"
 
     with pytest.raises(RuntimeError, match="HEAD changed"):
         package.build(output_dir, rebuild_frontend=False)
@@ -794,7 +794,7 @@ def test_build_deletes_partial_artifacts_if_archive_write_fails(
     _configure_clean_git(package, monkeypatch)
     output_dir = tmp_path / "out"
     output_dir.mkdir()
-    artifact = output_dir / "localization-workflow-studio-v9.9.9-gdeadbeefcafe-universal.zip"
+    artifact = output_dir / "有账号-v9.9.9.zip"
     sidecar = artifact.with_name(f"{artifact.name}.sha256")
     artifact.write_bytes(b"stale archive")
     sidecar.write_text("stale sidecar", encoding="utf-8")

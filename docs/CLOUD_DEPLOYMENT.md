@@ -2,7 +2,7 @@
 
 ## 结论
 
-v1.6.2 本次交付 `无账号-v1.6.2.zip`，制品的 manifest、Linux 启动脚本、systemd 服务和环境模板都锁定为内网无账号 `cloud/off`。它只适用于已有网络访问控制的可信公司内网；任何能够访问站点的人都拥有 synthetic admin 的业务能力，禁止直接暴露到公网。源码和默认 universal 构建仍保留 `cloud/required`，云端未显式选择时也默认强制账号登录。
+v1.6.3 同时交付 `有账号-v1.6.3.zip` 与 `无账号-v1.6.3.zip`。有账号包是默认使用 `cloud/required` 的 universal 制品，保留登录、注册、角色和项目成员权限；无账号包的 manifest、Linux 启动脚本、systemd 服务和环境模板都锁定为内网 `cloud/off`，只适用于已有网络访问控制的可信公司内网，禁止直接暴露到公网。
 
 线上采用“同域 Nginx + 单个 FastAPI worker + 独立持久数据目录”。前端只使用包内已验证的 Vite 构建产物，不运行开发服务器；SQLite、上传文件、任务产物和 `settings.local.json` 都放在版本目录之外。部署模板位于 `deploy/`。
 
@@ -45,7 +45,7 @@ test -f frontend/dist/index.html
 
 sudo chown -R root:root /srv/lwstudio/releases/<release-id>
 sudo ln -sfn /srv/lwstudio/releases/<release-id> /srv/lwstudio/current
-# 无账号-v1.6.2.zip 内的 deploy/lws.env.example 已锁定为 cloud/off。
+# 两个 v1.6.3 包都使用各自包内的 deploy/lws.env.example。
 sudo cp deploy/lws.env.example /etc/lwstudio/lws.env
 sudo chown root:lwstudio /etc/lwstudio/lws.env
 sudo chmod 0640 /etc/lwstudio/lws.env
@@ -176,7 +176,7 @@ PACKAGE_GIT_SHA="$(.venv/bin/python -c 'import json; print(json.load(open("PACKA
   --expect-auth-mode off \
   --expect-runtime-profile cloud-off \
   --require-provider \
-  --expect-version 1.6.2 \
+  --expect-version 1.6.3 \
   --expect-git-sha "$PACKAGE_GIT_SHA" \
   --check-frontend-assets frontend/dist/assets
 ```

@@ -7,7 +7,7 @@ Localization Workflow Studio 是一个面向游戏本地化项目的本地 Web �
 
 ## 风险收束与运行边界
 
-- 工作台是本地桌面 Web 应用：后端默认只应绑定本机地址。云端默认仍为强制账号登录的 `cloud/required`；v1.6.2 另提供锁定为 `cloud/off` 的内网无账号包，仅适用于已有网络隔离的可信公司内网，不得暴露到公网。本地默认仍然免登录，行为不变。
+- 工作台是本地桌面 Web 应用：后端默认只应绑定本机地址。v1.6.3 同时提供默认使用 `cloud/required` 的有账号包，以及锁定为 `cloud/off` 的内网无账号包；无账号包仅适用于已有网络隔离的可信公司内网，不得暴露到公网。本地默认仍然免登录，行为不变。
 - 长文本翻译由后端编排器负责拆批、限流、断点续跑、取消和失败恢复；Codex/Agent 不是运行依赖。
 - 正式模型路径只支持 OpenAI/GPT、GPT 中转站与 Claude；测试环境使用隐藏 test-fake，不作为产品 provider。
 - API key 写入私有 `settings.local.json`，不要提交到仓库；线上 Web 版不显示前端设置入口。
@@ -434,12 +434,13 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 - [v1.6.0 历史候选说明](docs/releases/v1.6.0.md)
 - [v1.6.1 统一版说明](docs/releases/v1.6.1.md)
 - [v1.6.2 无账号云端版说明](docs/releases/v1.6.2.md)
+- [v1.6.3 双云端包说明](docs/releases/v1.6.3.md)
 - [许可证](LICENSE)
 
 ## 版本
 
 
-当前版本：`1.6.2`。源码支持本地 `local/off`、内网无账号 `cloud/off` 和线上有账号 `cloud/required`；本次提供锁定为 `cloud/off` 的独立无账号线上包，默认云端配置仍为 `cloud/required`。
+当前版本：`1.6.3`。源码支持本地 `local/off`、内网无账号 `cloud/off` 和线上有账号 `cloud/required`；本次同时提供默认使用 `cloud/required` 的有账号包和锁定为 `cloud/off` 的无账号包。
 
 - `VERSION` 是产品版本的唯一真源；后端和生成的包清单/部署说明均从这里读取。
 - `frontend/package.json` 与 `frontend/package-lock.json` 是同步的前端版本镜像。

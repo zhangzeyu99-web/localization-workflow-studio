@@ -187,7 +187,7 @@ def test_public_release_docs_match_repository_version() -> None:
     assert "`cloud/off`" in github_guide
     assert "`cloud/required`" in github_guide
     assert f"正式版 v{version}" in pages_index
-    assert f"<strong>{version}</strong><span>可信内网 · 无账号云端包</span>" in pages_index
+    assert f"<strong>{version}</strong><span>有账号 / 无账号双云端包</span>" in pages_index
 
 
 def test_v160_release_commands_are_shell_safe_and_self_contained() -> None:

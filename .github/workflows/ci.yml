@@ -150,7 +150,7 @@ jobs:
           from pathlib import Path
 
           output = Path("release_archives")
-          archive = next(output.glob("*-universal.zip"))
+          archive = next(output.glob("有账号-v*.zip"))
           sidecar = archive.with_name(f"{archive.name}.sha256")
           expected_outer = sidecar.read_text(encoding="utf-8").split()[0]
           actual_outer = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -171,15 +171,15 @@ jobs:
           }
           (output / "release-identity.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
           PY
-          (cd release_archives && sha256sum --check *-universal.zip.sha256)
+          (cd release_archives && sha256sum --check 有账号-v*.zip.sha256)
       - name: Upload universal release
         id: upload-release
         uses: actions/upload-artifact@v4
         with:
           name: universal-release
           path: |
-            release_archives/*-universal.zip
-            release_archives/*-universal.zip.sha256
+            release_archives/有账号-v*.zip
+            release_archives/有账号-v*.zip.sha256
             release_archives/release-identity.json
           if-no-files-found: error
 
@@ -215,7 +215,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if (-not $env:EXPECTED_RELEASE_ARTIFACT_ID) { throw 'release artifact id is empty' }
           $ReleaseRoot = Join-Path $env:RUNNER_TEMP 'release'
-          $Zip = Get-ChildItem $ReleaseRoot -Filter '*-universal.zip' | Select-Object -First 1
+          $Zip = Get-ChildItem $ReleaseRoot -Filter '有账号-v*.zip' | Select-Object -First 1
           $Sidecar = Get-Item "$($Zip.FullName).sha256"
           $Identity = Get-Content -Raw (Join-Path $ReleaseRoot 'release-identity.json') | ConvertFrom-Json
           $OuterSha = (Get-FileHash -Algorithm SHA256 $Zip.FullName).Hash.ToLowerInvariant()
@@ -325,7 +325,7 @@ jobs:
           set -euo pipefail
           test -n "$EXPECTED_RELEASE_ARTIFACT_ID"
           RELEASE_ROOT="$RUNNER_TEMP/release"
-          ZIP="$(find "$RELEASE_ROOT" -maxdepth 1 -name '*-universal.zip' -print -quit)"
+          ZIP="$(find "$RELEASE_ROOT" -maxdepth 1 -name '有账号-v*.zip' -print -quit)"
           SIDECAR="$ZIP.sha256"
           (cd "$RELEASE_ROOT" && sha256sum --check "$(basename "$SIDECAR")")
           export LWS_RELEASE_ZIP="$ZIP"

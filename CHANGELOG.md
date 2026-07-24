@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.6.3 - 2026-07-24
+
+Prompt-editor polling fix and paired cloud artifacts.
+
+- Preserved the prompt editor and its unsaved draft while same-project detail or project-list polling refreshes the current project.
+- Kept project and target-language switches authoritative: changing either still exits the old edit scope and loads the new prompt.
+- Added deterministic browser coverage for both detail polling and focus-triggered project-list refreshes.
+- Standardized the account-enabled universal artifact name as `有账号-v1.6.3.zip` and shipped it beside the dedicated `无账号-v1.6.3.zip` cloud-off artifact.
+
 ## 1.6.2 - 2026-07-23
 
 Cloud no-account and official sentence-template release.
