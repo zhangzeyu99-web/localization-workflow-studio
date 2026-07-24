@@ -509,6 +509,60 @@ test('project list refreshes after an external project is created', async ({ pag
   await expect(page.getByRole('heading', { name: firstProjectName })).toBeVisible()
 })
 
+test('project refresh preserves the unsaved prompt draft and edit mode', async ({ page, request }) => {
+  const projectName = `E2E Prompt Draft ${Date.now()}`
+  const serverPrompt = '服务端项目提示词'
+  const draftPrompt = '尚未保存的人工提示词草稿'
+  const createResponse = await request.post(`${baseURL}/api/projects`, {
+    data: { name: projectName, type: 'prompt-refresh', description: 'Prompt refresh coverage.' },
+  })
+  expect(createResponse.ok()).toBeTruthy()
+  const project = await createResponse.json()
+  const promptResponse = await request.patch(`${baseURL}/api/projects/${project.id}`, {
+    data: {
+      prompt_text: serverPrompt,
+      profile: {
+        prompts_by_language: { en: serverPrompt },
+        display_prompts_by_language: { en: serverPrompt },
+      },
+    },
+  })
+  expect(promptResponse.ok()).toBeTruthy()
+
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: projectName }).click()
+  await expect(page.getByRole('heading', { name: projectName })).toBeVisible()
+
+  const promptCard = page.locator('.reference-card').filter({ hasText: '当前项目翻译提示词' }).first()
+  await promptCard.getByRole('button', { name: '编辑', exact: true }).click()
+  const editor = promptCard.locator('textarea.prompt-editor')
+  await expect(editor).toHaveValue(serverPrompt)
+  await editor.fill(draftPrompt)
+
+  const detailRefresh = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+    && new URL(response.url()).pathname === `/api/projects/${project.id}`
+  ))
+  await detailRefresh
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
+  await expect(editor).toBeVisible()
+  await expect(editor).toHaveValue(draftPrompt)
+
+  const listRefresh = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/projects'
+  ))
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await listRefresh
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
+  await expect(editor).toBeVisible()
+  await expect(editor).toHaveValue(draftPrompt)
+})
+
 test('an older project-list refresh cannot replace a newly created project selection', async ({ page, request }) => {
   const firstProjectName = `E2E Create Race Base ${Date.now()}`
   await request.post(`${baseURL}/api/projects`, {

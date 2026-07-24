@@ -83,9 +83,15 @@ export function MetaTab({
     setMaterialNotes(project.description || '')
     setMetaDraft(metaDraftFromProject(project))
     setEditingMeta(false)
-    setPromptDraft(projectPromptForLanguage(project, selectedLanguage))
+  }, [project.id, project.name, project.type, project.description, project.profile])
+
+  useEffect(() => {
     setEditingPrompt(false)
-  }, [project.id, project.name, project.type, project.description, project.prompt_text, project.profile, selectedLanguage])
+  }, [project.id, selectedLanguage])
+
+  useEffect(() => {
+    if (!editingPrompt) setPromptDraft(promptText)
+  }, [editingPrompt, promptText])
 
   async function saveMaterialInput() {
     try {
