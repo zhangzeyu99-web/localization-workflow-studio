@@ -197,6 +197,7 @@ def _detect_announcement_constraint_languages(project_id: str, metadata: dict[st
             continue
         found.update(_detect_language_columns(Path(artifact["path"])))
     if metadata.get("include_project_archive", True):
+        found.update(_project_glossary_languages(project_id))
         found.update(_translation_archive_languages(project_id))
     return [language for language in ANNOUNCEMENT_LANGUAGE_ORDER if language in found]
 
@@ -207,8 +208,17 @@ def _announcement_language_constraint_summary(project_id: str, metadata: dict[st
         _announcement_constraint_artifact_ids(metadata),
         languages,
     )
-    archive_counts = _translation_archive_count_summary(project_id, languages)
-    return {language: {"language_table": table_counts.get(language), "qa_archive": archive_counts.get(language, 0)} for language in languages}
+    include_project_archive = metadata.get("include_project_archive", True)
+    glossary_counts = _project_glossary_count_summary(project_id, languages) if include_project_archive else {}
+    archive_counts = _translation_archive_count_summary(project_id, languages) if include_project_archive else {}
+    return {
+        language: {
+            "project_glossary": glossary_counts.get(language, 0),
+            "language_table": table_counts.get(language),
+            "qa_archive": archive_counts.get(language, 0),
+        }
+        for language in languages
+    }
 
 
 def _announcement_constraint_artifact_ids(metadata: dict[str, Any]) -> list[str]:
@@ -249,6 +259,25 @@ def _translation_archive_languages(project_id: str) -> set[str]:
             (project_id,),
         ).fetchall()
     return {str(row["language"]) for row in rows}
+
+
+def _project_glossary_languages(project_id: str) -> set[str]:
+    return {
+        str(row.get("language") or "")
+        for row in db.list_glossary_terms(project_id)
+        if str(row.get("target") or row.get("target_alt") or "").strip()
+    }
+
+
+def _project_glossary_count_summary(project_id: str, languages: list[str]) -> dict[str, int]:
+    return {
+        language: sum(
+            1
+            for row in db.list_glossary_terms(project_id, language=language)
+            if str(row.get("target") or row.get("target_alt") or "").strip()
+        )
+        for language in languages
+    }
 
 
 def _normalize_announcement_languages(raw: Any, fallback: list[str] | tuple[str, ...] = ()) -> list[str]:
@@ -308,15 +337,21 @@ def _language_table_header_summary(path: Path, languages: list[str]) -> tuple[li
             exact_counts: dict[str, int] | None = None
             if ws.max_row is not None and int(ws.max_row or 0) <= 5000:
                 exact_counts = {language: 0 for language in languages}
-                source_idx = int(layout["source_index"])
+                source_indices = [int(index) for index in layout.get("source_indices") or [layout["source_index"]]]
                 language_indices = layout.get("language_indices") or {}
                 for values in ws.iter_rows(min_row=int(layout["header_row"]) + 1, values_only=True):
-                    source = str(values[source_idx] or "").strip() if source_idx < len(values) else ""
-                    if not source or source.lower() in {"string", "text", "c", "s", "int", "float", "number", "bool", "#ignore"}:
+                    sources = [
+                        str(values[index] or "").strip()
+                        for index in source_indices
+                        if index < len(values)
+                        and str(values[index] or "").strip()
+                        and str(values[index] or "").strip().lower() not in {"string", "text", "c", "s", "int", "float", "number", "bool", "#ignore"}
+                    ]
+                    if not sources:
                         continue
                     for language, index in language_indices.items():
                         if index is not None and index < len(values) and str(values[index] or "").strip():
-                            exact_counts[language] = exact_counts.get(language, 0) + 1
+                            exact_counts[language] = exact_counts.get(language, 0) + len(sources)
             elif ws.max_row is not None:
                 estimated_rows = max(0, int(ws.max_row or 0) - int(layout["header_row"] or 1))
             for code, index in (layout.get("language_indices") or {}).items():
@@ -357,11 +392,24 @@ def _header_index(headers: list[str], *, prefer_last: bool = False) -> dict[str,
     return normalized
 
 
+def _language_table_source_indices(headers: list[str]) -> list[int]:
+    normalized_first = _header_index(headers)
+    primary = _column_by_alias(normalized_first, _SOURCE_HEADER_ALIASES)
+    chinese_prc_indices = [
+        index
+        for index, header in enumerate(headers)
+        if (key := str(header or "").strip().lower()) == "chinese_prc"
+        or (key.startswith("chinese_prc.") and key.removeprefix("chinese_prc.").isdigit())
+    ]
+    indices = [primary, *chinese_prc_indices]
+    return [index for position, index in enumerate(indices) if index is not None and index not in indices[:position]]
+
+
 def _reserved_language_table_indices(headers: list[str]) -> list[int]:
     normalized_first = _header_index(headers)
     indices = [
         _column_by_alias(normalized_first, ["id", "key", "编号", "序号"]),
-        _column_by_alias(normalized_first, _SOURCE_HEADER_ALIASES),
+        *_language_table_source_indices(headers),
     ]
     return [index for index in indices if index is not None]
 
@@ -376,23 +424,72 @@ def _column_by_alias(normalized_headers: dict[str, int], aliases: list[str]) -> 
 
 def _announcement_constraint_rows(project_id: str, metadata: dict[str, Any], languages: list[str]) -> list[dict[str, Any]]:
     rows = _language_table_rows_from_artifacts(project_id, _announcement_constraint_artifact_ids(metadata), languages)
+    by_source: dict[str, dict[str, Any]] = {
+        _wide_source_key(row.get("source")): row
+        for row in rows
+        if _wide_source_key(row.get("source"))
+    }
+    for row in by_source.values():
+        translation_sources = row.setdefault("translation_sources", {})
+        for language, target in (row.get("translations") or {}).items():
+            if str(target or "").strip():
+                translation_sources.setdefault(language, {"type": "language_table", "priority": 1})
     if metadata.get("include_project_archive", True):
-        by_source: dict[str, dict[str, Any]] = {_wide_source_key(row.get("source")): row for row in rows if _wide_source_key(row.get("source"))}
         for language in languages:
             for entry in db.list_translation_entries(project_id, language=language):
                 source = str(entry.get("source") or "").strip()
                 if not source:
                     continue
                 key = _wide_source_key(source)
-                row = by_source.setdefault(key, {"id": entry.get("entry_key") or entry.get("id"), "source": source, "translations": {}, "sources": []})
-                if str(entry.get("target") or "").strip():
-                    current = row["translations"].get(language)
-                    if not current or _rank_translation_lookup_source(entry.get("source_type", "")) < _rank_translation_lookup_source(row.get("source_type", "")):
-                        row["translations"][language] = entry.get("target", "")
-                        row["source_type"] = entry.get("source_type", "")
+                row = by_source.setdefault(
+                    key,
+                    {
+                        "id": entry.get("entry_key") or entry.get("id"),
+                        "source": source,
+                        "translations": {},
+                        "translation_sources": {},
+                        "sources": [],
+                    },
+                )
+                target = str(entry.get("target") or "").strip()
+                if target:
+                    translation_sources = row.setdefault("translation_sources", {})
+                    current = str((row.get("translations") or {}).get(language) or "").strip()
+                    current_source = translation_sources.get(language) if isinstance(translation_sources.get(language), dict) else {}
+                    current_priority = int(current_source.get("priority", 99))
+                    archive_rank = _rank_translation_lookup_source(entry.get("source_type", ""))
+                    current_archive_rank = int(current_source.get("archive_rank", 99))
+                    if not current or 2 < current_priority or (current_priority == 2 and archive_rank < current_archive_rank):
+                        row["translations"][language] = target
+                        translation_sources[language] = {
+                            "type": "qa_archive",
+                            "priority": 2,
+                            "archive_rank": archive_rank,
+                        }
                 row.setdefault("sources", []).append({"type": "qa_archive", "language": language, "entry_id": entry.get("id")})
-        rows = list(by_source.values())
-    return rows
+            for term in db.list_glossary_terms(project_id, language=language):
+                source = str(term.get("source") or "").strip()
+                target = str(term.get("target") or term.get("target_alt") or "").strip()
+                if not source or not target:
+                    continue
+                key = _wide_source_key(source)
+                row = by_source.setdefault(
+                    key,
+                    {
+                        "id": term.get("term_key") or term.get("id"),
+                        "source": source,
+                        "translations": {},
+                        "translation_sources": {},
+                        "sources": [],
+                    },
+                )
+                translation_sources = row.setdefault("translation_sources", {})
+                current_source = translation_sources.get(language) if isinstance(translation_sources.get(language), dict) else {}
+                if int(current_source.get("priority", 99)) > 0:
+                    row["translations"][language] = target
+                    translation_sources[language] = {"type": "project_glossary", "priority": 0}
+                row.setdefault("sources", []).append({"type": "project_glossary", "language": language, "term_id": term.get("id")})
+    return list(by_source.values())
 
 
 def _announcement_sentence_template_matches(
@@ -586,20 +683,22 @@ def _read_language_table_rows(path: Path, languages: list[str]) -> list[dict[str
                 continue
             id_idx = layout["id_index"]
             source_idx = layout["source_index"]
+            source_indices = layout.get("source_indices") or [source_idx]
             lang_indices = layout["language_indices"]
             for values in ws.iter_rows(min_row=int(layout["header_row"]) + 1, values_only=True):
-                source = str(values[source_idx] or "").strip() if source_idx < len(values) else ""
-                if not source:
-                    continue
-                if source.lower() in {"string", "text", "c", "s", "int", "float", "number", "bool", "#ignore"}:
-                    continue
                 translations = {}
                 for language, index in lang_indices.items():
                     if index is not None and index < len(values):
                         value = str(values[index] or "").strip()
                         if value:
                             translations[language] = value
-                rows.append({"id": str(values[id_idx] or "").strip() if id_idx is not None and id_idx < len(values) else "", "source": source, "translations": translations, "sheet": ws.title})
+                for source_idx in source_indices:
+                    source = str(values[source_idx] or "").strip() if source_idx < len(values) else ""
+                    if not source:
+                        continue
+                    if source.lower() in {"string", "text", "c", "s", "int", "float", "number", "bool", "#ignore"}:
+                        continue
+                    rows.append({"id": str(values[id_idx] or "").strip() if id_idx is not None and id_idx < len(values) else "", "source": source, "translations": translations, "sheet": ws.title})
     finally:
         close()
     return rows
@@ -667,10 +766,11 @@ def _language_table_header_layout(ws: Any, languages: list[str], *, max_scan_row
         normalized_first = _header_index(headers)
         normalized_last = _header_index(headers, prefer_last=True)
         id_idx = _column_by_alias(normalized_first, ["id", "key", "编号", "序号"])
-        source_idx = _column_by_alias(normalized_first, _SOURCE_HEADER_ALIASES)
-        if source_idx is None:
+        source_indices = _language_table_source_indices(headers)
+        if not source_indices:
             continue
-        reserved_indices = set(index for index in (id_idx, source_idx) if index is not None)
+        source_idx = source_indices[0]
+        reserved_indices = set(index for index in [id_idx, *source_indices] if index is not None)
         language_indices = {
             language: index if index is not None and index not in reserved_indices else None
             for language in languages
@@ -701,6 +801,7 @@ def _language_table_header_layout(ws: Any, languages: list[str], *, max_scan_row
             "header_row": row_number,
             "id_index": id_idx,
             "source_index": source_idx,
+            "source_indices": source_indices,
             "language_indices": language_indices,
             "score": score,
         }
@@ -720,9 +821,27 @@ def _select_announcement_constraint_rows(text: str, candidates: list[dict[str, A
         hit_count, first_position = _announcement_term_occurs(text, source)
         if hit_count < min_hit:
             continue
-        selected.append({"id": row.get("id", ""), "source": source, "translations": {language: (row.get("translations") or {}).get(language, "") for language in languages}, "hit_count": hit_count, "first_position": first_position})
+        selected.append(
+            {
+                "id": row.get("id", ""),
+                "source": source,
+                "translations": {language: (row.get("translations") or {}).get(language, "") for language in languages},
+                "translation_sources": {
+                    language: (row.get("translation_sources") or {}).get(language)
+                    for language in languages
+                    if (row.get("translation_sources") or {}).get(language)
+                },
+                "sources": list(row.get("sources") or []),
+                "hit_count": hit_count,
+                "first_position": first_position,
+            }
+        )
     selected.sort(key=lambda row: (int(row.get("first_position") or 0), -len(str(row.get("source") or "")), str(row.get("source") or "")))
-    return _suppress_overlapping_lookup_hits(selected)
+    return [
+        row
+        for row in _suppress_overlapping_lookup_hits(selected, text=text)
+        if int(row.get("hit_count") or 0) >= min_hit
+    ]
 
 
 def _glossary_extractor_module() -> Any:

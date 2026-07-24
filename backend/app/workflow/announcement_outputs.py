@@ -47,7 +47,8 @@ def _announcement_translation_prompt(project: dict[str, Any], language: str, pro
     return (
         f"{project_prompt.strip()}\n\n"
         f"Announcement translation task: translate Chinese game external announcement text into {spec.prompt_name}.\n"
-        "Use sentence_adaptations before term_hits when present: official_exact is the preferred full-sentence wording, while official_similar is context evidence that must be adapted to the current source. Preserve IDs, placeholders, tags, dates, numbers, line breaks and JSONL row order.\n"
+        "Use term_hits as binding terminology. Sentence adaptations never override term_hits: official_exact is preferred only when it preserves every mandatory target, while official_similar is context evidence that must be adapted to the current source. Preserve IDs, placeholders, tags, dates, numbers, line breaks and JSONL row order.\n"
+        "Every target in term_hits is mandatory exact wording for its matched Chinese source and overrides general project wording or looser aliases; never paraphrase or split it.\n"
         "Return JSONL only: {\"id\": string, \"translation\": string}. Do not use browser translation, online MT, or machine-translation aggregators.\n"
         f"Terms missing target translation and requiring human review: {json.dumps(missing_for_prompt, ensure_ascii=False)}\n"
     ).strip()
@@ -108,7 +109,7 @@ def _announcement_segment_term_hits(segment: dict[str, Any], language: str, look
         hit_count, first_position = _announcement_term_occurs(source, term_source)
         if term_source and target and hit_count:
             hits.append({"source": term_source, "target": target, "first_position": first_position, "hit_count": hit_count})
-    selected = _suppress_overlapping_lookup_hits(hits)
+    selected = _suppress_overlapping_lookup_hits(hits, text=source)
     return [{"source": hit["source"], "target": hit["target"]} for hit in selected]
 
 
@@ -306,9 +307,6 @@ def _repair_announcement_translation_text(current: str, *, source: str, language
     if "chinese_residue" in issue_types and language != "ja" and _CJK_RE.search(text):
         seed = " ".join(dict.fromkeys(missing_terms))
         text = seed or "TBD"
-    for target in missing_terms:
-        if target and target not in text:
-            text = f"{text} {target}".strip()
     for token in protected_tokens:
         if token and token not in text:
             text = f"{text} {token}".strip()
@@ -318,6 +316,16 @@ def _repair_announcement_translation_text(current: str, *, source: str, language
     if not text.strip():
         text = "TBD"
     return text.strip()
+
+
+def _announcement_mandatory_target_occurs(translation: str, target: str, language: str) -> bool:
+    folded_translation = translation.casefold()
+    folded_target = target.casefold()
+    if language not in {"en", "idn"}:
+        return folded_target in folded_translation
+    left_boundary = r"(?<!\w)" if re.match(r"\w", folded_target) else ""
+    right_boundary = r"(?!\w)" if re.search(r"\w$", folded_target) else ""
+    return re.search(f"{left_boundary}{re.escape(folded_target)}{right_boundary}", folded_translation) is not None
 
 
 def _validate_announcement_translation_rows(segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str]) -> list[dict[str, Any]]:
@@ -341,26 +349,11 @@ def _validate_announcement_translation_rows(segments: list[dict[str, Any]], rows
                 if token and token not in translation:
                     issues.append({**base, "check_type": "protected_token_missing", "message": f"Missing protected token: {token}"})
             lang_hits = (row.get("term_hits") or {}).get(language) or []
-            lang_sentence_adaptations = (row.get("sentence_adaptations") or {}).get(language) or []
             for hit in lang_hits:
                 target = str(hit.get("target") or "").strip()
-                if _term_is_covered_by_exact_sentence_adaptation(str(hit.get("source") or ""), lang_sentence_adaptations):
-                    continue
-                if target and target not in translation:
+                if target and not _announcement_mandatory_target_occurs(translation, target, language):
                     issues.append({**base, "check_type": "term_missing", "message": f"Missing term target: {target}"})
     return issues
-
-
-def _term_is_covered_by_exact_sentence_adaptation(source_term: str, sentence_adaptations: list[dict[str, Any]]) -> bool:
-    normalized_term = _normalize_sentence_adaptation_text(source_term)
-    if not normalized_term:
-        return False
-    return any(
-        item.get("match_type") == "official_exact"
-        and str(item.get("target") or "").strip()
-        and normalized_term in _normalize_sentence_adaptation_text(item.get("official_cn_template"))
-        for item in sentence_adaptations
-    )
 
 
 def _write_announcement_outputs(task: dict[str, Any], segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str], output_dir: Path) -> list[tuple[str, Path]]:

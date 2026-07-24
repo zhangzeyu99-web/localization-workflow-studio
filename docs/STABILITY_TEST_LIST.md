@@ -12,7 +12,7 @@ python scripts/build_release_package.py --output-dir release_archives --no-rebui
 python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend --no-account
 ```
 
-默认输出名为 `有账号-v1.6.3.zip`，包内根目录为 `localization-workflow-studio-v1.6.3-g<sha12>-universal`；无账号输出名必须为 `无账号-v1.6.3.zip`，包内根目录为 `localization-workflow-studio-v1.6.3-g<sha12>-cloud-off`。每个 ZIP 旁边必须有同名 `.sha256`，包内必须包含 `PACKAGE_MANIFEST.json`、`SHA256SUMS.txt` 和 `DEPLOY_README.zh-CN.md`。
+默认输出名为 `有账号-v1.6.4.zip`，包内根目录为 `localization-workflow-studio-v1.6.4-g<sha12>-universal`；无账号输出名必须为 `无账号-v1.6.4.zip`，包内根目录为 `localization-workflow-studio-v1.6.4-g<sha12>-cloud-off`。每个 ZIP 旁边必须有同名 `.sha256`，包内必须包含 `PACKAGE_MANIFEST.json`、`SHA256SUMS.txt` 和 `DEPLOY_README.zh-CN.md`。
 
 无账号 manifest 必须是 `artifact_kind=profile`、`default_runtime_profile=cloud-off`、`supported_runtime_profiles=["cloud-off"]`。包内 `start-lws.sh`、`deploy/lws.service` 和 `deploy/lws.env.example` 必须同时锁定 `cloud/off`；启用的环境模板和 `DEPLOY_README.zh-CN.md` 不得要求 `LWS_ADMIN_USER`、`LWS_ADMIN_PASSWORD`、`--auth-user` 或 `--auth-password`。
 
@@ -37,7 +37,7 @@ python scripts\concurrency_smoke.py
 
 ### 内网无账号 `cloud/off`
 
-使用 `无账号-v1.6.3.zip` 内已锁定的 `deploy/lws.env.example` 安装服务器环境。部署检查不传登录凭据：
+使用 `无账号-v1.6.4.zip` 内已锁定的 `deploy/lws.env.example` 安装服务器环境。部署检查不传登录凭据：
 
 ```bash
 VERSION="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIFEST.json", encoding="utf-8"))["version"])')"

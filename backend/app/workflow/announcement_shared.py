@@ -16,34 +16,69 @@ ANNOUNCEMENT_STEP = {
 }
 
 
-def _count_lookup_hits(text: str, needle: str) -> tuple[int, int]:
+def _lookup_hit_spans(text: str, needle: str) -> list[tuple[int, int]]:
     if not needle:
-        return (0, -1)
-    count = 0
-    first = -1
+        return []
+    spans: list[tuple[int, int]] = []
     start = 0
     while True:
         index = text.find(needle, start)
         if index < 0:
             break
-        if first < 0:
-            first = index
-        count += 1
+        spans.append((index, index + len(needle)))
         start = index + max(1, len(needle))
-    return (count, first)
+    return spans
 
 
-def _suppress_overlapping_lookup_hits(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    accepted: list[dict[str, Any]] = []
-    spans: list[tuple[int, int]] = []
-    for row in sorted(rows, key=lambda item: (int(item.get("first_position") or 0), -len(str(item.get("source") or "")), str(item.get("source") or ""))):
-        start = int(row.get("first_position") or 0)
-        end = start + len(str(row.get("source") or ""))
-        if any(start < existing_end and end > existing_start for existing_start, existing_end in spans):
+def _count_lookup_hits(text: str, needle: str) -> tuple[int, int]:
+    spans = _lookup_hit_spans(text, needle)
+    return (len(spans), spans[0][0] if spans else -1)
+
+
+def _suppress_overlapping_lookup_hits(rows: list[dict[str, Any]], *, text: str | None = None) -> list[dict[str, Any]]:
+    if text is None:
+        accepted: list[dict[str, Any]] = []
+        spans: list[tuple[int, int]] = []
+        for row in sorted(rows, key=lambda item: (int(item.get("first_position") or 0), -len(str(item.get("source") or "")), str(item.get("source") or ""))):
+            start = int(row.get("first_position") or 0)
+            end = start + len(str(row.get("source") or ""))
+            if any(start < existing_end and end > existing_start for existing_start, existing_end in spans):
+                continue
+            accepted.append(row)
+            spans.append((start, end))
+        return accepted
+
+    occurrences: list[tuple[int, int, int, int, str]] = []
+    for row_index, row in enumerate(rows):
+        source = str(row.get("source") or "")
+        spans = _lookup_hit_spans(text, source)
+        occurrences.extend((start, end, row_index, len(source), source) for start, end in spans)
+
+    accepted_spans: list[tuple[int, int]] = []
+    accepted_by_row: dict[int, list[tuple[int, int]]] = {}
+    for start, end, row_index, _source_length, source in sorted(
+        occurrences,
+        key=lambda item: (-item[3], item[0], item[4]),
+    ):
+        if any(start < existing_end and end > existing_start for existing_start, existing_end in accepted_spans):
             continue
-        accepted.append(row)
-        spans.append((start, end))
-    return accepted
+        accepted_spans.append((start, end))
+        accepted_by_row.setdefault(row_index, []).append((start, end))
+
+    accepted: list[dict[str, Any]] = []
+    for row_index, spans in accepted_by_row.items():
+        selected = dict(rows[row_index])
+        selected["hit_count"] = len(spans)
+        selected["first_position"] = min(start for start, _ in spans)
+        accepted.append(selected)
+    return sorted(
+        accepted,
+        key=lambda item: (
+            int(item.get("first_position") or 0),
+            -len(str(item.get("source") or "")),
+            str(item.get("source") or ""),
+        ),
+    )
 
 
 _CJK_ANNOUNCEMENT_TERM_RE = re.compile(r"[\u3400-\u9fff]")

@@ -28,6 +28,7 @@ def _normalize_term_lookup(data: dict) -> dict[str, dict]:
         primary = ''
         variants: list[str] = []
         enforce_case = False
+        exact_match = False
 
         if isinstance(value, str):
             primary = value.strip()
@@ -43,6 +44,7 @@ def _normalize_term_lookup(data: dict) -> dict[str, dict]:
                 raw_vars = [raw_vars]
             variants = [str(x).strip() for x in raw_vars if str(x).strip()]
             enforce_case = bool(value.get('enforce_case', False))
+            exact_match = bool(value.get('exact_match', False))
 
         seen = set()
         dedup_variants = []
@@ -59,7 +61,12 @@ def _normalize_term_lookup(data: dict) -> dict[str, dict]:
                 dedup_variants = dedup_variants[1:]
             constraint = ''
             if isinstance(value, dict):
-                constraint = str(value.get('constraint', '')).strip()
+                constraint = str(
+                    value.get('constraint')
+                    or value.get('category')
+                    or value.get('type')
+                    or ''
+                ).strip()
                 if constraint.lower() == 'nan':
                     constraint = ''
             normalized[cn] = {
@@ -67,6 +74,7 @@ def _normalize_term_lookup(data: dict) -> dict[str, dict]:
                 'variants': dedup_variants,
                 'enforce_case': enforce_case,
                 'constraint': constraint,
+                'exact_match': exact_match,
             }
     return normalized
 
@@ -181,7 +189,14 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
         )
         if target_col is None and any(c.lower() in all_language_target_headers() for c in cols):
             return merge_builtin_name_terms({}, lang)
-        constraint_col = _pick([r'约束', r'constraint'])
+        constraint_col = _pick([
+            r'^(?:术语)?约束$',
+            r'^(?:term[\s_-]*)?constraint$',
+            r'^分类$',
+            r'^类别$',
+            r'^category$',
+            r'^type$',
+        ])
 
         from utils.text_normalize import strip_tags_and_vars
         split_variants = re.compile(r'[;,|/、]+')

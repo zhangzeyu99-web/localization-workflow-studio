@@ -528,7 +528,64 @@ def lookup_announcement_translations(task_id: str, request: Any) -> dict[str, An
     sentence_adaptations = list(metadata.get("sentence_adaptations") or [])
     if not metadata.get("terms_artifact_id"):
         raise ValueError("extract terms before lookup")
-    archive_by_language = _project_archive_by_language(task["project_id"], languages)
+    include_project_archive = bool(metadata.get("include_project_archive", True))
+    try:
+        terms_artifact = db.get_artifact(str(metadata.get("terms_artifact_id") or ""))
+        terms_run = db.get_run(str(terms_artifact.get("run_id") or ""))
+        imported_terms = str(terms_run.get("kind") or "") == "announcement_terms_import"
+    except KeyError:
+        imported_terms = False
+
+    def is_legacy_auto_term(term: dict[str, Any]) -> bool:
+        return (
+            not imported_terms
+            and "translation_sources" not in term
+            and str(term.get("source_type") or "").strip() != "ai_supplement"
+        )
+
+    legacy_auto_terms = any(is_legacy_auto_term(term) for term in terms)
+    table_targets: dict[str, dict[str, str]] = {}
+    if not include_project_archive:
+        has_unattributed_cached_target = any(
+            str((term.get("translations") or {}).get(language) or "").strip()
+            and not (term.get("translation_sources") or {}).get(language)
+            and not imported_terms
+            and str(term.get("source_type") or "").strip() not in {"announcement_term", "ai_supplement", "language_table"}
+            for term in terms
+            for language in languages
+        )
+        has_project_cached_target = any(
+            isinstance((term.get("translation_sources") or {}).get(language), dict)
+            and str((term.get("translation_sources") or {}).get(language, {}).get("type") or "").strip() in {"project_glossary", "qa_archive"}
+            for term in terms
+            for language in languages
+        )
+        if (has_unattributed_cached_target or has_project_cached_target) and any(
+            metadata.get(key)
+            for key in ("language_table_artifact_ids", "constraint_artifact_ids")
+        ):
+            table_only_metadata = {**metadata, "include_project_archive": False}
+            for row in _announcement_constraint_rows(task["project_id"], table_only_metadata, languages):
+                key = _wide_source_key(row.get("source"))
+                if not key:
+                    continue
+                table_targets[key] = {
+                    language: str(target or "").strip()
+                    for language, target in (row.get("translations") or {}).items()
+                    if str(target or "").strip()
+                }
+    current_constraints: dict[str, dict[str, Any]] = {}
+    if legacy_auto_terms:
+        current_constraints = {
+            _wide_source_key(row.get("source")): row
+            for row in _announcement_constraint_rows(task["project_id"], metadata, languages)
+            if _wide_source_key(row.get("source"))
+        }
+    archive_by_language = (
+        _project_archive_by_language(task["project_id"], languages)
+        if include_project_archive
+        else {}
+    )
     lookup: dict[str, Any] = {}
     run = db.insert_run(task["project_id"], kind="announcement_translation_lookup", language=languages[0] if languages else "en", metadata={"task_id": task_id, "languages": languages})
     output = run_dir(run["id"]) / "announcement_lookup"
@@ -539,9 +596,58 @@ def lookup_announcement_translations(task_id: str, request: Any) -> dict[str, An
         for term in terms:
             source = str(term.get("source") or "").strip()
             archive_entry = archive_by_language.get(language, {}).get(_wide_source_key(source))
-            table_target = str((term.get("translations") or {}).get(language) or "").strip()
-            target = str((archive_entry or {}).get("target") or "").strip() or table_target
-            rows.append({**term, "language": language, "target": target, "source_type": "qa_archive" if archive_entry else "language_table" if table_target else "missing"})
+            translations = dict(term.get("translations") or {})
+            translation_sources = dict(term.get("translation_sources") or {})
+            if is_legacy_auto_term(term):
+                current_constraint = current_constraints.get(_wide_source_key(source)) or {}
+                current_target = str((current_constraint.get("translations") or {}).get(language) or "").strip()
+                current_source = (current_constraint.get("translation_sources") or {}).get(language)
+                translations.pop(language, None)
+                translation_sources.pop(language, None)
+                if current_target:
+                    translations[language] = current_target
+                    if current_source:
+                        translation_sources[language] = current_source
+            source_metadata = translation_sources.get(language)
+            if isinstance(source_metadata, dict):
+                selected_source_type = str(source_metadata.get("type") or "").strip()
+            else:
+                selected_source_type = str(source_metadata or "").strip()
+            if not selected_source_type and str(term.get("source_type") or "").strip() == "ai_supplement":
+                selected_source_type = "ai_supplement"
+            if not include_project_archive and selected_source_type in {"project_glossary", "qa_archive"}:
+                translations.pop(language, None)
+                translation_sources.pop(language, None)
+                selected_source_type = ""
+            if not include_project_archive and not selected_source_type:
+                cached_target = str(translations.get(language) or "").strip()
+                legacy_source_type = str(term.get("source_type") or "").strip()
+                if cached_target and (
+                    imported_terms
+                    or legacy_source_type in {"announcement_term", "ai_supplement", "language_table"}
+                ):
+                    selected_source_type = legacy_source_type or "announcement_term"
+                else:
+                    table_target = table_targets.get(_wide_source_key(source), {}).get(language, "")
+                    if table_target:
+                        translations[language] = table_target
+                        translation_sources[language] = {"type": "language_table", "priority": 1}
+                        selected_source_type = "language_table"
+                    else:
+                        translations.pop(language, None)
+                        translation_sources.pop(language, None)
+            table_target = str(translations.get(language) or "").strip()
+            archive_target = str((archive_entry or {}).get("target") or "").strip()
+            target = table_target or archive_target
+            source_type = selected_source_type or ("announcement_term" if table_target else "qa_archive" if archive_target else "missing")
+            rows.append({
+                **term,
+                "translations": translations,
+                "translation_sources": translation_sources,
+                "language": language,
+                "target": target,
+                "source_type": source_type,
+            })
         missing = [row for row in rows if not str(row.get("target") or "").strip()]
         prompt_context = _announcement_prompt_context(
             project,

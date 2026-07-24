@@ -2,6 +2,18 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.6.4 - 2026-07-24
+
+Game-name terminology and announcement QA fix release.
+
+- Read every `Chinese_PRC` / `Chinese_PRC.N` source alias in complete language tables, so alternate Chinese game names map to the same canonical target.
+- Added confirmed project glossary terms to announcement constraints and made task edits, project terms, and selected language tables take precedence over historical translation archives.
+- Applied occurrence-aware longest-term matching: overlapping short aliases are suppressed while independent later nickname uses remain available.
+- Made announcement `term_hits` binding in prompts and QA, prevented sentence templates from overriding them, and stopped the hard-blocker repair step from appending a correct term to an otherwise wrong translation.
+- Rebuilt unprovenanced v1.6.3 announcement-term caches from current trusted constraints while preserving imported terms and AI supplements.
+- Hardened formal language-table QA so Unicode word substrings do not count as term hits; exact game-name categories block inflected names without rejecting normal pluralized common terms.
+- Produced account-enabled and no-account cloud artifacts from the same clean commit and frontend build.
+
 ## 1.6.3 - 2026-07-24
 
 Prompt-editor polling fix and paired cloud artifacts.

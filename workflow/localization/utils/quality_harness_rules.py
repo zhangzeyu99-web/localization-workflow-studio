@@ -46,6 +46,7 @@ DEFAULT_HARD_ISSUES = {
     'newline_mismatch',
     'chinese_residue',
     'term_missing',
+    'term_partial_hit',
     'term_capitalization',
     'ui_length_overflow',
     'opaque_abbreviation',

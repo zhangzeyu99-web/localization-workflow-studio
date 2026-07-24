@@ -174,6 +174,18 @@ def _announcement_language_table_with_generic_hits(path: Path) -> None:
     wb.close()
 
 
+def _announcement_language_table_with_chinese_prc_aliases(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Language"
+    ws.append(["EN", "CN", "Chinese_PRC.1", "Chinese_PRC.2"])
+    ws.append(["Legend of Mushroom", "冒险大作战", "菇勇者传说", ""])
+    ws.append(["Shroomie", "菇勇者", "", ""])
+    ws.append(["Legendary", "传说", "", ""])
+    wb.save(path)
+    wb.close()
+
+
 def _announcement_language_table_with_sentence_template(path: Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -465,6 +477,67 @@ def test_announcement_terms_filter_generic_language_table_hits_before_workpack(t
         targets = [hit["target"] for row in rows for hit in row["term_hits"]]
         assert targets == ["Infinity Train Event", "Puncher", "Artifact"]
         assert not {"Notice", "Game", "Use", "Issue", "Enter", "Enter Game", "Get"} & set(targets)
+
+
+def test_announcement_uses_all_chinese_prc_source_columns_and_suppresses_short_aliases(tmp_path: Path) -> None:
+    table_path = tmp_path / "language_with_chinese_prc_aliases.xlsx"
+    notice_path = tmp_path / "notice.txt"
+    _announcement_language_table_with_chinese_prc_aliases(table_path)
+    notice_path.write_text(
+        "《菇勇者传说》联动公告\n《冒险大作战》即将开启新活动",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Legend of Mushroom aliases", "type": "RPG"}).json()
+        with table_path.open("rb") as fh:
+            table_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=language_table",
+                files={"file": (table_path.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            ).json()
+        with notice_path.open("rb") as fh:
+            notice_artifact = client.post(
+                f"/api/projects/{project['id']}/files?kind=asset",
+                files={"file": (notice_path.name, fh, "text/plain")},
+            ).json()
+        task = client.post(
+            f"/api/projects/{project['id']}/announcement-tasks",
+            json={
+                "source_artifact_id": notice_artifact["id"],
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en"],
+                "include_project_archive": False,
+            },
+        ).json()
+
+        extracted = client.post(
+            f"/api/announcement-tasks/{task['id']}/extract-terms",
+            json={
+                "language_table_artifact_ids": [table_artifact["id"]],
+                "languages": ["en"],
+                "include_project_archive": False,
+                "ai_supplement": False,
+            },
+        )
+        assert extracted.status_code == 200, extracted.text
+        terms = extracted.json()["task"]["metadata"]["terms"]
+        assert [(term["source"], term["translations"]["en"]) for term in terms] == [
+            ("菇勇者传说", "Legend of Mushroom"),
+            ("冒险大作战", "Legend of Mushroom"),
+        ]
+
+        lookup = client.post(
+            f"/api/announcement-tasks/{task['id']}/lookup-translations",
+            json={"languages": ["en"], "include_project_archive": False},
+        )
+        assert lookup.status_code == 200, lookup.text
+        assert {term["source_type"] for term in lookup.json()["manifest"]["lookup"]["en"]["terms"]} == {"language_table"}
+        prepared = client.post(f"/api/announcement-tasks/{task['id']}/prepare", json={"languages": ["en"]})
+        assert prepared.status_code == 200, prepared.text
+        workpack = next(artifact for artifact in prepared.json()["artifacts"] if artifact["kind"] == "announcement_workpack")
+        rows = [json.loads(line) for line in Path(workpack["path"]).read_text(encoding="utf-8").splitlines()]
+        title_row = next(row for row in rows if row["source"] == "《菇勇者传说》联动公告")
+        assert title_row["term_hits"] == [{"source": "菇勇者传说", "target": "Legend of Mushroom"}]
 
 
 def test_announcement_sentence_template_flows_from_language_table_to_workpack_and_qa(tmp_path: Path) -> None:
@@ -1528,7 +1601,7 @@ def test_announcement_docx_harness_api_prepares_imports_applies_and_delivers(tmp
         assert Path(delivery_artifact["path"]).exists()
 
 
-def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_delivers(tmp_path: Path) -> None:
+def test_announcement_task_txt_multilingual_flow_uses_selected_constraint_priority_and_delivers(tmp_path: Path) -> None:
     source_path = tmp_path / "notice.txt"
     terms_path = tmp_path / "notice_terms.xlsx"
     source_path.write_text("英雄觉醒 2026/5/20\n", encoding="utf-8")
@@ -1577,11 +1650,11 @@ def test_announcement_task_txt_multilingual_flow_uses_archive_priority_and_deliv
         prepared = prepare_response.json()
         workpack = next(artifact for artifact in prepared["artifacts"] if artifact["kind"] == "announcement_workpack")
         rows = [json.loads(line) for line in Path(workpack["path"]).read_text(encoding="utf-8").splitlines()]
-        assert rows[0]["term_hits"] == [{"source": "英雄", "target": "히어로"}, {"source": "觉醒", "target": "각성"}]
+        assert rows[0]["term_hits"] == [{"source": "英雄", "target": "영웅"}, {"source": "觉醒", "target": "각성"}]
 
         response_path = tmp_path / "ai_response_ko.jsonl"
         response_path.write_text(
-            "\n".join(json.dumps({"para_id": row["para_id"], "translation": "히어로 각성 2026/5/20"}, ensure_ascii=False) for row in rows) + "\n",
+            "\n".join(json.dumps({"para_id": row["para_id"], "translation": "영웅 각성 2026/5/20"}, ensure_ascii=False) for row in rows) + "\n",
             encoding="utf-8",
         )
         with response_path.open("rb") as fh:

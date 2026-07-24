@@ -302,11 +302,11 @@ export function AnnouncementWizard({
           ) : step === 2 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 2</span>约束来源</div>
-              <div className="panel-desc">本步选择二次翻译的约束来源：项目译文归档默认参与；如有完整语言表，可再上传或勾选，用于补充反查并生成公告术语表。</div>
+              <div className="panel-desc">项目术语和译文归档默认参与；如有完整语言表，可再上传或勾选，用于补充反查并生成公告术语表。</div>
               <div className="constraint-source-grid">
                 <div className="constraint-source-panel is-primary">
-                  <div className="constraint-source-title">项目译文归档</div>
-                  <p>默认使用当前项目的既有译文和术语；QA 已通过的记录优先，待复核和外部导入记录保留来源标记。</p>
+                  <div className="constraint-source-title">项目术语与译文归档</div>
+                  <p>默认使用已确认项目术语和既有译文；项目术语优先，归档记录保留来源标记。</p>
                   <span className="tag tag-done">自动参与</span>
                 </div>
                 <div className="constraint-source-panel">
@@ -317,7 +317,7 @@ export function AnnouncementWizard({
               </div>
               <div className="asset-list compact-list">
                 <div className="ai-header">可选语言表</div>
-                {!constraintCandidates.length ? <div className="muted-left">当前没有可选完整语言表；可以只用项目译文归档继续。</div> : null}
+                {!constraintCandidates.length ? <div className="muted-left">当前没有可选完整语言表；可以只用项目术语和译文归档继续。</div> : null}
                 {hiddenAnnouncementTermsArtifacts.length ? <div className="muted-left">已隐藏 {hiddenAnnouncementTermsArtifacts.length} 个已生成公告术语表；如需复用，请到「术语提取」步骤导入。</div> : null}
                 {constraintCandidates.map((artifact) => (
                   <label key={artifact.id} className="check-row">
@@ -327,7 +327,7 @@ export function AnnouncementWizard({
                 ))}
               </div>
               <div className="workflow-note-grid">
-                <div><strong>约束优先级</strong><span>QA 已通过归档 &gt; 其他项目归档 &gt; 完整语言表</span></div>
+                <div><strong>约束优先级</strong><span>本次人工编辑 / 项目术语 &gt; 已选语言表 &gt; QA 归档 &gt; 其他归档</span></div>
                 <div><strong>已选语言表</strong><span>{activeConstraintArtifactIds.length} 个</span></div>
                 <div><strong>当前任务</strong><span>{activeTask ? activeTask.title || activeTask.id : '-'}</span></div>
               </div>
@@ -336,7 +336,7 @@ export function AnnouncementWizard({
           ) : step === 3 ? (
             <>
               <div className="panel-title"><span className="badge">STEP 3</span>目标语言</div>
-              <div className="panel-desc">系统从约束文件和项目归档识别目标语言；识别到的语言默认勾选，也可以手动勾选或取消。</div>
+              <div className="panel-desc">系统从约束文件、项目术语和译文归档识别目标语言；识别到的语言默认勾选，也可以手动勾选或取消。</div>
               <div className="announcement-language-chip-grid">
                 {announcementLanguages.map((lang) => {
                   const selected = effectiveLanguages.includes(lang.code)
@@ -365,7 +365,7 @@ export function AnnouncementWizard({
               aiSupplementResponseArtifactId={aiSupplementResponseArtifactId}
             />
           ) : step === 5 ? (
-            <AnnouncementActionStep title="译文反查" step={5} desc="按目标语言从项目译文归档和语言表反查译文；QA 已通过记录优先，缺失术语会标记但不阻断翻译准备。" activeTask={activeTask} busy={busy} actionLabel="反查术语译文" onAction={() => run('lookup-translations', 6)} />
+            <AnnouncementActionStep title="译文反查" step={5} desc="按目标语言应用本次人工编辑、项目术语、已选语言表和译文归档；高优先级约束不会再被旧归档覆盖。" activeTask={activeTask} busy={busy} actionLabel="反查术语译文" onAction={() => run('lookup-translations', 6)} />
           ) : step === 6 ? (
             <>
               <AnnouncementActionStep title="翻译准备" step={6} desc="按目标语言生成正文分段表和 AI 翻译上下文。正常流程下一步直接点 AI翻译，不需要手动下载过程文件。" activeTask={activeTask} busy={busy} actionLabel="生成翻译准备" onAction={() => run('prepare', 7)} />

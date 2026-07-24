@@ -6,6 +6,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from utils.translation_harness import (
+    _term_hits,
     apply_translation_response,
     prepare_translation_harness,
 )
@@ -76,6 +77,31 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 class TranslationHarnessTests(unittest.TestCase):
+    def test_term_hits_prefers_longest_term_at_overlapping_source_occurrence(self):
+        term_lookup = {
+            "菇勇者传说": {"primary": "Legend of Mushroom", "variants": []},
+            "菇勇者": {"primary": "Shroomie", "variants": []},
+            "传说": {"primary": "Legendary", "variants": []},
+        }
+
+        hits = _term_hits("欢迎来到《菇勇者传说》", term_lookup)
+
+        self.assertEqual([hit["source"] for hit in hits], ["菇勇者传说"])
+
+    def test_term_hits_keeps_shorter_term_at_independent_source_occurrence(self):
+        term_lookup = {
+            "菇勇者传说": {"primary": "Legend of Mushroom", "variants": []},
+            "菇勇者": {"primary": "Shroomie", "variants": []},
+            "传说": {"primary": "Legendary", "variants": []},
+        }
+
+        hits = _term_hits("菇勇者传说中的菇勇者", term_lookup)
+
+        self.assertEqual(
+            [hit["source"] for hit in hits],
+            ["菇勇者传说", "菇勇者"],
+        )
+
     def test_translation_harness_has_no_external_mt_client(self):
         source_path = Path(__file__).resolve().parents[1] / "utils" / "translation_harness.py"
         source = source_path.read_text(encoding="utf-8").lower()

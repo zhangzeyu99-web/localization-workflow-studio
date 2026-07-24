@@ -20,6 +20,7 @@ from openpyxl import load_workbook
 from process_language import _load_term_base
 from utils.excel_reader import get_text_pairs, read_language_file, resolve_language_index
 from utils.language_config import SUPPORTED_TRANSLATION_LANGUAGES, normalize_language_code
+from utils.term_checker import _select_longest_source_terms
 from utils.text_normalize import extract_vars, strip_tags_and_vars
 from utils.ui_detector import is_ui_text
 from utils.ui_length_checker import assess_ui_length, is_short_text_candidate
@@ -355,10 +356,13 @@ def _build_ui_length_meta(row_id: RowId, source: str, target: str, lang: str = "
 
 def _term_hits(source: str, term_lookup: dict[str, dict]) -> list[dict[str, str]]:
     hits = []
-    for cn_term, term in sorted(term_lookup.items(), key=lambda item: len(str(item[0])), reverse=True):
+    selected_terms = _select_longest_source_terms(
+        source,
+        (cn_term for cn_term in term_lookup if len(str(cn_term)) >= 2),
+    )
+    for cn_term in selected_terms:
+        term = term_lookup[cn_term]
         cn = str(cn_term)
-        if len(cn) < 2 or cn not in source:
-            continue
         primary = str(term.get("primary", "")) if isinstance(term, dict) else str(term)
         variants = term.get("variants", []) if isinstance(term, dict) else []
         strength = "soft" if cn in _SOFT_TERMS else "strong"
