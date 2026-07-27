@@ -6,6 +6,7 @@ from openpyxl import Workbook
 
 from process_language import (
     RowState,
+    _run_name_policy_checks,
     _run_readability_checks,
     _run_ui_length_checks,
     prepare_ai_review,
@@ -85,6 +86,59 @@ class ProcessLanguageUILengthTests(unittest.TestCase):
         self.assertTrue(state.needs_human_review)
         self.assertEqual(state.issues[0].check_type, "opaque_abbreviation")
         self.assertEqual(state.review_confidence, 0.95)
+
+    def test_run_name_policy_checks_adds_ai_review_metadata_and_collision_warning(self):
+        states = {
+            10: RowState(10, "终焉之境", "Realm of the Final Ending"),
+            11: RowState(11, "烈焰斩", "Flame Strike"),
+            12: RowState(12, "火焰冲击", "Flame Strike"),
+        }
+        term_lookup = {
+            "终焉之境": {"primary": "Final Realm", "category": "技能名", "name_type": "ui_skill_name"},
+            "烈焰斩": {"primary": "Flame Strike", "category": "技能名", "name_type": "ui_skill_name"},
+            "火焰冲击": {"primary": "Flame Strike", "category": "技能名", "name_type": "ui_skill_name"},
+        }
+
+        _run_name_policy_checks(states, term_lookup, lang="en")
+
+        self.assertEqual(states[10].name_type, "ui_skill_name")
+        self.assertEqual(states[10].name_policy["preferred_words"], 2)
+        self.assertIn("skill_name_word_count_watch", [issue.check_type for issue in states[10].issues])
+        self.assertIn("name_translation_collision_watch", [issue.check_type for issue in states[11].issues])
+        self.assertTrue(states[10].needs_human_review)
+
+    def test_prepare_ai_review_passes_english_reference_metadata(self):
+        state = RowState(30, "烈焰斩", "Frappe ardente")
+        state.source_mode = "cn+en"
+        state.reference_en = "Flame Strike"
+        state.reference_en_status = "usable"
+
+        batches = prepare_ai_review({30: state}, batch_size=10, lang="fr", scope="all")
+
+        self.assertEqual(len(batches), 1)
+        self.assertIn("SRC:cn+en", batches[0].prompt_text)
+        self.assertIn("REF_EN:Flame Strike", batches[0].prompt_text)
+
+    def test_machine_review_loads_english_reference_by_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "multilingual.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN", "FR"])
+            ws.append([40, "烈焰斩", "Flame Strike", "Frappe ardente"])
+            wb.save(path)
+            wb.close()
+
+            _, _, states, _ = run_machine_review(
+                str(path),
+                lang="fr",
+                lang_index=None,
+                source_mode="cn+en",
+            )
+
+            self.assertEqual(states[40].source_mode, "cn+en")
+            self.assertEqual(states[40].reference_en, "Flame Strike")
+            self.assertEqual(states[40].reference_en_status, "usable")
 
 
 if __name__ == "__main__":

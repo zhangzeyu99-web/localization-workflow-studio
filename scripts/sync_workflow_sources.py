@@ -46,7 +46,21 @@ class SyncTarget:
     keep_in_dest: set[str] = field(default_factory=lambda: {"SYNC.md"})
 
 
-COMMON_EXCLUDE_DIRS = {".git", ".github", ".pytest_cache", "__pycache__", ".ruff_cache", ".cursor", ".agents", ".local", ".tmp", ".translation_cache", "tmp", "output"}
+COMMON_EXCLUDE_DIRS = {
+    ".git",
+    ".github",
+    ".pytest_cache",
+    "__pycache__",
+    ".ruff_cache",
+    ".cursor",
+    ".agents",
+    ".local",
+    ".tmp",
+    ".translation_cache",
+    "superpowers",
+    "tmp",
+    "output",
+}
 
 TARGETS = {
     "glossary": SyncTarget(

@@ -107,6 +107,7 @@ def run_pipeline(
     delivery_dir: Path | None = None,
     batch_size: int = 60,
     workers: int = 4,
+    source_mode: str = "cn",
 ) -> PipelineResult:
     started = time.perf_counter()
     target_langs = [str(lang).upper() for lang in target_langs]
@@ -121,6 +122,7 @@ def run_pipeline(
         history_dirs=history_dirs,
         target_langs=target_langs,
         work_dir=work_dir,
+        source_mode=source_mode,
     )
     manifest = build_manifest(
         work_dir=work_dir,
@@ -130,6 +132,7 @@ def run_pipeline(
         workbook_count=len(inputs),
         relay_config=relay_config,
         proofread_mode=proofread_mode,
+        source_mode=source_mode,
     )
     manifest_path = Path(manifest["manifest_path"])
     shared_client = translation_client

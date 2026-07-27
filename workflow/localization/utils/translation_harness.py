@@ -20,6 +20,11 @@ from openpyxl import load_workbook
 from process_language import _load_term_base
 from utils.excel_reader import get_text_pairs, read_language_file, resolve_language_index
 from utils.language_config import SUPPORTED_TRANSLATION_LANGUAGES, normalize_language_code
+from utils.name_policy import build_name_policy, resolve_name_type
+from utils.source_reference import (
+    collect_english_references,
+    normalize_source_mode,
+)
 from utils.term_checker import _select_longest_source_terms
 from utils.text_normalize import extract_vars, strip_tags_and_vars
 from utils.ui_detector import is_ui_text
@@ -111,6 +116,7 @@ def prepare_translation_harness(
     output_dir: str | Path | None = None,
     lang_index: int | None = None,
     style_hint: str = "",
+    source_mode: str = "cn",
 ) -> PreparedTranslationHarness:
     """Prepare a translation workpack and strict manifest."""
     lang = _require_supported_translation_lang(lang)
@@ -119,35 +125,70 @@ def prepare_translation_harness(
     output_dir = Path(output_dir) if output_dir else input_path.parent / "translation_harness"
     output_dir.mkdir(parents=True, exist_ok=True)
     style_hint = _normalize_style_hint(style_hint)
+    source_mode = normalize_source_mode(source_mode)
 
     df, col_map = read_language_file(str(input_path))
     resolved_lang_index = resolve_language_index(col_map, lang, lang_index)
     pairs = get_text_pairs(df, col_map, lang_index=resolved_lang_index)
     term_lookup = _load_term_base(str(term_base_path) if term_base_path else None, lang=lang)
-    cache = _load_translation_cache(input_path.parent, lang, style_hint=style_hint)
+    active_indexes = [
+        index
+        for index, pair in pairs.iterrows()
+        if _coerce_row_id(pair["id"]) is not None
+    ]
+    english_references, english_reference_status = collect_english_references(
+        df,
+        col_map,
+        active_indexes,
+        target_lang=lang,
+        source_mode=source_mode,
+    )
+    cache = _load_translation_cache(
+        input_path.parent,
+        lang,
+        style_hint=style_hint,
+        source_mode=source_mode,
+    )
 
     target_status = analyze_target_column(pairs, lang=lang)
     rows = []
-    for _, pair in pairs.iterrows():
+    for pair_index, pair in pairs.iterrows():
         row_id = _coerce_row_id(pair["id"])
         if row_id is None:
             continue
         source = str(pair["original"])
+        reference = english_references.get(pair_index)
+        reference_en = reference.text if reference else ""
+        reference_en_status = reference.status if reference else "not_requested"
+        translation_source = reference_en if source_mode == "en" else source
         current_target = _seed_target(source, str(pair["translation"]), target_status, lang=lang)
-        cached_translation = cache.get(source, "")
-        text_type = classify_text(source, current_target)
+        cached_translation = cache.get(
+            (source, reference_en, reference_en_status),
+            "",
+        )
+        term_hits = _term_hits(source, term_lookup)
+        name_type = resolve_name_type(source, term_lookup)
+        name_policy = build_name_policy(name_type, lang=lang)
+        text_type = name_type or classify_text(source, current_target)
         ui_meta = _build_ui_length_meta(row_id, source, current_target, lang=lang)
         rows.append(
             {
                 "id": row_id,
                 "source": source,
+                "source_cn": source,
+                "translation_source": translation_source,
+                "source_mode": source_mode,
+                "reference_en": reference_en,
+                "reference_en_status": reference_en_status,
                 "current_target": current_target,
                 "text_type": text_type,
                 "placeholders": extract_vars(source),
                 "tags": _extract_tags(source),
                 "newline_shape": _newline_shape(source),
-                "term_hits": _term_hits(source, term_lookup),
+                "term_hits": term_hits,
                 "ui_length_meta": ui_meta,
+                "name_type": name_type,
+                "name_policy": name_policy,
                 "style_hint": style_hint,
                 "cache_hit": bool(cached_translation),
                 "cached_translation": cached_translation,
@@ -155,14 +196,22 @@ def prepare_translation_harness(
         )
 
     manifest = {
-        "version": 1,
+        "version": 2,
         "language": lang,
+        "source_mode": source_mode,
+        "english_reference_status": (
+            english_reference_status.to_dict() if english_reference_status else None
+        ),
         "input_path": str(input_path),
         "input_sha256": _sha256_file(input_path),
         "lang_index": resolved_lang_index,
         "row_ids": [row["id"] for row in rows],
         "target_status": target_status.__dict__,
-        "style_profile": _build_style_profile(rows, style_hint=style_hint),
+        "style_profile": _build_style_profile(
+            rows,
+            style_hint=style_hint,
+            source_mode=source_mode,
+        ),
         "response_protocol": "jsonl:{id:int|str,translation:str}",
     }
 
@@ -225,9 +274,17 @@ def apply_translation_response(
 
     style_profile = manifest.get("style_profile", {})
     style_hint = ""
+    source_mode = normalize_source_mode(manifest.get("source_mode", "cn"))
     if isinstance(style_profile, dict):
         style_hint = _normalize_style_hint(style_profile.get("project_hint", ""))
-    cache_path = _update_translation_cache(input_path.parent, lang, workpack, responses, style_hint=style_hint)
+    cache_path = _update_translation_cache(
+        input_path.parent,
+        lang,
+        workpack,
+        responses,
+        style_hint=style_hint,
+        source_mode=source_mode,
+    )
     summary_path = output_dir / "translation_apply_summary.json"
     summary = {
         "final_workbook": str(final_path),
@@ -354,7 +411,7 @@ def _build_ui_length_meta(row_id: RowId, source: str, target: str, lang: str = "
     }
 
 
-def _term_hits(source: str, term_lookup: dict[str, dict]) -> list[dict[str, str]]:
+def _term_hits(source: str, term_lookup: dict[str, dict]) -> list[dict[str, Any]]:
     hits = []
     selected_terms = _select_longest_source_terms(
         source,
@@ -365,6 +422,8 @@ def _term_hits(source: str, term_lookup: dict[str, dict]) -> list[dict[str, str]
         cn = str(cn_term)
         primary = str(term.get("primary", "")) if isinstance(term, dict) else str(term)
         variants = term.get("variants", []) if isinstance(term, dict) else []
+        category = str(term.get("category", "")) if isinstance(term, dict) else ""
+        name_type = str(term.get("name_type", "")) if isinstance(term, dict) else ""
         strength = "soft" if cn in _SOFT_TERMS else "strong"
         hits.append(
             {
@@ -372,6 +431,8 @@ def _term_hits(source: str, term_lookup: dict[str, dict]) -> list[dict[str, str]
                 "target": primary,
                 "variants": [str(v) for v in variants],
                 "strength": strength,
+                "category": category,
+                "name_type": name_type,
             }
         )
         if len(hits) >= 12:
@@ -379,16 +440,33 @@ def _term_hits(source: str, term_lookup: dict[str, dict]) -> list[dict[str, str]
     return hits
 
 
-def _build_style_profile(rows: list[dict[str, Any]], style_hint: str = "") -> dict[str, Any]:
+def _build_style_profile(
+    rows: list[dict[str, Any]],
+    style_hint: str = "",
+    source_mode: str = "cn",
+) -> dict[str, Any]:
     buckets: dict[str, list[RowId]] = {}
     for row in rows:
         buckets.setdefault(str(row["text_type"]), []).append(row["id"])
     samples = {key: value[:5] for key, value in buckets.items()}
     return {
         "project_hint": _normalize_style_hint(style_hint),
+        "source_mode": normalize_source_mode(source_mode),
+        "source_policy": (
+            "english_primary_with_chinese_backcheck"
+            if source_mode == "en"
+            else "chinese_primary_with_english_reference"
+            if source_mode == "cn+en"
+            else "chinese_primary"
+        ),
         "quality_target": "production_readable",
         "case_policy": "sentence_case_for_status_prompt_text",
         "term_policy": "strong_terms_required_soft_terms_guidance",
+        "name_policy": {
+            "skill_names": "explicit_glossary_category_only; prefer_two_readable_words",
+            "location_names": "explicit_glossary_category_only; prefer_two_content_words",
+            "priority": "meaning_and_uniqueness_before_length",
+        },
         "calibration_samples": samples,
     }
 
@@ -460,20 +538,31 @@ def _write_translations_to_workbook(workbook_path: Path, responses: dict[RowId, 
     wb.close()
 
 
-def _load_translation_cache(project_dir: Path, lang: str, style_hint: str = "") -> dict[str, str]:
+def _load_translation_cache(
+    project_dir: Path,
+    lang: str,
+    style_hint: str = "",
+    source_mode: str = "cn",
+) -> dict[tuple[str, str, str], str]:
     cache_path = project_dir / ".translation_cache" / f"{lang}.jsonl"
     if not cache_path.exists():
         return {}
     requested_hint = _normalize_style_hint(style_hint)
-    cache: dict[str, str] = {}
+    requested_source_mode = normalize_source_mode(source_mode)
+    cache: dict[tuple[str, str, str], str] = {}
     for row in _read_jsonl(cache_path):
         cached_hint = _normalize_style_hint(row.get("style_hint", ""))
         if cached_hint != requested_hint:
             continue
+        cached_source_mode = normalize_source_mode(row.get("source_mode", "cn"))
+        if cached_source_mode != requested_source_mode:
+            continue
         source = str(row.get("source", ""))
+        reference_en = str(row.get("reference_en", ""))
+        reference_en_status = str(row.get("reference_en_status", "not_requested"))
         translation = str(row.get("translation", ""))
         if source and translation:
-            cache[source] = translation
+            cache[(source, reference_en, reference_en_status)] = translation
     return cache
 
 
@@ -483,27 +572,40 @@ def _update_translation_cache(
     workpack: list[dict[str, Any]],
     responses: dict[RowId, str],
     style_hint: str = "",
+    source_mode: str = "cn",
 ) -> Path:
     cache_dir = project_dir / ".translation_cache"
     cache_dir.mkdir(exist_ok=True)
     cache_path = cache_dir / f"{lang}.jsonl"
     style_hint = _normalize_style_hint(style_hint)
+    source_mode = normalize_source_mode(source_mode)
     current = {}
     if cache_path.exists():
         for row in _read_jsonl(cache_path):
-            cache_key = (str(row.get("source", "")), _normalize_style_hint(row.get("style_hint", "")))
+            cache_key = (
+                str(row.get("source", "")),
+                _normalize_style_hint(row.get("style_hint", "")),
+                normalize_source_mode(row.get("source_mode", "cn")),
+                str(row.get("reference_en", "")),
+                str(row.get("reference_en_status", "not_requested")),
+            )
             current[cache_key] = row
     for row in workpack:
         row_id = _coerce_row_id(row["id"])
         if row_id is None:
             continue
         source = str(row["source"])
-        current[(source, style_hint)] = {
+        reference_en = str(row.get("reference_en", ""))
+        reference_en_status = str(row.get("reference_en_status", "not_requested"))
+        current[(source, style_hint, source_mode, reference_en, reference_en_status)] = {
             "source": source,
             "translation": responses[row_id],
             "text_type": row.get("text_type", ""),
             "lang": lang,
             "style_hint": style_hint,
+            "source_mode": source_mode,
+            "reference_en": reference_en,
+            "reference_en_status": reference_en_status,
         }
     _write_jsonl(cache_path, [row for _, row in sorted(current.items())])
     return cache_path

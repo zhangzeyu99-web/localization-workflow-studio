@@ -31,17 +31,26 @@ def backfill_project_glossary_from_final(project_id: str, final_output: Path, ru
             db.add_event(run_id, "Glossary backfill skipped: generated ID/CN/EN/EN2 file was not found.", level="warn")
         return result
 
-    # The embedded glossary extractor keeps legacy output headers as EN/EN2 even
-    # when the source target column is KR/JP/etc. Interpret those generated
-    # columns as the current run language only in this controlled backfill path.
-    rows, _columns = _read_glossary_rows(
-        final_output,
-        limit=None,
-        language=language,
-        target_column="EN",
-        include_empty=True,
-        allow_header_only=True,
-    )
+    try:
+        rows, _columns = _read_glossary_rows(
+            final_output,
+            limit=None,
+            language=language,
+            include_empty=True,
+            allow_header_only=True,
+        )
+    except (KeyError, ValueError):
+        # Older extractor versions always emitted EN/EN2 headers, even for
+        # non-English runs. Keep those artifacts readable after the extractor
+        # starts emitting the actual target-language header.
+        rows, _columns = _read_glossary_rows(
+            final_output,
+            limit=None,
+            language=language,
+            target_column="EN",
+            include_empty=True,
+            allow_header_only=True,
+        )
     result["candidates"] = len(rows)
 
     existing: dict[str, dict[str, Any]] = {}

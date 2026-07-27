@@ -29,6 +29,21 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(report["missing_terms"], [])
         self.assertEqual(report["mismatched_terms"], [])
 
+    def test_evaluate_proper_name_fixture_reports_pass(self):
+        fixture_path = ROOT / "fixtures" / "proper_name_extraction_regression.json"
+        report = MODULE.evaluate_fixture(fixture_path)
+        self.assertTrue(report["pass"], msg=report)
+        self.assertEqual(report["expected_count"], 2)
+        self.assertEqual(report["produced_count"], 2)
+        self.assertEqual(report["coverage"], 1.0)
+
+    def test_evaluate_current_translation_authority_fixture_reports_pass(self):
+        fixture_path = ROOT / "fixtures" / "current_translation_authority_regression.json"
+        report = MODULE.evaluate_fixture(fixture_path)
+        self.assertTrue(report["pass"], msg=report)
+        self.assertEqual(report["expected_count"], 2)
+        self.assertEqual(report["coverage"], 1.0)
+
     def test_evaluate_announcement_fixture_reports_pass(self):
         fixture_path = ROOT / "fixtures" / "announcement_lookup_regression.json"
         report = MODULE.evaluate_fixture(fixture_path)

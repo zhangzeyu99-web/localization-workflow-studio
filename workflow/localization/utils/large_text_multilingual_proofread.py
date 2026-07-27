@@ -54,6 +54,10 @@ def _review_signature(row: dict[str, Any], target_langs: list[str]) -> str:
     raw = json.dumps(
         {
             "cn": row.get("cn", ""),
+            "translation_source": row.get("translation_source", row.get("cn", "")),
+            "source_mode": row.get("source_mode", "cn"),
+            "reference_en": row.get("reference_en", ""),
+            "reference_en_status": row.get("reference_en_status", "not_requested"),
             "context": row.get("context", ""),
             "tokens": row.get("tokens") or [],
             "term_hits": row.get("term_hits") or [],
@@ -72,6 +76,10 @@ def _review_row(row: dict[str, Any], review_key: str, target_langs: list[str]) -
     return {
         "review_key": review_key,
         "cn": str(row.get("cn") or ""),
+        "translation_source": str(row.get("translation_source") or row.get("cn") or ""),
+        "source_mode": str(row.get("source_mode") or "cn"),
+        "reference_en": str(row.get("reference_en") or ""),
+        "reference_en_status": str(row.get("reference_en_status") or "not_requested"),
         "context": str(row.get("context") or ""),
         "protected_tokens": row.get("tokens") or [],
         "term_hits": row.get("term_hits") or [],

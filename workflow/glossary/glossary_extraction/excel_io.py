@@ -19,6 +19,7 @@ from glossary_extraction.constants import (
     AUTO_ID_HEADERS,
     AUTO_SOURCE_HEADERS,
     AUTO_TARGET_HEADERS,
+    AUTO_TERM_TYPE_HEADERS,
     DELIMITED_MATERIAL_EXTENSIONS,
     HEADER_SCAN_LIMIT,
     IMAGE_MATERIAL_EXTENSIONS,
@@ -179,14 +180,18 @@ def records_from_rows(
         id_index = resolve_column_index(headers, id_column)
         source_index = resolve_column_index(headers, source_column)
         target_index = None if source_only else resolve_column_index(headers, target_column)
+        actual_headers = headers
         data_rows = rows[1:]
         first_data_row_number = 2
     else:
         id_index = layout.id_index
         source_index = layout.source_index
         target_index = layout.target_index
+        actual_headers = list(rows[layout.header_row_index])
         data_rows = rows[layout.header_row_index + 1 :]
         first_data_row_number = layout.header_row_index + 2
+    source_field = clean_text(value_at(actual_headers, source_index))
+    term_type_index = first_matching_header_fuzzy(actual_headers, AUTO_TERM_TYPE_HEADERS)
 
     records: list[Record] = []
     for row_number, row in enumerate(data_rows, start=first_data_row_number):
@@ -197,9 +202,20 @@ def records_from_rows(
             row_id = f"{sheet_title}:{row_number}"
         source = "" if source_index >= len(row_values) else clean_text(row_values[source_index])
         target = "" if target_index is None or target_index >= len(row_values) else clean_text(row_values[target_index])
+        term_type_hint = clean_text(value_at(row_values, term_type_index))
         if not source:
             continue
-        records.append(Record(row_id=row_id, source=source, target=target))
+        records.append(
+            Record(
+                row_id=row_id,
+                source=source,
+                target=target,
+                sheet_name=sheet_title,
+                row_number=row_number,
+                source_field=source_field,
+                term_type_hint=term_type_hint,
+            )
+        )
     return records
 
 
@@ -421,6 +437,8 @@ def auto_records_from_sheet_rows(sheet_title: str, rows: list[list[object]]) -> 
         headers,
         ["唯一标识ID", "ID", "id", "章节", "关卡序号"],
     )
+    term_type_index = first_matching_header_fuzzy(headers, AUTO_TERM_TYPE_HEADERS)
+    source_field = clean_text(value_at(headers, source_index))
 
     records: list[Record] = []
     for row_number, row in enumerate(rows[1:], start=2):
@@ -434,7 +452,17 @@ def auto_records_from_sheet_rows(sheet_title: str, rows: list[list[object]]) -> 
             row_id = clean_text(row_values[id_index])
         if not row_id:
             row_id = f"{sheet_title}:{row_number}"
-        records.append(Record(row_id=row_id, source=source, target=target))
+        records.append(
+            Record(
+                row_id=row_id,
+                source=source,
+                target=target,
+                sheet_name=sheet_title,
+                row_number=row_number,
+                source_field=source_field,
+                term_type_hint=clean_text(value_at(row_values, term_type_index)),
+            )
+        )
     return records
 
 
@@ -670,6 +698,9 @@ def write_detail_workbook(
         "EN",
         "EN2",
         "SuggestedEN",
+        "TranslationSource",
+        "TranslationConflict",
+        "TranslationConflictValues",
         "ExactCandidates",
         "ExampleUsages",
         "ManualAdaptations",
@@ -680,6 +711,16 @@ def write_detail_workbook(
         "SameOrFormatOnlyCount",
         "DiffCount",
         "Category",
+        "TermType",
+        "TypeConfidence",
+        "TypeEvidence",
+        "NeedsReview",
+        "NameWordCount",
+        "NameCoreWordCount",
+        "NameCharCount",
+        "NamePolicyWarnings",
+        "NameCollision",
+        "NameCollisionWith",
         "Risk",
         "Priority",
         "HitRows",
@@ -706,6 +747,13 @@ def write_detail_workbook(
     all_sheet = workbook.create_sheet("Candidates")
     append_rows(all_sheet, headers, all_rows)
 
+    name_review_sheet = workbook.create_sheet("NameReview")
+    append_rows(
+        name_review_sheet,
+        headers,
+        [row for row in all_rows if row.get("TermType") in {"ui_skill_name", "location_name"}],
+    )
+
     notes_sheet = workbook.create_sheet("Notes")
     notes_sheet.append(["Item", "Value"])
     for item, value in [
@@ -729,33 +777,27 @@ def write_detail_workbook(
     workbook.close()
 
 
-def write_final_workbook(output_path: Path, final_rows: list[dict[str, object]]) -> None:
+def write_final_workbook(
+    output_path: Path,
+    final_rows: list[dict[str, object]],
+    target_header: str = "EN",
+    include_en2: bool = False,
+) -> None:
     workbook = Workbook()
-
-    glossary_sheet = workbook.active
-    glossary_sheet.title = "Glossary"
-    final_headers = ["ID", "CN", "EN", "EN2"]
-    glossary_sheet.append(final_headers)
+    worksheet = workbook.active
+    worksheet.title = "Glossary"
+    headers = ["ID", "CN", target_header]
+    if include_en2:
+        headers.append("EN2")
+    headers.append("分类")
+    worksheet.append(headers)
     for row in final_rows:
-        glossary_sheet.append([row.get(header, "") for header in final_headers])
-    style_sheet(glossary_sheet)
-
-    detail_sheet = workbook.create_sheet("Buckets")
-    detail_headers = ["ID", "CN", "EN", "EN2", "ExampleUsages", "ManualAdaptations", "Note"]
-    detail_sheet.append(detail_headers)
-    for row in final_rows:
-        detail_sheet.append([row.get(header, "") for header in detail_headers])
-    style_sheet(detail_sheet)
-
-    notes_sheet = workbook.create_sheet("Notes")
-    notes_sheet.append(["Item", "Value"])
-    for item, value in [
-        ("Columns", "ID = text id, CN = source term, EN = example English, EN2 = manual adaptation English"),
-        ("Rule", "EN2 remains blank when the alternative wording is not stable enough or is explicitly blocked by curated rules."),
-        ("RowCount", len(final_rows)),
-    ]:
-        notes_sheet.append([item, value])
-    style_sheet(notes_sheet)
+        values = [row.get("ID", ""), row.get("CN", ""), row.get("EN", "")]
+        if include_en2:
+            values.append(row.get("EN2", ""))
+        values.append(row.get("Category", ""))
+        worksheet.append(values)
+    style_sheet(worksheet)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)

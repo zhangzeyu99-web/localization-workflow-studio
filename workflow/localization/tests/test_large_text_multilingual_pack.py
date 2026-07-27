@@ -24,6 +24,17 @@ def create_workbook(path: Path, start_id: int, rows: int, unique_count: int = 14
     workbook.close()
 
 
+def create_reference_workbook(path: Path, *, missing_reference: bool = False) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Language"
+    sheet.append(["ID", "CN", "EN", "FR", "DE"])
+    sheet.append([1, "烈焰斩", "Flame Strike", None, None])
+    sheet.append([2, "太阳神殿", None if missing_reference else "Temple of the Sun", None, None])
+    workbook.save(path)
+    workbook.close()
+
+
 class LargeTextMultilingualPackTests(unittest.TestCase):
     def test_stable_row_key_includes_file_sheet_id_and_row(self) -> None:
         self.assertEqual(
@@ -77,6 +88,48 @@ class LargeTextMultilingualPackTests(unittest.TestCase):
                     history_dirs=[],
                     target_langs=LANGS,
                     work_dir=root / "work",
+                )
+
+    def test_prepare_pack_adds_english_reference_for_non_english_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "input.xlsx"
+            create_reference_workbook(path)
+
+            result = prepare_pack(
+                inputs=[path],
+                term_base=None,
+                history_dirs=[],
+                target_langs=["FR", "DE"],
+                work_dir=root / "work",
+                source_mode="cn+en",
+            )
+            rows = [
+                json.loads(line)
+                for line in result.items_jsonl.read_text(encoding="utf-8").splitlines()
+            ]
+            stats = json.loads(result.prepare_stats.read_text(encoding="utf-8"))
+
+            self.assertEqual(rows[0]["source_mode"], "cn+en")
+            self.assertEqual(rows[0]["translation_source"], "烈焰斩")
+            self.assertEqual(rows[0]["reference_en"], "Flame Strike")
+            self.assertEqual(rows[0]["reference_en_status"], "usable")
+            self.assertEqual(stats["english_reference_status"]["usable_rows"], 2)
+
+    def test_prepare_pack_en_mode_rejects_incomplete_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "input.xlsx"
+            create_reference_workbook(path, missing_reference=True)
+
+            with self.assertRaisesRegex(ValueError, "complete usable English"):
+                prepare_pack(
+                    inputs=[path],
+                    term_base=None,
+                    history_dirs=[],
+                    target_langs=["FR", "DE"],
+                    work_dir=root / "work",
+                    source_mode="en",
                 )
 
 

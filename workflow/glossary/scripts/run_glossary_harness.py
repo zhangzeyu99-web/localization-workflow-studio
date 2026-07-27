@@ -16,9 +16,12 @@ def write_fixture_workbook(path: Path, fixture: dict[str, Any]) -> None:
     worksheet = workbook.active
     worksheet.title = fixture.get("sheet", "Sheet0")
     columns = fixture.get("columns", {"id": "ID", "source": "cn", "target": "en"})
-    worksheet.append([columns["id"], columns["source"], columns["target"]])
+    column_keys = ["id", "source", "target"]
+    if columns.get("term_type"):
+        column_keys.append("term_type")
+    worksheet.append([columns[key] for key in column_keys])
     for row in fixture["rows"]:
-        worksheet.append([row[columns["id"]], row[columns["source"]], row[columns["target"]]])
+        worksheet.append([row.get(columns[key], "") for key in column_keys])
     workbook.save(path)
     workbook.close()
 
@@ -264,16 +267,18 @@ def evaluate_fixture(fixture_path: Path) -> dict[str, Any]:
         if not predicted:
             missing_terms.append(term)
             continue
-        expected_en = expected_item.get("EN", "")
-        expected_en2 = expected_item.get("EN2", "")
-        if predicted.get("EN", "") != expected_en or predicted.get("EN2", "") != expected_en2:
-            mismatched_terms.append(
-                {
-                    "CN": term,
-                    "expected": {"EN": expected_en, "EN2": expected_en2},
-                    "actual": {"EN": predicted.get("EN", ""), "EN2": predicted.get("EN2", "")},
+        field_mismatches: dict[str, dict[str, object]] = {}
+        for field, expected_value in expected_item.items():
+            if field == "CN":
+                continue
+            actual_value = predicted.get(field, "")
+            if actual_value != expected_value:
+                field_mismatches[field] = {
+                    "expected": expected_value,
+                    "actual": actual_value,
                 }
-            )
+        if field_mismatches:
+            mismatched_terms.append({"CN": term, "fields": field_mismatches})
 
     absent_hits = sorted(term for term in expected_absent if term in produced)
     unexpected_terms = sorted(term for term in produced if strict_terms and term not in expected and term not in expected_absent)

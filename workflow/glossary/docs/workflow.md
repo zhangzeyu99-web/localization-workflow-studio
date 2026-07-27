@@ -4,12 +4,12 @@
 
 从完整翻译语言表中稳定提炼出：
 
-- 高频重复词
+- 可复用的普通术语
+- 即使只出现一次也必须统一的技能名、地名等专名
 - 易混淆近义词
 - 需要全局统一的系统词
-- 需要保留第二套适配译法的术语
 
-最终形成可交付的 `ID / CN / EN / EN2` 术语表。
+最终默认形成可交付的 `ID / CN / 目标语言主译 / 分类` 术语表。
 
 ## 适用场景
 
@@ -27,6 +27,7 @@
 - 原文列是否稳定，默认是 `cn`
 - 目标语言列是否稳定，默认是 `en`
 - `ID` 是否可追溯
+- 是否存在显式的术语类型列、名称工作表或可识别的字段/ID 上下文
 - 是否存在大量占位符、富文本标签、测试串、活动临时文案
 
 ### 2. 项目审查与风格提示词
@@ -81,6 +82,7 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 - 多系统复用
 - 玩家操作强相关
 - 数值、资源、稀有度、玩法、按钮词
+- 有明确类型证据的技能名和地名；这类专名不受最低出现次数和术语命中阈值限制
 
 优先排除：
 
@@ -89,14 +91,28 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 - 测试串
 - 嵌入图片或复杂富文本的整段内容
 
+频次只用于普通术语的排序和取证，不是专名的准入条件。技能名、地名必须来自显式类型列、工作表、字段、ID 上下文或人工规则，不能按中文长度猜测。证据冲突的候选标记为 `待确认`，不进入正式交付。
+
+专名进入单独的名称检查：
+
+- 英语技能名采用 2 词、24 字符软预算。
+- 英语地名采用 2 个核心词、28 字符软预算。
+- 非英语名称按约 2 个核心语义单位人工检查，不套用英语词数。
+- 长度超限只产生警告，不机械截短；不同中文专名出现相同主译时属于硬阻断。
+- 需要模型复核时，使用 `--name-review-packet-output` 只导出专名精简候选和少量句内证据，不把完整语言包交给模型。
+
+分类只保留一个最重要类别。`技能名` 用于具体技能名称，`地名` 用于地点名称；原有 `技能` 继续用于技能机制、技能属性等非名称术语。`待确认` 只在内部明细中使用，不能进入正式交付。
+
 ### 5. 英文对齐
 
 用英文列做两件事：
 
-- 找示例英语 `EN`
-- 检查实际译文是否出现另一套稳定用词 `EN2`
+- 选定当前语言表中的主译
+- 记录与历史确认译文的冲突，供复核使用
 
-如果语言表还没有英文列，则先启用源文-only 模式，只提取 `CN` 候选并保留 `ID / CN / EN / EN2` 结构。后续拿到人工确认或翻译结果后，再用回灌脚本补齐规则层。
+译文权威顺序固定为：当前语言表非空译文、人工确认规则、历史观察。人工确认规则只补当前空值；历史观察只作证据，不覆盖本次语言表。
+
+如果语言表还没有目标语言列，则先启用 source-only 模式，只提取 `CN` 候选并保留 `ID / CN / 目标语言 / 分类` 结构。后续拿到人工确认或翻译结果后，再用回灌脚本补齐规则层。
 
 源文-only 项目建议按状态分阶段交付：
 
@@ -106,7 +122,7 @@ python scripts/extract_glossary.py /path/to/language_table.xlsx \
 - `项目名-已审校-YYYYMMDD.xlsx`
 - `项目名-已回灌-YYYYMMDD.xlsx`
 
-分类整理版主表使用 `ID / CN / EN / EN2 / 分类`，并将 `分类` 放在最后一列。同类术语应连续排列，便于翻译、LQA 和术语管理员筛选。完整复盘见 [source-only delivery retrospective](source-only-delivery-retrospective.md)。
+分类整理版主表使用 `ID / CN / 目标语言主译 / 分类`，并将 `分类` 放在最后一列。只有明确要求双译法时才通过 `--include-en2` 增加 `EN2`。同类术语应连续排列，便于翻译、LQA 和术语管理员筛选。完整复盘见 [source-only delivery retrospective](source-only-delivery-retrospective.md)。
 
 ### 5.1 版更公告按需术语提取
 
@@ -223,25 +239,25 @@ Codex 线程内执行检查清单见 [codex-thread-ai-supplement.md](codex-threa
 
 ### 6.1 规则层与观察层反哺
 
-如果某个术语已经被人工确认：
+如果当前语言表已有非空译文：
 
-- 优先使用 `approved_en`
-- 优先使用 `approved_en2`
-- 如果 `block_en2 = true`，则不再自动派生 `EN2`
+- 当前译文直接作为主译。
+- `approved_en` 与历史观察只记录冲突，不得静默覆盖当前译文。
 
-如果某个术语在历史跑表里已经多次出现：
+如果当前语言表译文为空：
 
-- 合并 `observed_exact_candidates`
-- 合并 `observed_example_usages`
-- 合并 `observed_manual_adaptations`
+- 使用人工确认的 `approved_en` 补空。
+- 如果 `block_en2 = true`，不自动派生 `EN2`。
 
-这样可以把一次人工判断沉淀为规则层，把后续运行的真实观察沉淀为自动学习层。
+历史跑表中的 `observed_exact_candidates`、`observed_example_usages` 和 `observed_manual_adaptations` 只用于审计和取证，不参与覆盖主译。这样既能沉淀人工判断，也不会让旧数据改写当前语言表。
 
 ### 7. 风险判定
 
 以下情况优先列为高风险：
 
 - 同一原文对应多个英文版本
+- 不同中文技能名或地名出现相同的归一化主译
+- 类型列、工作表、字段或 ID 上下文互相冲突
 - 稀有度、资源、数值、按钮操作词
 - 高命中但大多以内嵌形式出现
 - 实际短句里存在手动适配
@@ -252,13 +268,12 @@ Codex 线程内执行检查清单见 [codex-thread-ai-supplement.md](codex-threa
 
 - `ID`
 - `CN`
-- `EN`
-- `EN2`
+- 目标语言主译
+- `分类`
 
-其中：
+默认只写一个 `Glossary` 工作表，不带审计列、来源列、检查包或说明页。只有用户明确要求双译法时才使用 `--include-en2` 增加 `EN2`。
 
-- `EN` 是标准示例译法
-- `EN2` 只在替代译法稳定成立时填写，否则留空
+写出后必须重新打开成品，检查表头、行数、空 CN、空目标语言、重复 CN、空分类、非法分类和专名译文碰撞；任何硬阻断都不得交付正式表。
 
 ## 自动回归
 
@@ -270,29 +285,31 @@ python scripts/run_glossary_harness.py \
   fixtures/observation_feedback_regression.json \
   fixtures/announcement_lookup_regression.json \
   fixtures/announcement_ai_supplement_regression.json \
-  fixtures/announcement_sentence_templates_regression.json
+  fixtures/announcement_sentence_templates_regression.json \
+  fixtures/proper_name_extraction_regression.json \
+  fixtures/current_translation_authority_regression.json
 ```
 
 通过后再跑真实语言表。
 
 ## 人工确认回灌
 
-人工确认完 `ID / CN / EN / EN2` 交付表后，应尽快回灌到规则层：
+人工确认完 `ID / CN / 目标语言主译 / 分类` 交付表后，应尽快回灌到规则层。默认不带 `EN2` 的干净交付表也可直接导入：
 
 ```bash
 python scripts/import_curated_glossary.py /path/to/final_glossary.xlsx \
   --curated-rules data/experience/curated_terms.json
 ```
 
-这样下一次跑表时，标准 EN、稳定 EN2 和明确禁止 EN2 的术语都会直接继承。
+这样下一次跑表时，人工确认主译可用于补齐当前语言表中的空值；显式包含 `EN2` 时仍会同步第二译法规则。
 
 ## 推荐复核顺序
 
-1. 稀有度
-2. 数值属性
-3. 操作按钮
-4. 活动和付费系统
-5. 非空 `EN2`
+1. 专名分类证据冲突
+2. 技能名、地名主译碰撞
+3. 名称长度软预算警告
+4. 稀有度、数值属性和操作按钮
+5. 活动和付费系统
 
 ## 版本维护建议
 

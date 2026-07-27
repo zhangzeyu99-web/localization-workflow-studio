@@ -100,6 +100,7 @@ def phase1(args):
         args.auto_fix,
         args.lang_index,
         args.lang,
+        args.source_mode,
     )
 
     total = len(states)
@@ -424,7 +425,13 @@ def main():
     parser.add_argument('--lang', default='en', help='目标语言代码（默认 en）')
     parser.add_argument('--output-dir', default='./output', help='输出目录（默认 ./output/）')
     parser.add_argument('--auto-fix', action='store_true', help='自动修复可修复项')
-    parser.add_argument('--lang-index', type=int, default=0, help='多语言文件列索引')
+    parser.add_argument('--lang-index', type=int, default=None, help='多语言文件列索引（默认按 --lang 表头匹配）')
+    parser.add_argument(
+        '--source-mode',
+        choices=['cn', 'cn+en', 'en'],
+        default='cn',
+        help='语义源：cn=中文，cn+en=中文主源+英语参考，en=英语主源+中文回查',
+    )
     parser.add_argument('--batch-size', type=int, default=100,
                         help='AI审查每批行数（默认 100，首跑建议小批量）')
     parser.add_argument('--skip-ai', action='store_true', help='跳过AI审查，仅运行机审')

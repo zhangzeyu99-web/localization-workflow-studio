@@ -1,0 +1,79 @@
+{
+  "sheet": "Sheet0",
+  "columns": {
+    "id": "ID",
+    "source": "cn",
+    "target": "en"
+  },
+  "extract": {
+    "min_hit": 1,
+    "glossary_hit_threshold": 1
+  },
+  "curated_rules": {
+    "version": 1,
+    "terms": {
+      "报名": {
+        "approved_en": "Registration",
+        "approved_en2": "",
+        "block_en2": true,
+        "ignore": false,
+        "note": "",
+        "category_override": "UI",
+        "term_type_override": ""
+      },
+      "旧港": {
+        "approved_en": "Old Harbor",
+        "approved_en2": "",
+        "block_en2": true,
+        "ignore": false,
+        "note": "",
+        "category_override": "地名",
+        "term_type_override": "location_name"
+      }
+    }
+  },
+  "observations_store": {
+    "version": 1,
+    "terms": {
+      "报名": {
+        "observed_exact_candidates": {
+          "Registration": 8
+        },
+        "observed_example_usages": {},
+        "observed_manual_adaptations": {},
+        "seen_runs": 4,
+        "last_seen_at": "2026-07-01T00:00:00+00:00",
+        "last_input_digest": "old"
+      }
+    }
+  },
+  "rows": [
+    {
+      "ID": "1",
+      "cn": "报名",
+      "en": "Sign Up"
+    },
+    {
+      "ID": "2",
+      "cn": "旧港",
+      "en": ""
+    }
+  ],
+  "expected_final": [
+    {
+      "CN": "报名",
+      "EN": "Sign Up",
+      "TranslationSource": "current_table",
+      "TranslationConflict": "Yes"
+    },
+    {
+      "CN": "旧港",
+      "EN": "Old Harbor",
+      "TermType": "location_name",
+      "TranslationSource": "curated",
+      "TranslationConflict": "No"
+    }
+  ],
+  "expected_absent": [],
+  "strict_terms": true
+}

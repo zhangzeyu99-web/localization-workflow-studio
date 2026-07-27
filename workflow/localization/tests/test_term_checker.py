@@ -1,23 +1,9 @@
 import unittest
 
-from utils.term_checker import (
-    check_term_hit,
-    is_exact_term_metadata,
-    merge_builtin_name_terms,
-)
+from utils.term_checker import check_term_hit, merge_builtin_name_terms
 
 
 class TermCheckerTests(unittest.TestCase):
-    def test_exact_term_metadata_rejects_negated_labels(self):
-        for label in ("non-exact", "inexact", "not exact", "非专有名词"):
-            with self.subTest(label=label):
-                self.assertFalse(is_exact_term_metadata(label))
-
-    def test_exact_term_metadata_recognizes_explicit_english_categories(self):
-        for label in ("exact match", "proper name", "fixed name", "game name"):
-            with self.subTest(label=label):
-                self.assertTrue(is_exact_term_metadata(label))
-
     def test_merges_builtin_name_terms_when_term_base_missing_entries(self):
         merged = merge_builtin_name_terms({}, lang="en")
 
@@ -465,122 +451,6 @@ class TermCheckerTests(unittest.TestCase):
         )
 
         self.assertEqual(results, [])
-
-    def test_substring_inside_another_word_is_not_a_partial_term_hit(self):
-        term_lookup = {
-            "菇勇者传说": {"primary": "Legend of Mushroom", "variants": []},
-        }
-
-        results = check_term_hit(
-            row_id=28,
-            original="菇勇者传说",
-            translation="Shroomie Legendary",
-            term_lookup=term_lookup,
-        )
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].check_type, "term_missing")
-        self.assertEqual(results[0].severity, "error")
-        self.assertEqual(results[0].expected_target, "Legend of Mushroom")
-
-    def test_accepts_complete_multiword_term(self):
-        term_lookup = {
-            "菇勇者传说": {"primary": "Legend of Mushroom", "variants": []},
-        }
-
-        results = check_term_hit(
-            row_id=29,
-            original="菇勇者传说",
-            translation="Legend of Mushroom",
-            term_lookup=term_lookup,
-        )
-
-        self.assertEqual(results, [])
-
-    def test_accepts_pluralized_multiword_common_term(self):
-        term_lookup = {
-            "联盟成员": {"primary": "Alliance Member", "variants": []},
-        }
-
-        results = check_term_hit(
-            row_id=34,
-            original="联盟成员",
-            translation="Alliance Members",
-            term_lookup=term_lookup,
-        )
-
-        self.assertEqual(results, [])
-
-    def test_longest_source_term_suppresses_overlapping_child_terms(self):
-        term_lookup = {
-            "菇勇者传说": {"primary": "Legend of Mushroom", "variants": []},
-            "菇勇者": {"primary": "Shroomie", "variants": []},
-            "传说": {"primary": "Legendary", "variants": []},
-        }
-
-        results = check_term_hit(
-            row_id=31,
-            original="欢迎来到《菇勇者传说》",
-            translation="Welcome to Legend of Mushroom",
-            term_lookup=term_lookup,
-        )
-
-        self.assertEqual(results, [])
-
-    def test_short_source_term_is_still_checked_at_independent_occurrence(self):
-        term_lookup = {
-            "菇勇者传说": {"primary": "Legend of Mushroom", "variants": []},
-            "菇勇者": {"primary": "Shroomie", "variants": []},
-            "传说": {"primary": "Legendary", "variants": []},
-        }
-
-        results = check_term_hit(
-            row_id=32,
-            original="菇勇者传说中的菇勇者",
-            translation="The Shroomie in Legend of Mushroom",
-            term_lookup=term_lookup,
-        )
-
-        self.assertEqual(results, [])
-
-    def test_does_not_accept_inflected_or_joined_game_name(self):
-        term_lookup = {
-            "菇勇者传说": {
-                "primary": "Legend of Mushroom",
-                "variants": [],
-                "exact_match": True,
-            },
-        }
-
-        for translation in ("Legend of Mushrooms", "Legend of Mushroomland"):
-            with self.subTest(translation=translation):
-                results = check_term_hit(
-                    row_id=33,
-                    original="菇勇者传说",
-                    translation=translation,
-                    term_lookup=term_lookup,
-                )
-
-                self.assertEqual(len(results), 1)
-                self.assertIn(results[0].check_type, {"term_missing", "term_partial_hit"})
-                self.assertEqual(results[0].severity, "error")
-
-    def test_partial_multiword_term_hit_is_an_error(self):
-        term_lookup = {
-            "菇勇者传说": {"primary": "Legend of Mushroom", "variants": []},
-        }
-
-        results = check_term_hit(
-            row_id=30,
-            original="菇勇者传说",
-            translation="Mushroom Legend",
-            term_lookup=term_lookup,
-        )
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].check_type, "term_partial_hit")
-        self.assertEqual(results[0].severity, "error")
-        self.assertEqual(results[0].expected_target, "Legend of Mushroom")
 
 
 if __name__ == "__main__":

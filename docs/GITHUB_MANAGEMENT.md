@@ -43,7 +43,7 @@ GitHub Actions 覆盖：
 - 由同一个 frontend dist 生成一个 universal ZIP，并在 Windows `local/off` 与 Ubuntu TLS `cloud/required` 中分别执行 extracted smoke。
 - 两个 extracted smoke 读回同一 artifact ID、manifest `version`/`git_sha`、frontend digest、runtime payload digest 和 outer ZIP SHA。
 
-当前 CI 不构建 `--no-account` 专用制品。`有账号-v1.6.4.zip` 与 `无账号-v1.6.4.zip` 必须在本地从同一 clean commit 生成；无账号包还必须把 archive readback、外部 SHA-256、Linux 脚本语法和 extracted HTTPS `cloud/off` smoke 作为独立发布证据，现有 universal publish gate 不能代替这组验收。
+当前 CI 不构建 `--no-account` 专用制品。`有账号-v1.7.0.zip` 与 `无账号-v1.7.0.zip` 必须在本地从同一 clean commit 生成；无账号包还必须把 archive readback、外部 SHA-256、Linux 脚本语法和 extracted HTTPS `cloud/off` smoke 作为独立发布证据，现有 universal publish gate 不能代替这组验收。
 
 发布前本地建议执行：
 
@@ -103,7 +103,7 @@ PR 模板位于 `.github/pull_request_template.md`。
 
 ## 版本管理
 
-当前版本：`1.6.4`。稳定分支为 `master`；该版本发布说明见 [v1.6.4 游戏名术语约束修复说明](releases/v1.6.4.md)。源码支持 `local/off`、`cloud/off` 与 `cloud/required`；有账号 universal 制品默认使用 `cloud/required`，独立无账号制品锁定为 `cloud/off`。
+当前版本：`1.7.0`。稳定分支为 `master`；该版本发布说明见 [v1.7.0 专名与双源工作流说明](releases/v1.7.0.md)。源码支持 `local/off`、`cloud/off` 与 `cloud/required`；有账号 universal 制品默认使用 `cloud/required`，独立无账号制品锁定为 `cloud/off`。
 
 版本来源：
 

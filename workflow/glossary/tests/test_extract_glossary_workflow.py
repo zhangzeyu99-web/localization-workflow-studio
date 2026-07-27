@@ -60,6 +60,158 @@ class UtilityTests(unittest.TestCase):
         self.assertTrue(MODULE.is_valid_term("\u9644\u9b54"))
         self.assertTrue(MODULE.is_valid_term("\u51b0\u5c01\u6269\u6563"))
 
+    def test_common_combat_power_term_remains_a_deliverable_attribute(self):
+        records = [
+            MODULE.Record(row_id="A-1", source="\u6218\u529b", target="S\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-2", source="\u63d0\u5347\u6218\u529b", target="T\u0103ng s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-3", source="\u6218\u529b\u5956\u52b1", target="Ph\u1ea7n th\u01b0\u1edfng s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-4", source="\u6218\u529b\u6392\u884c", target="X\u1ebfp h\u1ea1ng s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-5", source="\u6218\u529b\u7cfb\u7edf", target="H\u1ec7 th\u1ed1ng s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-6", source="\u6218\u529b\u5c5e\u6027", target="Thu\u1ed9c t\u00ednh s\u1ee9c m\u1ea1nh"),
+            MODULE.Record(row_id="A-7", source="\u6218\u529b\u6210\u957f", target="T\u0103ng tr\u01b0\u1edfng s\u1ee9c m\u1ea1nh"),
+        ]
+
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=6,
+            include_empty_final_terms=True,
+            target_language="VN",
+        )
+
+        combat_power = next(row for row in final_rows if row["CN"] == "\u6218\u529b")
+        self.assertEqual(combat_power["Category"], "\u5c5e\u6027")
+
+    def test_records_from_rows_preserves_term_type_context(self):
+        rows = [
+            ["ID", "中文", "英文", "术语类型"],
+            ["SkillName_1001", "鲨潮护盾", "Sharkguard", "技能名"],
+            ["MapName_2001", "暮色海岸", "Dusk Coast", "地名"],
+        ]
+
+        records = MODULE.records_from_rows(
+            rows=rows,
+            sheet_title="技能与地图",
+            id_column="ID",
+            source_column="中文",
+            target_column="英文",
+        )
+
+        self.assertEqual(records[0].sheet_name, "技能与地图")
+        self.assertEqual(records[0].row_number, 2)
+        self.assertEqual(records[0].source_field, "中文")
+        self.assertEqual(records[0].term_type_hint, "技能名")
+        self.assertEqual(records[1].term_type_hint, "地名")
+
+    def test_singleton_proper_names_bypass_frequency_threshold(self):
+        records = [
+            MODULE.Record(
+                "SkillName_1001",
+                "鲨潮护盾",
+                "Sharkguard",
+                sheet_name="技能名称",
+                row_number=2,
+            ),
+            MODULE.Record(
+                "MapName_2001",
+                "暮色海岸",
+                "Dusk Coast",
+                sheet_name="地图名称",
+                row_number=3,
+            ),
+            MODULE.Record("Text_1", "普通文本", "Normal Text"),
+        ]
+
+        all_rows, glossary_rows, high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=10,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="singleton-proper-names",
+        )
+
+        final = {row["CN"]: row for row in final_rows}
+        self.assertEqual(final["鲨潮护盾"]["Category"], "技能名")
+        self.assertEqual(final["鲨潮护盾"]["HitRows"], 1)
+        self.assertEqual(final["暮色海岸"]["Category"], "地名")
+        self.assertNotIn("普通文本", final)
+        self.assertFalse(any(row["CN"] == "普通文本" for row in glossary_rows))
+        self.assertFalse(any(row["CN"] == "普通文本" for row in high_risk_rows))
+        self.assertTrue(any(row["CN"] == "鲨潮护盾" for row in all_rows))
+
+    def test_conflicting_name_type_stays_in_review_only(self):
+        records = [
+            MODULE.Record(
+                "MapName_2001",
+                "暮色海岸",
+                "Dusk Coast",
+                sheet_name="地图",
+                term_type_hint="技能名",
+            )
+        ]
+
+        all_rows, glossary_rows, high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=10,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="conflicting-name-type",
+        )
+
+        self.assertEqual(all_rows[0]["NeedsReview"], "Yes")
+        self.assertEqual(all_rows[0]["Category"], "待确认")
+        self.assertEqual(high_risk_rows[0]["CN"], "暮色海岸")
+        self.assertEqual(glossary_rows, [])
+        self.assertEqual(final_rows, [])
+
+    def test_name_budget_warning_does_not_remove_proper_name(self):
+        records = [
+            MODULE.Record(
+                "SkillName_1001",
+                "巨齿鲨水盾",
+                "Megalodon Water Shield",
+                term_type_hint="技能名",
+            )
+        ]
+
+        all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=10,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="name-budget-warning",
+            target_language="EN",
+        )
+
+        self.assertEqual(all_rows[0]["NameWordCount"], 3)
+        self.assertIn("english_skill_word_budget", all_rows[0]["NamePolicyWarnings"])
+        self.assertEqual(final_rows[0]["CN"], "巨齿鲨水盾")
+
+    def test_name_collision_is_high_risk_and_excluded_from_delivery(self):
+        records = [
+            MODULE.Record("SkillName_1001", "鲨潮护盾", "Sharkguard", term_type_hint="技能名"),
+            MODULE.Record("SkillName_1002", "鲨卫", "Sharkguard", term_type_hint="技能名"),
+        ]
+
+        all_rows, glossary_rows, high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=5,
+            glossary_hit_threshold=10,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=MODULE.new_observation_store(),
+            input_digest="name-collision",
+            target_language="EN",
+        )
+
+        self.assertTrue(all(row["NameCollision"] == "Yes" for row in all_rows))
+        self.assertTrue(all("鲨" in row["NameCollisionWith"] for row in all_rows))
+        self.assertEqual({row["CN"] for row in high_risk_rows}, {"鲨潮护盾", "鲨卫"})
+        self.assertEqual(glossary_rows, [])
+        self.assertEqual(final_rows, [])
+
     def test_collect_translation_diff_marks_manual_adaptation(self):
         counter = MODULE.Counter(
             {
@@ -344,6 +496,27 @@ class UtilityTests(unittest.TestCase):
 
             self.assertIn("新增纹章系统", text)
 
+    def test_announcement_candidate_prefers_current_language_table_translation(self):
+        curated = {
+            "version": 1,
+            "terms": {
+                "报名": {
+                    "approved_en": "Registration",
+                    "approved_en2": "",
+                    "block_en2": True,
+                    "ignore": False,
+                    "note": "",
+                }
+            },
+        }
+        rows = MODULE.build_announcement_candidate_rows(
+            records=[MODULE.Record("1", "报名", "Sign Up")],
+            curated_rules=curated,
+            min_hit=1,
+        )
+
+        self.assertEqual(rows[0]["EN"], "Sign Up")
+
 
 class MemoryTests(unittest.TestCase):
     def test_preferences_can_block_en2_and_accumulate_observations(self):
@@ -380,14 +553,14 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(state["seen_runs"], 1)
         self.assertIn("Reward", state["observed_exact_candidates"])
 
-    def test_curated_rules_can_override_en_and_en2(self):
+    def test_current_language_table_translation_wins_over_curated(self):
         curated = {
             "version": 1,
             "terms": {
                 "报名": {
                     "approved_en": "Registration",
-                    "approved_en2": "Sign Up",
-                    "block_en2": False,
+                    "approved_en2": "",
+                    "block_en2": True,
                     "ignore": False,
                     "note": ""
                 }
@@ -406,8 +579,63 @@ class MemoryTests(unittest.TestCase):
             input_digest="fixture-2",
         )
         row = {item["CN"]: item for item in final_rows}["报名"]
-        self.assertEqual(row["EN"], "Registration")
-        self.assertEqual(row["EN2"], "Sign Up")
+        self.assertEqual(row["EN"], "Sign Up")
+        self.assertEqual(row["TranslationSource"], "current_table")
+        self.assertEqual(row["TranslationConflict"], "Yes")
+        self.assertIn("Registration", row["TranslationConflictValues"])
+
+    def test_curated_translation_only_fills_blank_current_translation(self):
+        curated = {
+            "version": 1,
+            "terms": {
+                "报名": {
+                    "approved_en": "Registration",
+                    "approved_en2": "",
+                    "block_en2": True,
+                    "ignore": False,
+                    "note": "",
+                }
+            },
+        }
+        records = [MODULE.Record("1", "报名", "")]
+
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=curated,
+            observations_store=MODULE.new_observation_store(),
+            input_digest="curated-fills-blank",
+            include_empty_final_terms=True,
+        )
+
+        self.assertEqual(final_rows[0]["EN"], "Registration")
+        self.assertEqual(final_rows[0]["TranslationSource"], "curated")
+        self.assertEqual(final_rows[0]["TranslationConflict"], "No")
+
+    def test_observation_history_cannot_override_current_translation(self):
+        observations = MODULE.new_observation_store()
+        observations["terms"]["报名"] = {
+            "observed_exact_candidates": {"Registration": 8},
+            "observed_example_usages": {},
+            "observed_manual_adaptations": {},
+            "seen_runs": 4,
+            "last_seen_at": "2026-07-01T00:00:00+00:00",
+            "last_input_digest": "old",
+        }
+        records = [MODULE.Record("1", "报名", "Sign Up")]
+
+        _all_rows, _glossary_rows, _high_risk_rows, _manual_rows, final_rows = MODULE.build_term_rows(
+            records=records,
+            min_hit=1,
+            glossary_hit_threshold=1,
+            curated_rules=MODULE.new_curated_rules(),
+            observations_store=observations,
+            input_digest="current-run",
+        )
+
+        self.assertEqual(final_rows[0]["EN"], "Sign Up")
+        self.assertEqual(final_rows[0]["TranslationSource"], "current_table")
 
     def test_curated_and_observation_stores_roundtrip(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -522,6 +750,233 @@ class MemoryTests(unittest.TestCase):
 
 
 class CliIntegrationTests(unittest.TestCase):
+    def test_cli_writes_compact_name_review_packet(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "proper_names.xlsx"
+            detail_path = temp_path / "detail.xlsx"
+            final_path = temp_path / "final.xlsx"
+            packet_path = temp_path / "name_review.json"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Names"
+            worksheet.append(["ID", "cn", "en", "术语类型"])
+            worksheet.append(["Name_1001", "巨齿鲨水盾", "Megalodon Water Shield", "技能名"])
+            worksheet.append(["Text_1", "普通文本", "Normal Text", ""])
+            workbook.save(input_path)
+            workbook.close()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--output",
+                    str(detail_path),
+                    "--final-output",
+                    str(final_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--min-hit",
+                    "5",
+                    "--glossary-hit-threshold",
+                    "10",
+                    "--target-language",
+                    "EN",
+                    "--name-review-packet-output",
+                    str(packet_path),
+                    "--no-project-brief",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            self.assertEqual([row["CN"] for row in packet["candidates"]], ["巨齿鲨水盾"])
+            self.assertNotIn("普通文本", packet_path.read_text(encoding="utf-8"))
+            self.assertIn("english_skill_word_budget", packet["candidates"][0]["warnings"])
+
+    def test_cli_blocks_project_name_collision_before_final_delivery(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "colliding_names.xlsx"
+            detail_path = temp_path / "detail.xlsx"
+            final_path = temp_path / "final.xlsx"
+            packet_path = temp_path / "name_review.json"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Names"
+            worksheet.append(["ID", "cn", "en", "术语类型"])
+            worksheet.append(["Name_1001", "鲨潮护盾", "Sharkguard", "技能名"])
+            worksheet.append(["Name_1002", "鲨卫", "Sharkguard", "技能名"])
+            workbook.save(input_path)
+            workbook.close()
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(input_path),
+                    "--output",
+                    str(detail_path),
+                    "--final-output",
+                    str(final_path),
+                    "--curated-rules",
+                    str(curated_path),
+                    "--observations-store",
+                    str(observations_path),
+                    "--min-hit",
+                    "5",
+                    "--glossary-hit-threshold",
+                    "10",
+                    "--target-language",
+                    "EN",
+                    "--name-review-packet-output",
+                    str(packet_path),
+                    "--no-project-brief",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 2, msg=result.stderr or result.stdout)
+            self.assertIn("delivery_hard_blockers: 1", result.stdout)
+            self.assertTrue(detail_path.exists())
+            self.assertTrue(packet_path.exists())
+            self.assertFalse(final_path.exists())
+
+    def test_cli_proper_name_end_to_end_blocks_collision_then_passes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "proper_names.xlsx"
+            detail_path = temp_path / "detail.xlsx"
+            final_path = temp_path / "final.xlsx"
+            packet_path = temp_path / "name_review.json"
+            curated_path = temp_path / "curated.json"
+            observations_path = temp_path / "observations.json"
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "名称"
+            worksheet.append(["ID", "cn", "en", "术语类型"])
+            worksheet.append(["SkillName_1001", "鲨潮护盾", "Sharkguard", "技能名"])
+            worksheet.append(
+                [
+                    "SkillDesc_1001",
+                    "召唤鲨潮并获得护盾",
+                    "Summons a shark tide and gains a shield.",
+                    "",
+                ]
+            )
+            worksheet.append(["SkillName_1002", "鲨卫", "Sharkguard", "技能名"])
+            worksheet.append(["MapName_2001", "暮色海岸", "Dusk Coast", "地名"])
+            worksheet.append(["Text_1", "终极挑战", "Final Challenge", ""])
+            workbook.save(input_path)
+            workbook.close()
+
+            curated_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "terms": {
+                            "鲨潮护盾": {
+                                "approved_en": "Megalodon Water Shield",
+                                "approved_en2": "",
+                                "block_en2": True,
+                                "ignore": False,
+                                "note": "",
+                                "category_override": "",
+                                "term_type_override": "ui_skill_name",
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            args = [
+                sys.executable,
+                str(SCRIPT_PATH),
+                str(input_path),
+                "--output",
+                str(detail_path),
+                "--final-output",
+                str(final_path),
+                "--curated-rules",
+                str(curated_path),
+                "--observations-store",
+                str(observations_path),
+                "--min-hit",
+                "5",
+                "--glossary-hit-threshold",
+                "10",
+                "--target-language",
+                "EN",
+                "--name-review-packet-output",
+                str(packet_path),
+                "--no-project-brief",
+            ]
+
+            blocked = subprocess.run(
+                args,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(blocked.returncode, 2, msg=blocked.stderr or blocked.stdout)
+            self.assertIn("delivery_hard_blockers: 1", blocked.stdout)
+
+            workbook = load_workbook(input_path)
+            workbook["名称"]["C4"] = "Shark Ward"
+            workbook.save(input_path)
+            workbook.close()
+
+            passed = subprocess.run(
+                args,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(passed.returncode, 0, msg=passed.stderr or passed.stdout)
+
+            final_workbook = load_workbook(final_path, read_only=True, data_only=True)
+            self.assertEqual(final_workbook.sheetnames, ["Glossary"])
+            rows = list(final_workbook["Glossary"].iter_rows(values_only=True))
+            self.assertEqual(rows[0], ("ID", "CN", "EN", "分类"))
+            lookup = {row[1]: row for row in rows[1:]}
+            self.assertEqual(lookup["鲨潮护盾"][2], "Sharkguard")
+            self.assertEqual(lookup["鲨潮护盾"][3], "技能名")
+            self.assertEqual(lookup["暮色海岸"][3], "地名")
+            self.assertNotIn("终极挑战", lookup)
+            final_workbook.close()
+
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                {item["CN"] for item in packet["candidates"]},
+                {"鲨潮护盾", "鲨卫", "暮色海岸"},
+            )
+            self.assertNotIn("召唤鲨潮并获得护盾", packet_path.read_text(encoding="utf-8"))
+
     def test_cli_can_generate_source_only_final_terms(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -570,11 +1025,12 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
             final_workbook = load_workbook(final_path, read_only=True, data_only=True)
             rows = list(final_workbook["Glossary"].iter_rows(values_only=True))
+            final_workbook.close()
             lookup = {row[1]: row for row in rows[1:]}
+            self.assertEqual(rows[0], ("ID", "CN", "EN", "分类"))
             self.assertIn("奖励", lookup)
             self.assertEqual(lookup["奖励"][2], None)
-            self.assertEqual(lookup["奖励"][3], None)
-            final_workbook.close()
+            self.assertEqual(lookup["奖励"][3], "资源")
 
     def test_cli_generates_detail_final_and_store_outputs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -676,12 +1132,14 @@ class CliIntegrationTests(unittest.TestCase):
             final_workbook = load_workbook(final_path, read_only=True, data_only=True)
             glossary_sheet = final_workbook["Glossary"]
             rows = list(glossary_sheet.iter_rows(values_only=True))
-            lookup = {row[1]: row for row in rows[1:]}
-            self.assertEqual(lookup["报名"][2], "Registration")
-            self.assertEqual(lookup["报名"][3], "Sign Up")
-            self.assertEqual(lookup["升级"][2], "Level Up")
-            self.assertEqual(lookup["升级"][3], "Upgrade")
             final_workbook.close()
+            lookup = {row[1]: row for row in rows[1:]}
+            self.assertEqual(rows[0], ("ID", "CN", "EN", "分类"))
+            self.assertEqual(lookup["报名"][2], "Registration")
+            self.assertEqual(lookup["报名"][3], "动作")
+            self.assertEqual(lookup["升级"][2], "Level Up")
+            self.assertEqual(lookup["升级"][3], "动作")
+            self.assertIn("DELIVERY_HARD_BLOCKERS=0", result.stdout)
 
     def test_cli_generates_announcement_term_workbook(self):
         with tempfile.TemporaryDirectory() as temp_dir:

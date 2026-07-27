@@ -45,6 +45,7 @@ LEVEL_BATCH_ITEM_TERM_RE = re.compile(
 AUTO_ID_HEADERS = ["ID", "id", "\u7d22\u5f15ID", "\u552f\u4e00\u6807\u8bc6ID"]
 AUTO_SOURCE_HEADERS = ["CN", "cn", "zh", "source", "Chinese", "\u4e2d\u6587", "\u7b80\u4f53\u4e2d\u6587", "ori_string"]
 AUTO_TARGET_HEADERS = ["EN", "en", "target", "translation", "English", "\u82f1\u6587", "\u82f1\u8bed", "\u5185\u5bb9", "text"]
+AUTO_TERM_TYPE_HEADERS = ["term_type", "术语类型", "名称类型", "类型", "分类"]
 LOW_VALUE_ANNOUNCEMENT_TERMS = {
     "\u73a9\u5bb6",
     "\u6d3b\u52a8",
@@ -92,6 +93,7 @@ RESOURCE_TERMS = {
     "礼包",
 }
 STAT_TERMS = {
+    "战力",
     "攻击",
     "攻击力",
     "防御",
@@ -367,12 +369,24 @@ IMAGE_MATERIAL_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 DOCX_MATERIAL_EXTENSIONS = {".docx"}
 
 CATEGORY_LABELS = {
-    "rarity": "稀有度/品质",
-    "resource": "资源/货币/奖励",
-    "stat": "战斗属性/数值",
-    "action": "UI操作动词",
-    "system": "系统/玩法名",
-    "object": "角色/装备/对象",
-    "status": "状态/进度",
-    "other": "其他",
+    "rarity": "品质",
+    "resource": "资源",
+    "stat": "属性",
+    "action": "动作",
+    "activity": "活动",
+    "ui": "UI",
+    "equipment": "装备",
+    "item": "道具",
+    "skill": "技能",
+    "emblem": "纹章",
+    "dungeon": "副本",
+    "alliance": "联盟",
+    "hero": "英雄",
+    "monster": "怪物",
+    "pet": "宠物",
+    "world": "世界观",
+    "mail": "邮件",
+    "ui_skill_name": "技能名",
+    "location_name": "地名",
+    "needs_review": "待确认",
 }

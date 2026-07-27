@@ -38,6 +38,12 @@ def main() -> int:
         help="Short project-specific translation guidance; can be passed more than once",
     )
     parser.add_argument("--style-hint-file", default=None, help="UTF-8 text file with project-specific guidance")
+    parser.add_argument(
+        "--source-mode",
+        choices=["cn", "cn+en", "en"],
+        default="cn",
+        help="cn=Chinese source; cn+en=Chinese source plus reviewed English reference; en=reviewed English primary source",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -80,12 +86,20 @@ def main() -> int:
         output_dir=output_dir,
         lang_index=args.lang_index,
         style_hint=style_hint,
+        source_mode=args.source_mode,
     )
     print(f"workpack={prepared.workpack_path}")
     print(f"manifest={prepared.manifest_path}")
     print(f"response_template={prepared.response_template_path}")
     print(f"requires_full_translation={prepared.target_status.requires_full_translation}")
     print(f"target_status={prepared.target_status.reason}")
+    print(f"source_mode={prepared.manifest['source_mode']}")
+    reference_status = prepared.manifest.get("english_reference_status")
+    if reference_status:
+        print(
+            "english_reference="
+            f"{reference_status['usable_rows']}/{reference_status['total_rows']}"
+        )
     if style_hint:
         print(f"style_hint={style_hint}")
     return 0

@@ -3297,14 +3297,36 @@ def test_glossary_accept_handles_multiple_terms_from_the_same_source_row(tmp_pat
         assert sorted(term["term_key"] for term in terms.values()) == ["", "2"]
 
 
+def test_glossary_backfill_reads_generated_target_language_header(tmp_path: Path) -> None:
+    generated = tmp_path / "generated_glossary_kr.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Glossary"
+    ws.append(["ID", "CN", "KR"])
+    ws.append(["K-1", "\u653b\u51fb", "\uacf5\uaca9"])
+    wb.save(generated)
+    wb.close()
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"name": "Glossary KR Header", "type": "QA"}).json()
+        run = client.post("/api/runs", json={"project_id": project["id"], "kind": "glossary", "language": "ko"}).json()
+
+        result = backfill_project_glossary_from_final(project["id"], generated, run["id"], language="ko")
+
+        assert result["inserted"] == 1
+        batches = client.get(f"/api/projects/{project['id']}/glossary/batches?language=ko").json()
+        assert batches["active_batch"]["language"] == "ko"
+        assert batches["candidates"][0]["source"] == "\u653b\u51fb"
+        assert batches["candidates"][0]["target"] == "\uacf5\uaca9"
+
+
 def test_glossary_backfill_maps_legacy_generated_headers_to_kr_candidates(tmp_path: Path) -> None:
     generated = tmp_path / "generated_glossary_kr.xlsx"
     wb = Workbook()
     ws = wb.active
     ws.title = "Glossary"
-    # The embedded glossary extractor still writes legacy EN/EN2 headers even
-    # when the source language-table target column is KR. The workbench must
-    # map these generated columns into the active run language.
+    # Historical extractor versions wrote EN/EN2 even when the active target
+    # language was KR. Those delivered artifacts must remain readable.
     ws.append(["ID", "CN", "EN", "EN2"])
     ws.append(["K-1", "\u653b\u51fb", "\uacf5\uaca9", "\uacf5\uaca9"])
     wb.save(generated)

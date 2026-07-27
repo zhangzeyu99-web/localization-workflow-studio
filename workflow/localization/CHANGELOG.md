@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-24 - 中英双源翻译与校对
+
+- 标准翻译 harness、AI 审校 CLI、workspace runner 和大文本多语言 V2 新增 `cn / cn+en / en` 三种显式源模式。
+- `cn+en` 保持中文为语义主源，英语用于术语、专名、语气和歧义参考；英语缺失行自动回退中文。
+- `en` 使用英语主源并以中文回查，要求英语逐行 100% 可用；非英语目标限定，目标英语仍走 `cn`。
+- workpack、manifest、严格审校指纹、翻译缓存、API 唯一文本签名和深校 checkpoint 都纳入源模式及英语参考，避免输入漂移和跨模式缓存污染。
+
+## 2026-07-24 - 技能名与地名 UI 专名策略
+
+- 术语表 `分类/category/type` 明确为技能名或地名时，翻译 workpack、AI 审校、机审和最终 workbook 扫描统一启用专名策略。
+- 英语技能名优先 2 个可读词 / 24 字符，地名优先 2 个核心词 / 28 字符；其他语言按约 2 个核心语义单位自然表达，不机械套用英语词数。
+- 新增 `skill_name_word_count_watch`、`location_name_compactness_watch` 和 `name_translation_collision_watch` 三类软预警；含义、自然度、既有专名和名称唯一性优先于长度。
+- 规则只由术语表显式分类触发，排除技能描述、技能效果、地图说明和地点描述，避免根据短中文误判。
+- 回归：226 项 unittest 和 67 个质量 fixture 全部通过。
+
 ## 2026-07-09 - 翻译 harness 语言支持扩充到历史需求全集
 
 - `SUPPORTED_TRANSLATION_LANGUAGES` 从 6 语（en/ko/ja/th/vi/idn）扩充到 14 语，新增 fr/de/ru/it/es/pt/tr/ar。

@@ -82,7 +82,7 @@ def build_announcement_candidate_rows(
         approved_en = clean_text(curated_state.get("approved_en"))
         approved_en2 = "" if curated_state.get("block_en2") else clean_text(curated_state.get("approved_en2"))
         common_en = translations_by_term[term].most_common(1)[0][0] if translations_by_term[term] else ""
-        en = approved_en or common_en
+        en = common_en or approved_en
         example_record = next((record for record in term_records if record.target == en), term_records[0])
         rows.append(
             {

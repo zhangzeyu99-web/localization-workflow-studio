@@ -10,7 +10,7 @@
 
 - 完整语言表术语提取
 - source-only 中文术语提取
-- `ID / CN / EN / EN2 / 分类` 术语表整理
+- 默认 `ID / CN / 目标语言主译 / 分类` 的术语表整理
 - 公告术语 lookup
 - 多语言公告术语合并
 - 公告官方句式模板提取与译文沿用警告
@@ -112,16 +112,16 @@ python scripts/sync_workflow_sources.py glossary
 
 默认流程：
 
-1. 扫描目录，识别语言表、术语表、公告、注意事项、已有 brief。
-2. 自动识别表头，常见列包括 `ID / CN / EN / EN2 / 分类`，或导出型 `索引ID / 内容 / 中文`。
-3. 从语言表抽 CN 候选，按高价值术语筛选。
-4. 用已有译文表验证译文。
-5. 术语表译文和语言表实际译文冲突时，以语言表实际译文为准。
-6. EN 默认只保留主译文；不要写 `A / B`。
-7. EN2 只有用户明确要求双译法或历史工作流需要时才保留。
-8. 分类默认放最后一列。
-9. 频次只用于排序和取证，不是术语准入条件；低频专名可以保留，高频句子和配置短语仍要剔除。
-10. 脚本结果生成后，线程内必须由 Codex 对精简候选做一次 AI 补充检查，重点检查漏词、句内基础术语和分类错误。
+1. 扫描目录，识别中文主源、当前目标语言列、显式类型列、已有术语表、公告、注意事项和 brief。
+2. 自动识别表头，常见列包括 `ID / CN / EN / EN2 / 分类 / 术语类型`，或导出型 `索引ID / 内容 / 中文`。
+3. 普通术语与专名分路处理。技能名、地名必须来自类型列、工作表、字段、ID 上下文或人工覆盖，不能按中文长度猜测。
+4. 明确的技能名、地名不受 `min-hit` 和 `glossary-hit-threshold` 限制；频次只用于排序和取证。
+5. 类型证据冲突的候选进入 `待确认`，不进入正式交付。
+6. 译文优先级为：当前语言表非空译文、人工确认规则补空、历史观察取证。后两者不得覆盖当前非空译文。
+7. 目标语言默认只保留主译文，不写 `A / B`；EN2 只有用户明确要求双译法时才保留。
+8. 分类默认放最后一列，只保留一个最重要类别。
+9. 对专名执行名称长度软预算和项目内唯一性检查；碰撞属于硬阻断，长度超限只警告。
+10. 脚本结果生成后，Codex 只读取精简候选、公告文本和少量句内证据做 AI 补充检查，不读取完整语言包。
 
 优先保留：
 
@@ -160,6 +160,8 @@ python scripts/sync_workflow_sources.py glossary
 - `品质`
 - `属性`
 - `技能`
+- `技能名`
+- `地名`
 - `纹章`
 - `副本`
 - `联盟`
@@ -169,18 +171,30 @@ python scripts/sync_workflow_sources.py glossary
 - `世界观`
 - `邮件`
 
-无法判断时按“该术语主要约束什么”归类。例如 `领取` 归 `动作`，`排行奖励` 不因包含“奖励”而默认保留。
+`技能名` 用于具体技能名称，`地名` 用于具体地点名称；`技能` 继续用于技能机制、技能属性等非名称术语。无法判断或证据冲突时在内部明细标记 `待确认`，不得进入正式交付。其他术语按“该术语主要约束什么”归类，例如 `领取` 归 `动作`，`排行奖励` 不因包含“奖励”而默认保留。
 
 如果用户说“顺序不要变”，绝对不要排序，只改对应列。
 
 如果用户说“补在最后面”，原表全部保留，新增术语沿最后有效行向下追加；只检查新增项是否与原表 CN 重复，不擅自删除或合并原有行。
+
+### 6.1 专名检查
+
+- 英语技能名采用 2 词、24 字符软预算。
+- 英语地名采用 2 个核心词、28 字符软预算。
+- 非英语名称按约 2 个核心语义单位人工检查，不套用英语词数。
+- 超出预算只进入警告，不截断、不自动改名。
+- 不同 CN 的技能名或地名出现相同归一化主译时，阻断正式交付。
+- 需要 AI 检查时使用 `--name-review-packet-output`；检查包只能包含专名候选、类型证据、少量例句和警告。
 
 ## 7. 译文处理规则
 
 用户要求“译文填好”时：
 
 - EN 必须非空
-- 优先用已有语言表译文验证
+- 当前语言表非空译文直接作为主译
+- 人工确认规则只补当前空值
+- 历史观察只作证据，不覆盖本次主译
+- 译文冲突必须写入内部审计字段
 - 没有证据的译文不要硬编
 
 用户要求“英语只保留主译文”时：
@@ -270,12 +284,15 @@ ID / CN / 目标语言主译 / 分类
 
 默认只保留一个目标语言主译。只有用户明确要求示例译文与手动适配译文并列时，才输出 `EN / EN2`。
 
-用户要求“干净交付表”时：
+默认正式交付就是干净表：
 
+- 只有一个 `Glossary` 工作表
 - 不加审计列
 - 不加来源列
 - 不加置信度列
 - 不加解释列
+- 不交付名称检查包；用户明确要求时才单独输出
+- 只有明确要求双译法时才使用 `--include-en2`
 
 用户要求“只保留中文”时：
 
@@ -312,6 +329,8 @@ ID / CN / 目标语言主译 / 分类
 - 空 EN 数，如果任务要求译文
 - 重复 CN 数
 - 分类空值数
+- 非法分类数
+- 不同 CN 的技能名或地名主译碰撞数
 - 如果要求顺序不变，校验 ID/CN/EN 顺序完全不变
 - 如果要求 EN2 清空，校验 EN2 非空为 0
 - 组合效果短语命中数为 0
@@ -321,6 +340,8 @@ ID / CN / 目标语言主译 / 分类
 - 公告文件存在 `SentenceTemplates`，且完整句式优先级为 1、相似句证据优先级为 2
 - 提供翻译成品时，读回检查 `official_template_mismatches` 和 `unverifiable_placeholders`
 - 未提供翻译成品时，确认 `official_template_qa: not_run`
+
+正式术语表写出后必须重新打开校验。空 CN、要求译文时的空目标语言、重复 CN、空/非法分类、专名主译碰撞均为硬阻断；名称长度预算超限只作为风险提示。
 
 最终回复示例：
 
@@ -339,13 +360,13 @@ python -m pytest -q
 Harness 回归：
 
 ```bash
-python scripts/run_glossary_harness.py fixtures/core_regression.json fixtures/observation_feedback_regression.json fixtures/announcement_lookup_regression.json fixtures/announcement_ai_supplement_regression.json fixtures/announcement_sentence_templates_regression.json
+python scripts/run_glossary_harness.py fixtures/core_regression.json fixtures/observation_feedback_regression.json fixtures/announcement_lookup_regression.json fixtures/announcement_ai_supplement_regression.json fixtures/announcement_sentence_templates_regression.json fixtures/proper_name_extraction_regression.json fixtures/current_translation_authority_regression.json
 ```
 
 文档交付前：
 
 ```bash
-python D:\codex\codex\tools\output_quality_gate.py README.md CHANGELOG.md docs\terminology-thread-handoff.md --expect-cjk
+python D:\codex\codex\tools\output_quality_gate.py docs\workflow.md docs\terminology-thread-handoff.md docs\superpowers\plans\2026-07-24-proper-name-extraction-workflow-fix.md --expect-cjk
 ```
 
 ## 13. GitHub 与版本管理

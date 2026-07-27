@@ -15,6 +15,12 @@ from utils.ai_checker import prepare_all_batches
 from utils.text_normalize import repair_translation_surface
 from utils.ui_length_checker import assess_ui_length, check_ui_length
 from utils.readability_checker import check_readability
+from utils.name_policy import (
+    build_name_policy,
+    evaluate_name_translation,
+    find_name_collisions,
+    resolve_name_type,
+)
 
 
 RowId = int | str
@@ -32,6 +38,8 @@ class RowState:
         'review_confidence',
         'short_text_length_policy', 'short_text_source_len',
         'short_text_target_len', 'short_text_budget',
+        'name_type', 'name_policy',
+        'source_mode', 'reference_en', 'reference_en_status',
     )
 
     def __init__(self, row_id: RowId, original: str, translation: str):
@@ -51,6 +59,11 @@ class RowState:
         self.short_text_source_len = 0
         self.short_text_target_len = 0
         self.short_text_budget = 0
+        self.name_type = ''
+        self.name_policy: dict = {}
+        self.source_mode = 'cn'
+        self.reference_en = ''
+        self.reference_en_status = 'not_requested'
 
 
 def _coerce_row_id(value) -> RowId | None:
@@ -236,6 +249,45 @@ def _run_readability_checks(states: dict[RowId, RowState], lang: str):
             state.review_confidence = issue.confidence
 
 
+def _run_name_policy_checks(states: dict[RowId, RowState], term_lookup: dict, lang: str):
+    name_rows = []
+    for state in states.values():
+        state.name_type = resolve_name_type(state.original, term_lookup)
+        state.name_policy = build_name_policy(state.name_type, lang=lang)
+        if not state.name_type:
+            continue
+        for issue in evaluate_name_translation(
+            row_id=state.row_id,
+            source=state.original,
+            translation=state.fixed_translation,
+            name_type=state.name_type,
+            lang=lang,
+        ):
+            state.issues.append(issue)
+            state.needs_human_review = True
+            state.human_review_reason = issue.message
+            state.ai_suggestion = state.fixed_translation
+            state.review_confidence = issue.confidence
+        name_rows.append(
+            {
+                'id': state.row_id,
+                'source': state.original,
+                'translation': state.fixed_translation,
+                'name_type': state.name_type,
+            }
+        )
+
+    for issue in find_name_collisions(name_rows, lang=lang):
+        state = states.get(issue.row_id)
+        if not state:
+            continue
+        state.issues.append(issue)
+        state.needs_human_review = True
+        state.human_review_reason = issue.message
+        state.ai_suggestion = state.fixed_translation
+        state.review_confidence = issue.confidence
+
+
 def rerun_quality_review(
     states: dict[RowId, RowState],
     *,
@@ -249,6 +301,9 @@ def rerun_quality_review(
         new_state = RowState(row_id, state.original, state.fixed_translation)
         new_state.fixed_translation = state.fixed_translation
         new_state.notes = list(state.notes)
+        new_state.source_mode = state.source_mode
+        new_state.reference_en = state.reference_en
+        new_state.reference_en_status = state.reference_en_status
         refreshed[row_id] = new_state
 
     _run_surface_fixes(refreshed, auto_fix=True, lang=lang)
@@ -258,6 +313,7 @@ def rerun_quality_review(
     _run_chinese_residue_checks(refreshed, lang=lang)
     _run_ui_detection(refreshed)
     _run_ui_length_checks(refreshed, lang)
+    _run_name_policy_checks(refreshed, term_lookup or {}, lang)
     _run_readability_checks(refreshed, lang)
     return refreshed, groups
 
@@ -331,5 +387,12 @@ def prepare_ai_review(
             item['ui_length_source_len'] = int(s.short_text_source_len)
             item['ui_length_target_len'] = int(s.short_text_target_len)
             item['ui_length_budget'] = int(s.short_text_budget)
+        if s.name_type:
+            item['name_type'] = s.name_type
+            item['name_policy'] = dict(s.name_policy)
+        if s.source_mode != 'cn':
+            item['source_mode'] = s.source_mode
+            item['reference_en'] = s.reference_en
+            item['reference_en_status'] = s.reference_en_status
         rows.append(item)
     return prepare_all_batches(rows, batch_size=batch_size, term_lookup=term_lookup, lang=lang)

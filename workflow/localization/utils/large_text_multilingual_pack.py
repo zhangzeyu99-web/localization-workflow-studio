@@ -11,6 +11,11 @@ from openpyxl import load_workbook
 
 from utils.language_config import SOURCE_HEADERS, normalize_language_code, target_header_candidates
 from utils.large_text_multilingual_gate import protected_tokens
+from utils.source_reference import (
+    EnglishReferenceStatus,
+    classify_english_reference,
+    normalize_source_mode,
+)
 
 
 @dataclass(frozen=True)
@@ -178,14 +183,22 @@ def prepare_pack(
     history_dirs: list[Path],
     target_langs: list[str],
     work_dir: Path,
+    source_mode: str = "cn",
 ) -> PackArtifacts:
     started = time.perf_counter()
     target_langs = [str(lang).upper() for lang in target_langs]
+    source_mode = normalize_source_mode(source_mode)
+    if source_mode != "cn" and "EN" in target_langs:
+        raise ValueError("source_mode cn+en/en requires EN to be a reference, not a target language")
     terms = _load_terms(term_base, target_langs)
     history = _load_history(history_dirs, target_langs)
     exact_terms = {term["source"]: term["translations"] for term in terms}
     rows: list[dict[str, Any]] = []
     seed_memory: dict[str, dict[str, str]] = {}
+    english_column_name = ""
+    english_usable = 0
+    english_empty = 0
+    english_chinese = 0
 
     for input_path in inputs:
         workbook = load_workbook(input_path, read_only=True, data_only=False)
@@ -198,6 +211,14 @@ def prepare_pack(
                 source_col = _find_header(headers, {header.lower() for header in SOURCE_HEADERS})
                 if source_col is None:
                     continue
+                english_col = _find_header(headers, target_header_candidates("en"))
+                if source_mode != "cn" and english_col is None:
+                    raise ValueError(
+                        f"source_mode {source_mode} requires an English reference column: "
+                        f"{input_path.name}:{sheet.title}"
+                    )
+                if english_col is not None:
+                    english_column_name = str(first[english_col] or "")
                 language_columns = _language_columns(
                     headers,
                     target_langs,
@@ -218,6 +239,26 @@ def prepare_pack(
                                 f"target column is not empty: {input_path.name}:{sheet.title}!R{row_index}:{lang}"
                             )
                     source_text = str(source)
+                    if source_mode == "cn":
+                        reference_en = ""
+                        reference_status = "not_requested"
+                    else:
+                        reference_raw = values[english_col] if english_col is not None and english_col < len(values) else None
+                        reference = classify_english_reference(reference_raw)
+                        reference_en = reference.text
+                        reference_status = reference.status
+                        if reference_status == "usable":
+                            english_usable += 1
+                        elif reference_status == "missing":
+                            english_empty += 1
+                        else:
+                            english_chinese += 1
+                        if source_mode == "en" and reference_status != "usable":
+                            raise ValueError(
+                                "source_mode en requires complete usable English for every row: "
+                                f"{input_path.name}:{sheet.title}!R{row_index} status={reference_status}"
+                            )
+                    translation_source = reference_en if source_mode == "en" else source_text
                     if source_text in history:
                         seed_memory[source_text] = history[source_text]
                         seed_origin = "history"
@@ -234,6 +275,10 @@ def prepare_pack(
                         "row": row_index,
                         "context": context,
                         "cn": source_text,
+                        "translation_source": translation_source,
+                        "source_mode": source_mode,
+                        "reference_en": reference_en,
+                        "reference_en_status": reference_status,
                         "tokens": protected_tokens({"cn": source_text}),
                         "term_hits": _term_hits(source_text, terms),
                         "seed_origin": seed_origin,
@@ -251,7 +296,21 @@ def prepare_pack(
     _write_jsonl(
         source_rows_path,
         [
-            {key: row[key] for key in ("key", "id", "source_file", "sheet", "row", "cn")}
+            {
+                key: row[key]
+                for key in (
+                    "key",
+                    "id",
+                    "source_file",
+                    "sheet",
+                    "row",
+                    "cn",
+                    "translation_source",
+                    "source_mode",
+                    "reference_en",
+                    "reference_en_status",
+                )
+            }
             for row in rows
         ],
     )
@@ -265,12 +324,37 @@ def prepare_pack(
         source_rows_jsonl=source_rows_path,
         prepare_stats=stats_path,
         source_rows=len(rows),
-        unique_items=len({row["cn"] for row in rows}),
+        unique_items=len({
+            (row["cn"], row["translation_source"], row["source_mode"])
+            for row in rows
+        }),
         estimated_target_cells=len(rows) * len(target_langs),
         elapsed_seconds=elapsed,
     )
     stats_path.write_text(
-        json.dumps({**asdict(result), "items_jsonl": str(items_path), "source_rows_jsonl": str(source_rows_path), "prepare_stats": str(stats_path)}, ensure_ascii=False, indent=2, default=str),
+        json.dumps(
+            {
+                **asdict(result),
+                "items_jsonl": str(items_path),
+                "source_rows_jsonl": str(source_rows_path),
+                "prepare_stats": str(stats_path),
+                "source_mode": source_mode,
+                "english_reference_status": (
+                    EnglishReferenceStatus(
+                        column=english_column_name,
+                        total_rows=english_usable + english_empty + english_chinese,
+                        usable_rows=english_usable,
+                        empty_rows=english_empty,
+                        chinese_rows=english_chinese,
+                    ).to_dict()
+                    if source_mode != "cn"
+                    else None
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
         encoding="utf-8",
     )
     return result

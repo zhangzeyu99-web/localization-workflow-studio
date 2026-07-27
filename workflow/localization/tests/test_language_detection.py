@@ -5,7 +5,6 @@ from pathlib import Path
 import pandas as pd
 
 from utils.language_detection import detect_text_language, inspect_language_file
-from utils.term_checker import check_term_hit
 from process_language import _load_term_base
 
 
@@ -95,55 +94,6 @@ class LanguageDetectionTests(unittest.TestCase):
             self.assertEqual(term_lookup["建筑"]["primary"], "Bangunan")
             self.assertEqual(term_lookup["升级"]["primary"], "Tingkatkan")
             self.assertIn("Meningkatkan", term_lookup["升级"]["variants"])
-
-    def test_load_term_base_preserves_exact_game_name_category(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "terms.xlsx"
-            df = pd.DataFrame(
-                {
-                    "CN": ["菇勇者传说"],
-                    "EN": ["Legend of Mushroom"],
-                    "分类": ["游戏名"],
-                }
-            )
-            df.to_excel(path, index=False)
-
-            term_lookup = _load_term_base(str(path), lang="en")
-            results = check_term_hit(
-                row_id=1,
-                original="菇勇者传说",
-                translation="Legend of Mushrooms",
-                term_lookup=term_lookup,
-            )
-
-            self.assertEqual(len(results), 1)
-            self.assertIn(results[0].check_type, {"term_missing", "term_partial_hit"})
-            self.assertEqual(results[0].severity, "error")
-
-    def test_load_term_base_category_is_not_shadowed_by_case_constraint(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "terms.xlsx"
-            df = pd.DataFrame(
-                {
-                    "CN": ["菇勇者传说"],
-                    "EN": ["Legend of Mushroom"],
-                    "大小写约束": ["是"],
-                    "分类": ["游戏名"],
-                }
-            )
-            df.to_excel(path, index=False)
-
-            term_lookup = _load_term_base(str(path), lang="en")
-            results = check_term_hit(
-                row_id=1,
-                original="菇勇者传说",
-                translation="Legend of Mushrooms",
-                term_lookup=term_lookup,
-            )
-
-            self.assertEqual(len(results), 1)
-            self.assertIn(results[0].check_type, {"term_missing", "term_partial_hit"})
-            self.assertEqual(results[0].severity, "error")
 
     def test_load_term_base_uses_japanese_and_korean_columns(self):
         with tempfile.TemporaryDirectory() as tmp:

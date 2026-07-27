@@ -12,6 +12,7 @@ from glossary_extraction.constants import (
     ACTION_TERMS,
     BRACKET_TAG_RE,
     CAMEL_SPLIT_RE,
+    CATEGORY_LABELS,
     CJK_RE,
     EN_COMPARE_RE,
     EN_WORD_RE,
@@ -32,6 +33,13 @@ from glossary_extraction.constants import (
     SYSTEM_TERMS,
 )
 from glossary_extraction.models import Record
+from glossary_extraction.name_policy import (
+    PROPER_NAME_TYPES,
+    assess_name_translation,
+    classify_term_type,
+    find_name_collisions,
+    normalized_name,
+)
 
 
 def clean_text(value: object) -> str:
@@ -247,27 +255,43 @@ def extract_structured_term_pairs(raw_source: object, raw_target: object) -> lis
 
 
 def category_for(term: str) -> str:
-    if term in RARITY_TERMS:
+    if term in RARITY_TERMS or any(key in term for key in ("品质", "稀有度")):
         return "rarity"
     if term in RESOURCE_TERMS:
         return "resource"
-    if term in STAT_TERMS or term.endswith("伤害") or term.endswith("伤害+"):
+    if term in STAT_TERMS or any(key in term for key in ("伤害", "攻击", "生命", "防御", "暴击")):
         return "stat"
     if term in ACTION_TERMS:
         return "action"
+    if "活动" in term:
+        return "activity"
+    if any(key in term for key in ("邮件", "信件")):
+        return "mail"
+    if any(key in term for key in ("公会", "联盟")):
+        return "alliance"
+    if any(key in term for key in ("副本", "秘境")):
+        return "dungeon"
+    if any(key in term for key in ("英雄", "角色", "职业")):
+        return "hero"
+    if any(key in term for key in ("怪物", "首领", "BOSS", "Boss", "boss")):
+        return "monster"
+    if "宠物" in term:
+        return "pet"
+    if any(key in term for key in ("武器", "装备", "护甲")):
+        return "equipment"
+    if any(key in term for key in ("道具", "宝箱", "药水")):
+        return "item"
+    if "技能" in term:
+        return "skill"
+    if any(key in term for key in ("纹章", "铭文", "宝石")):
+        return "emblem"
     if term in SYSTEM_TERMS:
-        return "system"
+        return "ui"
     if term in OBJECT_TERMS:
-        return "object"
+        return "item"
     if term in STATUS_TERMS:
-        return "status"
-    if any(key in term for key in ("伤害", "攻击", "生命", "防御", "暴击")):
-        return "stat"
-    if any(key in term for key in ("公会", "竞技场", "战令", "签到", "商城", "商店", "基地", "防御塔", "活动")):
-        return "system"
-    if any(key in term for key in ("英雄", "技能", "装备", "建筑", "武器", "坐骑")):
-        return "object"
-    return "other"
+        return "ui"
+    return "needs_review"
 
 
 def join_counter(counter: Counter[str], limit: int = 5) -> str:
@@ -356,15 +380,18 @@ def build_term_rows(
     observations_store: dict[str, Any] | None = None,
     input_digest: str = "",
     include_empty_final_terms: bool = False,
+    target_language: str = "EN",
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     curated_rules = curated_rules if curated_rules is not None else experience.new_curated_rules()
     observations_store = observations_store if observations_store is not None else experience.new_observation_store()
     label_counter: Counter[str] = Counter()
     label_translations: dict[str, Counter[str]] = defaultdict(Counter)
+    exact_record_indexes: dict[str, list[int]] = defaultdict(list)
 
-    for record in records:
+    for index, record in enumerate(records):
         if is_valid_term(record.source):
             label_counter[record.source] += 1
+            exact_record_indexes[record.source].append(index)
             if record.target:
                 label_translations[record.source][record.target] += 1
 
@@ -382,14 +409,27 @@ def build_term_rows(
             if record.target and len(record.source) <= max(18, len(term) + 6):
                 near_translations[record.target] += 1
 
-        if hits < min_hit:
+        curated_state = experience.get_curated_term_state(curated_rules, term, create=False)
+        type_decision = classify_term_type(
+            term=term,
+            exact_record_indexes=exact_record_indexes[term],
+            records=records,
+            curated_state=curated_state,
+        )
+        if hits < min_hit and not type_decision.bypass_frequency and not type_decision.needs_review:
             continue
 
-        exact_translations = label_translations.get(term, Counter())
-        suggested_en = exact_translations.most_common(1)[0][0] if exact_translations else (
+        current_exact_translations = label_translations.get(term, Counter()).copy()
+        primary_en, translation_source, translation_conflicts = experience.choose_primary_translation(
+            current_counter=current_exact_translations,
+            curated_state=curated_state,
+        )
+        suggested_en = primary_en or (
             near_translations.most_common(1)[0][0] if near_translations else ""
         )
-        example_en = example_record.target if example_record and example_record.target else suggested_en
+        example_en = primary_en or (
+            example_record.target if example_record and example_record.target else suggested_en
+        )
 
         actual_short_counter: Counter[str] = Counter()
         diff_sample: Record | None = None
@@ -410,7 +450,7 @@ def build_term_rows(
         exact_diff_counter = Counter(
             {
                 text: count
-                for text, count in exact_translations.items()
+                for text, count in current_exact_translations.items()
                 if not is_same_or_extended_usage(example_en=example_en, actual_en=text)
             }
         )
@@ -420,11 +460,12 @@ def build_term_rows(
             manual_counter=manual_adaptation_counter,
         )
 
-        curated_state = experience.get_curated_term_state(curated_rules, term, create=False)
+        current_example_usage_counter = example_usage_counter.copy()
+        current_manual_adaptation_counter = manual_adaptation_counter.copy()
         observation_state = experience.get_observation_term_state(observations_store, term)
         exact_translations, example_usage_counter, manual_adaptation_counter = experience.apply_observation_history(
             observation_state=observation_state,
-            exact_translation_counter=exact_translations,
+            exact_translation_counter=current_exact_translations,
             example_usage_counter=example_usage_counter,
             manual_adaptation_counter=manual_adaptation_counter,
         )
@@ -444,20 +485,27 @@ def build_term_rows(
             example_en = suggested_en
         if not suggested_en:
             suggested_en = example_en
-        if not example_en and exact_translations:
-            example_en = exact_translations.most_common(1)[0][0]
 
         experience.update_observation_store(
             observation_state,
             input_digest=input_digest,
-            exact_translation_counter=exact_translations,
-            example_usage_counter=example_usage_counter,
-            manual_adaptation_counter=manual_adaptation_counter,
+            exact_translation_counter=current_exact_translations,
+            example_usage_counter=current_example_usage_counter,
+            manual_adaptation_counter=current_manual_adaptation_counter,
         )
 
         diff_info = collect_translation_diff(example_en=example_en, actual_counter=actual_short_counter)
         risk = risk_for(term, len(exact_translations or near_translations), hits, suggested_en)
-        category = clean_text(curated_state.get("category_override")) or category_for(term)
+        category_override = clean_text(curated_state.get("category_override"))
+        category_code = category_for(term)
+        category = (
+            type_decision.category
+            or CATEGORY_LABELS.get(category_override, category_override)
+            or CATEGORY_LABELS[category_code]
+        )
+        needs_review = type_decision.needs_review or category == "待确认"
+        if needs_review:
+            risk = "high"
         note = note_for(
             term=term,
             variants=len(exact_translations or near_translations),
@@ -468,6 +516,11 @@ def build_term_rows(
         )
         if clean_text(curated_state.get("note")):
             note = f"{note}; {clean_text(curated_state.get('note'))}" if note else clean_text(curated_state.get("note"))
+        name_policy = assess_name_translation(
+            term_type=type_decision.term_type,
+            translation=example_en,
+            language=target_language,
+        )
 
         row = {
             "ID": example_record.row_id if example_record else "",
@@ -475,6 +528,9 @@ def build_term_rows(
             "EN": example_en,
             "EN2": en2_value,
             "SuggestedEN": suggested_en,
+            "TranslationSource": translation_source,
+            "TranslationConflict": "Yes" if translation_conflicts else "No",
+            "TranslationConflictValues": " | ".join(translation_conflicts),
             "ExactCandidates": join_counter(exact_translations or near_translations),
             "ExampleUsages": join_counter(example_usage_counter, limit=8),
             "ManualAdaptations": join_counter(manual_adaptation_counter, limit=8),
@@ -485,6 +541,16 @@ def build_term_rows(
             "SameOrFormatOnlyCount": diff_info["same_or_format_only_count"],
             "DiffCount": diff_info["diff_count"],
             "Category": category,
+            "TermType": type_decision.term_type,
+            "TypeConfidence": type_decision.confidence,
+            "TypeEvidence": " | ".join(type_decision.evidence),
+            "NeedsReview": "Yes" if needs_review else "No",
+            "NameWordCount": name_policy.word_count,
+            "NameCoreWordCount": name_policy.core_word_count,
+            "NameCharCount": name_policy.char_count,
+            "NamePolicyWarnings": " | ".join(name_policy.warnings),
+            "NameCollision": "No",
+            "NameCollisionWith": "",
             "Risk": risk,
             "Priority": priority_for(risk, hits),
             "HitRows": hits,
@@ -500,6 +566,16 @@ def build_term_rows(
         if not curated_state.get("ignore"):
             rows_by_term.append(row)
 
+    collisions = find_name_collisions(rows_by_term, curated_rules)
+    for row in rows_by_term:
+        collision_cn_values = collisions.get(normalized_name(row.get("EN")), [])
+        if len(collision_cn_values) <= 1:
+            continue
+        row["NameCollision"] = "Yes"
+        row["NameCollisionWith"] = " | ".join(collision_cn_values)
+        row["Risk"] = "high"
+        row["Priority"] = priority_for("high", int(row["HitRows"]))
+
     rows_by_term.sort(
         key=lambda row: (
             {"P1": 0, "P2": 1, "P3": 2}[row["Priority"]],
@@ -510,9 +586,19 @@ def build_term_rows(
     )
 
     glossary_rows = [
-        row for row in rows_by_term if int(row["HitRows"]) >= glossary_hit_threshold or row["Risk"] == "high"
+        row
+        for row in rows_by_term
+        if row["NeedsReview"] != "Yes"
+        and row["NameCollision"] != "Yes"
+        and (
+            int(row["HitRows"]) >= glossary_hit_threshold
+            or row["Risk"] == "high"
+            or row["TermType"] in PROPER_NAME_TYPES
+        )
     ]
-    high_risk_rows = [row for row in rows_by_term if row["Risk"] == "high"]
+    high_risk_rows = [
+        row for row in rows_by_term if row["Risk"] == "high" or row["NeedsReview"] == "Yes"
+    ]
     manual_rows = [row for row in rows_by_term if row["HasActualDiff"] == "Yes"]
     final_rows = list(glossary_rows) if include_empty_final_terms else [
         row for row in glossary_rows if row["EN"] or row["EN2"]

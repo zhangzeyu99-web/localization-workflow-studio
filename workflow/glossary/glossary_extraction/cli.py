@@ -41,6 +41,7 @@ from glossary_extraction.excel_io import (
     load_records,
     write_detail_workbook,
     write_final_workbook,
+    write_json_output,
     write_text_output,
 )
 from glossary_extraction.experience import (
@@ -51,6 +52,8 @@ from glossary_extraction.experience import (
 )
 from glossary_extraction.heuristics import build_term_rows, clean_text
 from glossary_extraction.models import Record
+from glossary_extraction.name_policy import build_name_review_packet, normalized_name
+from glossary_extraction.quality import readback_delivery_workbook
 from glossary_extraction.reporting import build_project_brief
 from glossary_extraction.sentence_templates import (
     build_sentence_template_candidates_from_workbook,
@@ -67,7 +70,7 @@ def default_output_paths(input_path: Path, detail_output: str | None, final_outp
         f"{input_path.stem}_glossary_details_{date_suffix}.xlsx"
     )
     final_path = Path(final_output) if final_output else input_path.with_name(
-        f"{input_path.stem}_ID_CN_EN_EN2_{date_suffix}.xlsx"
+        f"{input_path.stem}_ID_CN_EN_{date_suffix}.xlsx"
     )
     return detail_path, final_path
 
@@ -150,6 +153,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-column", default="cn", help="Source text column header. Default: cn")
     parser.add_argument("--target-column", default="en", help="Target text column header. Default: en")
     parser.add_argument(
+        "--target-language",
+        default="EN",
+        help="Target language code used for proper-name QA. Default: EN",
+    )
+    parser.add_argument(
+        "--name-review-packet-output",
+        help="Optional compact JSON packet for AI review of skill and location names.",
+    )
+    parser.add_argument(
         "--language-table",
         action="append",
         default=[],
@@ -170,6 +182,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-empty-final-terms",
         action="store_true",
         help="Keep final glossary rows even when EN and EN2 are blank. Useful for source-only extraction.",
+    )
+    parser.add_argument(
+        "--include-en2",
+        action="store_true",
+        help="Include EN2 in the clean delivery workbook. Disabled by default.",
     )
     parser.add_argument("--min-hit", type=int, default=5, help="Minimum hit count to keep a candidate. Default: 5")
     parser.add_argument(
@@ -699,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
         observations_store=observations_store,
         input_digest=digest,
         include_empty_final_terms=args.include_empty_final_terms,
+        target_language=args.target_language,
     )
 
     write_detail_workbook(
@@ -712,7 +730,47 @@ def main(argv: list[str] | None = None) -> int:
         curated_rules_path=curated_rules_path,
         observations_store_path=observations_store_path,
     )
-    write_final_workbook(output_path=final_output_path, final_rows=final_rows)
+    name_review_packet_output_path = (
+        Path(args.name_review_packet_output) if args.name_review_packet_output else None
+    )
+    if name_review_packet_output_path is not None:
+        write_json_output(
+            name_review_packet_output_path,
+            build_name_review_packet(all_rows, language=args.target_language),
+        )
+    name_collision_count = len(
+        {
+            normalized_name(row.get("EN", ""))
+            for row in all_rows
+            if row.get("NameCollision") == "Yes"
+        }
+    )
+    if name_collision_count:
+        save_curated_rules(curated_rules_path, curated_rules)
+        save_observation_store(observations_store_path, observations_store)
+        print(f"DETAIL_OUTPUT={detail_output_path}")
+        print(f"NAME_REVIEW_PACKET_OUTPUT={name_review_packet_output_path or 'disabled'}")
+        print(f"delivery_hard_blockers: {name_collision_count}")
+        return 2
+    target_header = display_header_name(args.target_column, "EN")
+    write_final_workbook(
+        output_path=final_output_path,
+        final_rows=final_rows,
+        target_header=target_header,
+        include_en2=args.include_en2,
+    )
+    delivery_quality = readback_delivery_workbook(
+        final_output_path,
+        target_header=target_header,
+        require_target=not args.source_only,
+        include_en2=args.include_en2,
+    )
+    if delivery_quality.hard_blockers:
+        save_curated_rules(curated_rules_path, curated_rules)
+        save_observation_store(observations_store_path, observations_store)
+        print(f"FINAL_OUTPUT={final_output_path}")
+        print(f"DELIVERY_HARD_BLOCKERS={delivery_quality.hard_blockers}")
+        return 2
     material_records, material_sources = load_project_material_records(
         material_paths=[Path(path) for path in args.project_material],
         notes=args.project_note,
@@ -767,6 +825,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"INPUT={input_path}")
     print(f"DETAIL_OUTPUT={detail_output_path}")
     print(f"FINAL_OUTPUT={final_output_path}")
+    print(f"NAME_REVIEW_PACKET_OUTPUT={name_review_packet_output_path or 'disabled'}")
     print(f"PROJECT_BRIEF_OUTPUT={project_brief_output_path if not args.no_project_brief else 'disabled'}")
     print(f"TRANSLATION_PROMPT_OUTPUT={translation_prompt_output_path or 'disabled'}")
     print(f"ANNOUNCEMENT_OUTPUT={announcement_output_path if announcement_output_path else 'disabled'}")
@@ -792,4 +851,12 @@ def main(argv: list[str] | None = None) -> int:
         project_name=project_name,
     )
     print(f"FINAL_ROWS={len(final_rows)}")
+    print(f"DELIVERY_ROWS={delivery_quality.row_count}")
+    print(f"DELIVERY_BLANK_CN={delivery_quality.blank_cn}")
+    print(f"DELIVERY_BLANK_TARGET={delivery_quality.blank_target}")
+    print(f"DELIVERY_DUPLICATE_CN={delivery_quality.duplicate_cn}")
+    print(f"DELIVERY_BLANK_CATEGORY={delivery_quality.blank_category}")
+    print(f"DELIVERY_INVALID_CATEGORY={delivery_quality.invalid_category}")
+    print(f"DELIVERY_NAME_COLLISIONS={delivery_quality.name_collisions}")
+    print(f"DELIVERY_HARD_BLOCKERS={delivery_quality.hard_blockers}")
     return 0

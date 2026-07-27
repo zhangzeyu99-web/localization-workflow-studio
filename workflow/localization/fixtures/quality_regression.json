@@ -367,6 +367,48 @@
       "source": "<color=#608F01>##1</color>\u5956\u52b1",
       "translation": "<color=#FF0000>##1</color> rewards",
       "expected_issues": ["bbcode_color_mismatch"]
+    },
+    {
+      "id": "bad-skill-name-over-two-words",
+      "source": "终焉之境",
+      "translation": "Realm of the Final Ending",
+      "name_type": "ui_skill_name",
+      "expected_issues": ["skill_name_word_count_watch"]
+    },
+    {
+      "id": "good-skill-name-two-words",
+      "source": "终焉回响",
+      "translation": "Final Echo",
+      "name_type": "ui_skill_name",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-location-name-too-many-content-words",
+      "source": "永夜暗影之谷",
+      "translation": "Valley of Eternal Dark Night",
+      "name_type": "ui_location_name",
+      "expected_issues": ["location_name_compactness_watch"]
+    },
+    {
+      "id": "good-location-name-with-connectors",
+      "source": "太阳神殿",
+      "translation": "Temple of the Sun",
+      "name_type": "ui_location_name",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-skill-name-collision-a",
+      "source": "烈焰斩",
+      "translation": "Flame Strike",
+      "name_type": "ui_skill_name",
+      "expected_issues": ["name_translation_collision_watch"]
+    },
+    {
+      "id": "bad-skill-name-collision-b",
+      "source": "火焰冲击",
+      "translation": "Flame Strike",
+      "name_type": "ui_skill_name",
+      "expected_issues": ["name_translation_collision_watch"]
     }
   ]
 }

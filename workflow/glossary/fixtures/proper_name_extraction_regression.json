@@ -1,0 +1,51 @@
+{
+  "sheet": "Names",
+  "columns": {
+    "id": "ID",
+    "source": "cn",
+    "target": "en",
+    "term_type": "术语类型"
+  },
+  "extract": {
+    "min_hit": 5,
+    "glossary_hit_threshold": 10
+  },
+  "rows": [
+    {
+      "ID": "Name_1001",
+      "cn": "鲨潮护盾",
+      "en": "Sharkguard",
+      "术语类型": "技能名"
+    },
+    {
+      "ID": "Name_2001",
+      "cn": "暮色海岸",
+      "en": "Dusk Coast",
+      "术语类型": "地名"
+    },
+    {
+      "ID": "Text_1",
+      "cn": "普通文本",
+      "en": "Normal Text",
+      "术语类型": ""
+    }
+  ],
+  "expected_final": [
+    {
+      "CN": "鲨潮护盾",
+      "EN": "Sharkguard",
+      "Category": "技能名",
+      "TermType": "ui_skill_name"
+    },
+    {
+      "CN": "暮色海岸",
+      "EN": "Dusk Coast",
+      "Category": "地名",
+      "TermType": "location_name"
+    }
+  ],
+  "expected_absent": [
+    "普通文本"
+  ],
+  "strict_terms": true
+}

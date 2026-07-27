@@ -170,6 +170,60 @@ class LargeTextMultilingualExecutorTests(unittest.TestCase):
                     client=InvalidClient(),
                 )
 
+    def test_translate_request_uses_english_source_and_reference_in_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.jsonl"
+            rows = [
+                {
+                    "key": "1",
+                    "cn": "技能",
+                    "translation_source": "Flame Strike",
+                    "source_mode": "en",
+                    "reference_en": "Flame Strike",
+                    "reference_en_status": "usable",
+                    "context": "ui",
+                    "term_hits": [],
+                },
+                {
+                    "key": "2",
+                    "cn": "技能",
+                    "translation_source": "Blaze Slash",
+                    "source_mode": "en",
+                    "reference_en": "Blaze Slash",
+                    "reference_en_status": "usable",
+                    "context": "ui",
+                    "term_hits": [],
+                },
+            ]
+            write_jsonl(items, rows)
+            manifest = build_manifest(
+                work_dir=root / "work",
+                items_jsonl=items,
+                source_rows_jsonl=None,
+                target_langs=["FR"],
+                workbook_count=1,
+                relay_config=None,
+                proofread_mode="basic",
+                source_mode="en",
+            )
+            client = FakeClient()
+
+            result = translate_manifest(
+                Path(manifest["manifest_path"]),
+                relay_config=None,
+                client=client,
+                batch_size=20,
+            )
+
+            self.assertEqual(result.unique_api_rows, 2)
+            request_rows = [row for call in client.calls for row in call]
+            self.assertEqual(
+                {row["translation_source"] for row in request_rows},
+                {"Flame Strike", "Blaze Slash"},
+            )
+            self.assertTrue(all(row["source_mode"] == "en" for row in request_rows))
+
     def test_checkpoint_scope_changes_with_target_languages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

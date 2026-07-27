@@ -23,14 +23,17 @@ def import_glossary(
     id_index = extractor.resolve_column_index(headers, "ID")
     cn_index = extractor.resolve_column_index(headers, "CN")
     en_index = extractor.resolve_column_index(headers, "EN")
-    en2_index = extractor.resolve_column_index(headers, "EN2")
+    try:
+        en2_index = extractor.resolve_column_index(headers, "EN2")
+    except ValueError:
+        en2_index = None
 
     imported_count = 0
     for row in rows:
         _row_id = "" if row[id_index] is None else str(row[id_index])
         cn = extractor.clean_text(row[cn_index])
         en = extractor.clean_text(row[en_index])
-        en2 = extractor.clean_text(row[en2_index])
+        en2 = extractor.clean_text(row[en2_index]) if en2_index is not None else ""
         if not cn or not en:
             continue
         state = extractor.get_curated_term_state(curated_rules, cn)

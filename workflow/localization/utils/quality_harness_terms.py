@@ -20,6 +20,7 @@ from utils.language_config import (
     target_header_candidates,
     variant_header_candidates,
 )
+from utils.name_policy import classify_name_type
 from utils.term_checker import is_exact_term_metadata
 
 GLOSSARY_SHEET_NAMES = {'术语表', 'glossary', 'terms', 'term base', 'termbase'}
@@ -258,6 +259,7 @@ def _collect_term_context(
     soft_terms: dict[str, dict] = {}
     person_name_terms: list[tuple[str, str]] = []
     seen_person_names: set[tuple[str, str]] = set()
+    name_types: dict[str, str] = {}
 
     def add(
         cn: str,
@@ -274,6 +276,9 @@ def _collect_term_context(
         variants = [v for v in variants if v and v.lower() != target.lower()]
         if not cn or not target:
             return
+        name_type = classify_name_type(category)
+        if name_type:
+            name_types[cn] = name_type
         if _is_person_name_category(category):
             if _is_generic_role_target(target):
                 return
@@ -318,6 +323,7 @@ def _collect_term_context(
         'strong': strong_terms,
         'soft': soft_terms,
         'person_names': person_name_terms,
+        'name_types': name_types,
     }
 
 
@@ -456,6 +462,8 @@ def _enforces_contextual_term(category: str) -> bool:
 
 def _is_person_name_category(category: str) -> bool:
     text = str(category or '').strip().lower()
+    if classify_name_type(text):
+        return False
     return any(marker in text for marker in PERSON_NAME_CATEGORY_MARKERS)
 
 

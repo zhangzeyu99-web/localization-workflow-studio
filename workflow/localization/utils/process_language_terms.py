@@ -16,6 +16,7 @@ from utils.language_config import (
     variant_header_candidates,
 )
 from utils.term_checker import merge_builtin_name_terms
+from utils.name_policy import classify_name_type
 
 
 def _normalize_term_lookup(data: dict) -> dict[str, dict]:
@@ -29,6 +30,8 @@ def _normalize_term_lookup(data: dict) -> dict[str, dict]:
         variants: list[str] = []
         enforce_case = False
         exact_match = False
+        category = ''
+        name_type = ''
 
         if isinstance(value, str):
             primary = value.strip()
@@ -45,6 +48,8 @@ def _normalize_term_lookup(data: dict) -> dict[str, dict]:
             variants = [str(x).strip() for x in raw_vars if str(x).strip()]
             enforce_case = bool(value.get('enforce_case', False))
             exact_match = bool(value.get('exact_match', False))
+            category = str(value.get('category', '') or value.get('type', '')).strip()
+            name_type = str(value.get('name_type', '')).strip() or classify_name_type(category)
 
         seen = set()
         dedup_variants = []
@@ -61,20 +66,17 @@ def _normalize_term_lookup(data: dict) -> dict[str, dict]:
                 dedup_variants = dedup_variants[1:]
             constraint = ''
             if isinstance(value, dict):
-                constraint = str(
-                    value.get('constraint')
-                    or value.get('category')
-                    or value.get('type')
-                    or ''
-                ).strip()
+                constraint = str(value.get('constraint', '')).strip()
                 if constraint.lower() == 'nan':
                     constraint = ''
             normalized[cn] = {
                 'primary': primary,
                 'variants': dedup_variants,
                 'enforce_case': enforce_case,
-                'constraint': constraint,
                 'exact_match': exact_match,
+                'constraint': constraint,
+                'category': category,
+                'name_type': name_type,
             }
     return normalized
 
@@ -189,14 +191,8 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
         )
         if target_col is None and any(c.lower() in all_language_target_headers() for c in cols):
             return merge_builtin_name_terms({}, lang)
-        constraint_col = _pick([
-            r'^(?:术语)?约束$',
-            r'^(?:term[\s_-]*)?constraint$',
-            r'^分类$',
-            r'^类别$',
-            r'^category$',
-            r'^type$',
-        ])
+        constraint_col = _pick([r'约束', r'constraint'])
+        category_col = _pick([r'^分类$', r'^类别$', r'^category$', r'^type$', r'^tag$', r'^tags$'])
 
         from utils.text_normalize import strip_tags_and_vars
         split_variants = re.compile(r'[;,|/、]+')
@@ -208,8 +204,11 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
                 primary = strip_tags_and_vars(str(row.get(target_col, '')))
                 alt_raw = str(row.get(alt_col, '')).strip() if alt_col else ''
                 constraint_raw = str(row.get(constraint_col, '')).strip() if constraint_col else ''
+                category_raw = str(row.get(category_col, '')).strip() if category_col else ''
                 if constraint_raw.lower() == 'nan':
                     constraint_raw = ''
+                if category_raw.lower() == 'nan':
+                    category_raw = ''
                 variants = []
                 if alt_raw and alt_raw.lower() != 'nan':
                     variants = [
@@ -221,7 +220,18 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
                 if not src:
                     continue
 
-                entry = lookup.setdefault(src, {'primary': '', 'variants': [], 'enforce_case': False, 'constraint': ''})
+                entry = lookup.setdefault(
+                    src,
+                    {
+                        'primary': '',
+                        'variants': [],
+                        'enforce_case': False,
+                        'exact_match': False,
+                        'constraint': '',
+                        'category': '',
+                        'name_type': '',
+                    },
+                )
                 if primary and not entry['primary']:
                     entry['primary'] = primary
                 for v in variants:
@@ -231,6 +241,9 @@ def _load_term_base(path: str | None, lang: str = 'en') -> dict[str, dict]:
                         entry['variants'].append(v)
                 if constraint_raw and not entry.get('constraint'):
                     entry['constraint'] = constraint_raw
+                if category_raw and not entry.get('category'):
+                    entry['category'] = category_raw
+                    entry['name_type'] = classify_name_type(category_raw)
 
             return merge_builtin_name_terms(_normalize_term_lookup(lookup), lang)
 

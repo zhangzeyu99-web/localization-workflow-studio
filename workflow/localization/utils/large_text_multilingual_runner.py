@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from utils.large_text_multilingual_gate import parse_langs, preflight
+from utils.source_reference import normalize_source_mode
 
 
 WORKFLOW_VERSION = "large_text_multilingual_v1"
@@ -160,8 +161,23 @@ def build_manifest(
     workbook_count: int,
     relay_config: Path | None,
     proofread_mode: str,
+    source_mode: str = "cn",
 ) -> dict[str, Any]:
     work_dir.mkdir(parents=True, exist_ok=True)
+    source_mode = normalize_source_mode(source_mode)
+    detected_modes = {
+        normalize_source_mode(json.loads(line).get("source_mode", "cn"))
+        for line in items_jsonl.read_text(encoding="utf-8-sig").splitlines()
+        if line.strip()
+    }
+    if len(detected_modes) > 1:
+        raise ValueError(f"items_jsonl contains mixed source modes: {sorted(detected_modes)}")
+    detected_source_mode = next(iter(detected_modes), "cn")
+    if detected_source_mode != source_mode:
+        raise ValueError(
+            f"manifest source_mode {source_mode} does not match items_jsonl mode "
+            f"{detected_source_mode}"
+        )
     preflight_result = preflight(
         items_jsonl,
         target_langs=target_langs,
@@ -186,6 +202,7 @@ def build_manifest(
             "target_languages": target_langs,
             "workbook_count": workbook_count,
             "proofread_mode": proofread_mode,
+            "source_mode": source_mode,
         },
         "artifacts": {
             "preflight": str(preflight_path),
@@ -287,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     pack.add_argument("--history-dir", action="append", default=[], type=Path)
     pack.add_argument("--target-langs", required=True)
     pack.add_argument("--work-dir", required=True, type=Path)
+    pack.add_argument("--source-mode", choices=["cn", "cn+en", "en"], default="cn")
     pack.add_argument("--out", type=Path)
 
     prepare = sub.add_parser("prepare", help="Create workflow manifest and lightweight preflight artifacts.")
@@ -297,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--workbook-count", type=int, default=1)
     prepare.add_argument("--relay-config", type=Path)
     prepare.add_argument("--proofread-mode", choices=["basic", "sampled", "full"], default="basic")
+    prepare.add_argument("--source-mode", choices=["cn", "cn+en", "en"], default="cn")
     prepare.add_argument("--out", type=Path)
 
     smoke = sub.add_parser("record-smoke", help="Record API smoke result after a small schema/latency test.")
@@ -324,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--delivery-dir", type=Path)
     run.add_argument("--batch-size", type=int, default=60)
     run.add_argument("--workers", type=int, default=4)
+    run.add_argument("--source-mode", choices=["cn", "cn+en", "en"], default="cn")
     run.add_argument("--out", type=Path)
 
     args = parser.parse_args(argv)
@@ -338,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
             history_dirs=args.history_dir,
             target_langs=parse_langs(args.target_langs),
             work_dir=args.work_dir,
+            source_mode=args.source_mode,
         )
         payload = asdict(result)
         write_or_print({key: str(value) if isinstance(value, Path) else value for key, value in payload.items()}, args.out)
@@ -351,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             workbook_count=args.workbook_count,
             relay_config=args.relay_config,
             proofread_mode=args.proofread_mode,
+            source_mode=args.source_mode,
         )
         payload = {"manifest": manifest["manifest_path"], "status": workflow_status(manifest)}
         write_or_print(payload, args.out)
@@ -387,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
             delivery_dir=args.delivery_dir,
             batch_size=args.batch_size,
             workers=args.workers,
+            source_mode=args.source_mode,
         )
         payload = asdict(result)
         write_or_print({key: str(value) if isinstance(value, Path) else value for key, value in payload.items()}, args.out)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -11,6 +11,10 @@ class Record:
     row_id: str
     source: str
     target: str
+    sheet_name: str = field(default="", compare=False)
+    row_number: int = field(default=0, compare=False)
+    source_field: str = field(default="", compare=False)
+    term_type_hint: str = field(default="", compare=False)
 
 
 @dataclass

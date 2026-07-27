@@ -2,6 +2,17 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.7.0 - 2026-07-27
+
+Proper-name extraction and bilingual-source workflow release.
+
+- Added explicit `cn`, `cn+en`, and `en` source modes across standard translation, AI review, workspace execution, and the large-text multilingual workflow; source mode and English references now participate in manifests, caches, checkpoints, and request fingerprints.
+- Added category-driven skill-name and location-name policies with compactness, collision, and readability warnings while keeping meaning and established terminology authoritative.
+- Expanded glossary extraction with low-frequency proper-name retention, skill/location classification, current-language-table translation priority, delivery-quality review packets, and clean-delivery gates.
+- Preserved canonical game-name constraints across translation and QA so exact titles such as `Legend of Mushroom` cannot drift into pluralized, expanded, or recomposed variants.
+- Updated glossary backfill to consume the generated target-language header while retaining compatibility with legacy artifacts that used `EN` for every language.
+- Produced account-enabled and no-account cloud artifacts from the same clean commit and frontend build.
+
 ## 1.6.4 - 2026-07-24
 
 Game-name terminology and announcement QA fix release.

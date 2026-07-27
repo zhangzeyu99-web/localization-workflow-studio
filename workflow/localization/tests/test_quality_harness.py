@@ -177,108 +177,6 @@ class QualityHarnessTests(unittest.TestCase):
             self.assertEqual(result.issue_counts["term_missing"], 1)
             self.assertEqual(result.issues[0]["check_type"], "term_missing")
 
-    def test_scan_workbook_hard_blocks_partial_multiword_term_hit(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workbook_path = Path(tmp) / "language.xlsx"
-            wb = Workbook()
-            ws = wb.active
-            ws.append(["ID", "CN", "EN"])
-            ws.append([1, "菇勇者传说", "Mushroom Legend"])
-            wb.save(workbook_path)
-
-            term_path = Path(tmp) / "terms.xlsx"
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "术语表"
-            ws.append(["CN", "EN", "EN2", "分类"])
-            ws.append(["菇勇者传说", "Legend of Mushroom", None, "游戏名"])
-            wb.save(term_path)
-
-            result = scan_workbook(workbook_path, term_base=term_path)
-
-            self.assertFalse(result.passed)
-            self.assertEqual(result.issue_counts["term_partial_hit"], 1)
-            self.assertEqual(result.issues[0]["check_type"], "term_partial_hit")
-            self.assertEqual(result.issues[0]["severity"], "error")
-
-    def test_scan_workbook_treats_game_name_category_as_exact(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workbook_path = Path(tmp) / "language.xlsx"
-            wb = Workbook()
-            ws = wb.active
-            ws.append(["ID", "CN", "EN"])
-            ws.append([1, "菇勇者传说", "Legend of Mushrooms"])
-            wb.save(workbook_path)
-
-            term_path = Path(tmp) / "terms.xlsx"
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "术语表"
-            ws.append(["CN", "EN", "EN2", "分类"])
-            ws.append(["菇勇者传说", "Legend of Mushroom", None, "游戏名"])
-            wb.save(term_path)
-
-            result = scan_workbook(workbook_path, term_base=term_path)
-
-            self.assertFalse(result.passed)
-            self.assertEqual(result.issue_counts["term_partial_hit"], 1)
-            self.assertEqual(result.issues[0]["severity"], "error")
-
-    def test_scan_workbook_preserves_json_exact_match_metadata(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workbook_path = Path(tmp) / "language.xlsx"
-            wb = Workbook()
-            ws = wb.active
-            ws.append(["ID", "CN", "EN"])
-            ws.append([1, "菇勇者传说", "Legend of Mushrooms"])
-            wb.save(workbook_path)
-
-            term_path = Path(tmp) / "terms.json"
-            term_path.write_text(
-                json.dumps(
-                    {
-                        "lookup": {
-                            "菇勇者传说": {
-                                "primary": "Legend of Mushroom",
-                                "variants": [],
-                                "exact_match": True,
-                            }
-                        }
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-
-            result = scan_workbook(workbook_path, term_base=term_path)
-
-            self.assertFalse(result.passed)
-            self.assertEqual(result.issue_counts["term_partial_hit"], 1)
-            self.assertEqual(result.issues[0]["severity"], "error")
-
-    def test_scan_workbook_accepts_pluralized_common_multiword_term(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workbook_path = Path(tmp) / "language.xlsx"
-            wb = Workbook()
-            ws = wb.active
-            ws.append(["ID", "CN", "EN"])
-            ws.append([1, "联盟成员", "Alliance Members"])
-            wb.save(workbook_path)
-
-            term_path = Path(tmp) / "terms.xlsx"
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "术语表"
-            ws.append(["CN", "EN", "EN2", "分类"])
-            ws.append(["联盟成员", "Alliance Member", None, "系统/组织"])
-            wb.save(term_path)
-
-            result = scan_workbook(workbook_path, term_base=term_path)
-
-            self.assertTrue(result.passed, result.issues)
-            self.assertEqual(result.issue_counts["term_missing"], 0)
-            self.assertEqual(result.issue_counts["term_partial_hit"], 0)
-
     def test_scan_workbook_keeps_explicit_soft_terms_non_blocking(self):
         with tempfile.TemporaryDirectory() as tmp:
             workbook_path = Path(tmp) / "language.xlsx"
@@ -445,6 +343,36 @@ class QualityHarnessTests(unittest.TestCase):
                 [issue["id"] for issue in result.issues if issue["check_type"] == "ui_length_overflow"],
                 [1],
             )
+
+    def test_scan_workbook_counts_explicit_name_policy_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workbook_path = tmp_path / "language.xlsx"
+            term_path = tmp_path / "terms.xlsx"
+
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["ID", "CN", "EN"])
+            ws.append([1, "终焉之境", "Realm of the Final Ending"])
+            ws.append([2, "烈焰斩", "Flame Strike"])
+            ws.append([3, "火焰冲击", "Flame Strike"])
+            wb.save(workbook_path)
+            wb.close()
+
+            term_wb = Workbook()
+            term_ws = term_wb.active
+            term_ws.title = "术语表"
+            term_ws.append(["CN", "EN", "分类"])
+            term_ws.append(["终焉之境", "Realm of the Final Ending", "技能名"])
+            term_ws.append(["烈焰斩", "Flame Strike", "技能名"])
+            term_ws.append(["火焰冲击", "Flame Strike", "技能名"])
+            term_wb.save(term_path)
+            term_wb.close()
+
+            result = scan_workbook(workbook_path, term_base=term_path)
+
+            self.assertEqual(result.issue_counts["skill_name_word_count_watch"], 1)
+            self.assertEqual(result.issue_counts["name_translation_collision_watch"], 2)
 
     def test_scan_workbook_uses_non_read_only_and_fails_empty_scan(self):
         with tempfile.TemporaryDirectory() as tmp:

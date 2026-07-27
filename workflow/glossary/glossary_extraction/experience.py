@@ -47,6 +47,7 @@ def split_legacy_term_memory(memory: dict[str, Any] | None) -> tuple[dict[str, A
             "ignore": bool(raw_state.get("ignore")),
             "note": clean_text(raw_state.get("note")),
             "category_override": clean_text(raw_state.get("category_override")),
+            "term_type_override": clean_text(raw_state.get("term_type_override")),
         }
         observation_state = {
             "observed_exact_candidates": counter_to_dict(dict_to_counter(raw_state.get("observed_exact_candidates"))),
@@ -64,6 +65,7 @@ def split_legacy_term_memory(memory: dict[str, Any] | None) -> tuple[dict[str, A
                 curated_state["ignore"],
                 curated_state["note"],
                 curated_state["category_override"],
+                curated_state["term_type_override"],
             ]
         ):
             curated["terms"][term] = curated_state
@@ -112,6 +114,7 @@ def default_curated_term_state() -> dict[str, Any]:
         "ignore": False,
         "note": "",
         "category_override": "",
+        "term_type_override": "",
     }
 
 
@@ -136,6 +139,7 @@ def get_curated_term_state(curated_rules: dict[str, Any], term: str, *, create: 
             "ignore": bool(state.get("ignore")),
             "note": clean_text(state.get("note")),
             "category_override": clean_text(state.get("category_override")),
+            "term_type_override": clean_text(state.get("term_type_override")),
         }
     )
     state = defaults
@@ -173,6 +177,7 @@ def sanitize_curated_rules(payload: dict[str, Any] | None) -> dict[str, Any]:
             state["ignore"] = bool(raw.get("ignore"))
             state["note"] = clean_text(raw.get("note"))
             state["category_override"] = clean_text(raw.get("category_override"))
+            state["term_type_override"] = clean_text(raw.get("term_type_override"))
     return curated
 
 
@@ -222,7 +227,12 @@ def load_observation_store(path: Path | None) -> dict[str, Any]:
     payload = load_json_object(path)
     if payload:
         if any(
-            isinstance(state, dict) and any(key.startswith("approved_") or key in {"block_en2", "ignore", "note", "category_override"} for key in state.keys())
+            isinstance(state, dict)
+            and any(
+                key.startswith("approved_")
+                or key in {"block_en2", "ignore", "note", "category_override", "term_type_override"}
+                for key in state.keys()
+            )
             for state in payload.get("terms", {}).values()
         ):
             _legacy_curated, legacy_observations = split_legacy_term_memory(payload)
@@ -274,6 +284,20 @@ def apply_observation_history(
     )
 
 
+def choose_primary_translation(
+    current_counter: Counter[str],
+    curated_state: dict[str, Any],
+) -> tuple[str, str, list[str]]:
+    current = current_counter.most_common(1)[0][0] if current_counter else ""
+    approved = clean_text(curated_state.get("approved_en"))
+    conflicts = [approved] if current and approved and approved != current else []
+    if current:
+        return current, "current_table", conflicts
+    if approved:
+        return approved, "curated", []
+    return "", "none", []
+
+
 def apply_curated_preferences(
     curated_state: dict[str, Any],
     term: str,
@@ -284,16 +308,8 @@ def apply_curated_preferences(
     example_usage_counter: Counter[str],
     manual_adaptation_counter: Counter[str],
 ) -> tuple[str, str, str, Counter[str], Counter[str], Counter[str]]:
-    approved_en = clean_text(curated_state.get("approved_en"))
     approved_en2 = clean_text(curated_state.get("approved_en2"))
     block_en2 = bool(curated_state.get("block_en2"))
-
-    if approved_en:
-        suggested_en = approved_en
-        example_en = approved_en
-    elif not example_en and exact_translation_counter:
-        example_en = exact_translation_counter.most_common(1)[0][0]
-        suggested_en = example_en
 
     if approved_en2:
         en2_value = approved_en2
