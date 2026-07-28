@@ -395,7 +395,7 @@ def test_single_language_shared_identity_update_keeps_wide_concept_and_rolls_bac
         assert restored[key]["active"] == before[key]["active"]
 
 
-def test_cross_language_shared_source_collision_blocks_translation_batch_without_writes() -> None:
+def test_existing_id_can_adopt_source_used_by_another_id() -> None:
     with TestClient(app) as client:
         project = _create_project(client)
         base = _upload(
@@ -429,16 +429,22 @@ def test_cross_language_shared_source_collision_blocks_translation_batch_without
         )
         assert response.status_code == 200, response.text
         analysis = response.json()
-        blocked = client.post(
+        committed = client.post(
             f"/api/projects/{project['id']}/translations/import/commit",
             json={"token": analysis["token"]},
         )
 
-    assert analysis["can_commit"] is False
-    assert "concept_source_conflict" in {conflict["code"] for conflict in analysis["conflicts"]}
-    assert blocked.status_code == 409
-    assert blocked.json()["detail"]["code"] == "conflicts_present"
-    assert _all_translation_rows(project["id"]) == before
+    assert analysis["can_commit"] is True
+    assert analysis["conflicts"] == []
+    assert committed.status_code == 200
+    changed = _rows_by_key(project["id"])
+    assert changed[("en", "A-1")]["source"] == "占用源文"
+    assert changed[("en", "A-1")]["target"] == "New EN"
+    assert changed[("ko", "A-1")]["source"] == "占用源文"
+    assert changed[("ko", "A-1")]["target"] == "오래된 KO"
+    assert changed[("ko", "A-2")]["source"] == "占用源文"
+    assert changed[("ko", "A-2")]["target"] == "충돌 KO"
+    assert len(changed) == len(before)
 
 
 def test_same_translation_id_with_inconsistent_shared_input_is_blocked() -> None:
@@ -476,31 +482,77 @@ def test_same_translation_id_with_inconsistent_shared_input_is_blocked() -> None
     assert "shared_identity_mismatch" in {conflict["code"] for conflict in analysis["conflicts"]}
 
 
-def test_empty_project_rejects_cross_language_same_source_with_different_translation_ids() -> None:
+def test_empty_project_allows_distinct_ids_to_share_source_across_languages() -> None:
     with TestClient(app) as client:
         project = _create_project(client)
-        artifact = _upload_bytes(
+        artifact = _upload(
             client,
             project["id"],
-            "cross-language-source.json",
-            json.dumps(
-                [
-                    {"entry_key": "A-1", "source": "同一源文", "target": "One", "language": "en"},
-                    {"entry_key": "A-2", "source": "同一源文", "target": "Two", "language": "ko"},
-                ],
-                ensure_ascii=False,
-            ).encode("utf-8"),
+            "shared-source.xlsx",
+            [
+                ["ID", "CN", "EN", "FR"],
+                ["A-1", "同一源文", "One", "Un"],
+                ["A-2", "同一源文", "Two", "Deux"],
+            ],
         )
-        analysis = _analyze(client, project["id"], artifact["id"], languages=["en", "ko"])
-        blocked = client.post(
-            f"/api/projects/{project['id']}/translations/import/commit",
-            json={"token": analysis["token"]},
-        )
+        analysis = _analyze(client, project["id"], artifact["id"], languages=["en", "fr"])
+        result = _commit(client, project["id"], analysis["token"]) if analysis["can_commit"] else None
 
-    assert analysis["can_commit"] is False
-    assert "source_multiple_ids" in {conflict["code"] for conflict in analysis["conflicts"]}
-    assert blocked.status_code == 409
-    assert _all_translation_rows(project["id"]) == []
+    assert analysis["can_commit"] is True
+    assert analysis["conflicts"] == []
+    assert analysis["summary"]["insert"] == 4
+    assert analysis["summary"]["conflict"] == 0
+    assert result and result["status"] == "committed"
+    rows = _all_translation_rows(project["id"])
+    assert len(rows) == 4
+    assert {row["entry_key"] for row in rows} == {"A-1", "A-2"}
+
+
+def test_reimport_updates_shared_source_rows_independently_by_id() -> None:
+    with TestClient(app) as client:
+        project = _create_project(client)
+        base = _upload(
+            client,
+            project["id"],
+            "shared-source-base.xlsx",
+            [
+                ["ID", "CN", "EN", "FR"],
+                ["A-1", "同一源文", "One", "Un"],
+                ["A-2", "同一源文", "Two", "Deux"],
+            ],
+        )
+        base_analysis = _analyze(client, project["id"], base["id"], languages=["en", "fr"])
+        _commit(client, project["id"], base_analysis["token"])
+
+        edited = _upload(
+            client,
+            project["id"],
+            "shared-source-edited.xlsx",
+            [
+                ["ID", "CN", "EN", "FR"],
+                ["A-1", "同一源文", "One v2", "Un v2"],
+                ["A-2", "同一源文", "Two v2", "Deux v2"],
+            ],
+        )
+        analysis = _analyze(
+            client,
+            project["id"],
+            edited["id"],
+            languages=["en", "fr"],
+            dataset_key=base_analysis["dataset_key"],
+        )
+        result = _commit(client, project["id"], analysis["token"]) if analysis["can_commit"] else None
+
+    assert analysis["can_commit"] is True
+    assert analysis["conflicts"] == []
+    assert analysis["summary"]["update"] == 4
+    assert analysis["summary"]["conflict"] == 0
+    assert result and result["status"] == "committed"
+    rows = _rows_by_key(project["id"])
+    assert rows[("en", "A-1")]["target"] == "One v2"
+    assert rows[("en", "A-2")]["target"] == "Two v2"
+    assert rows[("fr", "A-1")]["target"] == "Un v2"
+    assert rows[("fr", "A-2")]["target"] == "Deux v2"
 
 
 def test_empty_project_rejects_cross_language_mixed_keyed_and_unkeyed_identity() -> None:
@@ -1003,10 +1055,6 @@ def test_analyze_persists_all_items_while_returning_only_bounded_change_samples(
             "duplicate_source",
         ),
         (
-            [["ID", "CN", "EN"], ["A-1", "相同源文", "One"], ["A-2", "相同源文", "Two"]],
-            "source_multiple_ids",
-        ),
-        (
             [["ID", "CN", "EN"], ["A-1", "混合 身份", "One"], ["", "混合身份", "Two"]],
             "source_mixed_identity",
         ),
@@ -1028,7 +1076,7 @@ def test_batch_identity_conflicts_are_structured_and_never_commit(rows: list[lis
     assert _all_translation_rows(project["id"]) == []
 
 
-def test_existing_id_and_cn_cross_match_is_a_blocking_conflict() -> None:
+def test_existing_id_and_cn_cross_match_updates_by_id() -> None:
     with TestClient(app) as client:
         project = _create_project(client)
         db.insert_translation_entry(
@@ -1046,9 +1094,16 @@ def test_existing_id_and_cn_cross_match_is_a_blocking_conflict() -> None:
             [["ID", "CN", "EN"], ["A-1", "源文二", "Cross"]],
         )
         analysis = _analyze(client, project["id"], artifact["id"])
+        result = _commit(client, project["id"], analysis["token"]) if analysis["can_commit"] else None
 
-    assert analysis["can_commit"] is False
-    assert "identity_cross_match" in {conflict["code"] for conflict in analysis["conflicts"]}
+    assert analysis["can_commit"] is True
+    assert analysis["conflicts"] == []
+    assert result and result["status"] == "committed"
+    rows = _rows_by_key(project["id"])
+    assert rows[("en", "A-1")]["source"] == "源文二"
+    assert rows[("en", "A-1")]["target"] == "Cross"
+    assert rows[("en", "A-2")]["source"] == "源文二"
+    assert rows[("en", "A-2")]["target"] == "Two"
 
 
 @pytest.mark.parametrize("source_type", ["manual", "qa_passed"])
