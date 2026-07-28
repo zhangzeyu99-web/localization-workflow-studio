@@ -587,9 +587,7 @@ def _input_conflicts(rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any
             add(indices, "duplicate_source", "同一语言中存在重复的无 ID 中文源文。")
     for indices in by_source.values():
         keys = {str(rows[index].get("entry_key") or "").strip() for index in indices if str(rows[index].get("entry_key") or "").strip()}
-        if len(keys) > 1:
-            add(indices, "source_multiple_ids", "同一中文源文对应多个 ID。")
-        elif keys and any(not str(rows[index].get("entry_key") or "").strip() for index in indices):
+        if keys and any(not str(rows[index].get("entry_key") or "").strip() for index in indices):
             add(indices, "source_mixed_identity", "同一中文源文不能同时使用有 ID 和无 ID 身份。")
     for indices in by_source_global.values():
         languages = {normalize_language(rows[index].get("language") or "en") for index in indices}
@@ -600,9 +598,7 @@ def _input_conflicts(rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any
             for index in indices
             if str(rows[index].get("entry_key") or "").strip()
         }
-        if len(keys) > 1:
-            add(indices, "source_multiple_ids", "同一中文源文不能跨语言对应多个 ID。")
-        elif keys and any(not str(rows[index].get("entry_key") or "").strip() for index in indices):
+        if keys and any(not str(rows[index].get("entry_key") or "").strip() for index in indices):
             add(indices, "source_mixed_identity", "同一中文源文不能跨语言混用有 ID 和无 ID 身份。")
     return conflicts
 
@@ -801,12 +797,6 @@ def _plan_batch(
         concept_siblings[index] = siblings
         match: dict[str, Any] | None = None
         if entry_key:
-            foreign_keyed_matches = [
-                candidate
-                for candidate in global_source_matches
-                if str(candidate.get("entry_key") or "").strip()
-                and str(candidate.get("entry_key") or "").strip() != entry_key
-            ]
             unkeyed_global_matches = [
                 candidate
                 for candidate in global_source_matches
@@ -824,7 +814,7 @@ def _plan_batch(
                 candidate_language in sibling_languages for candidate_language in unkeyed_language_counts
             )
             unkeyed_is_other_concept = bool(siblings and unkeyed_global_matches and source_key not in sibling_source_keys)
-            if foreign_keyed_matches or unkeyed_is_other_concept:
+            if unkeyed_is_other_concept:
                 row_conflicts.setdefault(index, []).append(
                     _conflict("concept_source_conflict", "修改后的中文源文已属于另一个归档概念。", row)
                 )
@@ -841,21 +831,11 @@ def _plan_batch(
                 concept_siblings[index] = siblings
 
             id_match = by_id.get((language, entry_key))
-            other_source_matches = [candidate for candidate in source_matches if not id_match or candidate["id"] != id_match["id"]]
-            if id_match and other_source_matches:
-                row_conflicts.setdefault(index, []).append(
-                    _conflict("identity_cross_match", "ID 与中文源文命中了不同归档记录。", row)
-                )
-            elif id_match:
+            if id_match:
                 match = id_match
             else:
-                keyed = [candidate for candidate in source_matches if str(candidate.get("entry_key") or "").strip()]
                 unkeyed = [candidate for candidate in source_matches if not str(candidate.get("entry_key") or "").strip()]
-                if keyed:
-                    row_conflicts.setdefault(index, []).append(
-                        _conflict("new_id_source_exists", "新 ID 的中文源文已属于另一条有 ID 记录。", row)
-                    )
-                elif len(unkeyed) == 1:
+                if len(unkeyed) == 1:
                     match = unkeyed[0]
                 elif len(unkeyed) > 1:
                     row_conflicts.setdefault(index, []).append(

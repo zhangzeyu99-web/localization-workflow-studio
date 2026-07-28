@@ -2,6 +2,16 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.7.1 - 2026-07-28
+
+Translation-archive identity compatibility fix.
+
+- Allowed distinct translation IDs to share the same normalized Chinese source text without being rejected as duplicate concepts.
+- Made keyed archive imports update by translation ID even when another keyed record already uses the incoming Chinese source.
+- Preserved the existing conflict guard when keyed and unkeyed rows mix the same source identity.
+- Added regression coverage for initial import, cross-language updates, source adoption, and independent re-import of shared-source rows.
+- Produced account-enabled and no-account cloud artifacts from the same clean commit and frontend build.
+
 ## 1.7.0 - 2026-07-27
 
 Proper-name extraction and bilingual-source workflow release.
