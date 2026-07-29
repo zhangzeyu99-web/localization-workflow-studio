@@ -117,13 +117,19 @@ def _docx_announcement_segments(path: Path) -> list[dict[str, Any]]:
 
 
 def _txt_announcement_segments(path: Path) -> list[dict[str, Any]]:
-    text = path.read_text(encoding="utf-8-sig")
+    text = _read_announcement_text(path)
     rows = []
     for index, line in enumerate(text.splitlines()):
         if not line.strip():
             continue
         rows.append({"id": _segment_id(path.name, index, line), "source_file": path.name, "index": index, "kind": "line", "source": line})
     return rows
+
+
+def _read_announcement_text(path: Path) -> str:
+    from .materials import _read_lookup_text_file
+
+    return _read_lookup_text_file(path)
 
 
 def _is_quick_text_path(path: Path) -> bool:
@@ -141,9 +147,10 @@ def _write_quick_text_output(source_path: Path, translated_rows: list[dict[str, 
     translations = {str(row.get("id")): str(row.get("translation") or "") for row in translated_rows}
     segments = _txt_announcement_segments(source_path)
     by_index = {int(segment["index"]): translations.get(str(segment["id"]), segment["source"]) for segment in segments}
-    raw_lines = source_path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
-    if not raw_lines and source_path.read_text(encoding="utf-8-sig").strip():
-        raw_lines = [source_path.read_text(encoding="utf-8-sig")]
+    source_text = _read_announcement_text(source_path)
+    raw_lines = source_text.splitlines(keepends=True)
+    if not raw_lines and source_text.strip():
+        raw_lines = [source_text]
     output_parts: list[str] = []
     for index, raw in enumerate(raw_lines):
         if raw.endswith("\r\n"):
