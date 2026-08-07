@@ -165,3 +165,60 @@ def test_non_ascii_language_keeps_contiguous_mandatory_target_match() -> None:
     }
 
     assert _validate_announcement_translation_rows(segments, rows, ["ja"]) == []
+
+
+def test_legacy_single_word_common_term_accepts_natural_plural() -> None:
+    segments = [{"id": "segment-1", "source": "各位幸存者请集结"}]
+    rows = {
+        "segment-1": {
+            "translations": {"en": "Survivors, rally now."},
+            "protected_tokens": [],
+            "term_hits": {"en": [{"source": "幸存者", "target": "Survivor"}]},
+        }
+    }
+
+    assert _validate_announcement_translation_rows(segments, rows, ["en"]) == []
+
+
+def test_common_multiword_term_accepts_natural_plural_when_category_is_known() -> None:
+    segments = [{"id": "segment-1", "source": "联盟成员可领取奖励"}]
+    rows = {
+        "segment-1": {
+            "translations": {"en": "Alliance Members can claim rewards."},
+            "protected_tokens": [],
+            "term_hits": {
+                "en": [
+                    {
+                        "source": "联盟成员",
+                        "target": "Alliance Member",
+                        "category": "普通术语",
+                    }
+                ]
+            },
+        }
+    }
+
+    assert _validate_announcement_translation_rows(segments, rows, ["en"]) == []
+
+
+def test_single_word_game_name_still_rejects_pluralized_variant() -> None:
+    segments = [{"id": "segment-1", "source": "霸主联动开启"}]
+    rows = {
+        "segment-1": {
+            "translations": {"en": "Overlords collaboration begins."},
+            "protected_tokens": [],
+            "term_hits": {
+                "en": [
+                    {
+                        "source": "霸主",
+                        "target": "Overlord",
+                        "category": "游戏名",
+                    }
+                ]
+            },
+        }
+    }
+
+    issues = _validate_announcement_translation_rows(segments, rows, ["en"])
+
+    assert [issue["check_type"] for issue in issues] == ["term_missing"]

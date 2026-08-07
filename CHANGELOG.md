@@ -2,6 +2,18 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.7.2 - 2026-08-07
+
+Announcement input and delivery reliability fixes.
+
+- Accepted GB18030 announcement text while preserving UTF-8 and UTF-8 BOM inputs.
+- Prevented oversized sentence-adaptation JSON from being silently truncated at Excel's 32,767-character cell limit.
+- Allowed legacy workbooks with already-truncated optional sentence-adaptation data to continue through QA and output generation.
+- Allowed natural English and Indonesian inflection for common announcement terms while keeping game names and explicitly exact terms strict.
+- Preserved term category and exact-match metadata in newly generated announcement translation workbooks.
+- Added regression coverage for source decoding, oversized workbook cells, legacy workbook recovery, common-term plurals, and exact game-name enforcement.
+- Produced account-enabled and no-account cloud artifacts from the same clean commit and frontend build.
+
 ## 1.7.1 - 2026-07-28
 
 Translation-archive identity compatibility fix.
