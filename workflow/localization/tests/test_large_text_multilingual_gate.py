@@ -218,6 +218,23 @@ class LargeTextMultilingualGateTests(unittest.TestCase):
             issue_types = {issue["type"] for issue in result["issues"]}
             self.assertLessEqual({"process_file_in_delivery", "blank_target_cell"}, issue_types)
 
+    def test_readback_gate_skips_id_only_rows_with_blank_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            delivery = Path(tmp) / "delivery"
+            delivery.mkdir()
+            workbook_path = delivery / "final.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["ID", "CN", "DE"])
+            sheet.append([1, "开始", "Starten"])
+            sheet.append([2, None, None])
+            workbook.save(workbook_path)
+
+            result = readback_gate(delivery, target_langs=["DE"])
+
+            self.assertEqual(result["hard_blockers"], 0, result["issues"])
+            self.assertTrue(result["readback_verified"])
+
     def test_readback_gate_skips_qa_summary_support_sheets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             delivery = Path(tmp) / "delivery"

@@ -512,6 +512,10 @@ def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, A
                 if not _looks_like_translation_sheet(headers, target_langs):
                     continue
                 col_by_lang = {header: index for index, header in enumerate(headers) if header}
+                source_col = next(
+                    (index for index, header in enumerate(headers) if header in SOURCE_HEADERS),
+                    None,
+                )
                 target_columns: list[tuple[str, int]] = []
                 for lang in target_langs:
                     col_index = col_by_lang.get(lang.upper())
@@ -522,6 +526,11 @@ def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, A
                 if not target_columns:
                     continue
                 for row_index, row_values in enumerate(sheet.iter_rows(min_row=2, values_only=True), 2):
+                    if source_col is not None:
+                        source = row_values[source_col] if source_col < len(row_values) else None
+                        # ID-only spacer/reserved rows are structural rows, not untranslated content.
+                        if source is None or str(source).strip() == "":
+                            continue
                     for lang, col_index in target_columns:
                         value = row_values[col_index] if col_index < len(row_values) else None
                         if value is None or str(value).strip() == "":
