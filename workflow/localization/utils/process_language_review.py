@@ -8,7 +8,7 @@ import re
 import pandas as pd
 
 from utils.variable_checker import check_all as check_variables
-from utils.term_checker import check_term_hit, check_chinese_residue
+from utils.term_checker import TERM_REVIEW_ISSUE_TYPES, check_term_hit, check_chinese_residue
 from utils.pattern_detector import detect_patterns
 from utils.ui_detector import is_ui_text
 from utils.ai_checker import prepare_all_batches
@@ -151,7 +151,7 @@ def _run_term_checks(states: dict[RowId, RowState], term_lookup: dict, auto_fix:
             state.issues.append(r)
             if auto_fix and r.auto_fix and r.confidence >= 0.8:
                 _safe_apply_fix(state, r.auto_fix, f"术语修复: {r.message}")
-            elif r.severity == 'error':
+            elif r.severity == 'error' or r.check_type == 'term_superstring_drift_candidate':
                 state.needs_human_review = True
                 state.human_review_reason = r.message
                 state.ai_suggestion = r.auto_fix or state.fixed_translation
@@ -373,14 +373,14 @@ def prepare_ai_review(
             item['is_ui'] = s.is_ui
             item['term_status'] = (
                 'TERM_ERROR' if any(
-                    getattr(i, 'check_type', '') in {'term_missing', 'term_partial_hit', 'term_capitalization', 'romanized_name_residue'}
+                    getattr(i, 'check_type', '') in TERM_REVIEW_ISSUE_TYPES
                     for i in s.issues
                 ) else 'TERM_OK'
             )
             item['term_issue_types'] = '; '.join(sorted(set(
                 getattr(i, 'check_type', '')
                 for i in s.issues
-                if getattr(i, 'check_type', '') in {'term_missing', 'term_partial_hit', 'term_capitalization', 'romanized_name_residue'}
+                if getattr(i, 'check_type', '') in TERM_REVIEW_ISSUE_TYPES
             )))
         if s.short_text_length_policy and s.short_text_length_policy != 'exempt':
             item['ui_length_policy'] = s.short_text_length_policy

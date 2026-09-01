@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from openpyxl import Workbook
 
-from utils.large_text_multilingual_pack import prepare_pack, stable_row_key
+from utils.large_text_multilingual_pack import _load_terms, prepare_pack, stable_row_key
 
 
 LANGS = ["EN", "IDN", "DE", "FR", "ES", "PT", "RU", "IT", "TR", "TH"]
@@ -36,6 +38,58 @@ def create_reference_workbook(path: Path, *, missing_reference: bool = False) ->
 
 
 class LargeTextMultilingualPackTests(unittest.TestCase):
+    def test_load_terms_ignores_stale_xlsx_dimension_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "terms.xlsx"
+            rewritten = Path(tmp) / "rewritten.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["ID", "CN", "EN", "分类"])
+            sheet.append([2179, "双生魔偶", "Clockwork Twins", "主角"])
+            workbook.save(path)
+            workbook.close()
+            with zipfile.ZipFile(path, "r") as source, zipfile.ZipFile(rewritten, "w") as target:
+                for info in source.infolist():
+                    payload = source.read(info.filename)
+                    if info.filename == "xl/worksheets/sheet1.xml":
+                        payload = re.sub(rb'<dimension ref="[^"]+"', b'<dimension ref="A1"', payload, count=1)
+                    target.writestr(info, payload)
+            terms = _load_terms(rewritten, ["EN"])
+
+            self.assertEqual([term["source"] for term in terms], ["双生魔偶"])
+
+    def test_load_terms_marks_main_character_names_as_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "terms.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["ID", "CN", "EN", "FR", "DE", "PT", "ES", "TR", "RU", "备注", "分类"])
+            sheet.append(
+                [
+                    2179,
+                    "双生魔偶",
+                    "Clockwork Twins",
+                    "Jumeaux Mécaniques",
+                    "Uhrwerk-Zwillinge",
+                    "Gêmeas Mecânicas",
+                    "Gemelos Mecánicos",
+                    "Kurmalı İkizler",
+                    "Заводные близнецы",
+                    None,
+                    "主角",
+                ]
+            )
+            workbook.save(path)
+            workbook.close()
+
+            terms = _load_terms(path, ["EN", "FR", "DE", "PT", "ES", "TR", "RU"])
+
+            self.assertEqual(len(terms), 1)
+            self.assertEqual(terms[0]["source"], "双生魔偶")
+            self.assertEqual(terms[0]["category"], "主角")
+            self.assertIs(terms[0]["required"], True)
+            self.assertIs(terms[0]["strict"], True)
+
     def test_stable_row_key_includes_file_sheet_id_and_row(self) -> None:
         self.assertEqual(
             stable_row_key("a.xlsx", "Sheet1", 7, 1001),

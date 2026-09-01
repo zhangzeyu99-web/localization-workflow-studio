@@ -288,6 +288,87 @@ def workflow_status(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def finalize_recovered_manifest(
+    manifest_path: Path,
+    *,
+    final_cache: Path,
+    final_cache_lint: Path,
+    proofread_summary: Path | None,
+    apply_dry_run: Path,
+    readback_gate: Path,
+    delivery_dir: Path,
+    reason: str,
+) -> dict[str, Any]:
+    manifest = load_manifest(manifest_path)
+    previous_status = str(manifest.get("status") or "unknown")
+    lint = read_json(final_cache_lint)
+    readback = read_json(readback_gate)
+    dry_run = read_json(apply_dry_run)
+    proofread_mode = str(manifest.get("inputs", {}).get("proofread_mode") or "basic")
+    if not final_cache.exists() or final_cache.stat().st_size == 0:
+        raise ValueError("final cache is missing or empty")
+    if lint.get("hard_blockers") != 0 or lint.get("ok_to_apply") is not True:
+        raise ValueError("final cache-lint is not verified")
+    if dry_run.get("ok") is not True:
+        raise ValueError("apply dry-run is not verified")
+    if readback.get("hard_blockers") != 0 or readback.get("readback_verified") is not True:
+        raise ValueError("readback gate is not verified")
+    if not delivery_dir.is_dir() or not any(path.is_file() for path in delivery_dir.iterdir()):
+        raise ValueError("delivery directory is missing or empty")
+    if proofread_mode in {"sampled", "full"} and (
+        proofread_summary is None or not read_json(proofread_summary)
+    ):
+        raise ValueError("proofread summary is required for deep proofreading recovery")
+
+    completed_at = datetime.now().isoformat(timespec="seconds")
+    recovery_retro = Path(manifest["work_dir"]) / "recovery_retro.json"
+    evidence = {
+        "final_cache": str(final_cache),
+        "final_cache_lint": str(final_cache_lint),
+        "proofread_summary": str(proofread_summary) if proofread_summary else "",
+        "apply_dry_run": str(apply_dry_run),
+        "readback_gate": str(readback_gate),
+        "delivery_dir": str(delivery_dir),
+    }
+    write_json(
+        recovery_retro,
+        {
+            "status": "complete",
+            "previous_status": previous_status,
+            "reason": reason,
+            "completed_at": completed_at,
+            "evidence": evidence,
+        },
+    )
+    for phase in manifest.get("critical_path") or []:
+        if manifest.setdefault("phase_status", {}).get(phase) != "skipped":
+            manifest["phase_status"][phase] = "done"
+    manifest.setdefault("phase_events", []).append(
+        {
+            "phase": "recovery_reconcile",
+            "event": "done",
+            "at": completed_at,
+            "previous_status": previous_status,
+            "reason": reason,
+        }
+    )
+    manifest.setdefault("artifacts", {}).update(
+        {
+            **evidence,
+            "recovery_retro": str(recovery_retro),
+        }
+    )
+    manifest["recovery"] = {
+        "previous_status": previous_status,
+        "reason": reason,
+        "completed_at": completed_at,
+    }
+    manifest["delivery_dir"] = str(delivery_dir)
+    manifest["status"] = "complete"
+    save_manifest(manifest)
+    return manifest
+
+
 def write_or_print(payload: dict[str, Any], out: Path | None = None) -> None:
     if out:
         write_json(out, payload)
@@ -331,6 +412,20 @@ def main(argv: list[str] | None = None) -> int:
     status = sub.add_parser("status", help="Print next required workflow phase.")
     status.add_argument("--manifest", required=True, type=Path)
     status.add_argument("--out", type=Path)
+
+    reconcile = sub.add_parser(
+        "reconcile",
+        help="Close a recovered failed run from verified cache, QA, writeback, and readback artifacts.",
+    )
+    reconcile.add_argument("--manifest", required=True, type=Path)
+    reconcile.add_argument("--final-cache", required=True, type=Path)
+    reconcile.add_argument("--final-cache-lint", required=True, type=Path)
+    reconcile.add_argument("--proofread-summary", type=Path)
+    reconcile.add_argument("--apply-dry-run", required=True, type=Path)
+    reconcile.add_argument("--readback-gate", required=True, type=Path)
+    reconcile.add_argument("--delivery-dir", required=True, type=Path)
+    reconcile.add_argument("--reason", required=True)
+    reconcile.add_argument("--out", type=Path)
 
     run = sub.add_parser("run", help="Run extract, translate, QA, optional deep proofread, writeback, and readback.")
     run.add_argument("--input", action="append", required=True, type=Path)
@@ -392,6 +487,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if manifest["status"] == "api_smoke_passed" else 1
     if args.command == "status":
         write_or_print(workflow_status(load_manifest(args.manifest)), args.out)
+        return 0
+    if args.command == "reconcile":
+        manifest = finalize_recovered_manifest(
+            args.manifest,
+            final_cache=args.final_cache,
+            final_cache_lint=args.final_cache_lint,
+            proofread_summary=args.proofread_summary,
+            apply_dry_run=args.apply_dry_run,
+            readback_gate=args.readback_gate,
+            delivery_dir=args.delivery_dir,
+            reason=args.reason,
+        )
+        write_or_print(
+            {"manifest": manifest["manifest_path"], "status": workflow_status(manifest)},
+            args.out,
+        )
         return 0
     if args.command == "run":
         from dataclasses import asdict

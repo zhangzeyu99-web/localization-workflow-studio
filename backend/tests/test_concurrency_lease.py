@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import sqlite3
 import tempfile
@@ -22,7 +21,6 @@ import app.jobs as jobs
 import app.workflow as workflow
 from app.config import DEFAULT_SETTINGS, save_settings
 from app.main import app
-from app.providers import test_fake_translate_batch
 from app.schemas import TranslateRequest
 from conftest import reset_data_root, wait_for_background_jobs
 
@@ -65,12 +63,18 @@ def _create_project_with_run(client: TestClient, tmp_path: Path, name: str) -> t
     return project, run
 
 
-def _slow_test_fake_translate_batch(delay_seconds: float):
-    async def _translate(batch, provider_settings, project_prompt):
-        await asyncio.sleep(delay_seconds)
-        return test_fake_translate_batch(batch, provider_settings)
+def _slow_successful_translation_run(delay_seconds: float):
+    def _run(run_id: str, request: object, cancel_event: threading.Event | None = None) -> dict:
+        _ = request
+        db.update_run(run_id, status="running")
+        time.sleep(delay_seconds)
+        if cancel_event is not None and cancel_event.is_set():
+            db.update_run(run_id, status="canceled")
+        else:
+            db.update_run(run_id, status="passed")
+        return {"run": db.get_run(run_id)}
 
-    return _translate
+    return _run
 
 
 def _wait_for_terminal_run(client: TestClient, run_id: str, timeout_iterations: int = 200) -> dict:
@@ -85,8 +89,8 @@ def _wait_for_terminal_run(client: TestClient, run_id: str, timeout_iterations: 
     return terminal
 
 
-def test_two_projects_translate_in_parallel_independently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
+def test_two_projects_are_accepted_and_finish_independently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workflow, "run_translate_sync", _slow_successful_translation_run(0.2))
 
     with TestClient(app) as client:
         project_a, run_a = _create_project_with_run(client, tmp_path, "Concurrency A")
@@ -97,9 +101,8 @@ def test_two_projects_translate_in_parallel_independently(tmp_path: Path, monkey
         started_b = client.post(f"/api/runs/{run_b['id']}/translate/start", json={"provider": "test-fake", "batch_size": 2})
         assert started_b.status_code == 200, started_b.text
 
-        # Both projects' background jobs run under different per-project
-        # leases, so neither should block the other (pre-M2 behaviour would
-        # have rejected the second start with a global lease conflict).
+        # The persistent language-table lane runs FIFO, but a second project
+        # must still be accepted instead of being rejected by a global lease.
         terminal_a = _wait_for_terminal_run(client, run_a["id"])
         terminal_b = _wait_for_terminal_run(client, run_b["id"])
         assert terminal_a["status"] == "passed"
@@ -108,7 +111,7 @@ def test_two_projects_translate_in_parallel_independently(tmp_path: Path, monkey
 
 
 def test_same_project_second_translation_is_accepted_into_fifo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
+    monkeypatch.setattr(workflow, "run_translate_sync", _slow_successful_translation_run(0.2))
 
     with TestClient(app) as client:
         project = client.post("/api/projects", json={"name": "Busy Project", "type": "QA"}).json()
@@ -159,7 +162,7 @@ def test_same_project_second_translation_is_accepted_into_fifo(tmp_path: Path, m
 
 def test_legacy_capacity_setting_does_not_reject_second_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     save_settings({**DEFAULT_SETTINGS, "max_concurrent_ai_jobs": 1})
-    monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
+    monkeypatch.setattr(workflow, "run_translate_sync", _slow_successful_translation_run(0.2))
 
     with TestClient(app) as client:
         project_a, run_a = _create_project_with_run(client, tmp_path, "Capacity A")
@@ -314,7 +317,7 @@ def test_init_db_adds_operator_name_to_v132_job_lease_table(
 
 
 def test_active_jobs_endpoint_reports_lease_and_project_details(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
+    monkeypatch.setattr(workflow, "run_translate_sync", _slow_successful_translation_run(0.2))
 
     with TestClient(app) as client:
         project, run = _create_project_with_run(client, tmp_path, "Active Jobs Panel")
@@ -448,7 +451,7 @@ def test_persistent_queue_staging_cannot_reopen_task_closed_before_activation(
 
 
 def test_active_jobs_excludes_second_project_waiting_in_same_lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(workflow, "translate_batch", _slow_test_fake_translate_batch(0.6))
+    monkeypatch.setattr(workflow, "run_translate_sync", _slow_successful_translation_run(0.2))
 
     with TestClient(app) as client:
         project_a, run_a = _create_project_with_run(client, tmp_path, "Panel Concurrency A")

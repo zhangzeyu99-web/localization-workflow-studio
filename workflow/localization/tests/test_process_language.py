@@ -8,6 +8,7 @@ from process_language import (
     RowState,
     _run_name_policy_checks,
     _run_readability_checks,
+    _run_term_checks,
     _run_ui_length_checks,
     prepare_ai_review,
     run_machine_review,
@@ -76,6 +77,39 @@ class ProcessLanguageUILengthTests(unittest.TestCase):
         prompt = batches[0].prompt_text
         self.assertIn("mode=soft", prompt)
         self.assertIn("budget<=", prompt)
+
+    def test_superstring_term_drift_is_routed_to_ai_review(self):
+        state = RowState(
+            9553,
+            "毒蝎巢穴·难度<@1>",
+            "Venom Scorpion Lair - Difficulty <@1>",
+        )
+        states = {9553: state}
+        term_lookup = {
+            "毒蝎巢穴": {"primary": "Scorpion Lair", "variants": []},
+        }
+
+        _run_term_checks(states, term_lookup, auto_fix=True, lang="en")
+        batches = prepare_ai_review(
+            states,
+            batch_size=10,
+            term_lookup=term_lookup,
+            lang="en",
+            scope="issues_only",
+            include_term_priority=True,
+        )
+
+        self.assertTrue(state.needs_human_review)
+        self.assertEqual(
+            state.issues[0].check_type,
+            "term_superstring_drift_candidate",
+        )
+        self.assertEqual(state.fixed_translation, state.translation)
+        self.assertEqual(len(batches), 1)
+        self.assertIn(
+            "term_superstring_drift_candidate",
+            batches[0].prompt_text,
+        )
 
     def test_run_readability_checks_marks_opaque_abbreviations_for_review(self):
         state = RowState(5, "请输入举报原因", "PERR")

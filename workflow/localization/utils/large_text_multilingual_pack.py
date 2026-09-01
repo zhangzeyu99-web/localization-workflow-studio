@@ -45,6 +45,11 @@ def _normalize_headers(values: tuple[Any, ...]) -> list[str]:
     return [str(value or "").strip().lower() for value in values]
 
 
+def _reset_stale_dimensions(sheet: Any) -> None:
+    if sheet.max_row == 1 and sheet.max_column == 1 and hasattr(sheet, "reset_dimensions"):
+        sheet.reset_dimensions()
+
+
 def _find_header(headers: list[str], candidates: set[str]) -> int | None:
     return next((index for index, header in enumerate(headers) if header in candidates), None)
 
@@ -70,17 +75,24 @@ def _language_columns(
     return columns
 
 
+def _is_strict_term_category(value: object) -> bool:
+    category = str(value or "").strip().casefold()
+    return category in {item.casefold() for item in STRICT_TERM_CATEGORIES}
+
+
 def _load_terms(path: Path | None, target_langs: list[str]) -> list[dict[str, Any]]:
     if path is None:
         return []
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         for sheet in workbook.worksheets:
+            _reset_stale_dimensions(sheet)
             iterator = sheet.iter_rows(values_only=True)
             first = next(iterator, ())
             headers = _normalize_headers(first)
             id_col = _find_header(headers, {"id", "key", "索引id"})
             source_col = _find_header(headers, {header.lower() for header in SOURCE_HEADERS})
+            category_col = _find_header(headers, TERM_CATEGORY_HEADERS)
             if source_col is None:
                 continue
             try:
@@ -91,7 +103,7 @@ def _load_terms(path: Path | None, target_langs: list[str]) -> list[dict[str, An
                 )
             except ValueError:
                 continue
-            terms: dict[str, dict[str, str]] = {}
+            terms: dict[str, dict[str, Any]] = {}
             for values in iterator:
                 source = values[source_col] if source_col < len(values) else None
                 if source in (None, ""):
@@ -101,10 +113,21 @@ def _load_terms(path: Path | None, target_langs: list[str]) -> list[dict[str, An
                     for lang, column in language_columns.items()
                 }
                 if all(translations.values()):
-                    terms[str(source).strip()] = translations
+                    category = (
+                        str((values[category_col] if category_col < len(values) else "") or "").strip()
+                        if category_col is not None
+                        else ""
+                    )
+                    strict = _is_strict_term_category(category)
+                    terms[str(source).strip()] = {
+                        "translations": translations,
+                        "category": category,
+                        "required": strict,
+                        "strict": strict,
+                    }
             return [
-                {"source": source, "translations": translations, "required": False}
-                for source, translations in sorted(terms.items(), key=lambda item: len(item[0]), reverse=True)
+                {"source": source, **metadata}
+                for source, metadata in sorted(terms.items(), key=lambda item: len(item[0]), reverse=True)
             ]
     finally:
         workbook.close()
@@ -119,6 +142,7 @@ def _load_history(history_dirs: list[Path], target_langs: list[str]) -> dict[str
             workbook = load_workbook(path, read_only=True, data_only=True)
             try:
                 for sheet in workbook.worksheets:
+                    _reset_stale_dimensions(sheet)
                     iterator = sheet.iter_rows(values_only=True)
                     first = next(iterator, ())
                     headers = _normalize_headers(first)
@@ -204,6 +228,7 @@ def prepare_pack(
         workbook = load_workbook(input_path, read_only=True, data_only=False)
         try:
             for sheet in workbook.worksheets:
+                _reset_stale_dimensions(sheet)
                 iterator = sheet.iter_rows(values_only=True)
                 first = next(iterator, ())
                 headers = _normalize_headers(first)

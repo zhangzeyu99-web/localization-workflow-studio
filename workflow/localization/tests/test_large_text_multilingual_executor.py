@@ -4,8 +4,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from utils.large_text_multilingual_executor import _partition_requests, translate_manifest
+from utils.large_text_multilingual_executor import (
+    OpenAICompatibleClient,
+    _partition_requests,
+    translate_manifest,
+)
 from utils.large_text_multilingual_runner import build_manifest
 
 
@@ -68,6 +73,48 @@ class IdentifiedClient(FakeClient):
 
 
 class LargeTextMultilingualExecutorTests(unittest.TestCase):
+    def test_openai_client_retries_response_without_choices(self) -> None:
+        class FakeResponse:
+            def __init__(self, body: dict[str, object]) -> None:
+                self.body = body
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *args):  # type: ignore[no-untyped-def]
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(self.body).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "relay.json"
+            config.write_text(
+                json.dumps({"base_url": "https://relay.example", "model": "test"}),
+                encoding="utf-8",
+            )
+            client = OpenAICompatibleClient(config)
+            responses = [
+                FakeResponse({"error": {"message": "temporary empty response"}}),
+                FakeResponse(
+                    {
+                        "choices": [
+                            {"message": {"content": json.dumps({"rows": []})}}
+                        ]
+                    }
+                ),
+            ]
+            with patch(
+                "utils.large_text_multilingual_executor.urllib.request.urlopen",
+                side_effect=responses,
+            ) as urlopen, patch(
+                "utils.large_text_multilingual_executor.time.sleep"
+            ):
+                result = client._chat_json("system", {"rows": []})
+
+            self.assertEqual(result, {"rows": []})
+            self.assertEqual(urlopen.call_count, 2)
+
     def test_partition_respects_row_and_character_limits(self) -> None:
         rows = [
             {"request_key": str(index), "cn": "x" * 60}

@@ -592,6 +592,13 @@ def check_term_hit(
                     confidence=0.8,
                 ))
         else:
+            results.extend(_check_term_superstring_drift(
+                row_id=row_id,
+                original=original,
+                translation=translation,
+                source_term=cn_term,
+                matched_expected=matched_expected,
+            ))
             # Optional Layer 2: capitalization checks (default disabled)
             if lang == 'en' and enforce_case and matched_expected:
                 cap_results = _check_capitalization(matched_expected, translation, row_id, cn_term)

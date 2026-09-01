@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import utils.large_text_multilingual_runner as runner
 from utils.large_text_multilingual_runner import (
     build_manifest,
     load_sanitized_relay_config,
@@ -21,6 +22,100 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class LargeTextMultilingualRunnerTests(unittest.TestCase):
+    def test_finalize_recovered_manifest_requires_verified_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.jsonl"
+            write_jsonl(items, [{"key": "1", "cn": "短文本"}])
+            manifest = build_manifest(
+                work_dir=root / "work",
+                items_jsonl=items,
+                source_rows_jsonl=None,
+                target_langs=["EN"],
+                workbook_count=1,
+                relay_config=None,
+                proofread_mode="full",
+            )
+            manifest_path = Path(manifest["manifest_path"])
+            manifest["status"] = "api_translate_failed"
+            manifest["phase_status"]["api_translate"] = "failed"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            final_cache = root / "final_cache.jsonl"
+            write_jsonl(final_cache, [{"key": "1", "translations": {"EN": "Text"}}])
+            lint = root / "final_cache_lint.json"
+            lint.write_text(json.dumps({"hard_blockers": 1, "ok_to_apply": False}), encoding="utf-8")
+            proof = root / "proofread_summary.json"
+            proof.write_text(json.dumps({"reviewed_rows": 1, "final_cache": str(final_cache)}), encoding="utf-8")
+            dry_run = root / "apply_dry_run.json"
+            dry_run.write_text(json.dumps({"ok": True}), encoding="utf-8")
+            readback = root / "readback_gate.json"
+            readback.write_text(json.dumps({"hard_blockers": 0, "readback_verified": True}), encoding="utf-8")
+            delivery = root / "delivery"
+            delivery.mkdir()
+            (delivery / "result.xlsx").write_bytes(b"xlsx")
+
+            with self.assertRaisesRegex(ValueError, "final cache-lint"):
+                runner.finalize_recovered_manifest(
+                    manifest_path,
+                    final_cache=final_cache,
+                    final_cache_lint=lint,
+                    proofread_summary=proof,
+                    apply_dry_run=dry_run,
+                    readback_gate=readback,
+                    delivery_dir=delivery,
+                    reason="provider response truncated",
+                )
+
+    def test_finalize_recovered_manifest_closes_verified_failed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.jsonl"
+            write_jsonl(items, [{"key": "1", "cn": "短文本"}])
+            manifest = build_manifest(
+                work_dir=root / "work",
+                items_jsonl=items,
+                source_rows_jsonl=None,
+                target_langs=["EN"],
+                workbook_count=1,
+                relay_config=None,
+                proofread_mode="full",
+            )
+            manifest_path = Path(manifest["manifest_path"])
+            manifest["status"] = "api_translate_failed"
+            manifest["phase_status"]["api_translate"] = "failed"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            final_cache = root / "final_cache.jsonl"
+            write_jsonl(final_cache, [{"key": "1", "translations": {"EN": "Text"}}])
+            lint = root / "final_cache_lint.json"
+            lint.write_text(json.dumps({"hard_blockers": 0, "ok_to_apply": True}), encoding="utf-8")
+            proof = root / "proofread_summary.json"
+            proof.write_text(json.dumps({"reviewed_rows": 1, "final_cache": str(final_cache)}), encoding="utf-8")
+            dry_run = root / "apply_dry_run.json"
+            dry_run.write_text(json.dumps({"ok": True}), encoding="utf-8")
+            readback = root / "readback_gate.json"
+            readback.write_text(json.dumps({"hard_blockers": 0, "readback_verified": True}), encoding="utf-8")
+            delivery = root / "delivery"
+            delivery.mkdir()
+            (delivery / "result.xlsx").write_bytes(b"xlsx")
+
+            updated = runner.finalize_recovered_manifest(
+                manifest_path,
+                final_cache=final_cache,
+                final_cache_lint=lint,
+                proofread_summary=proof,
+                apply_dry_run=dry_run,
+                readback_gate=readback,
+                delivery_dir=delivery,
+                reason="provider response truncated",
+            )
+
+            self.assertEqual(updated["status"], "complete")
+            self.assertTrue(
+                all(value in {"done", "skipped"} for value in updated["phase_status"].values())
+            )
+            self.assertEqual(updated["recovery"]["previous_status"], "api_translate_failed")
+            self.assertTrue(Path(updated["artifacts"]["recovery_retro"]).exists())
+
     def test_load_sanitized_relay_config_keeps_host_and_drops_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             relay = Path(tmp) / "relay-api-config.json"

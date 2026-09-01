@@ -148,22 +148,38 @@ class OpenAICompatibleClient:
                 },
             ],
         }
-        request = urllib.request.Request(
-            self._endpoint(),
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"relay request failed: {exc}") from exc
-        content = body["choices"][0]["message"]["content"]
-        return json.loads(content) if isinstance(content, str) else content
+        last_error: BaseException | None = None
+        for attempt in range(3):
+            request = urllib.request.Request(
+                self._endpoint(),
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                choices = body.get("choices") if isinstance(body, dict) else None
+                if not isinstance(choices, list) or not choices:
+                    raise RuntimeError("relay response is missing choices")
+                message = choices[0].get("message") if isinstance(choices[0], dict) else None
+                if not isinstance(message, dict) or "content" not in message:
+                    raise RuntimeError("relay response is missing message content")
+                content = message["content"]
+                return json.loads(content) if isinstance(content, str) else content
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                json.JSONDecodeError,
+                RuntimeError,
+            ) as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(2**attempt)
+        raise RuntimeError(f"relay request failed after 3 attempts: {last_error}") from last_error
 
     def translate_batch(
         self,

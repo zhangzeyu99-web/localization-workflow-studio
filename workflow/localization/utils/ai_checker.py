@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from utils.term_checker import TERM_REVIEW_ISSUE_TYPES
+
 from utils.language_config import LANGUAGE_NAMES, language_name
 
 REVIEW_PROTOCOL_VERSION = 3
@@ -715,7 +717,6 @@ def reset_review_dir(review_dir: Path) -> None:
 
 def collect_recheck_rows(states, batches) -> list[dict]:
     """Collect rows from AI batches that still carry term issues for recheck."""
-    term_error_types = {'term_missing', 'term_partial_hit', 'term_capitalization'}
     recheck_rows = []
     ai_batch_ids = set()
     for batch in batches:
@@ -724,13 +725,16 @@ def collect_recheck_rows(states, batches) -> list[dict]:
     for state in states.values():
         if state.row_id not in ai_batch_ids:
             continue
-        has_term_issue = any(getattr(issue, 'check_type', '') in term_error_types for issue in state.issues)
+        has_term_issue = any(
+            getattr(issue, 'check_type', '') in TERM_REVIEW_ISSUE_TYPES
+            for issue in state.issues
+        )
         if not has_term_issue:
             continue
         issue_desc = '; '.join(sorted(set(
             getattr(issue, 'check_type', '')
             for issue in state.issues
-            if getattr(issue, 'check_type', '') in term_error_types
+            if getattr(issue, 'check_type', '') in TERM_REVIEW_ISSUE_TYPES
         )))
         recheck_rows.append(
             {

@@ -20,6 +20,54 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class XlsxTranslationWritebackTests(unittest.TestCase):
+    def test_writeback_handles_underreported_worksheet_dimension(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["ID", "CN", "EN"])
+            sheet.append([1, "Attack", None])
+            workbook.save(source)
+            workbook.close()
+            with zipfile.ZipFile(source, "r") as archive:
+                entries = {name: archive.read(name) for name in archive.namelist()}
+                infos = archive.infolist()
+            xml = entries["xl/worksheets/sheet1.xml"].decode("utf-8")
+            xml = xml.replace('<dimension ref="A1:C2"/>', '<dimension ref="A1"/>')
+            entries["xl/worksheets/sheet1.xml"] = xml.encode("utf-8")
+            with zipfile.ZipFile(source, "w") as archive:
+                for info in infos:
+                    archive.writestr(info, entries[info.filename])
+            cache = root / "cache.jsonl"
+            write_jsonl(
+                cache,
+                [
+                    {
+                        "key": "source.xlsx::Sheet::1::2",
+                        "id": "1",
+                        "source_file": "source.xlsx",
+                        "sheet": "Sheet",
+                        "row": 2,
+                        "cn": "Attack",
+                        "translations": {"EN": "Attack"},
+                    }
+                ],
+            )
+
+            write_translation_workbooks(
+                inputs=[source],
+                cache_jsonl=cache,
+                target_langs=["EN"],
+                output_dir=root / "delivery",
+            )
+
+            saved = load_workbook(root / "delivery" / "source.xlsx", read_only=True)
+            try:
+                self.assertEqual(saved["Sheet"]["C2"].value, "Attack")
+            finally:
+                saved.close()
+
     def test_writeback_preserves_worksheet_namespace_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -154,6 +202,47 @@ class XlsxTranslationWritebackTests(unittest.TestCase):
                     target_langs=["EN"],
                     output_dir=root / "delivery",
                 )
+
+    def test_writeback_preserves_numeric_zero_source_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["ID", "CN", "EN"])
+            sheet.append([1, 0, None])
+            workbook.save(source)
+            workbook.close()
+            cache = root / "cache.jsonl"
+            write_jsonl(
+                cache,
+                [
+                    {
+                        "key": "source.xlsx::Sheet::1::2",
+                        "id": "1",
+                        "source_file": "source.xlsx",
+                        "sheet": "Sheet",
+                        "row": 2,
+                        "cn": "0",
+                        "translations": {"EN": "0"},
+                    }
+                ],
+            )
+
+            write_translation_workbooks(
+                inputs=[source],
+                cache_jsonl=cache,
+                target_langs=["EN"],
+                output_dir=root / "delivery",
+            )
+
+            saved = load_workbook(root / "delivery" / "source.xlsx", read_only=True)
+            try:
+                self.assertEqual(saved["Sheet"]["C2"].value, "0")
+            finally:
+                saved.close()
+            verification = verify_translation_cache(root / "delivery", cache, ["EN"])
+            self.assertEqual(verification["hard_blockers"], 0)
 
     def test_writeback_rejects_repeated_source_row_with_wrong_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

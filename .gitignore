@@ -36,5 +36,6 @@ api_key*
 .local-logs/
 tmp/
 release_archives/
+recovered_outputs/
 frontend-v2/
 .playwright-cli/
