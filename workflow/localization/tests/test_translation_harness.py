@@ -14,6 +14,9 @@ from utils.translation_harness import (
 SRC_CLAIM = "\u9886\u53d6\u5956\u52b1"
 SRC_SURVIVAL = "\u7d2f\u8ba1\u53c2\u4e0e{0}\u6b21\u6c42\u751f\u4e4b\u8def"
 SRC_RICH = "[size=80][c0]\u81ea\u9009\u4f20\u8bf4\u6280\u80fd[s0][/size]"
+SRC_SKILL = "\u7ec8\u7109\u4e4b\u5883"
+SRC_LOCATION = "\u592a\u9633\u795e\u6bbf"
+SRC_BUILDING = "\u8f7d\u5177\u4e2d\u5fc3"
 
 
 def _write_language_workbook(path: Path) -> None:
@@ -35,6 +38,48 @@ def _write_term_workbook(path: Path) -> None:
     ws.append([1, SRC_CLAIM, "Claim Reward", "", "UI\u64cd\u4f5c\u52a8\u8bcd"])
     ws.append([2, "\u6c42\u751f\u4e4b\u8def", "Survival Road", "", "\u4efb\u52a1/\u6d3b\u52a8/\u73a9\u6cd5"])
     ws.append([3, "\u4f20\u8bf4\u6280\u80fd", "Legendary Skill", "", "\u9053\u5177/\u88c5\u5907/\u793c\u5305"])
+    wb.save(path)
+
+
+def _write_name_policy_language_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["ID", "Cn", "En"])
+    ws.append([4, SRC_SKILL, ""])
+    ws.append([5, SRC_LOCATION, ""])
+    ws.append([6, SRC_BUILDING, ""])
+    wb.save(path)
+
+
+def _write_name_policy_term_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "\u672f\u8bed\u8868"
+    ws.append(["ID", "CN", "EN", "EN2", "\u5206\u7c7b"])
+    ws.append([4, SRC_SKILL, "Final Realm", "", "\u6280\u80fd\u540d"])
+    ws.append([5, SRC_LOCATION, "Temple of the Sun", "", "\u5730\u70b9\u540d"])
+    ws.append([6, SRC_BUILDING, "Vehicle Center", "", "\u5efa\u7b51\u540d"])
+    wb.save(path)
+
+
+def _write_english_reference_language_workbook(path: Path, *, missing_second_reference: bool = False) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["ID", "CN", "EN", "FR"])
+    ws.append([10, "\u70c8\u7130\u65a9", "Flame Strike", ""])
+    ws.append([11, "\u592a\u9633\u795e\u6bbf", "" if missing_second_reference else "Temple of the Sun", ""])
+    wb.save(path)
+
+
+def _write_english_reference_term_workbook(path: Path) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "\u672f\u8bed\u8868"
+    ws.append(["CN", "EN", "FR", "\u5206\u7c7b"])
+    ws.append(["\u70c8\u7130\u65a9", "Flame Strike", "Frappe ardente", "\u6280\u80fd\u540d"])
+    ws.append(["\u592a\u9633\u795e\u6bbf", "Temple of the Sun", "Temple du Soleil", "\u5730\u70b9\u540d"])
     wb.save(path)
 
 
@@ -126,6 +171,220 @@ class TranslationHarnessTests(unittest.TestCase):
             self.assertEqual(rows[1]["placeholders"], ["{0}"])
             self.assertIn("Survival Road", [term["target"] for term in rows[1]["term_hits"]])
             self.assertIn("[size=80]", rows[2]["tags"])
+
+    def test_prepare_adds_explicit_skill_location_and_building_name_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            term_path = tmp_path / "terms.xlsx"
+            _write_name_policy_language_workbook(lang_path)
+            _write_name_policy_term_workbook(term_path)
+
+            result = prepare_translation_harness(
+                input_path=lang_path,
+                term_base_path=term_path,
+                lang="en",
+                output_dir=tmp_path / "out",
+            )
+            rows = [
+                json.loads(line)
+                for line in result.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(rows[0]["text_type"], "ui_skill_name")
+            self.assertEqual(rows[0]["name_type"], "ui_skill_name")
+            self.assertEqual(rows[0]["name_policy"]["preferred_words"], 2)
+            self.assertEqual(rows[1]["text_type"], "ui_location_name")
+            self.assertEqual(rows[1]["name_policy"]["preferred_content_words"], 2)
+            self.assertEqual(rows[2]["text_type"], "ui_building_name")
+            self.assertEqual(rows[2]["name_policy"]["preferred_content_words"], 2)
+            self.assertEqual(rows[2]["name_policy"]["map_label_max_characters"], 14)
+            self.assertEqual(
+                rows[2]["name_policy"]["tier_policy"],
+                "separate_ui_badge_when_supported",
+            )
+            self.assertEqual(rows[0]["term_hits"][0]["category"], "\u6280\u80fd\u540d")
+
+    def test_prepare_cn_plus_en_keeps_chinese_primary_and_adds_english_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            term_path = tmp_path / "terms.xlsx"
+            _write_english_reference_language_workbook(lang_path)
+            _write_english_reference_term_workbook(term_path)
+
+            prepared = prepare_translation_harness(
+                input_path=lang_path,
+                term_base_path=term_path,
+                lang="fr",
+                output_dir=tmp_path / "out",
+                source_mode="cn+en",
+            )
+            rows = [
+                json.loads(line)
+                for line in prepared.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(prepared.manifest["source_mode"], "cn+en")
+            self.assertEqual(prepared.manifest["english_reference_status"]["usable_rows"], 2)
+            self.assertEqual(rows[0]["source"], "\u70c8\u7130\u65a9")
+            self.assertEqual(rows[0]["translation_source"], "\u70c8\u7130\u65a9")
+            self.assertEqual(rows[0]["reference_en"], "Flame Strike")
+            self.assertEqual(rows[0]["reference_en_status"], "usable")
+            self.assertEqual(rows[0]["source_mode"], "cn+en")
+
+    def test_prepare_en_mode_uses_english_as_translation_source_but_keeps_cn_terms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            term_path = tmp_path / "terms.xlsx"
+            _write_english_reference_language_workbook(lang_path)
+            _write_english_reference_term_workbook(term_path)
+
+            prepared = prepare_translation_harness(
+                input_path=lang_path,
+                term_base_path=term_path,
+                lang="fr",
+                output_dir=tmp_path / "out",
+                source_mode="en",
+            )
+            rows = [
+                json.loads(line)
+                for line in prepared.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(rows[0]["translation_source"], "Flame Strike")
+            self.assertEqual(rows[0]["reference_en"], "Flame Strike")
+            self.assertEqual(rows[0]["source_cn"], "\u70c8\u7130\u65a9")
+            self.assertIn("Frappe ardente", [term["target"] for term in rows[0]["term_hits"]])
+
+    def test_prepare_en_mode_rejects_incomplete_english_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            _write_english_reference_language_workbook(lang_path, missing_second_reference=True)
+
+            with self.assertRaisesRegex(ValueError, "complete usable English"):
+                prepare_translation_harness(
+                    input_path=lang_path,
+                    lang="fr",
+                    output_dir=tmp_path / "out",
+                    source_mode="en",
+                )
+
+    def test_prepare_cn_plus_en_marks_missing_reference_and_falls_back_to_chinese(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            _write_english_reference_language_workbook(lang_path, missing_second_reference=True)
+
+            prepared = prepare_translation_harness(
+                input_path=lang_path,
+                lang="fr",
+                output_dir=tmp_path / "out",
+                source_mode="cn+en",
+            )
+            rows = [
+                json.loads(line)
+                for line in prepared.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(prepared.manifest["english_reference_status"]["usable_rows"], 1)
+            self.assertEqual(prepared.manifest["english_reference_status"]["empty_rows"], 1)
+            self.assertEqual(rows[1]["reference_en"], "")
+            self.assertEqual(rows[1]["reference_en_status"], "missing")
+            self.assertEqual(rows[1]["translation_source"], "\u592a\u9633\u795e\u6bbf")
+
+    def test_translation_cache_is_isolated_by_source_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            _write_english_reference_language_workbook(lang_path)
+            out_dir = tmp_path / "out"
+
+            prepared_cn = prepare_translation_harness(
+                input_path=lang_path,
+                lang="fr",
+                output_dir=out_dir,
+                source_mode="cn",
+            )
+            response_path = tmp_path / "translation_response.jsonl"
+            _write_jsonl(
+                response_path,
+                [
+                    {"id": 10, "translation": "Frappe ardente"},
+                    {"id": 11, "translation": "Temple du Soleil"},
+                ],
+            )
+            apply_translation_response(
+                input_path=lang_path,
+                manifest_path=prepared_cn.manifest_path,
+                response_path=response_path,
+                output_dir=out_dir,
+                lang="fr",
+            )
+
+            prepared_ref = prepare_translation_harness(
+                input_path=lang_path,
+                lang="fr",
+                output_dir=out_dir,
+                source_mode="cn+en",
+            )
+            rows = [
+                json.loads(line)
+                for line in prepared_ref.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertFalse(rows[0]["cache_hit"])
+            self.assertFalse(rows[1]["cache_hit"])
+
+    def test_translation_cache_is_invalidated_when_english_reference_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            lang_path = tmp_path / "lang.xlsx"
+            _write_english_reference_language_workbook(lang_path)
+            out_dir = tmp_path / "out"
+
+            prepared = prepare_translation_harness(
+                input_path=lang_path,
+                lang="fr",
+                output_dir=out_dir,
+                source_mode="cn+en",
+            )
+            response_path = tmp_path / "translation_response.jsonl"
+            _write_jsonl(
+                response_path,
+                [
+                    {"id": 10, "translation": "Frappe ardente"},
+                    {"id": 11, "translation": "Temple du Soleil"},
+                ],
+            )
+            apply_translation_response(
+                input_path=lang_path,
+                manifest_path=prepared.manifest_path,
+                response_path=response_path,
+                output_dir=out_dir,
+                lang="fr",
+            )
+
+            wb = load_workbook(lang_path)
+            wb.active["C2"] = "Blaze Slash"
+            wb.save(lang_path)
+            wb.close()
+
+            changed_reference = prepare_translation_harness(
+                input_path=lang_path,
+                lang="fr",
+                output_dir=out_dir,
+                source_mode="cn+en",
+            )
+            rows = [
+                json.loads(line)
+                for line in changed_reference.workpack_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertFalse(rows[0]["cache_hit"])
+            self.assertTrue(rows[1]["cache_hit"])
 
     def test_prepare_supports_thai_vietnamese_and_indonesian_targets(self):
         expected_terms = {

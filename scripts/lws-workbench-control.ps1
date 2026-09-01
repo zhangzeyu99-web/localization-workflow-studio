@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("start", "restart", "status", "stop", "monitor", "monitor-status", "monitor-stop", "install-autostart", "uninstall-autostart")]
+  [ValidateSet("start", "restart", "status", "stop", "monitor", "monitor-status", "monitor-stop", "install-shortcut", "install-autostart", "uninstall-autostart")]
   [string]$Action = "start"
 )
 
@@ -244,18 +244,31 @@ function Invoke-MonitorLoop {
   }
 }
 
+function Install-DesktopShortcut {
+  $desktopDir = [Environment]::GetFolderPath("Desktop")
+  $shortcutName = "$([char]0x672C)$([char]0x5730)$([char]0x5316)$([char]0x5DE5)$([char]0x4F5C)$([char]0x53F0).lnk"
+  $shortcutPath = Join-Path $desktopDir $shortcutName
+  $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+  $shell = New-Object -ComObject WScript.Shell
+  $shortcut = $shell.CreateShortcut($shortcutPath)
+  $shortcut.TargetPath = $powershellPath
+  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ControlScript`" -Action start"
+  $shortcut.WorkingDirectory = $RepoRoot
+  $shortcut.WindowStyle = 1
+  $shortcut.Description = "Start Localization Workflow Studio (local + LAN)"
+  $shortcut.Save()
+  Write-Host "Desktop shortcut installed: $shortcutPath"
+}
+
 function Install-Autostart {
   $startupDir = [Environment]::GetFolderPath("Startup")
   $shortcutPath = Join-Path $startupDir "Localization Workbench.lnk"
-  $desktopCmd = Join-Path ([Environment]::GetFolderPath("Desktop")) "Start-Workbench.cmd"
-  if (-not (Test-Path $desktopCmd)) {
-    $desktopCmd = $ControlScript
-  }
+  $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
   $shell = New-Object -ComObject WScript.Shell
   $shortcut = $shell.CreateShortcut($shortcutPath)
-  $shortcut.TargetPath = $desktopCmd
-  $shortcut.Arguments = "start"
-  $shortcut.WorkingDirectory = Split-Path $desktopCmd
+  $shortcut.TargetPath = $powershellPath
+  $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ControlScript`" -Action start"
+  $shortcut.WorkingDirectory = $RepoRoot
   $shortcut.WindowStyle = 7
   $shortcut.Description = "Start Localization Workflow Studio (local + LAN)"
   $shortcut.Save()
@@ -312,6 +325,9 @@ switch ($Action) {
   }
   "monitor-stop" {
     Stop-Monitor
+  }
+  "install-shortcut" {
+    Install-DesktopShortcut
   }
   "install-autostart" {
     Install-Autostart

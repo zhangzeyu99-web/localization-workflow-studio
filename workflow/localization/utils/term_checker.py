@@ -91,6 +91,44 @@ TERM_ALIASES = {
     'meningkatkan': ['ditingkatkan', 'peningkatan', 'naik level'],
 }
 
+EXACT_TERM_METADATA_MARKERS = {
+    'exact',
+    'exact match',
+    'fixed name',
+    'fixed translation',
+    'proper name',
+    'proper noun',
+    'game name',
+    'game title',
+    'work title',
+    'product name',
+    'brand name',
+    '专有名词',
+    '专名',
+    '固定译名',
+    '游戏名',
+    '作品名',
+    '产品名',
+    '品牌名',
+}
+
+NEGATED_EXACT_TERM_METADATA_MARKERS = {
+    '非专有名词',
+    '非专名',
+    '非固定译名',
+    '非游戏名',
+    '不是专有名词',
+    '不是专名',
+}
+
+TERM_REVIEW_ISSUE_TYPES = frozenset({
+    'term_missing',
+    'term_partial_hit',
+    'term_capitalization',
+    'romanized_name_residue',
+    'term_superstring_drift_candidate',
+})
+
 
 @dataclass
 class TermCheckResult:
@@ -132,8 +170,126 @@ def _find_term_in_text(term: str, text: str) -> tuple[bool, str]:
     return False, ''
 
 
-def _source_contains_term(source_term: str, original: str) -> bool:
-    """Match source terms without treating placeholder numbers as plain text.
+SOURCE_QUOTE_PAIRS = (
+    ('“', '”'),
+    ('‘', '’'),
+    ('「', '」'),
+    ('『', '』'),
+    ('《', '》'),
+    ('"', '"'),
+    ("'", "'"),
+)
+TARGET_QUOTE_PAIRS = SOURCE_QUOTE_PAIRS + (
+    ('«', '»'),
+    ('„', '“'),
+)
+STRUCTURAL_SOURCE_SEPARATOR = re.compile(r'^(?:[·•・:：|｜]|[-–—]\s)')
+STRUCTURAL_SOURCE_PREFIX_SEPARATOR = re.compile(r'(?:[·•・:：|｜]|[-–—])$')
+STRUCTURAL_TARGET_SEPARATOR = re.compile(r'\s+(?:[-–—|｜])\s+|[·•・:：]')
+
+
+def _classify_source_term_usage(original: str, source_term: str) -> str:
+    """Return a high-signal context where the target name can be isolated."""
+    text = str(original or '')
+    for start, end in _source_term_spans(source_term, text):
+        left = text[:start].rstrip()
+        right = text[end:].lstrip()
+        for opening, closing in SOURCE_QUOTE_PAIRS:
+            if left.endswith(opening) and right.startswith(closing):
+                return 'quoted'
+        if (
+            STRUCTURAL_SOURCE_SEPARATOR.match(right)
+            or STRUCTURAL_SOURCE_PREFIX_SEPARATOR.search(left)
+        ):
+            return 'structural'
+    return ''
+
+
+def _find_term_match(term: str, text: str) -> re.Match | None:
+    return _compile_term_pattern(term).search(text)
+
+
+def _extract_quoted_term_segment(
+    text: str,
+    match: re.Match,
+) -> str:
+    for opening, closing in TARGET_QUOTE_PAIRS:
+        left = text.rfind(opening, 0, match.start())
+        if left < 0:
+            continue
+        right = text.find(closing, match.end())
+        if right < 0:
+            continue
+        return text[left + len(opening):right].strip()
+    return ''
+
+
+def _extract_structural_term_segment(
+    text: str,
+    match: re.Match,
+) -> str:
+    start = 0
+    end = len(text)
+    for separator in STRUCTURAL_TARGET_SEPARATOR.finditer(text):
+        if separator.end() <= match.start():
+            start = separator.end()
+            continue
+        if separator.start() >= match.end():
+            end = separator.start()
+            break
+    return text[start:end].strip()
+
+
+def _normalize_term_segment(text: str) -> str:
+    stripped = str(text or '').strip()
+    stripped = re.sub(r'^[\s"\'“”‘’「」『』《》«»„\[\](){}]+', '', stripped)
+    stripped = re.sub(r'[\s"\'“”‘’「」『』《》«»„\[\](){}]+$', '', stripped)
+    return re.sub(r'\s+', ' ', stripped).casefold()
+
+
+def _check_term_superstring_drift(
+    row_id: int,
+    original: str,
+    translation: str,
+    source_term: str,
+    matched_expected: str,
+) -> list[TermCheckResult]:
+    """Flag legacy modifiers around an approved term for contextual AI review."""
+    usage = _classify_source_term_usage(original, source_term)
+    if usage not in {'quoted', 'structural'}:
+        return []
+
+    clean_translation = _normalize_for_search(translation)
+    match = _find_term_match(matched_expected, clean_translation)
+    if not match:
+        return []
+
+    if usage == 'quoted':
+        segment = _extract_quoted_term_segment(clean_translation, match)
+    else:
+        segment = _extract_structural_term_segment(clean_translation, match)
+    if not segment:
+        return []
+    if _normalize_term_segment(segment) == _normalize_term_segment(matched_expected):
+        return []
+
+    return [TermCheckResult(
+        row_id=row_id,
+        check_type='term_superstring_drift_candidate',
+        severity='warning',
+        message=(
+            f"Approved term '{matched_expected}' is present, but the isolated name "
+            f"segment '{segment}' contains extra text; review for a legacy expanded name"
+        ),
+        source_term=source_term,
+        expected_target=matched_expected,
+        actual_fragment=segment,
+        confidence=0.75,
+    )]
+
+
+def _source_term_spans(source_term: str, original: str) -> list[tuple[int, int]]:
+    """Return valid source-term spans without matching placeholder fragments.
 
     For example, the glossary term "1小时" should not match the source
     "##1小时##2分钟"; that source is using a placeholder, not the literal number 1.
@@ -141,20 +297,51 @@ def _source_contains_term(source_term: str, original: str) -> bool:
     term = str(source_term or '')
     text = str(original or '')
     if not term:
-        return False
-    if not re.search(r'[A-Za-z0-9#]', term):
-        return term in text
+        return []
 
     pattern = re.compile(re.escape(term))
+    spans = []
     for match in pattern.finditer(text):
-        before = text[match.start() - 1] if match.start() > 0 else ''
-        after = text[match.end()] if match.end() < len(text) else ''
-        if term[0].isalnum() and before and (before.isalnum() or before == '#'):
+        if re.search(r'[A-Za-z0-9#]', term):
+            before = text[match.start() - 1] if match.start() > 0 else ''
+            after = text[match.end()] if match.end() < len(text) else ''
+            if term[0].isalnum() and before and (before.isalnum() or before == '#'):
+                continue
+            if term[-1].isalnum() and after and (after.isalnum() or after == '#'):
+                continue
+        spans.append((match.start(), match.end()))
+    return spans
+
+
+def _select_longest_source_terms(original: str, source_terms) -> list[str]:
+    """Select longest non-overlapping term occurrences from the source text."""
+    candidates: list[tuple[int, int, str, int]] = []
+    for order, source_term in enumerate(source_terms):
+        term = str(source_term or '')
+        for start, end in _source_term_spans(term, original):
+            candidates.append((start, end, term, order))
+
+    candidates.sort(key=lambda item: (-(item[1] - item[0]), item[0], item[3]))
+    accepted: list[tuple[int, int, str, int]] = []
+    for candidate in candidates:
+        start, end, _, _ = candidate
+        overlaps = any(
+            start < selected_end and end > selected_start
+            for selected_start, selected_end, _, _ in accepted
+        )
+        if overlaps:
             continue
-        if term[-1].isalnum() and after and (after.isalnum() or after == '#'):
-            continue
-        return True
-    return False
+        accepted.append(candidate)
+
+    first_occurrence: dict[str, int] = {}
+    source_order: dict[str, int] = {}
+    for start, _, term, order in accepted:
+        first_occurrence[term] = min(start, first_occurrence.get(term, start))
+        source_order.setdefault(term, order)
+    return sorted(
+        first_occurrence,
+        key=lambda term: (-len(term), first_occurrence[term], source_order[term]),
+    )
 
 
 def _pluralize_word(word: str) -> str:
@@ -201,7 +388,31 @@ def _inflect_term(term: str) -> set[str]:
     return {variant for variant in variants if variant}
 
 
-def _expand_search_terms(accepted_terms: list[str]) -> list[str]:
+def is_exact_term_metadata(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or '').strip().lower()
+    normalized = re.sub(r'[\s_-]+', ' ', text)
+    if (
+        re.search(r'\binexact\b', normalized)
+        or re.search(
+            r'\b(?:non|not)\s+(?:an?\s+)?'
+            r'(?:exact(?:\s+match)?|proper\s+(?:name|noun)|fixed\s+(?:name|translation)|game\s+(?:name|title))\b',
+            normalized,
+        )
+        or any(marker in text for marker in NEGATED_EXACT_TERM_METADATA_MARKERS)
+    ):
+        return False
+    for marker in EXACT_TERM_METADATA_MARKERS:
+        if re.search(r'[A-Za-z]', marker):
+            if re.search(rf'\b{re.escape(marker)}\b', normalized):
+                return True
+        elif marker in text:
+            return True
+    return False
+
+
+def _expand_search_terms(accepted_terms: list[str], *, exact_match: bool = False) -> list[str]:
     expanded: list[str] = []
     seen = set()
 
@@ -216,6 +427,9 @@ def _expand_search_terms(accepted_terms: list[str]) -> list[str]:
         expanded.append(normalized)
 
     for term in accepted_terms:
+        if exact_match:
+            _add(term)
+            continue
         for variant in _inflect_term(term):
             _add(variant)
 
@@ -227,17 +441,17 @@ def _expand_search_terms(accepted_terms: list[str]) -> list[str]:
     return expanded
 
 
-def _normalize_term_entry(term_value) -> tuple[str, list[str], bool]:
-    """Normalize term entry to (primary, accepted_terms, enforce_case)."""
+def _normalize_term_entry(term_value) -> tuple[str, list[str], bool, bool]:
+    """Normalize term entry to primary, accepted terms, case and exact-match flags."""
     if isinstance(term_value, str):
         t = term_value.strip()
-        return t, [t] if t else [], False
+        return t, [t] if t else [], False, False
 
     if isinstance(term_value, list):
         terms = [str(x).strip() for x in term_value if str(x).strip()]
         if not terms:
-            return '', [], False
-        return terms[0], terms, False
+            return '', [], False, False
+        return terms[0], terms, False, False
 
     if isinstance(term_value, dict):
         primary = str(term_value.get('primary', '')).strip()
@@ -246,6 +460,11 @@ def _normalize_term_entry(term_value) -> tuple[str, list[str], bool]:
             variants = [variants]
         variants = [str(x).strip() for x in variants if str(x).strip()]
         enforce_case = bool(term_value.get('enforce_case', False))
+        exact_match = (
+            bool(term_value.get('exact_match', False))
+            or is_exact_term_metadata(term_value.get('constraint'))
+            or is_exact_term_metadata(term_value.get('category'))
+        )
 
         accepted = []
         seen = set()
@@ -260,9 +479,9 @@ def _normalize_term_entry(term_value) -> tuple[str, list[str], bool]:
 
         if not primary and accepted:
             primary = accepted[0]
-        return primary, accepted, enforce_case
+        return primary, accepted, enforce_case, exact_match
 
-    return '', [], False
+    return '', [], False, False
 
 
 def merge_builtin_name_terms(term_lookup: dict, lang: str) -> dict:
@@ -426,11 +645,12 @@ def check_term_hit(
     """
     results = []
 
+    selected_source_terms = set(_select_longest_source_terms(original, term_lookup))
     for cn_term, term_entry in term_lookup.items():
-        if not _source_contains_term(cn_term, original):
+        if cn_term not in selected_source_terms:
             continue
 
-        primary_term, accepted_terms, enforce_case = _normalize_term_entry(term_entry)
+        primary_term, accepted_terms, enforce_case, exact_match = _normalize_term_entry(term_entry)
         if not accepted_terms:
             continue
         romanized_results = _check_romanized_name_residue(
@@ -444,7 +664,11 @@ def check_term_hit(
         if romanized_results:
             results.extend(romanized_results)
             continue
-        search_terms = _expand_search_terms(accepted_terms) if lang in {'en', 'idn'} else accepted_terms
+        search_terms = (
+            _expand_search_terms(accepted_terms, exact_match=exact_match)
+            if lang in {'en', 'idn'}
+            else accepted_terms
+        )
 
         # Layer 1: term hit detection
         found = False
@@ -461,12 +685,12 @@ def check_term_hit(
             en_words = primary_term.split()
             if lang in {'en', 'idn'} and len(en_words) > 1:
                 # Multi-word term: check if any words appear
-                hits = sum(1 for w in en_words if w.lower() in translation.lower())
+                hits = sum(1 for word in en_words if _find_term_in_text(word, translation)[0])
                 if hits > 0 and hits < len(en_words):
                     results.append(TermCheckResult(
                         row_id=row_id,
                         check_type='term_partial_hit',
-                        severity='warning',
+                        severity='error',
                         message=f"Partial term match: expected one of {accepted_terms} for '{cn_term}', "
                                 f"found {hits}/{len(en_words)} words",
                         source_term=cn_term,
@@ -494,6 +718,13 @@ def check_term_hit(
                     confidence=0.8,
                 ))
         else:
+            results.extend(_check_term_superstring_drift(
+                row_id=row_id,
+                original=original,
+                translation=translation,
+                source_term=cn_term,
+                matched_expected=matched_expected,
+            ))
             # Optional Layer 2: capitalization checks (default disabled)
             if lang == 'en' and enforce_case and matched_expected:
                 cap_results = _check_capitalization(matched_expected, translation, row_id, cn_term)

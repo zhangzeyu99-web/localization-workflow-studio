@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from utils.process_language_review import RowId, RowState, _coerce_row_id
+from utils.term_checker import TERM_REVIEW_ISSUE_TYPES
 
 
 # ─────────────────────────────────────────────────────────────
@@ -58,9 +59,8 @@ def _build_result_review(
         if not state.needs_human_review:
             continue
 
-        term_error_types = {'term_missing', 'term_partial_hit', 'term_capitalization', 'romanized_name_residue'}
         has_term_issue = any(
-            getattr(i, 'check_type', '') in term_error_types for i in state.issues
+            getattr(i, 'check_type', '') in TERM_REVIEW_ISSUE_TYPES for i in state.issues
         )
 
         if state.row_id in corrected:
@@ -99,8 +99,6 @@ def _build_term_only_view(
     ]
     if not term_lookup:
         return pd.DataFrame(columns=cols)
-
-    term_error_types = {'term_missing', 'term_partial_hit', 'term_capitalization', 'romanized_name_residue'}
 
     # Prebuild term candidates (skip too-short CN terms to reduce noisy hits)
     term_items: list[tuple[str, str]] = []
@@ -144,7 +142,7 @@ def _build_term_only_view(
         hit_issue_types = []
         for issue in state.issues:
             ctype = getattr(issue, 'check_type', '')
-            if ctype in term_error_types:
+            if ctype in TERM_REVIEW_ISSUE_TYPES:
                 hit_issue_types.append(ctype)
 
         if hit_issue_types:
@@ -220,8 +218,13 @@ def _build_report_sheets(
         'term_partial_hit': '多词术语仅部分匹配',
         'term_capitalization': '术语大小写问题',
         'romanized_name_residue': '译文中残留拼音或音译专名',
+        'term_superstring_drift_candidate': '主译已出现，但名称片段可能残留旧修饰词，需结合语境复核',
         'ui_length_overflow': 'UI短文案长度超出预算',
         'short_text_length_watch': '短文本长度偏长（软提示）',
+        'skill_name_word_count_watch': '技能名超过两词/字符软预算，需结合含义和重名风险压缩',
+        'location_name_compactness_watch': '地名核心词或字符偏长，需结合自然语序压缩',
+        'building_name_compactness_watch': '建筑名不适合移动端地图 UI，需保留功能语义并压缩正式名/地图短标签',
+        'name_translation_collision_watch': '不同中文专名使用了同一目标语名称',
         'opaque_abbreviation': '译文包含不可读缩写或内部代码式文案',
         'clipped_word': '译文包含截断词或过度压缩缩写',
         'title_case_overuse': '错误/状态/提示类文案过度使用 Title Case',

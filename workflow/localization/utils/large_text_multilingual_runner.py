@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from utils.large_text_multilingual_gate import parse_langs, preflight
+from utils.source_reference import normalize_source_mode
 
 
 WORKFLOW_VERSION = "large_text_multilingual_v1"
@@ -160,8 +161,23 @@ def build_manifest(
     workbook_count: int,
     relay_config: Path | None,
     proofread_mode: str,
+    source_mode: str = "cn",
 ) -> dict[str, Any]:
     work_dir.mkdir(parents=True, exist_ok=True)
+    source_mode = normalize_source_mode(source_mode)
+    detected_modes = {
+        normalize_source_mode(json.loads(line).get("source_mode", "cn"))
+        for line in items_jsonl.read_text(encoding="utf-8-sig").splitlines()
+        if line.strip()
+    }
+    if len(detected_modes) > 1:
+        raise ValueError(f"items_jsonl contains mixed source modes: {sorted(detected_modes)}")
+    detected_source_mode = next(iter(detected_modes), "cn")
+    if detected_source_mode != source_mode:
+        raise ValueError(
+            f"manifest source_mode {source_mode} does not match items_jsonl mode "
+            f"{detected_source_mode}"
+        )
     preflight_result = preflight(
         items_jsonl,
         target_langs=target_langs,
@@ -186,6 +202,7 @@ def build_manifest(
             "target_languages": target_langs,
             "workbook_count": workbook_count,
             "proofread_mode": proofread_mode,
+            "source_mode": source_mode,
         },
         "artifacts": {
             "preflight": str(preflight_path),
@@ -271,6 +288,87 @@ def workflow_status(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def finalize_recovered_manifest(
+    manifest_path: Path,
+    *,
+    final_cache: Path,
+    final_cache_lint: Path,
+    proofread_summary: Path | None,
+    apply_dry_run: Path,
+    readback_gate: Path,
+    delivery_dir: Path,
+    reason: str,
+) -> dict[str, Any]:
+    manifest = load_manifest(manifest_path)
+    previous_status = str(manifest.get("status") or "unknown")
+    lint = read_json(final_cache_lint)
+    readback = read_json(readback_gate)
+    dry_run = read_json(apply_dry_run)
+    proofread_mode = str(manifest.get("inputs", {}).get("proofread_mode") or "basic")
+    if not final_cache.exists() or final_cache.stat().st_size == 0:
+        raise ValueError("final cache is missing or empty")
+    if lint.get("hard_blockers") != 0 or lint.get("ok_to_apply") is not True:
+        raise ValueError("final cache-lint is not verified")
+    if dry_run.get("ok") is not True:
+        raise ValueError("apply dry-run is not verified")
+    if readback.get("hard_blockers") != 0 or readback.get("readback_verified") is not True:
+        raise ValueError("readback gate is not verified")
+    if not delivery_dir.is_dir() or not any(path.is_file() for path in delivery_dir.iterdir()):
+        raise ValueError("delivery directory is missing or empty")
+    if proofread_mode in {"sampled", "full"} and (
+        proofread_summary is None or not read_json(proofread_summary)
+    ):
+        raise ValueError("proofread summary is required for deep proofreading recovery")
+
+    completed_at = datetime.now().isoformat(timespec="seconds")
+    recovery_retro = Path(manifest["work_dir"]) / "recovery_retro.json"
+    evidence = {
+        "final_cache": str(final_cache),
+        "final_cache_lint": str(final_cache_lint),
+        "proofread_summary": str(proofread_summary) if proofread_summary else "",
+        "apply_dry_run": str(apply_dry_run),
+        "readback_gate": str(readback_gate),
+        "delivery_dir": str(delivery_dir),
+    }
+    write_json(
+        recovery_retro,
+        {
+            "status": "complete",
+            "previous_status": previous_status,
+            "reason": reason,
+            "completed_at": completed_at,
+            "evidence": evidence,
+        },
+    )
+    for phase in manifest.get("critical_path") or []:
+        if manifest.setdefault("phase_status", {}).get(phase) != "skipped":
+            manifest["phase_status"][phase] = "done"
+    manifest.setdefault("phase_events", []).append(
+        {
+            "phase": "recovery_reconcile",
+            "event": "done",
+            "at": completed_at,
+            "previous_status": previous_status,
+            "reason": reason,
+        }
+    )
+    manifest.setdefault("artifacts", {}).update(
+        {
+            **evidence,
+            "recovery_retro": str(recovery_retro),
+        }
+    )
+    manifest["recovery"] = {
+        "previous_status": previous_status,
+        "reason": reason,
+        "completed_at": completed_at,
+    }
+    manifest["delivery_dir"] = str(delivery_dir)
+    manifest["status"] = "complete"
+    save_manifest(manifest)
+    return manifest
+
+
 def write_or_print(payload: dict[str, Any], out: Path | None = None) -> None:
     if out:
         write_json(out, payload)
@@ -287,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     pack.add_argument("--history-dir", action="append", default=[], type=Path)
     pack.add_argument("--target-langs", required=True)
     pack.add_argument("--work-dir", required=True, type=Path)
+    pack.add_argument("--source-mode", choices=["cn", "cn+en", "en"], default="cn")
     pack.add_argument("--out", type=Path)
 
     prepare = sub.add_parser("prepare", help="Create workflow manifest and lightweight preflight artifacts.")
@@ -297,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--workbook-count", type=int, default=1)
     prepare.add_argument("--relay-config", type=Path)
     prepare.add_argument("--proofread-mode", choices=["basic", "sampled", "full"], default="basic")
+    prepare.add_argument("--source-mode", choices=["cn", "cn+en", "en"], default="cn")
     prepare.add_argument("--out", type=Path)
 
     smoke = sub.add_parser("record-smoke", help="Record API smoke result after a small schema/latency test.")
@@ -313,6 +413,20 @@ def main(argv: list[str] | None = None) -> int:
     status.add_argument("--manifest", required=True, type=Path)
     status.add_argument("--out", type=Path)
 
+    reconcile = sub.add_parser(
+        "reconcile",
+        help="Close a recovered failed run from verified cache, QA, writeback, and readback artifacts.",
+    )
+    reconcile.add_argument("--manifest", required=True, type=Path)
+    reconcile.add_argument("--final-cache", required=True, type=Path)
+    reconcile.add_argument("--final-cache-lint", required=True, type=Path)
+    reconcile.add_argument("--proofread-summary", type=Path)
+    reconcile.add_argument("--apply-dry-run", required=True, type=Path)
+    reconcile.add_argument("--readback-gate", required=True, type=Path)
+    reconcile.add_argument("--delivery-dir", required=True, type=Path)
+    reconcile.add_argument("--reason", required=True)
+    reconcile.add_argument("--out", type=Path)
+
     run = sub.add_parser("run", help="Run extract, translate, QA, optional deep proofread, writeback, and readback.")
     run.add_argument("--input", action="append", required=True, type=Path)
     run.add_argument("--term-base", type=Path)
@@ -324,6 +438,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--delivery-dir", type=Path)
     run.add_argument("--batch-size", type=int, default=60)
     run.add_argument("--workers", type=int, default=4)
+    run.add_argument("--proofread-batch-size", type=int, default=30)
+    run.add_argument("--proofread-workers", type=int, default=8)
+    run.add_argument("--source-mode", choices=["cn", "cn+en", "en"], default="cn")
     run.add_argument("--out", type=Path)
 
     args = parser.parse_args(argv)
@@ -338,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
             history_dirs=args.history_dir,
             target_langs=parse_langs(args.target_langs),
             work_dir=args.work_dir,
+            source_mode=args.source_mode,
         )
         payload = asdict(result)
         write_or_print({key: str(value) if isinstance(value, Path) else value for key, value in payload.items()}, args.out)
@@ -351,6 +469,7 @@ def main(argv: list[str] | None = None) -> int:
             workbook_count=args.workbook_count,
             relay_config=args.relay_config,
             proofread_mode=args.proofread_mode,
+            source_mode=args.source_mode,
         )
         payload = {"manifest": manifest["manifest_path"], "status": workflow_status(manifest)}
         write_or_print(payload, args.out)
@@ -371,6 +490,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         write_or_print(workflow_status(load_manifest(args.manifest)), args.out)
         return 0
+    if args.command == "reconcile":
+        manifest = finalize_recovered_manifest(
+            args.manifest,
+            final_cache=args.final_cache,
+            final_cache_lint=args.final_cache_lint,
+            proofread_summary=args.proofread_summary,
+            apply_dry_run=args.apply_dry_run,
+            readback_gate=args.readback_gate,
+            delivery_dir=args.delivery_dir,
+            reason=args.reason,
+        )
+        write_or_print(
+            {"manifest": manifest["manifest_path"], "status": workflow_status(manifest)},
+            args.out,
+        )
+        return 0
     if args.command == "run":
         from dataclasses import asdict
 
@@ -387,6 +522,9 @@ def main(argv: list[str] | None = None) -> int:
             delivery_dir=args.delivery_dir,
             batch_size=args.batch_size,
             workers=args.workers,
+            proofread_batch_size=args.proofread_batch_size,
+            proofread_workers=args.proofread_workers,
+            source_mode=args.source_mode,
         )
         payload = asdict(result)
         write_or_print({key: str(value) if isinstance(value, Path) else value for key, value in payload.items()}, args.out)

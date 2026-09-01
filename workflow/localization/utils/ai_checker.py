@@ -7,9 +7,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from utils.term_checker import TERM_REVIEW_ISSUE_TYPES
+
 from utils.language_config import LANGUAGE_NAMES, language_name
 
-REVIEW_PROTOCOL_VERSION = 2
+REVIEW_PROTOCOL_VERSION = 3
 
 LANG_NAMES = {
     code: name
@@ -72,6 +74,75 @@ def _make_ui_length_section() -> str:
         "- If compactness conflicts with readability, choose the readable translation; never use opaque abbreviations or clipped words to fit the budget.\n"
         "\n"
     )
+
+
+def _make_name_policy_section(batch_rows: list[dict], lang: str = "en") -> str:
+    name_types = {str(row.get("name_type", "")) for row in batch_rows}
+    lines = [
+        "Glossary-classified UI name rules:",
+        "- Apply these rules only to rows carrying NAME metadata; do not infer a name type from source length.",
+        "- Preserve the core image, gameplay distinction, established proper nouns, and uniqueness before shortening.",
+        "- Never create an opaque abbreviation or clipped word to meet a name budget.",
+    ]
+    if "ui_skill_name" in name_types:
+        if lang == "en":
+            lines.append(
+                "Skill-name rule: prefer no more than 2 readable English words and 24 characters; "
+                "use natural Title Case noun phrases, compounds, or hyphenation, and allow a longer exception "
+                "when meaning or uniqueness would otherwise be lost."
+            )
+        else:
+            lines.append(
+                "Skill-name rule: prefer about 2 core semantic units in natural target-language grammar; "
+                "do not impose an English surface-word count."
+            )
+    if "ui_location_name" in name_types:
+        if lang == "en":
+            lines.append(
+                "Place-name rule: prefer no more than 2 content words and 28 characters; "
+                "articles and connectors such as of/the do not count, and established natural place names may be longer."
+            )
+        else:
+            lines.append(
+                "Place-name rule: keep the geographic head and core image compact in natural target-language grammar; "
+                "do not impose an English surface-word count."
+            )
+    if "ui_building_name" in name_types:
+        if lang == "en":
+            lines.append(
+                "Building-name rule: treat the name as mobile map UI; prefer no more than 2 readable "
+                "content words and 18 characters for the official name. When the product supports a "
+                "separate map label, target 14 characters and move Lv./I-V tier information to UI badges. "
+                "Do not replace an established building term with an opaque abbreviation."
+            )
+        else:
+            lines.append(
+                "Building-name rule: keep the functional head and distinguishing resource or troop type "
+                "compact in natural target-language grammar; move level/tier information to UI badges when "
+                "the product supports it, and do not impose an English surface-word count."
+            )
+    return "\n".join(lines) + "\n\n"
+
+
+def _make_source_reference_section(batch_rows: list[dict]) -> str:
+    modes = {str(row.get("source_mode", "cn")) for row in batch_rows}
+    lines = [
+        "Bilingual source rule:",
+        "- REF_EN is a reviewed English reference when present; do not copy its word order mechanically.",
+        "- Preserve placeholders, numbers, conditions, targets, tags, and content that appear in the Chinese source.",
+    ]
+    if "cn+en" in modes:
+        lines.append(
+            "- In SRC:cn+en rows, Chinese remains the semantic source of truth; use REF_EN to stabilize "
+            "terminology, proper names, tone, and ambiguity. If they conflict, do not propagate an English "
+            "omission or mistranslation."
+        )
+    if "en" in modes:
+        lines.append(
+            "- In SRC:en rows, REF_EN is the primary translation source; use the Chinese source as a backcheck "
+            "for omissions, gameplay conditions, and terminology."
+        )
+    return "\n".join(lines) + "\n\n"
 
 
 def _make_term_section(lang: str = "en", has_constraints: bool = False) -> str:
@@ -200,6 +271,10 @@ def format_batch_prompt(
     prompt = _make_prompt_header(lang)
     if any("ui_length_budget" in row for row in batch_rows):
         prompt += _make_ui_length_section()
+    if any(row.get("name_type") for row in batch_rows):
+        prompt += _make_name_policy_section(batch_rows, lang=lang)
+    if any(str(row.get("source_mode", "cn")) != "cn" for row in batch_rows):
+        prompt += _make_source_reference_section(batch_rows)
     relevant_terms = _extract_relevant_terms(batch_rows, term_lookup, max_terms=max_terms)
     if relevant_terms:
         has_constraints = any(constraint for _, _, _, constraint in relevant_terms)
@@ -222,6 +297,8 @@ def format_batch_prompt(
     lines = []
     has_ui_meta = any("is_ui" in row for row in batch_rows)
     has_len_meta = any("ui_length_budget" in row for row in batch_rows)
+    has_name_meta = any(row.get("name_type") for row in batch_rows)
+    has_source_meta = any(str(row.get("source_mode", "cn")) != "cn" for row in batch_rows)
     for row in batch_rows:
         row_id = row["id"]
         original = str(row["original"]).replace("\n", "\\n")
@@ -241,6 +318,40 @@ def format_batch_prompt(
                 )
             else:
                 meta.append("LEN:-")
+        if has_name_meta:
+            name_type = str(row.get("name_type", "")).strip()
+            if name_type:
+                policy = row.get("name_policy", {}) or {}
+                if name_type == "ui_skill_name" and "preferred_words" in policy:
+                    meta.append(
+                        f"NAME:{name_type},words<={policy.get('preferred_words')},"
+                        f"chars<={policy.get('max_characters')}"
+                    )
+                elif name_type == "ui_location_name" and "preferred_content_words" in policy:
+                    meta.append(
+                        f"NAME:{name_type},content_words<={policy.get('preferred_content_words')},"
+                        f"chars<={policy.get('max_characters')}"
+                    )
+                elif name_type == "ui_building_name" and "preferred_content_words" in policy:
+                    meta.append(
+                        f"NAME:{name_type},content_words<={policy.get('preferred_content_words')},"
+                        f"chars<={policy.get('max_characters')},"
+                        f"map_chars<={policy.get('map_label_max_characters')}"
+                    )
+                else:
+                    meta.append(f"NAME:{name_type}")
+            else:
+                meta.append("NAME:-")
+        if has_source_meta:
+            source_mode = str(row.get("source_mode", "cn"))
+            reference_en = str(row.get("reference_en", "")).replace("\n", "\\n")
+            reference_status = str(row.get("reference_en_status", "not_requested"))
+            meta.append(f"SRC:{source_mode}")
+            meta.append(
+                f"REF_EN:{reference_en}"
+                if reference_en
+                else f"REF_EN:-({reference_status})"
+            )
         if meta:
             lines.append(f"{row_id} | {original} | {translation} | " + " | ".join(meta))
         else:
@@ -251,6 +362,10 @@ def format_batch_prompt(
         header += " | UI"
     if has_len_meta:
         header += " | LEN"
+    if has_name_meta:
+        header += " | NAME"
+    if has_source_meta:
+        header += " | SOURCE_MODE | REF_EN"
     prompt += (
         f"Rows to review (batch {batch_num}/{total_batches}):\n\n"
         + header
@@ -315,6 +430,10 @@ def format_recheck_prompt(
     )
     if any("ui_length_budget" in row for row in batch_rows):
         prompt += _make_ui_length_section()
+    if any(row.get("name_type") for row in batch_rows):
+        prompt += _make_name_policy_section(batch_rows, lang=lang)
+    if any(str(row.get("source_mode", "cn")) != "cn" for row in batch_rows):
+        prompt += _make_source_reference_section(batch_rows)
 
     relevant_terms = _extract_relevant_terms(batch_rows, term_lookup, max_terms=max_terms)
     if relevant_terms:
@@ -334,11 +453,14 @@ def format_recheck_prompt(
 
     lines = []
     has_len_meta = any("ui_length_budget" in row for row in batch_rows)
+    has_name_meta = any(row.get("name_type") for row in batch_rows)
+    has_source_meta = any(str(row.get("source_mode", "cn")) != "cn" for row in batch_rows)
     for row in batch_rows:
         row_id = row["id"]
         original = str(row["original"]).replace("\n", "\\n")
         translation = str(row["translation"]).replace("\n", "\\n")
         issue = str(row.get("term_issue", "")).replace("\n", " ")
+        meta = []
         if has_len_meta and "ui_length_budget" in row:
             len_meta = (
                 "LEN:"
@@ -347,13 +469,38 @@ def format_recheck_prompt(
                 f"target={row.get('ui_length_target_len', 0)},"
                 f"budget<={row.get('ui_length_budget', 0)}"
             )
-            lines.append(f"{row_id} | {original} | {translation} | {issue} | {len_meta}")
+            meta.append(len_meta)
+        elif has_len_meta:
+            meta.append("LEN:-")
+        if has_name_meta:
+            name_type = str(row.get("name_type", "")).strip()
+            meta.append(f"NAME:{name_type}" if name_type else "NAME:-")
+        if has_source_meta:
+            source_mode = str(row.get("source_mode", "cn"))
+            reference_en = str(row.get("reference_en", "")).replace("\n", "\\n")
+            reference_status = str(row.get("reference_en_status", "not_requested"))
+            meta.append(f"SRC:{source_mode}")
+            meta.append(
+                f"REF_EN:{reference_en}"
+                if reference_en
+                else f"REF_EN:-({reference_status})"
+            )
+        if meta:
+            lines.append(f"{row_id} | {original} | {translation} | {issue} | " + " | ".join(meta))
         else:
             lines.append(f"{row_id} | {original} | {translation} | {issue}")
 
+    recheck_header = "ID | Source | Translation | Term issue"
+    if has_len_meta:
+        recheck_header += " | LEN"
+    if has_name_meta:
+        recheck_header += " | NAME"
+    if has_source_meta:
+        recheck_header += " | SOURCE_MODE | REF_EN"
     prompt += (
         f"Rows to recheck (batch {batch_num}/{total_batches}):\n\n"
-        + ("ID | Source | Translation | Term issue | LEN\n" if has_len_meta else "ID | Source | Translation | Term issue\n")
+        + recheck_header
+        + "\n"
         + "\n".join(lines)
     )
     return prompt
@@ -493,13 +640,29 @@ def apply_corrections(corrections: list[AICorrection], states: dict) -> int:
     return modified
 
 
-def build_row_fingerprint(row_id: int, original: str, translation: str) -> str:
+def build_row_fingerprint(
+    row_id: int,
+    original: str,
+    translation: str,
+    source_mode: str = "cn",
+    reference_en: str = "",
+    reference_en_status: str = "not_requested",
+) -> str:
+    fingerprint_data = {
+        "row_id": row_id,
+        "original": original,
+        "translation": translation,
+    }
+    if source_mode != "cn" or reference_en:
+        fingerprint_data.update(
+            {
+                "source_mode": source_mode,
+                "reference_en": reference_en,
+                "reference_en_status": reference_en_status,
+            }
+        )
     payload = json.dumps(
-        {
-            "row_id": row_id,
-            "original": original,
-            "translation": translation,
-        },
+        fingerprint_data,
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -532,7 +695,11 @@ def _build_batch_manifest(
                     row_id,
                     str(state.original),
                     str(state.fixed_translation),
+                    str(getattr(state, "source_mode", "cn")),
+                    str(getattr(state, "reference_en", "")),
+                    str(getattr(state, "reference_en_status", "not_requested")),
                 ),
+                "source_mode": str(getattr(state, "source_mode", "cn")),
             }
         )
 
@@ -570,7 +737,6 @@ def reset_review_dir(review_dir: Path) -> None:
 
 def collect_recheck_rows(states, batches) -> list[dict]:
     """Collect rows from AI batches that still carry term issues for recheck."""
-    term_error_types = {'term_missing', 'term_partial_hit', 'term_capitalization'}
     recheck_rows = []
     ai_batch_ids = set()
     for batch in batches:
@@ -579,13 +745,16 @@ def collect_recheck_rows(states, batches) -> list[dict]:
     for state in states.values():
         if state.row_id not in ai_batch_ids:
             continue
-        has_term_issue = any(getattr(issue, 'check_type', '') in term_error_types for issue in state.issues)
+        has_term_issue = any(
+            getattr(issue, 'check_type', '') in TERM_REVIEW_ISSUE_TYPES
+            for issue in state.issues
+        )
         if not has_term_issue:
             continue
         issue_desc = '; '.join(sorted(set(
             getattr(issue, 'check_type', '')
             for issue in state.issues
-            if getattr(issue, 'check_type', '') in term_error_types
+            if getattr(issue, 'check_type', '') in TERM_REVIEW_ISSUE_TYPES
         )))
         recheck_rows.append(
             {
@@ -593,6 +762,9 @@ def collect_recheck_rows(states, batches) -> list[dict]:
                 'original': state.original,
                 'translation': state.fixed_translation,
                 'term_issue': issue_desc,
+                'source_mode': getattr(state, 'source_mode', 'cn'),
+                'reference_en': getattr(state, 'reference_en', ''),
+                'reference_en_status': getattr(state, 'reference_en_status', 'not_requested'),
             }
         )
     return recheck_rows
@@ -737,6 +909,9 @@ def merge_review_batches(
                 row_id,
                 str(state.original),
                 str(state.fixed_translation),
+                str(getattr(state, "source_mode", "cn")),
+                str(getattr(state, "reference_en", "")),
+                str(getattr(state, "reference_en_status", "not_requested")),
             )
             if current_fingerprint != row["fingerprint"] and row_id not in ignore_fingerprint_for:
                 raise ValueError(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from utils.announcement_docx_common import (
     AI_RESPONSE_PREFIX,
     FIXED_COLUMNS,
     QA_SUMMARY_NAME,
+    SENTENCE_ADAPTATIONS_COLUMN,
     TRANSLATION_WORKBOOK_NAME,
     _CJK_RE,
     _clean_cell,
@@ -87,6 +89,8 @@ def import_announcement_ai_responses(
     for header, code in target_languages:
         if header not in selected_headers:
             continue
+        qa_report_path = work_dir / f"ai_response_qa_{code}.json"
+        qa_report_path.unlink(missing_ok=True)
         response_path = response_root / f"{response_prefix}{code}.jsonl"
         response_rows = _read_ai_response_rows(response_path, ordered_rows)
         issues: list[dict[str, Any]] = []
@@ -105,10 +109,25 @@ def import_announcement_ai_responses(
                     header,
                     code,
                     row_context,
+                    expected_row.get("sentence_adaptations", []),
                 )
             )
         if issues:
-            raise ValueError(f"AI response QA failed for {code}: {len(issues)} issues")
+            qa_report_path.write_text(
+                json.dumps(
+                    {
+                        "language": {"header": header, "code": code},
+                        "issue_count": len(issues),
+                        "issues": issues,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            raise ValueError(
+                f"AI response QA failed for {code}: {len(issues)} issues; qa_report={qa_report_path}"
+            )
         translations_by_header[header] = {
             response_row["para_id"]: response_row["translation"]
             for response_row in response_rows
@@ -138,17 +157,18 @@ def apply_announcement_translations(
     _validate_input_drift(input_dir, manifest)
 
     issues = _validate_all_translations(expected, rows, target_languages)
+    retrieval_metrics = _announcement_retrieval_metrics(manifest)
     output_dir = work_dir / "output"
     qa_summary_path = work_dir / QA_SUMMARY_NAME
     if issues:
-        _write_qa_summary(qa_summary_path, issues, [])
+        _write_qa_summary(qa_summary_path, issues, [], retrieval_metrics)
         raise ValueError(f"hard blockers: {len(issues)}")
 
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_paths = _write_output_docx(input_dir, manifest, rows, output_dir, target_languages)
-    _write_qa_summary(qa_summary_path, [], output_paths)
+    _write_qa_summary(qa_summary_path, [], output_paths, retrieval_metrics)
     return AppliedAnnouncementHarness(
         work_dir=work_dir,
         output_dir=output_dir,
@@ -218,6 +238,12 @@ def _read_translation_rows(path: Path, target_languages: list[tuple[str, str]]) 
                 "CN": _clean_cell(ws.cell(row_idx, header_index["CN"]).value),
                 "protected_tokens": _parse_json_cell(ws.cell(row_idx, header_index["protected_tokens"]).value, []),
                 "term_hits": _parse_json_cell(ws.cell(row_idx, header_index["term_hits_json"]).value, []),
+                "sentence_adaptations": _parse_json_cell(
+                    ws.cell(row_idx, header_index[SENTENCE_ADAPTATIONS_COLUMN]).value,
+                    [],
+                )
+                if SENTENCE_ADAPTATIONS_COLUMN in header_index
+                else [],
                 "translations": {
                     header: _clean_cell(ws.cell(row_idx, header_index[header]).value)
                     for header, _ in target_languages
@@ -258,10 +284,22 @@ def _validate_all_translations(
         row = rows[para_id]
         source = str(expected_row["CN"])
         term_hits = expected_row.get("term_hits", [])
+        sentence_adaptations = expected_row.get("sentence_adaptations", [])
         protected_tokens = expected_row.get("protected_tokens", [])
         for header, code in target_languages:
             translation = row["translations"].get(header, "")
-            issues.extend(_validate_translation(source, translation, protected_tokens, term_hits, header, code, row))
+            issues.extend(
+                _validate_translation(
+                    source,
+                    translation,
+                    protected_tokens,
+                    term_hits,
+                    header,
+                    code,
+                    row,
+                    sentence_adaptations,
+                )
+            )
     return issues
 
 
@@ -338,6 +376,7 @@ def _validate_translation(
     lang_header: str,
     lang_code: str,
     row: dict[str, Any],
+    sentence_adaptations: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     base = {
@@ -355,7 +394,7 @@ def _validate_translation(
         issues.append({**base, "check_type": "chinese_residue", "message": "Chinese residue found"})
 
     for token in protected_tokens:
-        if token and token not in translation:
+        if token and not _contains_protected_token(translation, token):
             issues.append({**base, "check_type": "protected_token_missing", "message": f"Missing protected token: {token}"})
 
     if _BRACKET_RE.search(source) and not _BRACKET_RE.search(translation):
@@ -363,6 +402,12 @@ def _validate_translation(
 
     for hit in term_hits:
         target = str(hit.get("targets", {}).get(lang_header, "")).strip()
+        if _term_is_covered_by_exact_sentence_adaptation(
+            str(hit.get("source", "")),
+            sentence_adaptations or [],
+            lang_header,
+        ):
+            continue
         if target and not _contains_term(translation, target):
             issues.append(
                 {
@@ -399,13 +444,20 @@ def _write_output_docx(
     return output_paths
 
 
-def _write_qa_summary(path: Path, issues: list[dict[str, Any]], output_paths: list[Path]) -> None:
+def _write_qa_summary(
+    path: Path,
+    issues: list[dict[str, Any]],
+    output_paths: list[Path],
+    metrics: dict[str, int] | None = None,
+) -> None:
     wb = Workbook()
     summary = wb.active
     summary.title = "Summary"
     summary.append(["metric", "value"])
     summary.append(["hard_blockers", len(issues)])
     summary.append(["output_docx_count", len(output_paths)])
+    for name, value in (metrics or {}).items():
+        summary.append([name, value])
     summary.append(["generated_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
     details = wb.create_sheet("Issues")
     issue_headers = ["source_file", "para_id", "para_index", "lang", "check_type", "message", "source", "translation"]
@@ -431,6 +483,55 @@ def _replace_paragraph_text(paragraph, text: str) -> None:
 
 
 def _contains_term(translation: str, target: str) -> bool:
-    normalized_translation = re.sub(r"\s+", " ", translation).casefold()
-    normalized_target = re.sub(r"\s+", " ", target).casefold()
+    normalized_translation = _normalize_term_match(translation)
+    normalized_target = _normalize_term_match(target)
     return normalized_target in normalized_translation
+
+
+def _contains_protected_token(translation: str, token: str) -> bool:
+    return _normalize_protected_token(token) in _normalize_protected_token(translation)
+
+
+def _normalize_protected_token(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    normalized = normalized.translate(str.maketrans({"【": "[", "】": "]", "（": "(", "）": ")"}))
+    return re.sub(r"\s+", "", normalized).casefold()
+
+
+def _normalize_term_match(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    normalized = re.sub(r"[\s\-_\u2010-\u2015]+", " ", normalized)
+    return normalized.strip()
+
+
+def _term_is_covered_by_exact_sentence_adaptation(
+    source_term: str,
+    sentence_adaptations: list[dict[str, Any]],
+    lang_header: str,
+) -> bool:
+    if not source_term:
+        return False
+    for item in sentence_adaptations:
+        if item.get("match_type") != "official_exact":
+            continue
+        if not str(item.get("targets", {}).get(lang_header, "")).strip():
+            continue
+        sentence_source = f"{item.get('announcement_cn', '')} {item.get('official_cn_template', '')}"
+        if source_term in sentence_source:
+            return True
+    return False
+
+
+def _announcement_retrieval_metrics(manifest: dict[str, Any]) -> dict[str, int]:
+    rows = _ordered_expected_rows(manifest)
+    adaptations = [item for row in rows for item in row.get("sentence_adaptations", [])]
+    return {
+        "term_hit_rows": sum(1 for row in rows if row.get("term_hits")),
+        "sentence_adaptation_hit_rows": sum(1 for row in rows if row.get("sentence_adaptations")),
+        "official_exact_sentence_hits": sum(
+            1 for item in adaptations if item.get("match_type") == "official_exact"
+        ),
+        "official_similar_sentence_hits": sum(
+            1 for item in adaptations if item.get("match_type") == "official_similar"
+        ),
+    }

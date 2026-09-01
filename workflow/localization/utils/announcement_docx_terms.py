@@ -7,6 +7,7 @@ surface stable.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -159,17 +160,29 @@ class TermEntry:
 
 
 @dataclass(frozen=True)
+class SentenceAdaptationEntry:
+    priority: int
+    match_type: str
+    entry_id: str
+    announcement_cn: str
+    official_cn_template: str
+    targets: dict[str, str]
+    source_row: int
+
+
+@dataclass(frozen=True)
 class AnnouncementTerms:
     path: Path
     languages: list[LanguageSpec]
     by_language: dict[str, dict[str, TermEntry]]
+    sentence_adaptations: list[SentenceAdaptationEntry]
 
 
 def load_announcement_terms(path: str | Path) -> AnnouncementTerms:
     path = Path(path)
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        ws = wb.active
+        ws = wb["Glossary"] if "Glossary" in wb.sheetnames else wb.active
         languages = _language_specs_from_headers(
             [str(ws.cell(1, col).value or "").strip() for col in range(1, ws.max_column + 1)]
         )
@@ -186,15 +199,21 @@ def load_announcement_terms(path: str | Path) -> AnnouncementTerms:
                 target = _clean_cell(ws.cell(row, spec.column_index).value)
                 if target:
                     by_language[spec.header][source] = TermEntry(source=source, target=target, term_id=term_id)
+        sentence_adaptations = _load_sentence_adaptations(wb, languages)
     finally:
         wb.close()
-    return AnnouncementTerms(path=path, languages=languages, by_language=by_language)
+    return AnnouncementTerms(
+        path=path,
+        languages=languages,
+        by_language=by_language,
+        sentence_adaptations=sentence_adaptations,
+    )
 
 
 def _read_announcement_language_specs(path: Path) -> list[LanguageSpec]:
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        ws = wb.active
+        ws = wb["Glossary"] if "Glossary" in wb.sheetnames else wb.active
         headers = [str(ws.cell(1, col).value or "").strip() for col in range(1, ws.max_column + 1)]
         return _language_specs_from_headers(headers)
     finally:
@@ -238,6 +257,141 @@ def _find_term_hits(source: str, terms: AnnouncementTerms) -> list[dict[str, Any
         if targets:
             hits.append({"source": source_term, "targets": targets})
     return hits
+
+
+def _find_sentence_adaptations(source: str, terms: AnnouncementTerms) -> list[dict[str, Any]]:
+    hits: list[SentenceAdaptationEntry] = []
+    for entry in terms.sentence_adaptations:
+        if entry.match_type == "official_exact":
+            matched = _sentence_exact_match(source, entry)
+        else:
+            matched = _normalized_sentence_contains(source, entry.announcement_cn)
+        if matched:
+            hits.append(entry)
+
+    hits.sort(
+        key=lambda entry: (
+            entry.priority,
+            0 if entry.match_type == "official_exact" else 1,
+            -len(_normalize_sentence_text(entry.announcement_cn)),
+            entry.source_row,
+        )
+    )
+    return [
+        {
+            "priority": entry.priority,
+            "match_type": entry.match_type,
+            "id": entry.entry_id,
+            "announcement_cn": entry.announcement_cn,
+            "official_cn_template": entry.official_cn_template,
+            "targets": entry.targets,
+        }
+        for entry in hits
+    ]
+
+
+def _load_sentence_adaptations(wb, languages: list[LanguageSpec]) -> list[SentenceAdaptationEntry]:
+    if "SentenceTemplates" not in wb.sheetnames:
+        return []
+
+    ws = wb["SentenceTemplates"]
+    headers = [_clean_cell(ws.cell(1, col).value) for col in range(1, ws.max_column + 1)]
+    required_headers = ("Priority", "MatchType", "ID", "AnnouncementCN", "OfficialCNTemplate")
+    header_index: dict[str, int] = {}
+    for col, header in enumerate(headers, start=1):
+        if header and header not in header_index:
+            header_index[header] = col
+    missing = [header for header in required_headers if header not in header_index]
+    if missing:
+        raise ValueError(f"SentenceTemplates missing columns: {missing}")
+
+    required_columns = {header_index[header] for header in required_headers}
+    language_columns: dict[str, int] = {}
+    for col, header in enumerate(headers, start=1):
+        if col in required_columns:
+            continue
+        code = _language_code_for_header(header)
+        if code:
+            language_columns[CANONICAL_LANGUAGE_HEADER[code]] = col
+    missing_languages = [spec.header for spec in languages if spec.header not in language_columns]
+    if missing_languages:
+        raise ValueError(f"SentenceTemplates missing language columns: {missing_languages}")
+
+    entries: list[SentenceAdaptationEntry] = []
+    for row in range(2, ws.max_row + 1):
+        values = [_clean_cell(ws.cell(row, col).value) for col in required_columns]
+        if not any(values):
+            continue
+        try:
+            priority = int(float(_clean_cell(ws.cell(row, header_index["Priority"]).value)))
+        except ValueError as exc:
+            raise ValueError(f"SentenceTemplates row {row} has invalid Priority") from exc
+        if priority < 1:
+            raise ValueError(f"SentenceTemplates row {row} has invalid Priority")
+        match_type = _clean_cell(ws.cell(row, header_index["MatchType"]).value).lower()
+        if match_type not in {"official_exact", "official_similar"}:
+            raise ValueError(f"SentenceTemplates row {row} has unsupported MatchType: {match_type}")
+        entry_id = _clean_cell(ws.cell(row, header_index["ID"]).value)
+        announcement_cn = _clean_cell(ws.cell(row, header_index["AnnouncementCN"]).value)
+        official_cn_template = _clean_cell(ws.cell(row, header_index["OfficialCNTemplate"]).value)
+        if not entry_id or not announcement_cn or not official_cn_template:
+            raise ValueError(f"SentenceTemplates row {row} has empty required fields")
+        targets = {
+            spec.header: _clean_cell(ws.cell(row, language_columns[spec.header]).value)
+            for spec in languages
+        }
+        missing_targets = [header for header, target in targets.items() if not target]
+        if missing_targets:
+            raise ValueError(f"SentenceTemplates row {row} has empty targets: {missing_targets}")
+        entries.append(
+            SentenceAdaptationEntry(
+                priority=priority,
+                match_type=match_type,
+                entry_id=entry_id,
+                announcement_cn=announcement_cn,
+                official_cn_template=official_cn_template,
+                targets=targets,
+                source_row=row,
+            )
+        )
+    return entries
+
+
+def _sentence_exact_match(source: str, entry: SentenceAdaptationEntry) -> bool:
+    if _normalized_sentence_contains(source, entry.announcement_cn):
+        return True
+    normalized_source = _normalize_sentence_text(source)
+    normalized_template = _normalize_sentence_text(entry.official_cn_template)
+    parts = re.split(r"(<@\d+>)", normalized_template)
+    pattern = "".join(r".+?" if re.fullmatch(r"<@\d+>", part) else re.escape(part) for part in parts)
+    return bool(pattern and re.search(pattern, normalized_source))
+
+
+def _normalized_sentence_contains(source: str, cue: str) -> bool:
+    normalized_cue = _normalize_sentence_text(cue)
+    return bool(normalized_cue and normalized_cue in _normalize_sentence_text(source))
+
+
+def _normalize_sentence_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    normalized = normalized.translate(
+        str.maketrans(
+            {
+                "，": ",",
+                "。": ".",
+                "：": ":",
+                "；": ";",
+                "！": "!",
+                "？": "?",
+                "【": "[",
+                "】": "]",
+                "（": "(",
+                "）": ")",
+                "～": "~",
+            }
+        )
+    )
+    return re.sub(r"\s+", "", normalized).casefold()
 
 
 def _is_low_value_announcement_term(source: str) -> bool:

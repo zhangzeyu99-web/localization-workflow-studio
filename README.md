@@ -421,6 +421,7 @@ Pages Demo 不能包含真实 workbook、客户素材、API key、SQLite、run �
 - [存储模型](docs/STORAGE.md)
 - [用例说明](docs/USE_CASES.md)
 - [质量门槛](docs/QUALITY_GATES.md)
+- [游戏台词翻译与校对要求](docs/DIALOGUE_TRANSLATION_REQUIREMENTS.md)
 - [迭代方式](docs/ITERATION.md)
 - [GitHub 管理](docs/GITHUB_MANAGEMENT.md)
 - [更新日志](CHANGELOG.md)

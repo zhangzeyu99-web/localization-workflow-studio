@@ -21,10 +21,11 @@ from typing import Any
 from openpyxl import load_workbook
 
 
-TOKEN_RE = re.compile(r"\\n|\{[^{}\s]+\}|%[sdif]|##\d+|</?[A-Za-z][^>\s]*[^>]*>|\[[A-Za-z0-9_:/#=.,-]+\]")
+TOKEN_RE = re.compile(r"\\n|<@\d+>|\{[^{}\s]+\}|%[sdif]|##\d+|</?[A-Za-z][^>\s]*[^>]*>|\[[A-Za-z0-9_:/#=.,-]+\]")
 CJK_RE = re.compile(r"[\u3400-\u9fff]")
+MOJIBAKE_RE = re.compile(r"\ufffd|\x00|\?{3}")
 NUMBER_RE = re.compile(
-    r"\d+(?:[,.]\d+)?(?:\s*(?:千|万|萬|亿|億|(?i:thousand|million|billion|ribu|rb|juta|miliar|millones|millón|milhao|milhão|milhões|mil)\b)|[KkMBWw](?![A-Za-z]))%?"
+    r"\d+(?:[,.]\d+)?(?:\s*(?:千|万|萬|亿|億|(?i:thousand|million|billion|ribu|rb|juta|miliar|millones|millón|milhao|milhão|milhões|mil|тыс|тысяч|тысяча|тысячи|млн|миллион|миллиона|миллионов|млрд|миллиард|миллиарда|миллиардов)\b\.?|[KkMBWw](?![A-Za-z])))%?"
     r"|\d{1,3}(?:[,\s.]\d{3})+(?:[,.]\d+)?%?"
     r"|\d+(?:[,.]\d+)?%?"
 )
@@ -33,6 +34,10 @@ WORD_MULTIPLIERS = {
     "ribu": Decimal("1000"),
     "rb": Decimal("1000"),
     "mil": Decimal("1000"),
+    "тыс": Decimal("1000"),
+    "тысяч": Decimal("1000"),
+    "тысяча": Decimal("1000"),
+    "тысячи": Decimal("1000"),
     "million": Decimal("1000000"),
     "juta": Decimal("1000000"),
     "millones": Decimal("1000000"),
@@ -40,8 +45,16 @@ WORD_MULTIPLIERS = {
     "milhao": Decimal("1000000"),
     "milhão": Decimal("1000000"),
     "milhões": Decimal("1000000"),
+    "млн": Decimal("1000000"),
+    "миллион": Decimal("1000000"),
+    "миллиона": Decimal("1000000"),
+    "миллионов": Decimal("1000000"),
     "billion": Decimal("1000000000"),
     "miliar": Decimal("1000000000"),
+    "млрд": Decimal("1000000000"),
+    "миллиард": Decimal("1000000000"),
+    "миллиарда": Decimal("1000000000"),
+    "миллиардов": Decimal("1000000000"),
 }
 NUMBER_WORDS = {
     "zero": Decimal("0"),
@@ -243,6 +256,13 @@ def parse_number_token(token: str) -> Decimal | None:
 def numeric_values(text: str) -> set[Decimal]:
     text = text or ""
     text = re.sub(r"(\d(?:[\d,.]*))(?:<[^>]+>)+\s*([千万萬亿億KkMBWw])", r"\1\2", text)
+    word_suffixes = "|".join(re.escape(word) for word in sorted(WORD_MULTIPLIERS, key=len, reverse=True))
+    text = re.sub(
+        rf"(\d(?:[\d,.]*))(?:<[^>]+>)+\s*({word_suffixes})\b\.?",
+        r"\1 \2",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"(?<=\d)\uff0c(?=\d{3}(?!\d))", ",", text)
     text = text.replace("\uff0c", " ")
     values = set()
@@ -272,6 +292,12 @@ def source_numeric_values(row: dict[str, Any]) -> set[Decimal]:
                 and not re.search(rf"(?<!\d){int(value)}\s*%", src)
             )
         }
+    reference_en = str(row.get("reference_en") or "")
+    for left, right in re.findall(r"(?<!\d)(\d+)\s*[-–—]\s*(\d+)(?!\d)", reference_en):
+        joined = Decimal(left + right)
+        if joined in values:
+            values.discard(joined)
+            values.update((Decimal(left), Decimal(right)))
     return values
 
 
@@ -380,12 +406,24 @@ def _check_required_terms(issues: list[dict[str, Any]], row: dict[str, Any], key
             add_issue(issues, "term_missing", key, lang, f"required term not used: {source}")
 
 
-def cache_lint(cache_jsonl: Path, *, target_langs: list[str]) -> dict[str, Any]:
+def cache_lint(
+    cache_jsonl: Path,
+    *,
+    target_langs: list[str],
+    term_base: Path | None = None,
+) -> dict[str, Any]:
     rows = read_jsonl(cache_jsonl)
     issues: list[dict[str, Any]] = []
     seen: set[str] = set()
     unauthorized = Counter()
     requested = set(target_langs)
+    terms: list[dict[str, Any]] = []
+    match_terms = None
+    if term_base is not None:
+        from utils.large_text_multilingual_pack import _load_terms, _term_hits as find_term_hits
+
+        terms = _load_terms(term_base, target_langs)
+        match_terms = find_term_hits
     for index, row in enumerate(rows, 1):
         key = row_key(row, index)
         if key in seen:
@@ -396,23 +434,62 @@ def cache_lint(cache_jsonl: Path, *, target_langs: list[str]) -> dict[str, Any]:
             unauthorized[lang] += 1
             add_issue(issues, "unauthorized_language", key, lang, "translation cache contains a language that was not requested")
 
+        effective_row = row
+        if match_terms is not None:
+            expected_hits = match_terms(source_text(row), terms)
+            actual_hits = _term_hits(row)
+            expected_snapshot = json.dumps(expected_hits, ensure_ascii=False, sort_keys=True)
+            actual_snapshot = json.dumps(actual_hits, ensure_ascii=False, sort_keys=True)
+            if expected_snapshot != actual_snapshot:
+                add_issue(
+                    issues,
+                    "term_hit_snapshot_mismatch",
+                    key,
+                    "",
+                    "cached term hits do not match the selected term-base snapshot",
+                )
+            effective_row = {**row, "term_hits": expected_hits}
+
         src_numbers = source_numeric_values(row)
         tokens = protected_tokens(row)
         for lang in target_langs:
             target = row_translation(row, lang).strip()
+            if row.get("opaque_payload_preserved") is True:
+                if target != source_text(row).strip():
+                    add_issue(issues, "opaque_payload_changed", key, lang, "opaque source payload must be preserved exactly")
+                continue
             if not target:
                 add_issue(issues, "empty_translation", key, lang, "target translation is empty")
                 continue
             if lang.upper() not in CJK_ALLOWED_LANGS and CJK_RE.search(target):
                 add_issue(issues, "cjk_residue", key, lang, "target translation still contains Chinese/Japanese ideographs")
+            if MOJIBAKE_RE.search(target):
+                add_issue(issues, "mojibake", key, lang, "target translation contains replacement, null, or repeated question-mark characters")
             for token in tokens:
                 if token and token not in target:
                     add_issue(issues, "protected_token_missing", key, lang, f"missing protected token {token}")
+            target_tokens = {
+                token
+                for token in TOKEN_RE.findall(target)
+                if is_auto_protected_token(token)
+            }
+            source_token_set = set(tokens)
+            source_markup = {
+                token for token in source_token_set if re.match(r"</?[A-Za-z]", token)
+            }
+            extra_tokens = {
+                token
+                for token in target_tokens - source_token_set
+                if token.startswith("<@")
+                or (not source_markup and re.match(r"</?[A-Za-z]", token))
+            }
+            for token in sorted(extra_tokens):
+                add_issue(issues, "protected_token_extra", key, lang, f"unexpected protected token {token}")
             target_numbers = numeric_values(target)
             missing_numbers = {number for number in src_numbers if not numeric_value_present(number, target_numbers)}
             if missing_numbers:
                 add_issue(issues, "number_missing", key, lang, f"missing numeric value(s): {sorted(str(value) for value in missing_numbers)}")
-            _check_required_terms(issues, row, key, lang, target)
+            _check_required_terms(issues, effective_row, key, lang, target)
 
     by_type = Counter(issue["type"] for issue in issues)
     return {
@@ -516,6 +593,10 @@ def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, A
                     (index for index, header in enumerate(headers) if header in SOURCE_HEADERS),
                     None,
                 )
+                id_col = next(
+                    (index for index, header in enumerate(headers) if header in {"ID", "KEY", "索引ID"}),
+                    None,
+                )
                 target_columns: list[tuple[str, int]] = []
                 for lang in target_langs:
                     col_index = col_by_lang.get(lang.upper())
@@ -528,8 +609,10 @@ def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, A
                 for row_index, row_values in enumerate(sheet.iter_rows(min_row=2, values_only=True), 2):
                     if source_col is not None:
                         source = row_values[source_col] if source_col < len(row_values) else None
-                        # ID-only spacer/reserved rows are structural rows, not untranslated content.
-                        if source is None or str(source).strip() == "":
+                        row_id = row_values[id_col] if id_col is not None and id_col < len(row_values) else None
+                        if (source is None or str(source).strip() == "") and (
+                            row_id is None or str(row_id).strip() == ""
+                        ):
                             continue
                     for lang, col_index in target_columns:
                         value = row_values[col_index] if col_index < len(row_values) else None
@@ -579,6 +662,7 @@ def main(argv: list[str] | None = None) -> int:
     lint = sub.add_parser("cache-lint", help="Block workbook/docx writes until translation cache has no hard blockers.")
     lint.add_argument("--cache-jsonl", required=True, type=Path)
     lint.add_argument("--target-langs", required=True)
+    lint.add_argument("--term-base", type=Path)
     lint.add_argument("--out", type=Path)
     lint.add_argument("--quiet", action="store_true")
 
@@ -606,7 +690,11 @@ def main(argv: list[str] | None = None) -> int:
         write_or_print(result, args.out, quiet=args.quiet)
         return 0
     if args.command == "cache-lint":
-        result = cache_lint(args.cache_jsonl, target_langs=parse_langs(args.target_langs))
+        result = cache_lint(
+            args.cache_jsonl,
+            target_langs=parse_langs(args.target_langs),
+            term_base=args.term_base,
+        )
         write_or_print(result, args.out, quiet=args.quiet)
         return 0 if result["hard_blockers"] == 0 else 1
     if args.command == "apply-dry-run":

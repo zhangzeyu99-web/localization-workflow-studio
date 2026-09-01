@@ -4,8 +4,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from utils.large_text_multilingual_executor import _partition_requests, translate_manifest
+from utils.large_text_multilingual_executor import (
+    OpenAICompatibleClient,
+    _partition_requests,
+    translate_manifest,
+)
 from utils.large_text_multilingual_runner import build_manifest
 
 
@@ -68,6 +73,48 @@ class IdentifiedClient(FakeClient):
 
 
 class LargeTextMultilingualExecutorTests(unittest.TestCase):
+    def test_openai_client_retries_response_without_choices(self) -> None:
+        class FakeResponse:
+            def __init__(self, body: dict[str, object]) -> None:
+                self.body = body
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *args):  # type: ignore[no-untyped-def]
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(self.body).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "relay.json"
+            config.write_text(
+                json.dumps({"base_url": "https://relay.example", "model": "test"}),
+                encoding="utf-8",
+            )
+            client = OpenAICompatibleClient(config)
+            responses = [
+                FakeResponse({"error": {"message": "temporary empty response"}}),
+                FakeResponse(
+                    {
+                        "choices": [
+                            {"message": {"content": json.dumps({"rows": []})}}
+                        ]
+                    }
+                ),
+            ]
+            with patch(
+                "utils.large_text_multilingual_executor.urllib.request.urlopen",
+                side_effect=responses,
+            ) as urlopen, patch(
+                "utils.large_text_multilingual_executor.time.sleep"
+            ):
+                result = client._chat_json("system", {"rows": []})
+
+            self.assertEqual(result, {"rows": []})
+            self.assertEqual(urlopen.call_count, 2)
+
     def test_partition_respects_row_and_character_limits(self) -> None:
         rows = [
             {"request_key": str(index), "cn": "x" * 60}
@@ -169,6 +216,60 @@ class LargeTextMultilingualExecutorTests(unittest.TestCase):
                     relay_config=None,
                     client=InvalidClient(),
                 )
+
+    def test_translate_request_uses_english_source_and_reference_in_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.jsonl"
+            rows = [
+                {
+                    "key": "1",
+                    "cn": "技能",
+                    "translation_source": "Flame Strike",
+                    "source_mode": "en",
+                    "reference_en": "Flame Strike",
+                    "reference_en_status": "usable",
+                    "context": "ui",
+                    "term_hits": [],
+                },
+                {
+                    "key": "2",
+                    "cn": "技能",
+                    "translation_source": "Blaze Slash",
+                    "source_mode": "en",
+                    "reference_en": "Blaze Slash",
+                    "reference_en_status": "usable",
+                    "context": "ui",
+                    "term_hits": [],
+                },
+            ]
+            write_jsonl(items, rows)
+            manifest = build_manifest(
+                work_dir=root / "work",
+                items_jsonl=items,
+                source_rows_jsonl=None,
+                target_langs=["FR"],
+                workbook_count=1,
+                relay_config=None,
+                proofread_mode="basic",
+                source_mode="en",
+            )
+            client = FakeClient()
+
+            result = translate_manifest(
+                Path(manifest["manifest_path"]),
+                relay_config=None,
+                client=client,
+                batch_size=20,
+            )
+
+            self.assertEqual(result.unique_api_rows, 2)
+            request_rows = [row for call in client.calls for row in call]
+            self.assertEqual(
+                {row["translation_source"] for row in request_rows},
+                {"Flame Strike", "Blaze Slash"},
+            )
+            self.assertTrue(all(row["source_mode"] == "en" for row in request_rows))
 
     def test_checkpoint_scope_changes_with_target_languages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

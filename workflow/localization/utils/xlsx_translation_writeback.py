@@ -225,7 +225,7 @@ def write_translation_workbooks(
     invalid_style_refs = 0
     output_dir.mkdir(parents=True, exist_ok=True)
     for name, source in inputs_by_name.items():
-        workbook = load_workbook(source, read_only=True, data_only=False)
+        workbook = load_workbook(source, read_only=False, data_only=False)
         changes_by_sheet: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         try:
             columns_by_sheet: dict[str, tuple[int | None, int, dict[str, int]]] = {}
@@ -258,7 +258,9 @@ def write_translation_workbooks(
                         f"source row key drift: {name}:{sheet_name}!R{row_number}"
                     )
                 current_source = sheet.cell(row=row_number, column=source_column).value
-                if str(current_source or "") != str(row.get("cn") or ""):
+                current_source_text = "" if current_source is None else str(current_source)
+                expected_source_text = "" if row.get("cn") is None else str(row.get("cn"))
+                if current_source_text != expected_source_text:
                     raise ValueError(
                         f"source text drift: {name}:{sheet_name}!R{row_number}"
                     )
@@ -310,7 +312,7 @@ def verify_translation_cache(
                 if not path.exists():
                     issues.append({"type": "output_file_missing", "key": name, "lang": ""})
                     continue
-                workbooks[name] = load_workbook(path, read_only=True, data_only=False)
+                workbooks[name] = load_workbook(path, read_only=False, data_only=False)
             workbook = workbooks.get(name)
             if workbook is None:
                 continue
@@ -339,7 +341,9 @@ def verify_translation_cache(
             ):
                 issues.append({"type": "source_row_identity_mismatch", "key": str(row.get("key") or expected_key), "lang": ""})
                 continue
-            if str(current_source or "") != str(row.get("cn") or ""):
+            current_source_text = "" if current_source is None else str(current_source)
+            expected_source_text = "" if row.get("cn") is None else str(row.get("cn"))
+            if current_source_text != expected_source_text:
                 issues.append({"type": "source_value_mismatch", "key": expected_key, "lang": ""})
             translations = row.get("translations") or {}
             for lang in target_langs:

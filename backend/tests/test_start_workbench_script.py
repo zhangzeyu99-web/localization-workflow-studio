@@ -41,3 +41,33 @@ def test_workbench_control_requires_real_api_health_payload() -> None:
     assert '.ok -eq $true' in script
     assert "Test-HttpOk" not in script
     assert "$response.StatusCode -lt 500" not in script
+
+
+def test_workbench_control_can_install_desktop_shortcut() -> None:
+    script = _control_script_text()
+    desktop_shortcut = script.split("function Install-DesktopShortcut", 1)[1].split(
+        "function Install-Autostart", 1
+    )[0]
+
+    assert '"install-shortcut"' in script
+    assert "function Install-DesktopShortcut" in script
+    assert (
+        '$shortcutName = "$([char]0x672C)$([char]0x5730)$([char]0x5316)'
+        '$([char]0x5DE5)$([char]0x4F5C)$([char]0x53F0).lnk"'
+    ) in script
+    assert '"本地化工作台.lnk"' not in script
+    assert '"install-shortcut" {' in script
+    assert "$desktopCmd" not in desktop_shortcut
+    assert "$shortcut.TargetPath = $powershellPath" in desktop_shortcut
+    assert '-File `"$ControlScript`" -Action start' in desktop_shortcut
+
+
+def test_autostart_shortcut_does_not_depend_on_desktop_launcher_file() -> None:
+    script = _control_script_text()
+    autostart = script.split("function Install-Autostart", 1)[1].split(
+        "function Uninstall-Autostart", 1
+    )[0]
+
+    assert "$desktopCmd" not in autostart
+    assert "$shortcut.TargetPath = $powershellPath" in autostart
+    assert '-File `"$ControlScript`" -Action start' in autostart

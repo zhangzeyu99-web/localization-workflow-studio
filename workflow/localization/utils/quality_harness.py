@@ -18,6 +18,7 @@ from typing import Iterable, Sequence
 from openpyxl import load_workbook
 
 from utils.language_config import normalize_language_code
+from utils.name_policy import evaluate_name_translation, find_name_collisions, resolve_name_type
 from utils.quality_harness_rules import (  # noqa: F401  (re-exported)
     BROKEN_BULLET_PATTERN,
     CJK_PATTERN,
@@ -111,6 +112,19 @@ def load_fixture(path: str | Path) -> dict:
 def run_fixture(fixture: dict, lang: str = 'en') -> HarnessResult:
     cases = fixture.get('cases', [])
     result = HarnessResult(passed=True, total_cases=len(cases))
+    collision_issues: dict[object, list] = {}
+    name_rows = [
+        {
+            'id': case.get('id', ''),
+            'source': case.get('source', ''),
+            'translation': case.get('translation', ''),
+            'name_type': case.get('name_type', ''),
+        }
+        for case in cases
+        if case.get('name_type')
+    ]
+    for issue in find_name_collisions(name_rows, lang=lang):
+        collision_issues.setdefault(issue.row_id, []).append(issue)
 
     for case in cases:
         row_id = case.get('id', '')
@@ -121,6 +135,18 @@ def run_fixture(fixture: dict, lang: str = 'en') -> HarnessResult:
             translation=case.get('translation', ''),
             lang=case_lang,
         )
+        name_type = str(case.get('name_type', ''))
+        if name_type:
+            issues.extend(
+                evaluate_name_translation(
+                    row_id=row_id,
+                    source=case.get('source', ''),
+                    translation=case.get('translation', ''),
+                    name_type=name_type,
+                    lang=case_lang,
+                )
+            )
+            issues.extend(collision_issues.get(row_id, []))
         actual = sorted({issue.check_type for issue in issues})
         expected = sorted(case.get('expected_issues', []))
 
@@ -164,6 +190,7 @@ def scan_workbook(
         strong_term_lookup = term_context['strong']
         soft_term_lookup = term_context['soft']
         person_name_terms = term_context['person_names']
+        name_type_lookup = term_context['name_types']
         for ws in wb.worksheets:
             if _is_glossary_sheet(ws) or _is_support_sheet(ws):
                 continue
@@ -172,6 +199,7 @@ def scan_workbook(
                 continue
             max_col = max(c for c in (id_col, src_col, tgt_col) if c is not None) + 1
             numbered_rows: list[dict] = []
+            name_rows: list[dict] = []
             for row_index, row in enumerate(
                 ws.iter_rows(min_row=2, max_col=max_col, values_only=True),
                 start=2,
@@ -193,6 +221,26 @@ def scan_workbook(
                 })
                 row_issues = check_row(row_id, source, target, lang=lang)
                 row_issues.extend(_check_ui_length(row_id, source, target, lang=lang))
+                name_type = resolve_name_type(source, name_type_lookup)
+                if name_type:
+                    row_issues.extend(
+                        evaluate_name_translation(
+                            row_id=row_id,
+                            source=source,
+                            translation=target,
+                            name_type=name_type,
+                            lang=lang,
+                        )
+                    )
+                    name_rows.append(
+                        {
+                            'id': row_id,
+                            'source': source,
+                            'translation': target,
+                            'name_type': name_type,
+                            'row': row_index,
+                        }
+                    )
                 if not _should_skip_term_checks(source):
                     row_issues.extend(_check_terms(row_id, source, target, strong_term_lookup, lang=lang))
                     row_issues.extend(_check_terms(row_id, source, target, soft_term_lookup, soft=True, lang=lang))
@@ -215,6 +263,25 @@ def scan_workbook(
                         })
 
             _append_numbered_term_consistency_issues(numbered_rows, result, fail_set, strong_term_lookup, lang=lang)
+            name_row_by_id = {row['id']: row for row in name_rows}
+            for issue in find_name_collisions(name_rows, lang=lang):
+                result.issue_counts[issue.check_type] += 1
+                if issue.check_type not in fail_set:
+                    continue
+                result.passed = False
+                row = name_row_by_id.get(issue.row_id, {})
+                result.issues.append({
+                    'file': str(workbook_path),
+                    'sheet': ws.title,
+                    'row': row.get('row', 0),
+                    'id': issue.row_id,
+                    'check_type': issue.check_type,
+                    'severity': issue.severity,
+                    'message': issue.message,
+                    'source': row.get('source', ''),
+                    'translation': row.get('translation', ''),
+                    'auto_fix': issue.auto_fix,
+                })
 
         if result.rows_scanned == 0:
             result.passed = False

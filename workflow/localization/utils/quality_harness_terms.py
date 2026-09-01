@@ -20,6 +20,8 @@ from utils.language_config import (
     target_header_candidates,
     variant_header_candidates,
 )
+from utils.name_policy import classify_name_type
+from utils.term_checker import is_exact_term_metadata
 
 GLOSSARY_SHEET_NAMES = {'术语表', 'glossary', 'terms', 'term base', 'termbase'}
 TERM_BASE_FILENAME_KEYWORDS = {'术语', 'glossary', 'term', 'termbase'}
@@ -257,6 +259,7 @@ def _collect_term_context(
     soft_terms: dict[str, dict] = {}
     person_name_terms: list[tuple[str, str]] = []
     seen_person_names: set[tuple[str, str]] = set()
+    name_types: dict[str, str] = {}
 
     def add(
         cn: str,
@@ -264,6 +267,7 @@ def _collect_term_context(
         category: str = '',
         variants: Sequence[str] | None = None,
         enforce_case: bool = False,
+        exact_match: bool = False,
     ) -> None:
         cn = _clean_term_cell(cn)
         target = _clean_term_cell(target)
@@ -272,6 +276,9 @@ def _collect_term_context(
         variants = [v for v in variants if v and v.lower() != target.lower()]
         if not cn or not target:
             return
+        name_type = classify_name_type(category)
+        if name_type:
+            name_types[cn] = name_type
         if _is_person_name_category(category):
             if _is_generic_role_target(target):
                 return
@@ -288,6 +295,7 @@ def _collect_term_context(
             variants,
             enforce_case,
             enforce_in_context=_enforces_contextual_term(category),
+            exact_match=exact_match or is_exact_term_metadata(category),
         )
 
     _collect_terms_from_workbook(workbook, add, lang=lang)
@@ -315,6 +323,7 @@ def _collect_term_context(
         'strong': strong_terms,
         'soft': soft_terms,
         'person_names': person_name_terms,
+        'name_types': name_types,
     }
 
 
@@ -383,7 +392,14 @@ def _collect_terms_from_json(path: Path, add, lang: str = 'en') -> None:
             else:
                 variants = [_clean_term_cell(v) for v in raw_variants if _clean_term_cell(v)]
             category = value.get('category') or value.get('type') or value.get('constraint') or ''
-            add(cn, target, category, variants, bool(value.get('enforce_case', False)))
+            add(
+                cn,
+                target,
+                category,
+                variants,
+                bool(value.get('enforce_case', False)),
+                exact_match=bool(value.get('exact_match', False)),
+            )
 
 
 def _add_term_lookup_entry(
@@ -393,8 +409,18 @@ def _add_term_lookup_entry(
     variants: Sequence[str],
     enforce_case: bool,
     enforce_in_context: bool = False,
+    exact_match: bool = False,
 ) -> None:
-    entry = lookup.setdefault(cn, {'primary': target, 'variants': [], 'enforce_case': False, 'enforce_in_context': False})
+    entry = lookup.setdefault(
+        cn,
+        {
+            'primary': target,
+            'variants': [],
+            'enforce_case': False,
+            'enforce_in_context': False,
+            'exact_match': False,
+        },
+    )
     if not entry.get('primary'):
         entry['primary'] = target
     for variant in variants:
@@ -404,6 +430,7 @@ def _add_term_lookup_entry(
             entry.setdefault('variants', []).append(variant)
     entry['enforce_case'] = bool(entry.get('enforce_case')) or enforce_case
     entry['enforce_in_context'] = bool(entry.get('enforce_in_context')) or enforce_in_context
+    entry['exact_match'] = bool(entry.get('exact_match')) or exact_match
 
 
 def _split_term_variants(value) -> list[str]:
@@ -435,6 +462,8 @@ def _enforces_contextual_term(category: str) -> bool:
 
 def _is_person_name_category(category: str) -> bool:
     text = str(category or '').strip().lower()
+    if classify_name_type(text):
+        return False
     return any(marker in text for marker in PERSON_NAME_CATEGORY_MARKERS)
 
 

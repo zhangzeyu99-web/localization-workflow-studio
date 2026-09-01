@@ -20,9 +20,9 @@ from docx import Document
 from openpyxl import Workbook
 
 from utils.announcement_docx_common import (
-    FIXED_COLUMNS,
     HARNESS_DIR_NAME,
     MANIFEST_NAME,
+    PREPARED_COLUMNS,
     TRANSLATION_WORKBOOK_NAME,
     WORK_DIR_NAME,
     _CJK_RE,
@@ -34,12 +34,14 @@ from utils.announcement_docx_common import (
     _write_jsonl,
 )
 from utils.announcement_docx_terms import (
+    _find_sentence_adaptations,
     _find_term_hits,
     _read_announcement_language_specs,
     load_announcement_terms,
 )
 
 _DATE_RE = re.compile(r"\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b")
+_CHINESE_MONTH_DAY_RE = re.compile(r"(?P<month>\d{1,2})\u6708(?P<day>\d{1,2})\u65e5")
 _TIME_RANGE_RE = re.compile(r"\b\d{1,2}:\d{2}\s*(?:[-–~]\s*\d{1,2}:\d{2})?\b")
 _NUMBER_RE = re.compile(r"\d+")
 _BRACKET_TOKEN_RE = re.compile(r"\[[^\]]+\]|\([^)]+\)|\{[^}]+\}|【[^】]+】|（[^）]+）")
@@ -92,11 +94,11 @@ def prepare_announcement_docx_harness(
     wb = Workbook()
     ws = wb.active
     ws.title = "Translations"
-    headers = [*FIXED_COLUMNS, *[header for header, _ in target_languages]]
+    headers = [*PREPARED_COLUMNS, *[header for header, _ in target_languages]]
     ws.append(headers)
 
     manifest: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "input_dir": str(input_dir),
         "languages": [{"header": header, "code": code} for header, code in target_languages],
         "documents": [],
@@ -122,6 +124,7 @@ def prepare_announcement_docx_harness(
             para_id = _paragraph_id(docx_path.name, index, source)
             style = paragraph.style.name if paragraph.style else ""
             term_hits = _find_term_hits(source, terms)
+            sentence_adaptations = _find_sentence_adaptations(source, terms)
             protected_tokens = _protected_tokens(source)
             row = {
                 "source_file": docx_path.name,
@@ -131,6 +134,7 @@ def prepare_announcement_docx_harness(
                 "CN": source,
                 "protected_tokens": protected_tokens,
                 "term_hits": term_hits,
+                "sentence_adaptations": sentence_adaptations,
             }
             doc_record["paragraphs"].append(row)
             ws.append(
@@ -142,6 +146,7 @@ def prepare_announcement_docx_harness(
                     source,
                     json.dumps(protected_tokens, ensure_ascii=False),
                     json.dumps(term_hits, ensure_ascii=False),
+                    json.dumps(sentence_adaptations, ensure_ascii=False),
                     *["" for _ in target_languages],
                 ]
             )
@@ -156,6 +161,18 @@ def prepare_announcement_docx_harness(
                             {"source": hit["source"], "target": hit["targets"].get(header, "")}
                             for hit in term_hits
                             if hit["targets"].get(header)
+                        ],
+                        "sentence_adaptations": [
+                            {
+                                "priority": item["priority"],
+                                "match_type": item["match_type"],
+                                "id": item["id"],
+                                "announcement_cn": item["announcement_cn"],
+                                "official_cn_template": item["official_cn_template"],
+                                "target": item["targets"].get(header, ""),
+                            }
+                            for item in sentence_adaptations
+                            if item["targets"].get(header)
                         ],
                         "protected_tokens": protected_tokens,
                     }
@@ -331,13 +348,27 @@ def _paragraph_id(source_file: str, para_index: int, source: str) -> str:
 def _protected_tokens(text: str) -> list[str]:
     tokens = []
     seen = set()
-    for pattern in (_DATE_RE, _TIME_RANGE_RE, _BRACKET_TOKEN_RE, _NUMBER_RE):
+    chinese_month_spans = []
+    for match in _CHINESE_MONTH_DAY_RE.finditer(str(text)):
+        chinese_month_spans.append(match.span("month"))
+        day = match.group("day")
+        if day not in seen:
+            seen.add(day)
+            tokens.append(day)
+    for pattern in (_DATE_RE, _TIME_RANGE_RE, _BRACKET_TOKEN_RE):
         for token in pattern.findall(str(text)):
             if isinstance(token, tuple):
                 token = next((part for part in token if part), "")
             token = str(token).strip()
             if not token or _CJK_RE.search(token) or token in seen:
                 continue
+            seen.add(token)
+            tokens.append(token)
+    for match in _NUMBER_RE.finditer(str(text)):
+        if any(match.span() == span for span in chinese_month_spans):
+            continue
+        token = match.group(0)
+        if token not in seen:
             seen.add(token)
             tokens.append(token)
     return tokens

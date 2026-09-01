@@ -28,6 +28,7 @@ from pathlib import Path
 from utils.excel_reader import get_text_pairs, read_language_file, resolve_language_index
 from utils.language_detection import inspect_language_file
 from utils.quality_harness import scan_workbook
+from utils.source_reference import collect_english_references, normalize_source_mode
 from utils.process_language_terms import (  # noqa: F401  (re-exported)
     LANG_TERM_PATTERNS,
     _load_term_base,
@@ -38,6 +39,7 @@ from utils.process_language_review import (  # noqa: F401  (re-exported)
     RowState,
     _coerce_row_id,
     _run_chinese_residue_checks,
+    _run_name_policy_checks,
     _run_pattern_checks,
     _run_readability_checks,
     _run_surface_fixes,
@@ -94,12 +96,14 @@ def run_machine_review(
     auto_fix: bool = True,
     lang_index: int | None = None,
     lang: str = 'en',
+    source_mode: str = 'cn',
 ) -> tuple:
     """Phase 1: Run all rule-based checks.
 
     Returns (df, col_map, states, groups) for further processing.
     """
-    print(f"[1/9] 读取输入: {input_path}")
+    print(f"[1/10] 读取输入: {input_path}")
+    source_mode = normalize_source_mode(source_mode)
     df, col_map = read_language_file(input_path)
     resolved_lang_index = resolve_language_index(col_map, lang, lang_index)
     pairs = get_text_pairs(df, col_map, lang_index=resolved_lang_index)
@@ -111,41 +115,68 @@ def run_machine_review(
     if profile['source_lang'] != 'zh':
         print(f"       [预警] 源语言检测为 {profile['source_lang']}，术语和句式检查可能降级")
 
+    active_indexes = [
+        index
+        for index, row in pairs.iterrows()
+        if _coerce_row_id(row['id']) is not None
+    ]
+    english_references, english_reference_status = collect_english_references(
+        df,
+        col_map,
+        active_indexes,
+        target_lang=lang,
+        source_mode=source_mode,
+    )
+    if english_reference_status:
+        print(
+            "       英语参考: "
+            f"mode={source_mode} usable={english_reference_status.usable_rows}/"
+            f"{english_reference_status.total_rows}"
+        )
+
     states: dict[RowId, RowState] = {}
     skipped = 0
-    for _, row in pairs.iterrows():
+    for pair_index, row in pairs.iterrows():
         rid = _coerce_row_id(row['id'])
         if rid is None:
             skipped += 1
             continue
-        states[rid] = RowState(rid, str(row['original']), str(row['translation']))
+        state = RowState(rid, str(row['original']), str(row['translation']))
+        reference = english_references.get(pair_index)
+        state.source_mode = source_mode
+        state.reference_en = reference.text if reference else ''
+        state.reference_en_status = reference.status if reference else 'not_requested'
+        states[rid] = state
     if skipped:
         print(f"       (跳过 {skipped} 行缺少有效 ID)")
 
-    print("[2/9] 加载术语库")
+    print("[2/10] 加载术语库")
     term_lookup = _load_term_base(term_base_path, lang=lang)
     print(f"       {len(term_lookup)} 条术语" if term_lookup else "       (无术语库)")
 
-    print("[3/9] 变量 & 标签检查")
+    print("[3/10] 变量 & 标签检查")
     _run_surface_fixes(states, auto_fix, lang)
     _run_variable_checks(states, auto_fix)
 
-    print("[4/9] 术语检查")
+    print("[4/10] 术语检查")
     _run_term_checks(states, term_lookup, auto_fix, lang)
 
-    print("[5/9] 句式一致性检查")
+    print("[5/10] 句式一致性检查")
     groups = _run_pattern_checks(states, auto_fix)
 
-    print("[6/9] 中文残留检查")
+    print("[6/10] 中文残留检查")
     _run_chinese_residue_checks(states, lang)
 
-    print("[7/9] UI文本识别")
+    print("[7/10] UI文本识别")
     _run_ui_detection(states)
 
-    print("[8/9] UI长度预算检查")
+    print("[8/10] UI长度预算检查")
     _run_ui_length_checks(states, lang)
 
-    print("[9/9] 可读缩写/截断词检查")
+    print("[9/10] 技能名/地名/建筑名专名检查")
+    _run_name_policy_checks(states, term_lookup, lang)
+
+    print("[10/10] 可读缩写/截断词检查")
     _run_readability_checks(states, lang)
 
     total_issues = sum(len(s.issues) for s in states.values())
@@ -199,6 +230,7 @@ def process(
     output_dir: str = './output',
     auto_fix: bool = True,
     lang_index: int | None = None,
+    source_mode: str = 'cn',
 ) -> dict:
     """Run the full pipeline (machine review only, no AI).
 
@@ -206,7 +238,7 @@ def process(
     separately, with AI review in between.
     """
     df, col_map, states, groups = run_machine_review(
-        input_path, term_base_path, auto_fix, lang_index, lang,
+        input_path, term_base_path, auto_fix, lang_index, lang, source_mode,
     )
     resolved_lang_index = resolve_language_index(col_map, lang, lang_index)
     return write_outputs(
@@ -222,6 +254,12 @@ def main():
     parser.add_argument('--output-dir', default='./output', help='输出目录')
     parser.add_argument('--auto-fix', action='store_true', help='自动修复可修复项')
     parser.add_argument('--lang-index', type=int, default=None, help='多语言文件列索引（默认按 --lang 自动匹配表头）')
+    parser.add_argument(
+        '--source-mode',
+        choices=['cn', 'cn+en', 'en'],
+        default='cn',
+        help='翻译/审校语义源：cn=中文，cn+en=中文主源+英语参考，en=英语主源+中文回查',
+    )
 
     args = parser.parse_args()
 
@@ -236,6 +274,7 @@ def main():
         output_dir=args.output_dir,
         auto_fix=args.auto_fix,
         lang_index=args.lang_index,
+        source_mode=args.source_mode,
     )
 
 

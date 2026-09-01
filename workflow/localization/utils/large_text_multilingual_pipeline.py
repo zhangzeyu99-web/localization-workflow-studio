@@ -107,6 +107,9 @@ def run_pipeline(
     delivery_dir: Path | None = None,
     batch_size: int = 60,
     workers: int = 4,
+    proofread_batch_size: int | None = None,
+    proofread_workers: int | None = None,
+    source_mode: str = "cn",
 ) -> PipelineResult:
     started = time.perf_counter()
     target_langs = [str(lang).upper() for lang in target_langs]
@@ -121,6 +124,7 @@ def run_pipeline(
         history_dirs=history_dirs,
         target_langs=target_langs,
         work_dir=work_dir,
+        source_mode=source_mode,
     )
     manifest = build_manifest(
         work_dir=work_dir,
@@ -130,6 +134,7 @@ def run_pipeline(
         workbook_count=len(inputs),
         relay_config=relay_config,
         proofread_mode=proofread_mode,
+        source_mode=source_mode,
     )
     manifest_path = Path(manifest["manifest_path"])
     shared_client = translation_client
@@ -148,7 +153,11 @@ def run_pipeline(
     initial_lint_path = work_dir / "cache_lint.json"
 
     def lint_initial() -> dict[str, Any]:
-        result = cache_lint(translation.cache_jsonl, target_langs=target_langs)
+        result = cache_lint(
+            translation.cache_jsonl,
+            target_langs=target_langs,
+            term_base=term_base,
+        )
         _write_json(initial_lint_path, result)
         if result["hard_blockers"]:
             raise ValueError(f"cache-lint failed with {result['hard_blockers']} hard blockers")
@@ -167,13 +176,18 @@ def run_pipeline(
             initial_cache=translation.cache_jsonl,
             reviewer=effective_reviewer,  # type: ignore[arg-type]
             auditor=effective_auditor,  # type: ignore[arg-type]
-            batch_size=batch_size,
+            batch_size=proofread_batch_size or batch_size,
+            workers=proofread_workers or workers,
         )
         final_cache = proof_summary.final_cache
         final_lint_path = work_dir / "final_cache_lint.json"
 
         def lint_final() -> dict[str, Any]:
-            result = cache_lint(final_cache, target_langs=target_langs)
+            result = cache_lint(
+                final_cache,
+                target_langs=target_langs,
+                term_base=term_base,
+            )
             _write_json(final_lint_path, result)
             if result["hard_blockers"]:
                 raise ValueError(

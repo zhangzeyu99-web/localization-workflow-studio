@@ -17,7 +17,7 @@ flowchart TD
   C --> D["生成 manifest: API 策略、QA gate、subagent 策略"]
   D --> E["API smoke: 小样本验证模型、schema、延迟"]
   E --> F["API 翻译: 分片、重试、成功项落缓存"]
-  F --> G["cache-lint: 空译文、中文残留、占位符、数字、强术语"]
+  F --> G["cache-lint: 重算术语命中、空译文、中文残留、占位符、数字、强术语"]
   G --> H{"hard blocker = 0?"}
   H -- "否" --> I["结构热修或重翻缓存后再 lint"]
   I --> G
@@ -62,6 +62,7 @@ python scripts\run_large_text_multilingual_runner.py prepare `
 
 python scripts\run_large_text_multilingual_gate.py cache-lint `
   --cache-jsonl "<task>\\_work\\translation_cache.jsonl" `
+  --term-base "<task>\\_source\\术语快照_revNNN.xlsx" `
   --target-langs "DE,FR,ES,PT,RU,IT,TR,TH" `
   --out "<task>\\_work\\large_text_multilingual\\cache_lint.json"
 
@@ -84,6 +85,7 @@ python scripts\run_large_text_multilingual_retro.py `
 
 - 这个 harness 不直接从任意 Excel 推断业务列并生成译文；真实任务仍应先由项目脚本或现有 workbook harness 抽取 `items.jsonl/source_rows.jsonl`，再进入本流程。
 - 本地 gate 是确定性门禁，不替代语义校对；漏译、错译、语境不自然必须通过模型翻译和逐句审校处理。
+- 在线术语表任务必须冻结当前 revision 的本地快照；若导出文件的 worksheet dimension 低报，pack 加载器会重置维度。`cache-lint --term-base` 会重新计算术语命中并阻断缓存漏词，不能仅信任旧 `term_hits`。
 - gate 因性能、误报或任务不适用而跳过时，retro/QA 摘要必须显式记录 `status=skipped/waived`、原因和替代验证；不能把“未提供”或旧误报混同为最终通过。
 - 单次任务耗时超过一小时时，retro 自动触发长任务复盘关注；这不代表任务有问题，只要求检查耗时是否符合规模、是否有失败/重试/跳过门禁/意外修复，以及是否存在值得沉淀的最小优化。
 - 长任务复盘用于持续改进，不用于扩大流程；重复出现或可机器检查的问题才沉淀为测试、gate 或文档，偶发问题只记录原因和处理结果。

@@ -148,22 +148,38 @@ class OpenAICompatibleClient:
                 },
             ],
         }
-        request = urllib.request.Request(
-            self._endpoint(),
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"relay request failed: {exc}") from exc
-        content = body["choices"][0]["message"]["content"]
-        return json.loads(content) if isinstance(content, str) else content
+        last_error: BaseException | None = None
+        for attempt in range(3):
+            request = urllib.request.Request(
+                self._endpoint(),
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                choices = body.get("choices") if isinstance(body, dict) else None
+                if not isinstance(choices, list) or not choices:
+                    raise RuntimeError("relay response is missing choices")
+                message = choices[0].get("message") if isinstance(choices[0], dict) else None
+                if not isinstance(message, dict) or "content" not in message:
+                    raise RuntimeError("relay response is missing message content")
+                content = message["content"]
+                return json.loads(content) if isinstance(content, str) else content
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                json.JSONDecodeError,
+                RuntimeError,
+            ) as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(2**attempt)
+        raise RuntimeError(f"relay request failed after 3 attempts: {last_error}") from last_error
 
     def translate_batch(
         self,
@@ -174,6 +190,10 @@ class OpenAICompatibleClient:
             (
                 "You are a senior mobile-game localizer. Translate every row into every "
                 "requested language. Preserve tokens, numbers, tags, and terminology. "
+                "Rows may include source_mode, translation_source, and reference_en. For cn+en, "
+                "Chinese is authoritative and English is a reviewed terminology/style reference. "
+                "For en, translation_source/reference_en is primary and Chinese is an omission "
+                "and gameplay-condition backcheck. Do not propagate conflicts or omissions. "
                 "Return strict JSON: {\"rows\":[{\"request_key\":...,"
                 "\"translations\":{LANG:TEXT}}]}. Do not omit or add rows."
             ),
@@ -193,6 +213,10 @@ class OpenAICompatibleClient:
             (
                 "Act as an independent line-by-line mobile-game localization reviewer. "
                 "Check meaning, omissions, terminology, fluency, length, tokens, tags, and numbers. "
+                "Rows may include source_mode and reference_en. For cn+en, Chinese is authoritative "
+                "and English is supporting evidence. For en, English is primary and Chinese is an "
+                "omission/gameplay-condition backcheck. Do not preserve an error merely because it "
+                "appears in the English reference. "
                 "Do not rewrite correct text. Return strict JSON with one item per row and language: "
                 "{\"rows\":[{\"review_key\":...,\"lang\":...,\"status\":\"KEEP|FIX\","
                 "\"suggested\":...,\"reason\":...}]}."
@@ -228,6 +252,10 @@ def _request_signature(row: dict[str, Any]) -> str:
     raw = json.dumps(
         {
             "cn": row.get("cn", ""),
+            "translation_source": row.get("translation_source", row.get("cn", "")),
+            "source_mode": row.get("source_mode", "cn"),
+            "reference_en": row.get("reference_en", ""),
+            "reference_en_status": row.get("reference_en_status", "not_requested"),
             "context": row.get("context", ""),
             "term_hits": row.get("term_hits") or [],
         },
@@ -242,6 +270,10 @@ def _request_row(row: dict[str, Any], request_key: str) -> dict[str, object]:
     return {
         "request_key": request_key,
         "cn": str(row.get("cn") or ""),
+        "translation_source": str(row.get("translation_source") or row.get("cn") or ""),
+        "source_mode": str(row.get("source_mode") or "cn"),
+        "reference_en": str(row.get("reference_en") or ""),
+        "reference_en_status": str(row.get("reference_en_status") or "not_requested"),
         "context": str(row.get("context") or ""),
         "protected_tokens": row.get("tokens") or [],
         "term_hits": row.get("term_hits") or [],
@@ -421,6 +453,7 @@ def translate_manifest(
             )
         )
         strategy = manifest.get("api_strategy") or {}
+        source_modes = sorted({str(row.get("source_mode") or "cn") for row in items})
         model = str(strategy.get("model") or "injected")
         scope = hashlib.sha256(
             json.dumps(
@@ -430,7 +463,11 @@ def translate_manifest(
                     "provider_path": strategy.get("base_url_path", ""),
                     "client_identity": client_identity,
                     "target_langs": target_langs,
-                    "prompt": "translate-v1",
+                    "prompt": (
+                        "translate-v2-source-reference"
+                        if any(mode != "cn" for mode in source_modes)
+                        else "translate-v1"
+                    ),
                 },
                 sort_keys=True,
             ).encode("utf-8")

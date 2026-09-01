@@ -292,7 +292,12 @@ def write_merged_term_base(term_files: list[Path], output_dir: Path, lang: str) 
     return merged_path
 
 
-def _resolve_task_context(task: WorkspaceTask, lang: str | None, auto_fix: bool):
+def _resolve_task_context(
+    task: WorkspaceTask,
+    lang: str | None,
+    auto_fix: bool,
+    source_mode: str = 'cn',
+):
     effective_lang = lang or task.lang
     profile = inspect_language_file(task.language_file)
     print(
@@ -310,6 +315,7 @@ def _resolve_task_context(task: WorkspaceTask, lang: str | None, auto_fix: bool)
         term_base_path=str(merged_term_path) if merged_term_path else None,
         lang=effective_lang,
         auto_fix=auto_fix,
+        source_mode=source_mode,
     )
     return {
         'effective_lang': effective_lang,
@@ -341,8 +347,9 @@ def run_workspace_task(
     ai_scope: str = 'all',
     strict_review: bool = True,
     term_only_view: bool = True,
+    source_mode: str = 'cn',
 ) -> dict:
-    context = _resolve_task_context(task, lang, auto_fix)
+    context = _resolve_task_context(task, lang, auto_fix, source_mode)
     effective_lang = context['effective_lang']
     merged_term_path = context['merged_term_path']
     term_lookup = context['term_lookup']
@@ -493,6 +500,12 @@ def main():
                         help='AI 审查范围')
     parser.add_argument('--strict-review', action='store_true',
                         help='merge 时启用严格回复校验：批次全覆盖且输入指纹一致')
+    parser.add_argument(
+        '--source-mode',
+        choices=['cn', 'cn+en', 'en'],
+        default='cn',
+        help='语义源：cn=中文，cn+en=中文主源+英语参考，en=英语主源+中文回查',
+    )
     args = parser.parse_args()
 
     if args.mode.startswith('announcement-'):
@@ -564,6 +577,7 @@ def main():
             batch_size=args.batch_size,
             ai_scope=args.ai_scope,
             strict_review=args.strict_review,
+            source_mode=args.source_mode,
         )
         if args.mode == 'prepare':
             print(

@@ -452,6 +452,67 @@ class TermCheckerTests(unittest.TestCase):
 
         self.assertEqual(results, [])
 
+    def test_flags_superstring_drift_in_structural_term_segment(self):
+        term_lookup = {
+            "毒蝎巢穴": {"primary": "Scorpion Lair", "variants": []},
+        }
+
+        results = check_term_hit(
+            row_id=9553,
+            original="毒蝎巢穴·难度<@1>",
+            translation="Venom Scorpion Lair - Difficulty <@1>",
+            term_lookup=term_lookup,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].check_type, "term_superstring_drift_candidate")
+        self.assertEqual(results[0].actual_fragment, "Venom Scorpion Lair")
+        self.assertEqual(results[0].auto_fix, "")
+
+    def test_accepts_primary_term_with_structural_suffix(self):
+        term_lookup = {
+            "毒蝎巢穴": {"primary": "Scorpion Lair", "variants": []},
+        }
+
+        results = check_term_hit(
+            row_id=9553,
+            original="毒蝎巢穴·难度<@1>",
+            translation="Scorpion Lair - Difficulty <@1>",
+            term_lookup=term_lookup,
+        )
+
+        self.assertEqual(results, [])
+
+    def test_flags_superstring_drift_inside_quotes(self):
+        term_lookup = {
+            "毒蝎巢穴": {"primary": "Scorpion Lair", "variants": []},
+        }
+
+        results = check_term_hit(
+            row_id=1705,
+            original="用于解锁“毒蝎巢穴”并升星",
+            translation='Used to unlock "Venom Scorpion Lair" and raise its stars',
+            term_lookup=term_lookup,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].check_type, "term_superstring_drift_candidate")
+        self.assertEqual(results[0].actual_fragment, "Venom Scorpion Lair")
+
+    def test_accepts_primary_term_inside_quotes(self):
+        term_lookup = {
+            "毒蝎巢穴": {"primary": "Scorpion Lair", "variants": []},
+        }
+
+        results = check_term_hit(
+            row_id=1705,
+            original="用于解锁“毒蝎巢穴”并升星",
+            translation='Used to unlock "Scorpion Lair" and raise its stars',
+            term_lookup=term_lookup,
+        )
+
+        self.assertEqual(results, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,13 @@ Project context:
 - Target language: {{project.target_language}}
 - Platform: {{project.platform}}
 - Audience: {{project.audience}}
+- Source mode: {{project.source_mode}}
+
+Source priority:
+- cn: translate from Chinese.
+- cn+en: Chinese is authoritative; use reviewed English only for terminology, proper names, tone, and ambiguity.
+- en: reviewed English is primary; use Chinese to backcheck omissions, gameplay conditions, numbers, placeholders, and terminology.
+- Never propagate an English omission or mistranslation merely because it appears in the reference.
 
 Style target:
 - Primary goal: {{translation_goals.primary_goal}}
@@ -27,6 +34,11 @@ Terminology:
 - Soft terms are references. Prefer them when natural, but do not force awkward or misleading wording.
 - Forbidden translations must not appear.
 - Character names, place names, item names, skill names, rarity names, system names, and repeated numbered entries must stay consistent.
+- For glossary rows explicitly categorized as skill names, English should preferably use no more than 2 readable words / 24 characters; keep meaning and uniqueness before length, and allow a longer exception when compression would distort the name.
+- For glossary rows explicitly categorized as place/location/map/region names, English should preferably use no more than 2 content words / 28 characters; articles and connectors do not count, and established natural place names may be longer.
+- For non-English targets, keep skill and place names compact at about 2 core semantic units, but follow natural target-language grammar instead of an English surface-word count.
+- Never infer these name types from source length. Do not apply name compression to skill descriptions, effects, map descriptions, or ordinary sentences.
+- Check that different source skill/place names have not been compressed into the same target name.
 
 Technical constraints:
 - Preserve placeholders, variables, BBCode, HTML-like tags, color tags, and newline shape exactly.

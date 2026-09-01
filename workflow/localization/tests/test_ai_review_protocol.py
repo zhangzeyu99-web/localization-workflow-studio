@@ -41,6 +41,80 @@ class AIReviewProtocolTests(unittest.TestCase):
         self.assertIn("never use opaque abbreviations or clipped words", prompt)
         self.assertIn("Use sentence case by default for English status, error, and prompt text", prompt)
 
+    def test_format_batch_prompt_includes_skill_and_location_name_rules(self):
+        prompt = format_batch_prompt(
+            batch_rows=[
+                {
+                    "id": 10,
+                    "original": "终焉之境",
+                    "translation": "Realm of the Final Ending",
+                    "name_type": "ui_skill_name",
+                    "name_policy": {
+                        "preferred_words": 2,
+                        "max_characters": 24,
+                    },
+                },
+                {
+                    "id": 11,
+                    "original": "太阳神殿",
+                    "translation": "Temple of the Sun",
+                    "name_type": "ui_location_name",
+                    "name_policy": {
+                        "preferred_content_words": 2,
+                        "max_characters": 28,
+                    },
+                },
+                {
+                    "id": 12,
+                    "original": "载具组件工厂",
+                    "translation": "Support Aircraft Parts Factory",
+                    "name_type": "ui_building_name",
+                    "name_policy": {
+                        "preferred_content_words": 2,
+                        "max_characters": 18,
+                        "map_label_max_characters": 14,
+                    },
+                },
+            ],
+            batch_num=1,
+            total_batches=1,
+            lang="en",
+        )
+
+        self.assertIn("Skill-name rule", prompt)
+        self.assertIn("prefer no more than 2 readable English words", prompt)
+        self.assertIn("Place-name rule", prompt)
+        self.assertIn("Building-name rule", prompt)
+        self.assertIn("target 14 characters", prompt)
+        self.assertIn("NAME:ui_skill_name", prompt)
+        self.assertIn("NAME:ui_location_name", prompt)
+        self.assertIn("NAME:ui_building_name", prompt)
+        self.assertIn("map_chars<=14", prompt)
+        self.assertIn("ID | Source | Translation | NAME", prompt)
+
+    def test_format_batch_prompt_includes_bilingual_source_reference_rules(self):
+        prompt = format_batch_prompt(
+            batch_rows=[
+                {
+                    "id": 20,
+                    "original": "烈焰斩",
+                    "translation": "Frappe ardente",
+                    "source_mode": "cn+en",
+                    "reference_en": "Flame Strike",
+                    "reference_en_status": "usable",
+                }
+            ],
+            batch_num=1,
+            total_batches=1,
+            lang="fr",
+        )
+
+        self.assertIn("Bilingual source rule", prompt)
+        self.assertIn("Chinese remains the semantic source of truth", prompt)
+        self.assertIn("SRC:cn+en", prompt)
+        self.assertIn("REF_EN:Flame Strike", prompt)
+        self.assertIn("ID | Source | Translation | SOURCE_MODE | REF_EN", prompt)
+
     def test_parse_review_response_supports_exhaustive_keep_and_fix_lines(self):
         decisions = parse_review_response(
             "1 | KEEP\n2 | FIX | Updated translation\n",
@@ -142,6 +216,32 @@ class AIReviewProtocolTests(unittest.TestCase):
             )
 
             with self.assertRaises(ValueError):
+                merge_review_batches(review_dir, states, batch_type="main")
+
+    def test_merge_review_batches_rejects_english_reference_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            review_dir = Path(tmp)
+            state = RowState(3, "烈焰斩", "Frappe ardente")
+            state.source_mode = "cn+en"
+            state.reference_en = "Flame Strike"
+            state.reference_en_status = "usable"
+            states = {3: state}
+            batches = [
+                BatchInfo(batch_num=1, total_batches=1, row_ids=[3], prompt_text="prompt"),
+            ]
+            write_review_files(
+                review_dir=review_dir,
+                batches=batches,
+                states=states,
+                batch_type="main",
+                lang="fr",
+                input_path="demo.xlsx",
+                ai_scope="all",
+            )
+            state.reference_en = "Blaze Slash"
+            (review_dir / "batch_1_response.txt").write_text("3 | KEEP\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "Input drift"):
                 merge_review_batches(review_dir, states, batch_type="main")
 
     def test_write_response_templates_seeds_keep_lines_for_all_ids(self):
