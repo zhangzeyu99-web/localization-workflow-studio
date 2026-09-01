@@ -107,6 +107,8 @@ def run_pipeline(
     delivery_dir: Path | None = None,
     batch_size: int = 60,
     workers: int = 4,
+    proofread_batch_size: int | None = None,
+    proofread_workers: int | None = None,
     source_mode: str = "cn",
 ) -> PipelineResult:
     started = time.perf_counter()

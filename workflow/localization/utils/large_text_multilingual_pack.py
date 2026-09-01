@@ -18,6 +18,18 @@ from utils.source_reference import (
 )
 
 
+TERM_CATEGORY_HEADERS = {"分类", "类别", "术语分类", "category", "type"}
+STRICT_TERM_CATEGORIES = {
+    "主角",
+    "角色名",
+    "人物名",
+    "英雄名",
+    "怪物名",
+    "boss",
+    "npc",
+}
+
+
 @dataclass(frozen=True)
 class PackArtifacts:
     items_jsonl: Path

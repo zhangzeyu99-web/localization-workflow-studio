@@ -121,6 +121,14 @@ NEGATED_EXACT_TERM_METADATA_MARKERS = {
     '不是专名',
 }
 
+TERM_REVIEW_ISSUE_TYPES = frozenset({
+    'term_missing',
+    'term_partial_hit',
+    'term_capitalization',
+    'romanized_name_residue',
+    'term_superstring_drift_candidate',
+})
+
 
 @dataclass
 class TermCheckResult:
@@ -160,6 +168,118 @@ def _find_term_in_text(term: str, text: str) -> tuple[bool, str]:
     if match:
         return True, match.group()
     return False, ''
+
+
+SOURCE_QUOTE_PAIRS = (
+    ('“', '”'),
+    ('‘', '’'),
+    ('「', '」'),
+    ('『', '』'),
+    ('《', '》'),
+    ('"', '"'),
+    ("'", "'"),
+)
+TARGET_QUOTE_PAIRS = SOURCE_QUOTE_PAIRS + (
+    ('«', '»'),
+    ('„', '“'),
+)
+STRUCTURAL_SOURCE_SEPARATOR = re.compile(r'^(?:[·•・:：|｜]|[-–—]\s)')
+STRUCTURAL_SOURCE_PREFIX_SEPARATOR = re.compile(r'(?:[·•・:：|｜]|[-–—])$')
+STRUCTURAL_TARGET_SEPARATOR = re.compile(r'\s+(?:[-–—|｜])\s+|[·•・:：]')
+
+
+def _classify_source_term_usage(original: str, source_term: str) -> str:
+    """Return a high-signal context where the target name can be isolated."""
+    text = str(original or '')
+    for start, end in _source_term_spans(source_term, text):
+        left = text[:start].rstrip()
+        right = text[end:].lstrip()
+        for opening, closing in SOURCE_QUOTE_PAIRS:
+            if left.endswith(opening) and right.startswith(closing):
+                return 'quoted'
+        if (
+            STRUCTURAL_SOURCE_SEPARATOR.match(right)
+            or STRUCTURAL_SOURCE_PREFIX_SEPARATOR.search(left)
+        ):
+            return 'structural'
+    return ''
+
+
+def _find_term_match(term: str, text: str) -> re.Match | None:
+    return _compile_term_pattern(term).search(text)
+
+
+def _extract_quoted_term_segment(text: str, match: re.Match) -> str:
+    for opening, closing in TARGET_QUOTE_PAIRS:
+        left = text.rfind(opening, 0, match.start())
+        if left < 0:
+            continue
+        right = text.find(closing, match.end())
+        if right < 0:
+            continue
+        return text[left + len(opening):right].strip()
+    return ''
+
+
+def _extract_structural_term_segment(text: str, match: re.Match) -> str:
+    start = 0
+    end = len(text)
+    for separator in STRUCTURAL_TARGET_SEPARATOR.finditer(text):
+        if separator.end() <= match.start():
+            start = separator.end()
+            continue
+        if separator.start() >= match.end():
+            end = separator.start()
+            break
+    return text[start:end].strip()
+
+
+def _normalize_term_segment(text: str) -> str:
+    stripped = str(text or '').strip()
+    stripped = re.sub(r'^[\s"\'“”‘’「」『』《》«»„\[\](){}]+', '', stripped)
+    stripped = re.sub(r'[\s"\'“”‘’「」『』《》«»„\[\](){}]+$', '', stripped)
+    return re.sub(r'\s+', ' ', stripped).casefold()
+
+
+def _check_term_superstring_drift(
+    row_id: int,
+    original: str,
+    translation: str,
+    source_term: str,
+    matched_expected: str,
+) -> list[TermCheckResult]:
+    """Flag legacy modifiers around an approved term for contextual AI review."""
+    usage = _classify_source_term_usage(original, source_term)
+    if usage not in {'quoted', 'structural'}:
+        return []
+
+    clean_translation = _normalize_for_search(translation)
+    match = _find_term_match(matched_expected, clean_translation)
+    if not match:
+        return []
+
+    if usage == 'quoted':
+        segment = _extract_quoted_term_segment(clean_translation, match)
+    else:
+        segment = _extract_structural_term_segment(clean_translation, match)
+    if not segment:
+        return []
+    if _normalize_term_segment(segment) == _normalize_term_segment(matched_expected):
+        return []
+
+    return [TermCheckResult(
+        row_id=row_id,
+        check_type='term_superstring_drift_candidate',
+        severity='warning',
+        message=(
+            f"Approved term '{matched_expected}' is present, but the isolated name "
+            f"segment '{segment}' contains extra text; review for a legacy expanded name"
+        ),
+        source_term=source_term,
+        expected_target=matched_expected,
+        actual_fragment=segment,
+        confidence=0.75,
+    )]
 
 
 def _source_term_spans(source_term: str, original: str) -> list[tuple[int, int]]:
