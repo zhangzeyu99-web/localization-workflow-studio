@@ -11,11 +11,14 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from utils.readability_checker import check_readability
+from utils.punctuation_policy import FULLWIDTH_PATTERN, punctuation_issues
 from utils.term_checker import check_chinese_residue, check_term_hit
 from utils.text_normalize import strip_tags_and_vars
 from utils.ui_detector import is_ui_text
 from utils.ui_length_checker import check_ui_length
 from utils.variable_checker import CheckResult, check_all as check_variables
+from utils.quantity_guard import quantity_issues
+from utils.semantic_constraints import semantic_constraint_issues
 
 HTML_ENTITY_PATTERN = re.compile(r'&(?:#[0-9]+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);')
 INTERNAL_TOKEN_PATTERN = re.compile(r'\b[A-Z]{2,}[A-Z0-9]*\d[A-Z0-9]*\b')
@@ -28,7 +31,7 @@ ORPHAN_LEADING_CLITIC_PATTERN = re.compile(r"^\s*['’]s\b", re.IGNORECASE)
 BROKEN_BULLET_PATTERN = re.compile(r'(?:^|\\n|\n)\?[A-Za-z0-9]')
 SANDWICHED_QUESTION_PATTERN = re.compile(r'\b[A-Za-z0-9]+\s+\?\s+[A-Za-z0-9]')
 SOURCE_SEPARATOR_PATTERN = re.compile(r'[·•・:：/|｜>→\-]')
-FULLWIDTH_PUNCTUATION_PATTERN = re.compile(r'[，。！？：；（）【】％＋－]')
+FULLWIDTH_PUNCTUATION_PATTERN = FULLWIDTH_PATTERN
 WORD_START_PATTERN = re.compile(r'[A-Za-z]')
 NUMBERED_SOURCE_PATTERN = re.compile(r'^\s*(?P<stem>.+?)-(?P<number>\d{1,6})\s*$')
 NUMBERED_TARGET_PATTERN = re.compile(r'^\s*(?P<stem>.+?)(?P<separator>\s*-\s*)(?P<number>\d{1,6})\s*$')
@@ -36,6 +39,14 @@ CJK_PATTERN = re.compile(r'[\u3400-\u9fff]')
 MIN_NUMBERED_TERM_GROUP_SIZE = 3
 
 DEFAULT_HARD_ISSUES = {
+    'number_missing',
+    'semantic_entity_number_missing',
+    'semantic_action_condition_missing',
+    'semantic_enemy_scope_missing',
+    'semantic_negation_missing',
+    'quantity_count_missing',
+    'quantity_duration_mismatch',
+    'quantity_per_hit_missing',
     'variable_missing',
     'variable_extra',
     'variable_order',
@@ -62,6 +73,7 @@ DEFAULT_HARD_ISSUES = {
     'leading_lowercase',
     'punctuation_corruption',
     'fullwidth_punctuation',
+    'incompatible_punctuation',
     'person_name_term_mismatch',
     'numbered_term_inconsistency',
 }
@@ -87,16 +99,22 @@ class HarnessResult:
         }
 
 
-def check_row(row_id, source: str, translation: str, lang: str = 'en') -> list[CheckResult]:
+def check_row(row_id, source: str, translation: str, lang: str = 'en', punctuation_mode: str | None = None) -> list[CheckResult]:
     """Run all row-level hard gates used by the harness."""
     results: list[CheckResult] = []
     source = str(source or '')
     translation = str(translation or '')
 
     results.extend(check_variables(row_id, source, translation))
+    from utils.large_text_multilingual_gate import pair_integrity_issues
+    for issue_type, detail in pair_integrity_issues({'cn': source}, lang, translation, punctuation_mode):
+        if issue_type in {'number_missing', 'newline_mismatch'} and not any(r.check_type == issue_type for r in results):
+            results.append(CheckResult(row_id, issue_type, 'error', detail, source, translation))
+    for issue_type, detail in quantity_issues(source, translation, lang) + semantic_constraint_issues(source, translation, lang):
+        results.append(CheckResult(row_id, issue_type, 'error', detail, source, translation))
     results.extend(check_chinese_residue(row_id, translation, lang=lang))
     results.extend(check_readability(row_id, source, translation, lang=lang))
-    results.extend(_check_surface_regressions(row_id, source, translation, lang=lang))
+    results.extend(_check_surface_regressions(row_id, source, translation, lang=lang, punctuation_mode=punctuation_mode))
 
     if any(r.check_type == 'internal_token_leak' for r in results):
         results = [r for r in results if r.check_type != 'opaque_abbreviation']
@@ -344,7 +362,7 @@ def _contains_expected_person_name(translation: str, expected: str) -> bool:
     return bool(pattern.search(str(translation or '')))
 
 
-def _check_surface_regressions(row_id, source: str, translation: str, lang: str = 'en') -> list[CheckResult]:
+def _check_surface_regressions(row_id, source: str, translation: str, lang: str = 'en', punctuation_mode: str | None = None) -> list[CheckResult]:
     results: list[CheckResult] = []
 
     if HTML_ENTITY_PATTERN.search(translation):
@@ -440,11 +458,11 @@ def _check_surface_regressions(row_id, source: str, translation: str, lang: str 
             translation,
         ))
 
-    if FULLWIDTH_PUNCTUATION_PATTERN.search(translation):
+    for check_type, message in punctuation_issues(translation, lang, punctuation_mode).items():
         results.append(_issue(
             row_id,
-            'fullwidth_punctuation',
-            "Fullwidth punctuation remains in Latin-script translation",
+            check_type,
+            message,
             source,
             translation,
         ))

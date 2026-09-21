@@ -8,6 +8,7 @@ from .. import db
 from ..config import REAL_PROVIDERS, load_settings, normalize_provider_name
 from .common import run_dir
 from .qa import (
+    QaCanceled,
     _check_qa_cancel,
     _append_improvement_items,
     _apply_workbook_fixes,
@@ -20,7 +21,7 @@ from .qa import (
     run_qa_sync,
 )
 from .semantic_qa import _call_semantic_provider, _parse_semantic_qa_payload
-from .translation_tasks import ensure_task_run_open, translation_task_continuation_metadata
+from .translation_tasks import ensure_task_run_open, translation_task_continuation_metadata, update_task_run_status
 
 
 def model_fix_provider_settings() -> tuple[dict[str, Any], str]:
@@ -141,5 +142,10 @@ def apply_model_fixes(
                 **translation_task_continuation_metadata(run),
             },
         )
-        result["qa_result"] = run_qa_sync(qa_run["id"], settings=settings, cancel_event=cancel_event)
+        try:
+            result["qa_result"] = run_qa_sync(qa_run["id"], settings=settings, cancel_event=cancel_event)
+        except QaCanceled:
+            db.merge_run_metadata(qa_run["id"], {"canceled_at": db.now_iso()})
+            update_task_run_status(qa_run["id"], "canceled")
+            raise
     return result

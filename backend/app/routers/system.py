@@ -248,6 +248,8 @@ def _queue_entry(entry: dict[str, Any], *, position: int | None = None, ahead: i
         "ahead": ahead,
         "queued_at": entry.get("queued_at"),
         "started_at": entry.get("started_at"),
+        "archive_committed": bool((entry.get("payload") or {}).get("archive_commit")),
+        "can_cancel": entry.get("status") in job_queue.ACTIVE_STATUSES and not bool((entry.get("payload") or {}).get("archive_commit")),
     }
 
 
@@ -283,7 +285,10 @@ def cancel_queued_job(job_id: str) -> dict[str, Any]:
     if existing is None:
         raise HTTPException(status_code=404, detail="job not found")
     require_project_access(str(existing.get("project_id") or ""))
-    result = background_jobs.cancel(job_id)
+    try:
+        result = background_jobs.cancel(job_id)
+    except job_queue.ArchiveAlreadyCommittedError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="job not found")
     return result

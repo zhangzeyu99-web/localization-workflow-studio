@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -16,6 +16,12 @@ const selectWizardStep = async (page: any, step: number, scope?: string) => {
 }
 
 test.use({ acceptDownloads: true })
+
+async function openPresentationTestPage(page: Page) {
+  // 纯函数/文案测试不依赖项目数据，避免快速关页后遗留真实列表统计请求。
+  await page.route(`${baseURL}/api/projects`, (route) => route.fulfill({ json: [] }))
+  await page.goto(baseURL)
+}
 
 test('auth-off runtime reports local profile and exposes only local operator controls', async ({ page, request }) => {
   const versionResponse = await request.get(`${baseURL}/api/version`)
@@ -108,7 +114,7 @@ test('glossary candidates stay readable while curation actions are hidden in rea
 })
 
 test('spreadsheet column errors are shown as actionable Chinese', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const message = await page.evaluate(async () => {
     const { sanitizeUserFacingError } = await import('/src/apiClient.ts')
     return sanitizeUserFacingError('target column not found in sheet: fminth')
@@ -117,7 +123,7 @@ test('spreadsheet column errors are shown as actionable Chinese', async ({ page 
 })
 
 test('API client no longer exposes the obsolete 409 queue-conflict navigation classifier', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const hasLegacyClassifier = await page.evaluate(async () => {
     const apiClient = await import('/src/apiClient.ts')
     return 'isQueueConflictMessage' in apiClient
@@ -126,7 +132,7 @@ test('API client no longer exposes the obsolete 409 queue-conflict navigation cl
 })
 
 test('glossary scan events do not expose backend diagnostics', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const messages = await page.evaluate(async () => {
     const { humanBackendEvent } = await import('/src/appText.ts')
     return [
@@ -147,7 +153,7 @@ test('glossary scan events do not expose backend diagnostics', async ({ page }) 
 })
 
 test('line proofread events are shown as actionable Chinese', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const messages = await page.evaluate(async () => {
     const { humanBackendEvent } = await import('/src/appText.ts')
     return [
@@ -167,7 +173,7 @@ test('line proofread events are shown as actionable Chinese', async ({ page }) =
 })
 
 test('quick task preflight events do not expose backend diagnostics', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const message = await page.evaluate(async () => {
     const { humanBackendEvent } = await import('/src/appText.ts')
     return humanBackendEvent('quick TXT translation preflight: source_lines=3, batch_size=90, estimated_batches=1')
@@ -177,7 +183,7 @@ test('quick task preflight events do not expose backend diagnostics', async ({ p
 })
 
 test('quick translation completion status stays scoped to the quick task', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const message = await page.evaluate(async () => {
     const { projectTranslationPassedStatusText } = await import('/src/domain/projectActivity.ts')
     return projectTranslationPassedStatusText({
@@ -192,7 +198,7 @@ test('quick translation completion status stays scoped to the quick task', async
 })
 
 test('job queue presentation maps lanes, task kinds, counts, and target status', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const result = await page.evaluate(async () => {
     const { allQueueJobs, projectQueueJobCount, queueJobKindLabel, queueJobStatusText, queueJobForTarget } = await import('/src/domain/jobQueues.ts')
     const queues = {
@@ -230,7 +236,7 @@ test('job queue presentation maps lanes, task kinds, counts, and target status',
 })
 
 test('job queue target matching is project scoped and formal workflow prefers the multilingual source job', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const result = await page.evaluate(async () => {
     const { formalWorkflowQueueJob, queueJobForTarget } = await import('/src/domain/jobQueues.ts')
     const queues = {
@@ -299,7 +305,7 @@ test('job queue target matching is project scoped and formal workflow prefers th
 })
 
 test('formal queue status is scoped by translation task when a source is reused', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const operators = await page.evaluate(async () => {
     const { formalWorkflowQueueJob } = await import('/src/domain/jobQueues.ts')
     const queues = {
@@ -339,7 +345,7 @@ test('formal queue status is scoped by translation task when a source is reused'
 })
 
 test('delivery issue label distinguishes available from already delivered', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const labels = await page.evaluate(async () => {
     const { deliveryStatusLabel } = await import('/src/components/translationWizard/ProjectTabs.tsx')
     return [
@@ -353,7 +359,7 @@ test('delivery issue label distinguishes available from already delivered', asyn
 })
 
 test('failed translation QA exposes the correct repair path for row and structural issues', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const modes = await page.evaluate(async () => {
     const { qaRepairMode } = await import('/src/components/translationWizard/steps/StepQA.tsx')
     const failedTranslation = { kind: 'translation', status: 'failed' } as any
@@ -367,7 +373,7 @@ test('failed translation QA exposes the correct repair path for row and structur
 })
 
 test('glossary candidate notes hide model metadata', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const note = await page.evaluate(async () => {
     const { normalizeGlossaryNote } = await import('/src/domain/projectAssets.ts')
     return normalizeGlossaryNote('AI 漏词补充候选，需人工确认；置信度 high；特训玩法的具体类型，不与 existing_candidates 中“特训”重复。')
@@ -376,7 +382,7 @@ test('glossary candidate notes hide model metadata', async ({ page }) => {
 })
 
 test('glossary review stays visible after another run becomes latest', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const state = await page.evaluate(async () => {
     const { glossaryReviewState } = await import('/src/components/translationWizard/steps/StepFreqV2.tsx')
     return glossaryReviewState(
@@ -391,7 +397,7 @@ test('glossary review stays visible after another run becomes latest', async ({ 
 })
 
 test('active glossary extraction blocks advancing before candidates arrive', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const state = await page.evaluate(async () => {
     const { glossaryReviewState } = await import('/src/components/translationWizard/steps/StepFreqV2.tsx')
     return glossaryReviewState(
@@ -406,7 +412,7 @@ test('active glossary extraction blocks advancing before candidates arrive', asy
 })
 
 test('inline status does not repeat running prefixes', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const messages = await page.evaluate(async () => {
     const { actionStatusText } = await import('/src/components/shared/WorkflowPrimitives.tsx')
     return [
@@ -425,7 +431,7 @@ test('inline status does not repeat running prefixes', async ({ page }) => {
 })
 
 test('QA issue labels do not expose internal enum names', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const labels = await page.evaluate(async () => {
     const { issueHumanMessage, issueTypeLabel } = await import('/src/components/translationWizard/QaIssuePanel.tsx')
     return [
@@ -444,7 +450,7 @@ test('QA issue labels do not expose internal enum names', async ({ page }) => {
 })
 
 test('announcement artifact labels do not expose internal English names', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const labels = await page.evaluate(async () => {
     const { artifactKindLabel } = await import('/src/domain/artifacts.ts')
     return [
@@ -457,7 +463,7 @@ test('announcement artifact labels do not expose internal English names', async 
 })
 
 test('generated result filenames use a user-facing picker label', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const label = await page.evaluate(async () => {
     const { artifactPickerLabel } = await import('/src/domain/artifacts.ts')
     return artifactPickerLabel({
@@ -473,7 +479,7 @@ test('generated result filenames use a user-facing picker label', async ({ page 
 })
 
 test('failed announcement tasks do not show stale child runs as translating', async ({ page }) => {
-  await page.goto(baseURL)
+  await openPresentationTestPage(page)
   const label = await page.evaluate(async () => {
     const { announcementStatusLabel } = await import('/src/domain/announcementText.ts')
     return announcementStatusLabel('running', 'failed')
@@ -1342,7 +1348,15 @@ test('user can complete the EN localization workflow from project tabs', async (
   await page.locator('label.upload-box', { hasText: '上传待翻译表格' }).locator('input[type="file"]').setInputFiles(sourceWorkbook)
   await expect(page.locator('.selected-input span', { hasText: fileStem(sourceWorkbook) })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('formal-translate')).toBeEnabled()
+  const translationCreated = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/runs' && response.request().postDataJSON().kind === 'translation')
   await page.getByTestId('formal-translate').click()
+  const translationResponse = await translationCreated
+  expect(translationResponse.ok()).toBeTruthy()
+  const translationRequest = translationResponse.request().postDataJSON()
+  expect(translationRequest.translation_task_id).toMatch(/^translation-task-/)
+  const translationRun = await translationResponse.json()
+  expect(translationRun.metadata.translation_task_id).toBe(translationRequest.translation_task_id)
   await expect(inlineStatus(page, 'EN 翻译和 QA 已通过，最终产物已归档。')).toBeVisible({ timeout: 120000 })
   await expect(page.getByText('最近翻译任务')).toBeVisible()
   await expect(page.getByText('已通过').first()).toBeVisible()
@@ -1353,16 +1367,49 @@ test('user can complete the EN localization workflow from project tabs', async (
   await expect(page.locator('.qa-outcome-panel')).not.toContainText('QA final workbook')
   await expect(page.locator('.qa-outcome-panel')).not.toContainText('result_en')
   await expect(page.locator('.qa-outcome-panel')).toContainText('上一翻译结果')
+  await page.locator('details.qa-input-details > summary').click()
+  const continuationCreated = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/runs' && response.request().postDataJSON().kind === 'qa')
+  await page.getByTestId('run-qa').click()
+  const continuationResponse = await continuationCreated
+  expect(continuationResponse.ok()).toBeTruthy()
+  expect(continuationResponse.request().postDataJSON()).toMatchObject({
+    source_run_id: translationRun.id, translation_task_id: translationRequest.translation_task_id,
+  })
+  const continuationRun = await continuationResponse.json()
+  await expect.poll(async () => (await request.get(`${baseURL}/api/runs/${continuationRun.id}`).then((response) => response.json())).status).toBe('passed')
+  const completedContinuation = await request.get(`${baseURL}/api/runs/${continuationRun.id}`).then((response) => response.json())
+  expect(completedContinuation.metadata.translation_task_id).toBe(translationRequest.translation_task_id)
+  await expect(page.locator('.qa-outcome-panel.ready')).toContainText('QA 已通过')
 
   await page.getByRole('button', { name: '交付', exact: true }).click()
   await expect(page.locator('.card-title .left', { hasText: '最终交付' })).toBeVisible()
   await expect(page.locator('.delivery-card').first()).toBeVisible({ timeout: 30000 })
-  await expect(page.getByText('任务进度', { exact: true })).toBeVisible()
-  await expect(page.getByText('交付结果', { exact: true })).toBeVisible()
+  await expect(page.getByText('本次 QA', { exact: true })).toBeVisible()
+  await expect(page.getByText('当前交付', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '生成交付文件' }).click()
   await expect(inlineStatus(page, '最终交付已生成：2 个文件')).toBeVisible({ timeout: 30000 })
   await expect(page.getByRole('link', { name: '下载最终译文' })).toBeVisible()
   await expect(page.getByRole('link', { name: '下载修改记录' })).toBeVisible()
+  const deliveredRun = await request.get(`${baseURL}/api/runs/${continuationRun.id}`).then((response) => response.json())
+  expect(deliveredRun.metadata.translation_task_state).toBe('delivered')
+  await page.getByRole('button', { name: '翻译', exact: true }).click()
+  const nextTranslationCreated = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/runs' && response.request().postDataJSON().kind === 'translation')
+  await page.getByTestId('formal-translate').click()
+  const nextTranslationResponse = await nextTranslationCreated
+  expect(nextTranslationResponse.ok()).toBeTruthy()
+  const nextTranslationRequest = nextTranslationResponse.request().postDataJSON()
+  expect(nextTranslationRequest.input_artifact_id).toBe(translationRequest.input_artifact_id)
+  expect(nextTranslationRequest.translation_task_id).toMatch(/^translation-task-/)
+  expect(nextTranslationRequest.translation_task_id).not.toBe(translationRequest.translation_task_id)
+  const nextTranslationRun = await nextTranslationResponse.json()
+  expect(nextTranslationRun.metadata.translation_task_id).toBe(nextTranslationRequest.translation_task_id)
+  await expect.poll(async () => (await request.get(`${baseURL}/api/runs/${nextTranslationRun.id}`).then((response) => response.json())).status, { timeout: 120000 }).toBe('passed')
+  await expect(page.getByTestId('formal-translate')).toBeEnabled()
+  await page.getByRole('button', { name: '交付', exact: true }).click()
+  await page.getByTestId(`delivery-generate-${nextTranslationRun.id}`).click()
+  await expect(page.getByTestId(`delivery-current-${nextTranslationRun.id}`).getByRole('button', { name: '重新生成交付', exact: true })).toBeVisible()
   await page.locator('main').getByRole('button', { name: '新翻译任务', exact: true }).click()
   await expect(page.getByTestId('step-menu-toggle')).toContainText('项目资料')
   await expect(page.locator('.workflow-file-link')).toHaveCount(0)
@@ -2091,7 +2138,7 @@ wb.close()
     },
   }).then((response) => response.json())
   const run = await request.post(`${baseURL}/api/runs`, {
-    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: upload.id, batch_size: 2, task_code: 'T' },
+    data: { project_id: project.id, kind: 'translation', language: 'en', input_artifact_id: upload.id, batch_size: 2, task_code: 'T', translation_task_id: `translation-task-${project.id}` },
   }).then((response) => response.json())
 
   await page.route(new RegExp(`/api/projects/${project.id}(?:\\?.*)?$`), async (route) => {
@@ -2705,9 +2752,7 @@ wb.close()
   await page.locator('label.upload-box', { hasText: '\u4e0a\u4f20\u5916\u90e8 AI \u7ed3\u679c JSON' }).locator('input[type="file"]').setInputFiles(supplementResponse)
   await expect(page.locator('.inline-status')).toContainText(fileStem(supplementResponse), { timeout: 15000 })
   await page.getByRole('button', { name: '\u63d0\u53d6\u672f\u8bed\u5e76 AI \u590d\u67e5' }).click()
-  await expect(page.locator('.panel-title', { hasText: '\u8bd1\u6587\u53cd\u67e5' })).toBeVisible({ timeout: 30000 })
-  await selectWizardStep(page, 4, '.announcement-wizard')
-  await expect(page.locator('.panel-title', { hasText: '\u672f\u8bed\u63d0\u53d6' })).toBeVisible()
+  await expect(page.locator('.panel-title', { hasText: '\u672f\u8bed\u63d0\u53d6' })).toBeVisible({ timeout: 30000 })
   const termsTable = page.locator('.announcement-terms-table')
   await expect(termsTable.locator('tbody tr')).toHaveCount(2, { timeout: 30000 })
   await expect(termsTable.locator('tbody tr').nth(0).locator('input').nth(1)).toHaveValue('\u79d8\u5883')
@@ -2716,7 +2761,7 @@ wb.close()
   await expect(page.getByRole('link', { name: '\u5bfc\u51fa XLSX' })).toBeVisible()
   await expect(page.getByRole('link', { name: '\u4e0b\u8f7d\u68c0\u67e5\u5305' })).toBeVisible()
   await expect(page.getByRole('link', { name: '\u4e0b\u8f7d AI \u62a5\u544a' })).toBeVisible()
-  await selectWizardStep(page, 5, '.announcement-wizard')
+  await page.getByRole('button', { name: '确认并继续', exact: true }).click()
   await expect(page.locator('.panel-title', { hasText: '\u8bd1\u6587\u53cd\u67e5' })).toBeVisible({ timeout: 20000 })
   await page.getByRole('button', { name: '\u53cd\u67e5\u672f\u8bed\u8bd1\u6587' }).click()
   await expect(page.locator('.panel-title', { hasText: '\u7ffb\u8bd1\u51c6\u5907' })).toBeVisible({ timeout: 20000 })
@@ -2758,7 +2803,7 @@ wb.close()
   await expect(page.locator('.announcement-subflow-strip')).toHaveCount(0)
   await expect(page.locator('.announcement-artifacts')).toContainText('\u53ef\u4ea4\u4ed8')
   await page.goto(baseURL)
-  await page.getByRole('button', { name: projectName }).click()
+  await page.getByRole('button', { name: '返回项目概览', exact: true }).click()
   await expect(page.locator('.announcement-project-panel .mini-lang')).toHaveCount(0)
   await expect(page.locator('.announcement-project-panel')).not.toContainText('terms_ready')
   await page.getByRole('button', { name: '交付', exact: true }).click()
@@ -2807,8 +2852,17 @@ wb.close()
   await page.getByRole('button', { name: '校对', exact: true }).click()
   await page.locator('label.upload-box', { hasText: '上传译文' }).locator('input[type="file"]').setInputFiles(translatedWorkbook)
   await expect(inlineStatus(page, '已有译文已登记')).toBeVisible({ timeout: 15000 })
+  const directQaCreated = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/runs' && response.request().postDataJSON().kind === 'qa')
   await page.getByTestId('run-qa').click()
+  const directQaResponse = await directQaCreated
+  expect(directQaResponse.ok()).toBeTruthy()
+  expect(directQaResponse.request().postDataJSON().translation_task_id).toMatch(/^translation-task-/)
+  const directQaRun = await directQaResponse.json()
+  expect(directQaRun.metadata.translation_task_id).toBe(directQaResponse.request().postDataJSON().translation_task_id)
   await expect(page.locator('.qa-outcome-panel.ready')).toContainText('QA 已通过', { timeout: 60000 })
+  const completedDirectQa = await request.get(`${baseURL}/api/runs/${directQaRun.id}`).then((response) => response.json())
+  expect(completedDirectQa.metadata.translation_task_id).toBe(directQaRun.metadata.translation_task_id)
   await page.getByRole('button', { name: '交付', exact: true }).click()
   await expect(page.locator('.delivery-head span', { hasText: /QA-[0-9a-f]{6}/ }).first()).toBeVisible({ timeout: 30000 })
   await page.getByRole('button', { name: '\u751f\u6210\u4ea4\u4ed8\u6587\u4ef6' }).click()
@@ -3033,7 +3087,7 @@ wb.close()
     },
   }).then((response) => response.json())
   const run = await request.post(`${baseURL}/api/runs`, {
-    data: { project_id: project.id, kind: 'qa', language: 'en', input_artifact_id: artifact.id },
+    data: { project_id: project.id, kind: 'qa', language: 'en', input_artifact_id: artifact.id, translation_task_id: `translation-task-${project.id}` },
   }).then((response) => response.json())
   const qa = await request.post(`${baseURL}/api/runs/${run.id}/qa`)
   expect(qa.ok()).toBeTruthy()
@@ -3591,17 +3645,16 @@ test('delivery cards reflow without horizontal overflow at 1024px', async ({ pag
   await request.post(`${baseURL}/api/projects`, {
     data: { name: projectName, type: 'responsive', description: 'Delivery reflow coverage.' },
   })
-  await page.route('**/api/projects/*/deliverables', async (route) => {
+  await page.route('**/api/projects/*/delivery-history', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        deliverables: [{
+        project_id: route.request().url().split('/').at(-2),
+        current_tasks: [{
           run_id: 'run-responsive-delivery',
-          task_code: 'T',
+          task_kind: 'translation',
           task_id: 'task-responsive-delivery',
-          task_label: 'T-responsive',
-          task_type: '翻译任务',
           language: 'EN',
           created_at: '2026-07-11T08:54:54Z',
           updated_at: '2026-07-11T08:54:54Z',
@@ -3612,8 +3665,10 @@ test('delivery cards reflow without horizontal overflow at 1024px', async ({ pag
           qa_status: 'passed',
           qa_hard_errors: 0,
           qa_soft_warnings: 0,
-          files: { outputs: [] },
+          current_version_id: null,
+          can_generate: true,
         }],
+        versions: [],
       }),
     })
   })

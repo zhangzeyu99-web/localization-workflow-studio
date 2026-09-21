@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import db
+from . import db, job_queue
+
+
+class ArchiveCommitCanceled(RuntimeError):
+    """Cancellation won the database write boundary before automatic archive."""
 
 
 class ArchiveBatchError(ValueError):
@@ -351,6 +355,8 @@ def commit_archive_batch(
     adapter: ArchiveEntityAdapter,
     *,
     compact: bool = False,
+    run_id: str | None = None,
+    cancel_event: Any | None = None,
 ) -> dict[str, Any]:
     with db.connect() as conn:
         initial = _scope_batch(
@@ -373,6 +379,30 @@ def commit_archive_batch(
     try:
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            archive_job = None
+            if run_id:
+                run = db.get_run(run_id, conn=conn)
+                if run["project_id"] != project_id:
+                    raise KeyError(run_id)
+                execution = job_queue.current_execution()
+                jobs = conn.execute(
+                    "SELECT * FROM job_queue WHERE job_id = ? AND queued_at = ? AND project_id = ? AND status = 'running'",
+                    (*execution, project_id),
+                ).fetchall() if execution is not None else []
+                canceled = run["status"] == "canceled" or (cancel_event is not None and cancel_event.is_set())
+                canceled = canceled or (execution is not None and not jobs)
+                for job in jobs:
+                    payload = json_load(job["payload_json"], {})
+                    model_fix_parent = (
+                        job["job_kind"] == "model_fix"
+                        and job["target_id"] == (run.get("metadata") or {}).get("model_fix_source_run_id")
+                    )
+                    if job["target_id"] == run_id or run_id in payload.get("child_run_ids", []) or model_fix_parent:
+                        canceled = canceled or bool(job["cancel_requested"])
+                        if model_fix_parent or (job["target_id"] == run_id and job["job_kind"] in {"translation", "qa"}):
+                            archive_job = job
+                if canceled:
+                    raise ArchiveCommitCanceled("任务已取消，未提交译文归档。")
             batch = _scope_batch(
                 conn.execute("SELECT * FROM archive_import_batches WHERE token = ?", (token,)).fetchone(),
                 project_id,
@@ -511,6 +541,15 @@ def commit_archive_batch(
                 "committed_at = ?, updated_at = ? WHERE id = ?",
                 (json_dump(result), now, now, batch["id"]),
             )
+            if archive_job is not None:
+                # The cancel endpoint takes this same write lock. A model-fix QA
+                # seals its repair job; a multilingual child never seals its parent.
+                payload = json_load(archive_job["payload_json"], {})
+                payload["archive_commit"] = {"batch_id": batch["id"], "run_id": run_id, "committed_at": now}
+                conn.execute(
+                    "UPDATE job_queue SET payload_json = ?, updated_at = ? WHERE job_id = ?",
+                    (json_dump(payload), now, archive_job["job_id"]),
+                )
             return result
     except sqlite3.IntegrityError as exc:
         raise ArchiveBatchError(

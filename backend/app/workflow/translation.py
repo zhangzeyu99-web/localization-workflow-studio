@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import db
+from ..archive_batch_engine import ArchiveCommitCanceled
 from ..config import LOCALIZATION_ROOT, REAL_PROVIDERS, TEST_FAKE_PROVIDER, load_settings, normalize_provider_name, test_provider_enabled
 from ..jobs import lease_name_for_project
 from ..languages import require_supported_language, workflow_language_code
@@ -446,6 +447,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             run_metadata=metadata,
             language=language,
             settings=settings,
+            cancel_event=cancel_event,
         )
         line_proofread_state: dict[str, Any] | None = None
         if bool(getattr(request, "enable_line_proofread", False) or metadata.get("enable_line_proofread")):
@@ -474,9 +476,12 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
                     manual_fixes=line_proofread_state["fixes"],
                     language=language,
                     settings=settings,
+                    cancel_event=cancel_event,
                 )
             line_proofread_state = {key: value for key, value in line_proofread_state.items() if key != "fixes"}
             db.merge_run_metadata(run_id, {"line_proofread": line_proofread_state})
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("translation canceled")
         status = "passed" if qa_result["quality_summary"]["passed"] else "failed"
         artifacts = [
             raw_artifact,
@@ -503,11 +508,15 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
             input_artifacts["translation_workbook"] = qa_result["qa_final_artifact"]["id"]
         archive_result = None
         if status == "passed" and qa_result.get("qa_final_artifact") and not is_quick_task_run(run):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("translation canceled")
             archive_result = archive_translation_artifact(
                 project["id"],
                 qa_result["qa_final_artifact"]["id"],
                 language=run.get("language") or "en",
                 source_type="qa_passed",
+                run_id=run_id,
+                cancel_event=cancel_event,
             )
             db.add_event(run_id, f"translation archive updated: rows={archive_result['imported_count']}")
         db.add_event(run_id, f"translation run finished: status={status}")
@@ -572,7 +581,7 @@ async def translate_run(run_id: str, request: Any, cancel_event: Any | None = No
         friendly = user_facing_error(exc)
         db.add_event(run_id, friendly, level="error")
         failed_metadata = db.get_run(run_id).get("metadata", {})
-        status = "canceled" if str(exc) == "translation canceled" else "failed"
+        status = "canceled" if isinstance(exc, ArchiveCommitCanceled) or str(exc) == "translation canceled" else "failed"
         db.merge_run_metadata(run_id, {"translation_progress": _terminal_translation_progress(failed_metadata.get("translation_progress"), status), "error": friendly})
         update_task_run_status(run_id, status)
         if isinstance(exc, UserFacingWorkflowError):

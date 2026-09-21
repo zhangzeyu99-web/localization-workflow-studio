@@ -82,6 +82,24 @@ def list_project_glossary_wide(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/api/projects/{project_id}/glossary/pending")
+def list_project_pending_glossary(
+    project_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=200),
+    q: str = "",
+    language: str | None = None,
+    batch_id: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return db.list_pending_glossary_terms(
+            project_id, page=page, page_size=page_size, q=q,
+            language=_query_language(language), batch_id=batch_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+
 @router.get("/api/projects/{project_id}/glossary/by-source-key")
 def get_glossary_source_summary(project_id: str, source_key: str) -> dict[str, Any]:
     try:
@@ -223,8 +241,8 @@ def create_glossary_term(project_id: str, payload: GlossaryTermPayload) -> dict[
 
 @router.patch("/api/projects/{project_id}/glossary/{term_id}")
 def update_glossary_term(project_id: str, term_id: str, payload: GlossaryTermUpdate) -> dict[str, Any]:
-    _require_project_term(project_id, term_id)
     data = payload.model_dump(exclude_unset=True)
+    expected_revision = data.pop("expected_revision", None)
     if "language" in data:
         data["language"] = _query_language(data.get("language")) or "en"
     data.update(
@@ -236,8 +254,19 @@ def update_glossary_term(project_id: str, term_id: str, payload: GlossaryTermUpd
             "review_status": "approved",
         }
     )
-    updated = db.update_glossary_term(term_id, data)
-    return db.get_glossary_term(updated["id"])
+    try:
+        return db.update_project_glossary_term(project_id, term_id, data, expected_revision=expected_revision)
+    except db.GlossaryRevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "glossary_revision_conflict",
+            "message": "术语已被修改，请刷新后重新编辑确认。",
+            "expected_revision": exc.expected_revision,
+            "current_revision": exc.current_revision,
+        }) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="glossary term not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.delete("/api/projects/{project_id}/glossary/{term_id}")

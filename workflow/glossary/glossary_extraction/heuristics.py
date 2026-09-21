@@ -20,6 +20,7 @@ from glossary_extraction.constants import (
     HIGH_CONFUSION_TERMS,
     HTML_TAG_RE,
     LEVEL_BATCH_ITEM_TERM_RE,
+    LOW_VALUE_UI_PHRASES,
     NON_TERM_RE,
     NUMBERED_TITLE_RE,
     OBJECT_TERMS,
@@ -189,6 +190,8 @@ def is_short_usage_candidate(record: Record, term: str, example_en: str) -> bool
 
 def is_valid_term(term: str) -> bool:
     if len(term) < 2 or len(term) > 12:
+        return False
+    if term in LOW_VALUE_UI_PHRASES:
         return False
     if EFFECT_COMBO_TERM_RE.match(term):
         return False

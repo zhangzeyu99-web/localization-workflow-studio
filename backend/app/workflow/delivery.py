@@ -11,7 +11,7 @@ from openpyxl import Workbook, load_workbook
 
 from .. import db, operator_context
 from ..delivery_naming import safe_delivery_name
-from ..download_urls import artifact_download_url
+from ..download_urls import artifact_download_url, attach_delivery_item_downloads
 from ..languages import PROJECT_LANGUAGE_ORDER, SOURCE_HEADER_ALIASES, require_supported_language, target_aliases
 from .announcement_outputs import _announcement_task_source_stem, _artifact_display_label, _visible_language_code
 from .announcement_segments import _normalize_announcement_languages
@@ -23,6 +23,243 @@ from .subprocess_runner import user_facing_error
 from .translation_tasks import is_quick_task_run, mark_translation_task_state
 
 DELIVERED_WITH_ISSUES_SOURCE_TYPE = "delivered_with_issues"
+
+
+def _delivery_nonnegative_count(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return int(number) if number >= 0 and number.is_integer() else None
+
+
+def _delivery_run_qa_snapshot(run: dict[str, Any]) -> dict[str, Any]:
+    if run.get("delivery_current_ambiguous"):
+        return {"status": "unknown", "hard_errors": None, "soft_warnings": None}
+    quality = (run.get("metadata") or {}).get("quality_summary") or {}
+    hard = _delivery_nonnegative_count(quality.get("hard_errors"))
+    status = str(run.get("status") or "unknown")
+    if status == "passed":
+        status = "failed" if quality.get("passed") is False or (hard or 0) > 0 else "unknown" if hard is None else "passed"
+    elif status in {"failed", "needs_input"}:
+        status = "failed"
+    else:
+        status = "pending"
+    warnings = []
+    for key in ("global_harness_quality", "project_harness_quality", "semantic_qa"):
+        payload = quality.get(key) if isinstance(quality.get(key), dict) else {}
+        warnings.append(_delivery_nonnegative_count(payload.get("soft_warnings", payload.get("warnings", 0))))
+    return {"status": status, "hard_errors": hard,
+            "soft_warnings": sum(warnings) if quality and all(value is not None for value in warnings) else None}
+
+
+def _delivery_run_evidence(run: dict[str, Any]) -> dict[str, Any]:
+    metadata = run.get("metadata") or {}
+    final = _deliverable_final_artifact(run)
+    return {"run_id": run["id"], "execution_at": metadata.get("queued_at") or run.get("created_at"),
+            "qa_snapshot": _delivery_run_qa_snapshot(run), "final_artifact_id": final["id"] if final else None}
+
+
+def _delivery_current_task_runs(runs: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for run in runs:
+        task_id = str((run.get("metadata") or {}).get("translation_task_id") or "")
+        if task_id:
+            groups.setdefault((task_id, _visible_language_code(run.get("language") or "en")), []).append(run)
+    current = {}
+    for scope, candidates in groups.items():
+        execution_time = lambda run: str((run.get("metadata") or {}).get("queued_at") or run.get("created_at") or "")
+        latest = max(execution_time(run) for run in candidates)
+        tied = [run for run in candidates if execution_time(run) == latest]
+        predecessors = {str((run.get("metadata") or {}).get(key) or "") for run in tied
+                        for key in ("source_run_id", "manual_fix_source_run_id", "model_fix_source_run_id")}
+        heads = [run for run in tied if run["id"] not in predecessors]
+        # A timestamp tie without a unique explicit successor is not evidence
+        # that either passed result is the current one. Do not guess via IDs.
+        current[scope] = heads[0] if len(heads) == 1 else {**tied[0], "delivery_current_ambiguous": True}
+    return current
+
+
+def _register_delivery_snapshot(
+    artifact: dict[str, Any], *, task_id: str | None, task_kind: str, language: str,
+    run_id: str, qa_snapshot: dict[str, Any], files: list[dict[str, Any]],
+    source_runs: list[dict[str, Any]] | None = None, **evidence: Any,
+) -> dict[str, Any]:
+    # The snapshot is written only at generation, never reconstructed from later QA.
+    attach_delivery_item_downloads(artifact["project_id"], files)
+    snapshot = {"version_id": artifact["id"], "task_id": task_id or None, "task_kind": task_kind,
+                "language": language, "run_id": run_id, "generated_at": artifact["created_at"],
+                "qa_snapshot": qa_snapshot, "files": files, "history_complete": bool(task_id) and qa_snapshot.get("status") != "unknown",
+                "source_runs": source_runs or [], **evidence}
+    return db.update_artifact(artifact["id"], {"metadata": {**(artifact.get("metadata") or {}), "delivery_snapshot": snapshot}})
+
+
+def _register_single_delivery(project: dict[str, Any], run: dict[str, Any], summary: dict[str, Any]) -> None:
+    metadata = run.get("metadata") or {}
+    files = list(summary["files"].values())
+    artifact = db.add_artifact(project["id"], files[0]["filename"], files[0]["path"], "delivery_version",
+                               run_id=run["id"], origin="generated", role="delivery")
+    _register_delivery_snapshot(
+        artifact, task_id=metadata.get("translation_task_id"),
+        task_kind="quick" if is_quick_task_run(run) else "translation",
+        language=summary["language"], run_id=run["id"], qa_snapshot=_delivery_run_qa_snapshot(run), files=files,
+        source_runs=[_delivery_run_evidence(run)], delivery_version=metadata.get("delivery_version"),
+    )
+
+
+def _announcement_delivery_qa_snapshot(task: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    from .announcement import _announcement_hard_blocker_count
+
+    hard = _announcement_hard_blocker_count(task, metadata)
+    qa_id = str(metadata.get("qa_summary_artifact_id") or "")
+    try:
+        artifact = db.get_artifact(qa_id) if qa_id else None
+    except KeyError:
+        artifact = None
+    has_qa = bool(artifact and artifact["project_id"] == task["project_id"]
+                  and artifact["kind"] in {"announcement_qa_summary", "announcement_docx_qa_summary"}
+                  and str((artifact.get("metadata") or {}).get("task_id") or "") == task["id"]
+                  and _delivery_nonnegative_count((artifact.get("metadata") or {}).get("hard_blockers")) is not None)
+    return {"status": "failed" if hard else "passed" if has_qa else "unknown",
+            "hard_errors": hard if hard or has_qa else None, "soft_warnings": None}
+
+
+def list_project_delivery_history(project_id: str) -> dict[str, Any]:
+    project = db.get_project(project_id)
+    runs = [run for run in db.list_runs(project_id) if run.get("kind") in {"translation", "qa"}]
+    runs.sort(key=lambda run: str((run.get("metadata") or {}).get("queued_at") or run.get("created_at") or ""), reverse=True)
+    current_runs = _delivery_current_task_runs(runs)
+    current_tasks: list[dict[str, Any]] = []
+    for (task_id, language), run in current_runs.items():
+        qa = _delivery_run_qa_snapshot(run)
+        final = _deliverable_final_artifact(run)
+        task_state = str((run.get("metadata") or {}).get("translation_task_state") or "")
+        complete = not run.get("delivery_current_ambiguous")
+        can_generate = bool(complete and qa["status"] in {"passed", "failed"} and task_state not in {"canceled", "abandoned", "closed"}
+                            and final and Path(final["path"]).is_file() and run["status"] in {"passed", "failed", "needs_input"})
+        if can_generate and final["kind"] != "final_text":
+            can_generate = _workbook_processed_rows(Path(final["path"]), run.get("language") or "en")["translated_rows"] > 0
+        current_tasks.append({"task_id": task_id, "task_kind": "quick" if is_quick_task_run(run) else "translation",
+                              "language": language, "run_id": run["id"], "status": run["status"] if complete else "needs_input",
+                              "task_state": task_state, "current_evidence_complete": complete,
+                              "qa_status": qa["status"], "qa_hard_errors": qa["hard_errors"],
+                              "qa_soft_warnings": qa["soft_warnings"], "input_label": _input_artifact_label(run, project_id),
+                              "current_version_id": None, "can_generate": can_generate})
+    announcement_tasks = {task["id"]: task for task in db.list_announcement_tasks(project_id)}
+    for task in announcement_tasks.values():
+        metadata = task.get("metadata") or {}
+        qa = _announcement_delivery_qa_snapshot(task, metadata)
+        languages = _normalize_announcement_languages(task.get("selected_languages") or [], fallback=metadata.get("languages") or [])
+        current_tasks.append({"task_id": task["id"], "task_kind": "announcement",
+                              "language": " / ".join(_visible_language_code(item) for item in languages),
+                              "run_id": str(metadata.get("translate_run_id") or ""), "status": task["status"],
+                              "qa_status": qa["status"], "qa_hard_errors": qa["hard_errors"], "qa_soft_warnings": None,
+                              "input_label": task.get("title") or _announcement_task_source_stem(task),
+                              "current_version_id": None, "can_generate": False})
+    versions = []
+    artifacts = db.list_artifacts(project_id=project_id, include_superseded=True)
+    merged_scopes: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        snapshot = (artifact.get("metadata") or {}).get("delivery_snapshot")
+        if not isinstance(snapshot, dict):
+            continue
+        version = {**snapshot, "is_current": False}
+        if snapshot.get("task_kind") in {"translation", "quick"}:
+            current = current_runs.get((str(snapshot.get("task_id") or ""), str(snapshot.get("language") or "")))
+            if current and (current.get("metadata") or {}).get("translation_task_state") not in {"canceled", "abandoned", "closed"} and snapshot.get("source_runs") == [_delivery_run_evidence(current)]:
+                version["is_current"] = snapshot.get("delivery_version") == (current.get("metadata") or {}).get("delivery_version")
+        elif snapshot.get("task_kind") == "merged" and snapshot.get("task_id"):
+            scope = (snapshot["task_id"], snapshot["language"])
+            if scope not in merged_scopes:
+                merged_scopes.add(scope)
+                current_sources = {language: _delivery_run_evidence(current_runs[(scope[0], language)])
+                                   for language in snapshot.get("requested_languages", []) if (scope[0], language) in current_runs}
+                version["is_current"] = current_sources == snapshot.get("language_sources")
+                qa_values = [item["qa_snapshot"] for item in current_sources.values()]
+                qa_status = ("failed" if any(item["status"] == "failed" for item in qa_values)
+                             else "pending" if any(item["status"] != "passed" for item in qa_values) or len(current_sources) < len(snapshot.get("requested_languages", []))
+                             else "passed")
+                if version["is_current"]:
+                    qa_status = snapshot["qa_snapshot"]["status"]
+                source_runs = [current_runs[(scope[0], language)] for language in snapshot.get("requested_languages", []) if (scope[0], language) in current_runs]
+                if any((run.get("metadata") or {}).get("translation_task_state") in {"canceled", "abandoned", "closed"} for run in source_runs):
+                    version["is_current"] = False
+                action_run = next((run for run in source_runs if _delivery_run_qa_snapshot(run)["status"] != "passed"), source_runs[0] if source_runs else {})
+                current_tasks.append({"task_id": scope[0], "task_kind": "merged", "language": scope[1],
+                                      "run_id": action_run.get("id", ""), "status": "delivered" if version["is_current"] else qa_status,
+                                      "task_state": (action_run.get("metadata") or {}).get("translation_task_state", ""),
+                                      "qa_status": qa_status, "qa_hard_errors": sum(item["hard_errors"] for item in qa_values) if qa_values and all(item["hard_errors"] is not None for item in qa_values) else None,
+                                      "qa_soft_warnings": None, "input_label": snapshot.get("input_label", "多语言合并交付"),
+                                      "skipped_languages": [item["language"] for item in snapshot.get("language_results", []) if item.get("status") == "skipped"],
+                                      "current_version_id": None, "can_generate": False})
+        elif snapshot.get("task_kind") == "announcement":
+            task = announcement_tasks.get(str(snapshot.get("task_id") or ""))
+            metadata = (task or {}).get("metadata") or {}
+            version["is_current"] = bool(task and task["status"] == "delivered"
+                                          and metadata.get("delivery_artifact_id") == artifact["id"]
+                                          and snapshot.get("qa_summary_artifact_id") == metadata.get("qa_summary_artifact_id")
+                                          and snapshot.get("output_artifact_ids") == metadata.get("output_artifact_ids")
+                                          and snapshot["qa_snapshot"] == _announcement_delivery_qa_snapshot(task, metadata))
+        versions.append(version)
+
+    # Older releases did not retain QA snapshots. Expose only recoverable files,
+    # never infer their historical QA from today's run/task state.
+    recorded_paths = {item.get("path") for version in versions for item in version["files"]}
+    for artifact in artifacts:
+        if artifact["kind"] not in {"merged_delivery_workbook", "announcement_delivery_package", "announcement_docx_delivery_package"} or artifact["path"] in recorded_paths:
+            continue
+        metadata = artifact.get("metadata") or {}
+        merged = artifact["kind"] == "merged_delivery_workbook"
+        languages = metadata.get("merged_languages" if merged else "languages") or []
+        versions.append(_legacy_delivery_version(
+            artifact["id"], metadata.get("translation_task_id" if merged else "task_id"),
+            "merged" if merged else "announcement", " / ".join(_visible_language_code(item) for item in languages),
+            artifact.get("run_id") or artifact["id"], artifact.get("created_at") or "",
+            [_artifact_delivery_file("merged_final" if merged else "package", artifact)],
+        ))
+    for run in runs:
+        final = _deliverable_final_artifact(run)
+        if not final:
+            continue
+        final_path, changes_path = _delivery_output_paths(project, run)
+        if final["kind"] == "final_text":
+            final_path = _delivery_final_output_path(project, run, final)
+        if not final_path.is_file() or str(final_path) in recorded_paths:
+            continue
+        files = [_delivery_file("final", final_path)]
+        if final["kind"] != "final_text":
+            files.extend(_delivery_file(kind, path) for kind, path in [("changes", changes_path), ("qa_summary", _delivery_qa_summary_output_path(project, run))] if path.is_file())
+        attach_delivery_item_downloads(project_id, files)
+        versions.append(_legacy_delivery_version(
+            f"legacy-{run['id']}", (run.get("metadata") or {}).get("translation_task_id"),
+            "quick" if is_quick_task_run(run) else "translation", _visible_language_code(run.get("language") or "en"), run["id"], "", files,
+        ))
+    for version in versions:
+        version["files"] = [{**item, "available": Path(item.get("path") or "").is_file(),
+                             "download_url": item.get("download_url", "") if Path(item.get("path") or "").is_file() else ""}
+                            for item in version["files"]]
+        version["available"] = bool(version["files"]) and all(item["available"] for item in version["files"])
+        version["is_current"] = version["is_current"] and version["available"]
+    versions.sort(key=lambda version: version.get("generated_at") or "", reverse=True)
+    for task in current_tasks:
+        current_version = next((v for v in versions if v["is_current"] and v["task_id"] == task["task_id"]
+                                and v["task_kind"] == task["task_kind"]
+                                and (task["task_kind"] == "announcement" or v["language"] == task["language"])), None)
+        if current_version:
+            task["current_version_id"] = current_version["version_id"]
+            if task["task_kind"] == "announcement":
+                task["run_id"] = current_version["run_id"]
+                task["language"] = current_version["language"]
+    return {"project_id": project_id, "current_tasks": current_tasks, "versions": versions}
+
+
+def _legacy_delivery_version(version_id: str, task_id: str | None, task_kind: str, language: str,
+                             run_id: str, generated_at: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"version_id": version_id, "task_id": task_id or None, "task_kind": task_kind, "language": language,
+            "run_id": run_id, "generated_at": generated_at, "files": files, "is_current": False,
+            "history_complete": False, "qa_snapshot": {"status": "unknown", "hard_errors": None, "soft_warnings": None}}
 
 
 def _build_deliverable_summary(
@@ -255,6 +492,8 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     quality_summary = run.get("metadata", {}).get("quality_summary") or {}
     qa_passed = bool(quality_summary.get("passed", run.get("status") == "passed"))
     qa_report_source = _run_artifact(run["id"], "qa_report")
+    delivery_version = db.new_id("delivery")[-12:]
+    run = {**run, "metadata": {**run.get("metadata", {}), "delivery_version": delivery_version}}
 
     output_dir = project_dir(project_id) / "delivery"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -269,6 +508,8 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
             raise ValueError("TXT 交付文件读回不一致，请重试生成。")
         summary = _deliverable_summary(project, run, final_source)
         summary["files"] = {"final": _delivery_file("final", final_path)}
+        _register_single_delivery(project, run, summary)
+        db.merge_run_metadata(run["id"], {"delivery_version": delivery_version})
         translation_task_id = str((run.get("metadata") or {}).get("translation_task_id") or "")
         if translation_task_id:
             mark_translation_task_state(project_id, translation_task_id, "delivered")
@@ -302,6 +543,8 @@ def build_delivery_package(project_id: str, run_id: str | None = None) -> dict[s
     if not qa_passed:
         summary["files"]["qa_summary"] = _delivery_file("qa_summary", qa_summary_path)
     archive_result = None if is_quick_task_run(run) else _archive_delivery_translation(project_id, run, final_source)
+    _register_single_delivery(project, run, summary)
+    db.merge_run_metadata(run["id"], {"delivery_version": delivery_version})
     translation_task_id = str((run.get("metadata") or {}).get("translation_task_id") or "")
     if translation_task_id:
         mark_translation_task_state(project_id, translation_task_id, "delivered")
@@ -335,11 +578,13 @@ def build_merged_delivery_package(
 
     merged: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    language_sources: dict[str, Any] = {}
     for language in selected_languages:
         run = _find_merge_source_run(project_id, input_artifact_id, language, translation_task_id)
         if not run:
             skipped.append({"language": _visible_language_code(language), "reason": "未找到可交付的翻译/QA 结果"})
             continue
+        language_sources[_visible_language_code(language)] = _delivery_run_evidence(run)
         final_artifact = _deliverable_final_artifact(run)
         if not final_artifact or not Path(final_artifact["path"]).exists():
             skipped.append({"language": _visible_language_code(language), "run_id": run["id"], "reason": "缺少最终译文文件"})
@@ -449,6 +694,18 @@ def build_merged_delivery_package(
         _artifact_delivery_file("merged_final", final_artifact),
         _artifact_delivery_file("qa_summary", summary_artifact),
     ]
+    source_qa = [item["qa_snapshot"] for item in language_sources.values()]
+    hard_errors = sum(int(item.get("hard_errors") or 0) for item in merged)
+    snapshot_status = ("mixed" if skipped else "failed" if hard_errors or any(item["status"] == "failed" for item in source_qa)
+                       else "unknown" if any(item["status"] != "passed" for item in source_qa) else "passed")
+    _register_delivery_snapshot(
+        final_artifact, task_id=translation_task_id, task_kind="merged",
+        language=" / ".join(_visible_language_code(item) for item in selected_languages), run_id=final_artifact["id"],
+        qa_snapshot={"status": snapshot_status,
+                     "hard_errors": hard_errors if all(item["hard_errors"] is not None for item in source_qa) else None, "soft_warnings": None}, files=files,
+        requested_languages=[_visible_language_code(item) for item in selected_languages], language_sources=language_sources,
+        language_results=language_results, input_label=_artifact_display_label(source_artifact),
+    )
     deliverable = next(
         (item for item in _merged_deliverable_summaries(project) if item.get("run_id") == final_artifact["id"]),
         {},
@@ -592,6 +849,8 @@ def _delivery_output_paths(project: dict[str, Any], run: dict[str, Any]) -> tupl
     timestamp = _delivery_timestamp(run.get("created_at", ""))
     language = _visible_language_code(run.get("language") or "en")
     prefix = f"{_safe_delivery_name(project['name'])}_{language}_{timestamp}_{task_code}-{_short_run_id(task_run_id)}"
+    if version := str((run.get("metadata") or {}).get("delivery_version") or ""):
+        prefix += f"_{_safe_delivery_name(version)}"
     return output_dir / f"{prefix}_final.xlsx", output_dir / f"{prefix}_changes.xlsx"
 
 
@@ -647,6 +906,8 @@ def _delivery_final_output_path(project: dict[str, Any], run: dict[str, Any], so
     language = _visible_language_code(run.get("language") or "en")
     suffix = Path(str(source_artifact.get("path") or "")).suffix.lower() or ".txt"
     prefix = f"{_safe_delivery_name(project['name'])}_{language}_{timestamp}_{task_code}-{_short_run_id(task_run_id)}"
+    if version := str((run.get("metadata") or {}).get("delivery_version") or ""):
+        prefix += f"_{_safe_delivery_name(version)}"
     return output_dir / f"{prefix}_final{suffix}"
 
 
@@ -933,6 +1194,18 @@ def _find_merge_source_run(
     translation_task_id: str | None = None,
 ) -> dict[str, Any] | None:
     accepted_status = {"passed", "failed", "needs_input"}
+    if translation_task_id:
+        # An identified task's latest attempt is authoritative, even if it has
+        # no deliverable. Do not silently merge an older passed attempt.
+        runs = [run for run in db.list_runs(project_id) if run.get("kind") in {"translation", "qa"}]
+        current = _delivery_current_task_runs(runs).get((translation_task_id, _visible_language_code(language)))
+        if not current or current.get("delivery_current_ambiguous") or current.get("status") not in accepted_status:
+            return None
+        metadata = current.get("metadata") or {}
+        input_artifacts = metadata.get("input_artifacts") or {}
+        inputs = {metadata.get(key) for key in ("input_artifact_id", "parent_input_artifact_id", "multilingual_source_artifact_id")}
+        inputs.update(input_artifacts.values())
+        return current if input_artifact_id in inputs else None
     for run in db.list_runs(project_id):
         if run.get("kind") not in {"qa", "translation"}:
             continue

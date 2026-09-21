@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .. import auth, background_jobs, db, operator_context
+from .. import auth, background_jobs, db, job_queue, operator_context
 from ..ai_input_audit import run_ai_input_summary
 from ..authz import require_project_access
 from ..languages import require_supported_language
@@ -219,11 +219,20 @@ def translate_cancel(run_id: str) -> dict[str, Any]:
     try:
         run = db.get_run(run_id)
         canceled = background_jobs.cancel(f"run:{run_id}")
-        if canceled is None and run.get("status") in {"queued", "running"}:
-            raise HTTPException(status_code=404, detail="active translation job not found")
+        if canceled is None:
+            run = db.get_run(run_id)
+            archive = (run.get("metadata") or {}).get("translation_archive") or {}
+            if run.get("status") == "passed" and archive.get("status") == "committed":
+                raise job_queue.ArchiveAlreadyCommittedError(
+                    f"run:{run_id}", {"run_id": run_id, "batch_id": archive.get("batch_id")},
+                )
+            if run.get("status") in {"queued", "running"}:
+                raise HTTPException(status_code=404, detail="active translation job not found")
         cancel_translation_run(run_id)
         cancel_quick_task_run(run_id)
         return get_run(run_id)
+    except job_queue.ArchiveAlreadyCommittedError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
 

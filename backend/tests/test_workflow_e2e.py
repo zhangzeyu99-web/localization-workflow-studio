@@ -4210,8 +4210,8 @@ def test_delivery_package_contains_only_task_outputs(tmp_path: Path) -> None:
         package = package_response.json()
         filenames = [item["filename"] for item in package["files"]]
         assert len(filenames) == 2
-        assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_final\.xlsx", filenames[0])
-        assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_changes\.xlsx", filenames[1])
+        assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_[0-9a-f]{12}_final\.xlsx", filenames[0])
+        assert re.fullmatch(r"小小战机_EN_\d{12}_QA-[0-9a-f]{6}_[0-9a-f]{12}_changes\.xlsx", filenames[1])
         assert not any("readback_gate" in filename for filename in filenames)
         assert not any(
             "input_copy" in filename
@@ -4273,8 +4273,8 @@ def test_delivery_filename_uses_visible_language_code_for_korean(tmp_path: Path)
         assert response.status_code == 200, response.text
         package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={run['id']}").json()
         filenames = [item["filename"] for item in package["files"]]
-        assert re.fullmatch(r"KR Delivery_KR_\d{12}_QA-[0-9a-f]{6}_final\.xlsx", filenames[0])
-        assert re.fullmatch(r"KR Delivery_KR_\d{12}_QA-[0-9a-f]{6}_changes\.xlsx", filenames[1])
+        assert re.fullmatch(r"KR Delivery_KR_\d{12}_QA-[0-9a-f]{6}_[0-9a-f]{12}_final\.xlsx", filenames[0])
+        assert re.fullmatch(r"KR Delivery_KR_\d{12}_QA-[0-9a-f]{6}_[0-9a-f]{12}_changes\.xlsx", filenames[1])
         assert not any("_KO_" in filename for filename in filenames)
 
 
@@ -4311,7 +4311,7 @@ def test_qa_continuation_inherits_translation_delivery_identity(tmp_path: Path) 
         deliverables = client.get(f"/api/projects/{project['id']}/deliverables").json()["deliverables"]
         assert deliverables[0]["task_label"] == f"A-{source_run['id'].replace('run_', '')[:6]}"
         package = client.post(f"/api/projects/{project['id']}/delivery-package?run_id={qa_run['id']}").json()
-        assert re.fullmatch(r"继承任务_EN_\d{12}_A-[0-9a-f]{6}_final\.xlsx", package["files"][0]["filename"])
+        assert re.fullmatch(r"继承任务_EN_\d{12}_A-[0-9a-f]{6}_[0-9a-f]{12}_final\.xlsx", package["files"][0]["filename"])
 
 
 def test_failed_qa_runs_remain_deliverable_with_qa_summary(tmp_path: Path) -> None:

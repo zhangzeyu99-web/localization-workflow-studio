@@ -61,6 +61,7 @@ class GlossaryTermPayload(BaseModel):
 
 
 class GlossaryTermUpdate(BaseModel):
+    expected_revision: str | None = Field(default=None, min_length=1, max_length=128)
     term_key: str | None = None
     source: str | None = None
     target: str | None = None

@@ -64,6 +64,17 @@ class AIReviewProtocolTests(unittest.TestCase):
                         "max_characters": 28,
                     },
                 },
+                {
+                    "id": 12,
+                    "original": "载具组件工厂",
+                    "translation": "Support Aircraft Parts Factory",
+                    "name_type": "ui_building_name",
+                    "name_policy": {
+                        "preferred_content_words": 2,
+                        "max_characters": 18,
+                        "map_label_max_characters": 14,
+                    },
+                },
             ],
             batch_num=1,
             total_batches=1,
@@ -73,8 +84,12 @@ class AIReviewProtocolTests(unittest.TestCase):
         self.assertIn("Skill-name rule", prompt)
         self.assertIn("prefer no more than 2 readable English words", prompt)
         self.assertIn("Place-name rule", prompt)
+        self.assertIn("Building-name rule", prompt)
+        self.assertIn("target 14 characters", prompt)
         self.assertIn("NAME:ui_skill_name", prompt)
         self.assertIn("NAME:ui_location_name", prompt)
+        self.assertIn("NAME:ui_building_name", prompt)
+        self.assertIn("map_chars<=14", prompt)
         self.assertIn("ID | Source | Translation | NAME", prompt)
 
     def test_format_batch_prompt_includes_bilingual_source_reference_rules(self):

@@ -47,7 +47,8 @@ SUPPORT_SHEET_NAME_KEYWORDS = {
 }
 LEGAL_TERM_CHECK_SKIP_MARKERS = {'隐私政策', '用户协议'}
 LEGAL_TERM_CHECK_MIN_LENGTH = 1000
-PERSON_NAME_CATEGORY_MARKERS = {'人名', '角色', 'person', 'name', 'character'}
+PERSON_NAME_CATEGORY_MARKERS = {'人名', '角色', '英雄名', '人物名', 'person', 'name', 'character'}
+EXPLICIT_NAME_NOTES = {'人名', '角色名', '英雄名', '人物名', '怪物名', 'boss', 'npc', 'character name', 'person name'}
 SOFT_TERM_CATEGORY_MARKERS = {'soft', 'generic', 'common', '参考', '泛词', '通用词'}
 CONTEXTUAL_HARD_TERM_CATEGORY_MARKERS = {'强术语', '强制', '固定译名', '专有名词', '专名'}
 AUTO_SOFT_SOURCE_TERMS = {
@@ -339,6 +340,7 @@ def _collect_terms_from_workbook(workbook, add, all_sheets: bool = False, lang: 
         target_idx = _find_header(header, target_candidates)
         variant_idx = _find_header(header, variant_candidates)
         category_idx = _find_header(header, {'分类', '类别', 'category', 'type', 'tag', 'tags'})
+        note_idx = _find_header(header, {'备注', 'note', 'notes'})
         enforce_idx = _find_header(header, {'enforce_case', '大小写', '大小写约束'})
         has_language_header = _has_explicit_language_header(header, language_headers)
 
@@ -350,23 +352,28 @@ def _collect_terms_from_workbook(workbook, add, all_sheets: bool = False, lang: 
                 target_idx = _fallback_index(header, 1)
             if variant_idx is None and not has_language_header:
                 variant_idx = _fallback_index(header, 2)
-            category_idx = category_idx if category_idx is not None else _fallback_index(header, 3)
+            if category_idx is None and note_idx is None:
+                category_idx = _fallback_index(header, 3)
         elif not all_sheets:
             continue
         elif cn_idx is None or target_idx is None:
             continue
-        elif category_idx is None and len(workbook.worksheets) > 1:
+        elif category_idx is None and note_idx is None and len(workbook.worksheets) > 1:
             # Avoid treating a full delivery workbook passed as --term-base as a glossary.
             continue
 
         if cn_idx is None or target_idx is None:
             continue
-        max_idx = max(index for index in (cn_idx, target_idx, variant_idx, category_idx, enforce_idx) if index is not None)
+        max_idx = max(index for index in (cn_idx, target_idx, variant_idx, category_idx, note_idx, enforce_idx) if index is not None)
         for row in ws.iter_rows(min_row=2, max_col=max_idx + 1, values_only=True):
             cn = row[cn_idx] if cn_idx < len(row) else ''
             target = row[target_idx] if target_idx < len(row) else ''
             raw_variants = row[variant_idx] if variant_idx is not None and variant_idx < len(row) else ''
             category = row[category_idx] if category_idx is not None and category_idx < len(row) else ''
+            if category_idx is None and note_idx is not None:
+                category = name_category_from_note(row[note_idx])
+                if not category and not is_glossary_sheet and len(workbook.worksheets) > 1:
+                    continue
             enforce_raw = row[enforce_idx] if enforce_idx is not None and enforce_idx < len(row) else ''
             add(cn, target, category, _split_term_variants(raw_variants), _truthy_cell(enforce_raw))
 
@@ -448,6 +455,11 @@ def _clean_term_cell(value) -> str:
 def _truthy_cell(value) -> bool:
     text = _clean_term_cell(value).lower()
     return text in {'1', 'true', 'yes', 'y', '是', '强制'}
+
+
+def name_category_from_note(value: object) -> str:
+    text = str(value or '').strip()
+    return '角色名' if text.casefold() in EXPLICIT_NAME_NOTES else ''
 
 
 def _is_soft_term_category(category: str) -> bool:

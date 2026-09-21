@@ -134,8 +134,13 @@ def _resolve_data_root(
             or PurePosixPath(raw_data_root).is_absolute()
         ):
             raise RuntimeError("LWS_DATA_ROOT must be an absolute path in cloud mode")
-        resolved_data_root = data_root.resolve(strict=False)
-        resolved_repo_root = REPO_ROOT.resolve(strict=False)
+        try:
+            resolved_data_root = data_root.resolve(strict=False)
+            resolved_repo_root = REPO_ROOT.resolve(strict=False)
+        except OSError as exc:
+            raise RuntimeError(
+                "Cannot verify LWS_DATA_ROOT is outside the repository: path resolution failed"
+            ) from exc
         if (
             resolved_data_root == resolved_repo_root
             or resolved_repo_root in resolved_data_root.parents

@@ -113,6 +113,37 @@ def _state_version(project_id: str) -> int:
     return int(row["version"] if row else 0)
 
 
+def test_glossary_preview_prioritizes_update_after_fifty_unchanged_rows() -> None:
+    source_rows = [[f"T-{index:03d}", f"术语{index}", f"Term {index}"] for index in range(51)]
+    with TestClient(app) as client:
+        project = _create_project(client)
+        base = _upload_rows(client, project["id"], [["ID", "CN", "EN"], *source_rows], filename="base.xlsx")
+        base_analysis = _analyze(client, project["id"], base["id"])
+        _commit(client, project["id"], base_analysis["token"])
+
+        source_rows[-1][2] = "Updated term"
+        changed = _upload_rows(client, project["id"], [["ID", "CN", "EN"], *source_rows], filename="changed.xlsx")
+        analysis = _analyze(client, project["id"], changed["id"])
+
+        assert analysis["summary"]["unchanged"] == 50
+        assert analysis["summary"]["update"] == 1
+        assert len(analysis["changes"]) == 50
+        assert analysis["changes"][0] == {
+            "ordinal": 50,
+            "action": "update",
+            "language": "en",
+            "term_key": "T-050",
+            "source": "术语50",
+            "target": "Updated term",
+            "explicit_empty": False,
+        }
+        result = _commit(client, project["id"], analysis["token"])
+        assert result["changed_count"] == 1
+        terms = client.get(f"/api/projects/{project['id']}/glossary").json()
+        assert len(terms) == 51
+        assert next(term for term in terms if term["term_key"] == "T-050")["target"] == "Updated term"
+
+
 @pytest.mark.parametrize("format_name", ["xlsx", "csv", "json"])
 def test_safe_glossary_roundtrip_supports_xlsx_csv_json_and_never_persists_target_alt(
     format_name: str,

@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from utils.large_text_multilingual_runner import load_manifest, save_manifest
+from utils.structured_text_template import (
+    ParsedTemplate,
+    TranslationSlot,
+    parse_template,
+    render_translations,
+    should_use_template,
+    translation_slots,
+)
 
 
 class TranslationClient(Protocol):
@@ -194,6 +202,8 @@ class OpenAICompatibleClient:
                 "Chinese is authoritative and English is a reviewed terminology/style reference. "
                 "For en, translation_source/reference_en is primary and Chinese is an omission "
                 "and gameplay-condition backcheck. Do not propagate conflicts or omissions. "
+                "Rows marked as structured text segments contain only readable text: return only "
+                "translated prose for them and never add markup, placeholders, or JSON syntax. "
                 "Return strict JSON: {\"rows\":[{\"request_key\":...,"
                 "\"translations\":{LANG:TEXT}}]}. Do not omit or add rows."
             ),
@@ -217,7 +227,18 @@ class OpenAICompatibleClient:
                 "and English is supporting evidence. For en, English is primary and Chinese is an "
                 "omission/gameplay-condition backcheck. Do not preserve an error merely because it "
                 "appears in the English reference. "
-                "Do not rewrite correct text. Return strict JSON with one item per row and language: "
+                "For structured text segments, review only the readable text and never add markup, "
+                "placeholders, or JSON syntax to suggested. "
+                "Do not rewrite correct text. "
+                "For dialogue, distinguish the speaker, addressee, and grammatical antecedent. "
+                "A gender or address change must cite concrete supplied context in reason; never "
+                "guess from an isolated line or assume alternating speakers. If context is insufficient, "
+                "KEEP the current form and state the uncertainty in reason. Preserve idiomatic meaning "
+                "and explicit quantities, units, hit counts, and per-hit effects. Report any unresolved "
+                "omission or semantic defect in unresolved_issues (an array; empty only when none remain). "
+                "Do not call a known unresolved defect KEEP or hide it in a QA handoff note. "
+                "and emotional intent instead of copying the surface metaphor. "
+                "Return strict JSON with one item per row and language: "
                 "{\"rows\":[{\"review_key\":...,\"lang\":...,\"status\":\"KEEP|FIX\","
                 "\"suggested\":...,\"reason\":...}]}."
             ),
@@ -232,19 +253,84 @@ class OpenAICompatibleClient:
         self,
         suggestions: list[dict[str, object]],
     ) -> list[dict[str, object]]:
+        blind_rows = [{"review_key": row["review_key"], "lang": row["lang"], "text": row["suggested"]}
+                      for row in suggestions if row.get("semantic_check_required")]
+        readings = {}
+        if blind_rows:
+            blind = self._chat_json(
+                "Read these target-language sentences independently, without assuming an intended source. "
+                "Describe what the actual grammar says in plain English. Identify who acts, the predicate, "
+                "and its exact object/complement; report tone and ambiguity. Do not silently repair an odd "
+                "sentence into a familiar English idiom. In particular distinguish worrying about a person "
+                "or body part from worrying about a situation. Return JSON {\"rows\":[{\"review_key\":...,"
+                "\"lang\":...,\"meaning\":...,\"predicate_object\":...,\"tone\":...}]}.",
+                {"rows": blind_rows},
+            )
+            blind = blind.get("rows") if isinstance(blind, dict) else blind
+            if not isinstance(blind, list) or len(blind) != len(blind_rows):
+                raise ValueError("blind semantic reading coverage mismatch")
+            for reading in blind:
+                key = (str(reading.get("review_key")), str(reading.get("lang")).upper())
+                if key in readings or any(not isinstance(reading.get(field), str) or not reading[field].strip()
+                                          for field in ("meaning", "predicate_object", "tone")):
+                    raise ValueError("invalid blind semantic reading")
+                readings[key] = reading
+            if set(readings) != {(str(row["review_key"]), str(row["lang"]).upper()) for row in blind_rows}:
+                raise ValueError("blind semantic reading key mismatch")
+        audit_input = [{**row, "independent_target_reading": readings.get((str(row["review_key"]), str(row["lang"]).upper()))}
+                       for row in suggestions]
         parsed = self._chat_json(
             (
                 "Audit localization change suggestions conservatively. Revert changes that narrow "
                 "meaning, force terminology into the wrong context, damage tokens/numbers, or are "
-                "not a clear improvement. Return strict JSON: {\"rows\":[{\"review_key\":...,"
+                "not a clear improvement. "
+                "Review every supplied cell, including KEEP rows; KEEP is not evidence of correctness. "
+                "For KEEP, ACCEPT only if the current target is correct or REVISE it; never REVERT a KEEP. "
+                "REVISE an incorrect KEEP target. Check numbered entities, action conditions, enemy/ally "
+                "ownership, negation, limits, per-hit effects, and quantities against the source. "
+                "Use the controller-supplied source, current translation, and context to check each "
+                "suggestion independently; the reviewer reason is a claim to verify, not evidence. "
+                "For dialogue gender/address changes require explicit speaker/addressee evidence; "
+                "REVERT speculative changes based only on a likely speaker. Compare idioms by meaning "
+                "and tone, not by literal imagery. First paraphrase the primary source WITHOUT its metaphor, "
+                "then independently paraphrase the actual final target wording back into plain English. "
+                "Check the predicate and its object: the thing worried about, the person causing an effect, "
+                "and the person affected must not change. A pretty metaphor cannot excuse a wrong object. "
+                "Use independent_target_reading (obtained without source or reviewer reason) to detect "
+                "anchoring: if it reveals a different predicate/object, REVERT or REVISE the wording. "
+                "Read target-language antecedents in dialogue_evidence; these are unverified translations, "
+                "not authoritative speaker labels. Do not infer alternating speakers. "
+                "For semantic_check_required=true, ACCEPT/REVISE must include semantic_check with nonempty "
+                "source_meaning and final_meaning plain-English paraphrases, and boolean meaning_preserved, "
+                "roles_preserved, tone_preserved. All must be true for the final wording; otherwise REVERT "
+                "or fix the wording and reassess. Do not rubber-stamp these fields from reviewer reason. "
+                "Structured text suggestions are prose-only; never add "
+                "markup, placeholders, or JSON syntax to final. Return strict JSON: {\"rows\":[{\"review_key\":...,"
                 "\"lang\":...,\"decision\":\"ACCEPT|REVERT|REVISE\",\"final\":...,"
-                "\"reason\":...}]}."
+                "\"reason\":...,\"semantic_check\":{\"source_meaning\":...,\"final_meaning\":...,"
+                "\"meaning_preserved\":true,\"roles_preserved\":true,\"tone_preserved\":true}}]}. "
+                "Always return final explicitly, including for ACCEPT."
             ),
-            {"suggestions": suggestions},
+            {"suggestions": audit_input},
         )
         result = parsed.get("rows") if isinstance(parsed, dict) else parsed
         if not isinstance(result, list):
             raise ValueError("audit response must contain a rows array")
+        for row in result:
+            key = (str(row.get("review_key")), str(row.get("lang")).upper())
+            reading = readings.get(key)
+            if reading:
+                row["independent_target_reading"] = reading
+            original = next((item for item in suggestions if (str(item["review_key"]), str(item["lang"]).upper()) == key), None)
+            if original and str(row.get("decision")).upper() in {"ACCEPT", "REVISE"}:
+                from utils.semantic_regression import known_semantic_regressions
+
+                regressions = known_semantic_regressions(original, key[1], str(row.get("final") or ""))
+                if regressions:
+                    row["rejected_model_decision"] = dict(row)
+                    row.update(decision="REVERT", final=original.get("current", ""),
+                               reason="Known semantic regression blocked: " + ", ".join(regressions))
+                    row.pop("semantic_check", None)
         return result
 
 
@@ -277,6 +363,30 @@ def _request_row(row: dict[str, Any], request_key: str) -> dict[str, object]:
         "context": str(row.get("context") or ""),
         "protected_tokens": row.get("tokens") or [],
         "term_hits": row.get("term_hits") or [],
+    }
+
+
+def _template_request_row(
+    row: dict[str, Any],
+    request_key: str,
+    slot: TranslationSlot,
+) -> dict[str, object]:
+    term_hits = [
+        hit
+        for hit in (row.get("term_hits") or [])
+        if isinstance(hit, dict)
+        and str(hit.get("source") or hit.get("CN") or hit.get("term") or "") in slot.source
+    ]
+    return {
+        "request_key": request_key,
+        "cn": slot.source,
+        "translation_source": slot.source,
+        "source_mode": "cn",
+        "reference_en": "",
+        "reference_en_status": "not_requested",
+        "context": f"{row.get('context') or ''}; structured text segment; {slot.context}",
+        "protected_tokens": [],
+        "term_hits": term_hits,
     }
 
 
@@ -424,11 +534,29 @@ def translate_manifest(
             else:
                 representatives.setdefault(signature, row)
 
-        request_rows = [
-            _request_row(row, signature)
-            for signature, row in representatives.items()
-            if signature not in seeded
-        ]
+        request_by_key: dict[str, dict[str, object]] = {}
+        template_specs: dict[str, tuple[ParsedTemplate, list[TranslationSlot]]] = {}
+        template_slot_keys: dict[tuple[str, str], str] = {}
+        for signature, row in representatives.items():
+            if signature in seeded:
+                continue
+            if should_use_template(row):
+                template = parse_template(str(row.get("translation_source") or row.get("cn") or ""))
+                slots = translation_slots(template)
+                if not slots:
+                    raise ValueError(
+                        f"structured source row {row.get('key')} has no translatable text slots"
+                    )
+                template_specs[signature] = (template, slots)
+                for slot in slots:
+                    segment = _template_request_row(row, "", slot)
+                    segment_key = _request_signature(segment)
+                    segment["request_key"] = segment_key
+                    request_by_key.setdefault(segment_key, segment)
+                    template_slot_keys[(signature, slot.slot_key)] = segment_key
+            else:
+                request_by_key.setdefault(signature, _request_row(row, signature))
+        request_rows = list(request_by_key.values())
         smoke_size = min(20, batch_size)
         smoke_candidates = _partition_requests(
             request_rows[:smoke_size],
@@ -453,7 +581,6 @@ def translate_manifest(
             )
         )
         strategy = manifest.get("api_strategy") or {}
-        source_modes = sorted({str(row.get("source_mode") or "cn") for row in items})
         model = str(strategy.get("model") or "injected")
         scope = hashlib.sha256(
             json.dumps(
@@ -463,11 +590,7 @@ def translate_manifest(
                     "provider_path": strategy.get("base_url_path", ""),
                     "client_identity": client_identity,
                     "target_langs": target_langs,
-                    "prompt": (
-                        "translate-v2-source-reference"
-                        if any(mode != "cn" for mode in source_modes)
-                        else "translate-v1"
-                    ),
+                    "prompt": "translate-v3-program-owned-structure",
                 },
                 sort_keys=True,
             ).encode("utf-8")
@@ -514,7 +637,22 @@ def translate_manifest(
                     values, reused = future.result()
                     translated.update(values)
                     reused_batches += int(reused)
-        resolved = {**translated, **seeded}
+        rebuilt: dict[str, dict[str, str]] = {}
+        for signature, (template, slots) in template_specs.items():
+            rebuilt[signature] = {
+                lang: render_translations(
+                    template,
+                    slots,
+                    {
+                        slot.slot_key: translated[
+                            template_slot_keys[(signature, slot.slot_key)]
+                        ][lang]
+                        for slot in slots
+                    },
+                )
+                for lang in target_langs
+            }
+        resolved = {**translated, **rebuilt, **seeded}
         output_rows: list[dict[str, Any]] = []
         for row, signature in zip(items, row_signatures, strict=True):
             if signature not in resolved:
@@ -550,6 +688,8 @@ def translate_manifest(
                 "unique_api_rows": summary.unique_api_rows,
                 "batch_count": summary.batch_count,
                 "reused_batches": summary.reused_batches,
+                "structured_source_rows": len(template_specs),
+                "structured_text_segments": len(template_slot_keys),
             },
         )
         return summary

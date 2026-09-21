@@ -96,10 +96,15 @@ export function QuickTaskWizard({
   const [language, setLanguage] = useState<LanguageCode>(normalizeLanguageCode(initialRun?.language) || 'en')
   const [readiness, setReadiness] = useState<TranslationReadiness | null>(null)
   const [startedRun, setStartedRun] = useState<Run | null>(initialRun)
-  const [inputMode, setInputMode] = useState<'paste' | 'upload'>('paste')
+  const [inputMode, setInputMode] = useState<'paste' | 'upload'>(initialInputArtifact ? 'upload' : 'paste')
   const [pastedText, setPastedText] = useState('')
   const [maxQuickStep, setMaxQuickStep] = useState(initialRun ? 3 : 1)
   const [localStatus, setLocalStatus] = useState('')
+  const [inputInspectionBusy, setInputInspectionBusy] = useState(false)
+  const [inputInspectionError, setInputInspectionError] = useState('')
+  const inputRequestRef = useRef(0)
+  const [starting, setStarting] = useState(false)
+  const contextLockedRef = useRef(false)
   const [deliveryBusy, setDeliveryBusy] = useState(false)
   const [deliveryError, setDeliveryError] = useState('')
   const [serverDeliveryFiles, setServerDeliveryFiles] = useState<DeliveryFile[]>([])
@@ -121,7 +126,7 @@ export function QuickTaskWizard({
       .then((result) => {
         if (canceled || !accept()) return
         setReadiness(result)
-        if (canSkipModelTranslation(result)) setObjective('qa')
+        if (canSkipModelTranslation(result) && !contextLockedRef.current) setObjective('qa')
       })
       .catch(() => {
         if (!canceled && accept()) setReadiness(null)
@@ -129,13 +134,15 @@ export function QuickTaskWizard({
     return () => { canceled = true }
   }, [inputArtifact?.id, language, settings?.batch_size, scope.projectId, scope.taskId, scope.generation, accept])
 
-  async function uploadInput(file: File) {
-    const artifact = await onUploadFile(file, 'quick_input', accept)
-    if (!artifact || !accept()) return
-    setInputArtifact(artifact)
+  async function inspectInput(artifact: Artifact, requestGeneration = ++inputRequestRef.current) {
+    const isCurrentInput = () => accept() && !contextLockedRef.current && inputRequestRef.current === requestGeneration
+    if (!isCurrentInput()) return
+    setInputInspectionBusy(true)
+    setInputInspectionError('')
+    setLocalStatus('')
     try {
       const inspected = await api<TranslationTargets>(`/api/projects/${scope.projectId}/artifacts/${artifact.id}/translation-targets`)
-      if (!accept()) return
+      if (!isCurrentInput()) return
       const normalized = {
         ...inspected,
         detected_languages: normalizeLanguageArray(inspected.detected_languages),
@@ -147,8 +154,27 @@ export function QuickTaskWizard({
       setMaxQuickStep((current) => Math.max(current, 2))
       setQuickStep(2)
     } catch {
-      if (accept()) setLocalStatus('语言识别失败，请重新选择目标语言。')
+      if (isCurrentInput()) setInputInspectionError('输入已上传，语言识别失败。请重试识别，无需重新上传。')
+    } finally {
+      if (isCurrentInput()) setInputInspectionBusy(false)
     }
+  }
+
+  async function uploadInput(file: File) {
+    if (contextLockedRef.current) return
+    const requestGeneration = ++inputRequestRef.current
+    const isCurrentInput = () => accept() && inputRequestRef.current === requestGeneration
+    setInputArtifact(null)
+    setTargets(null)
+    setReadiness(null)
+    setInputInspectionError('')
+    setInputInspectionBusy(false)
+    setMaxQuickStep(1)
+    setQuickStep(1)
+    const artifact = await onUploadFile(file, 'quick_input', isCurrentInput)
+    if (!artifact || !isCurrentInput()) return
+    setInputArtifact(artifact)
+    await inspectInput(artifact, requestGeneration)
   }
 
   async function submitPastedText() {
@@ -159,15 +185,18 @@ export function QuickTaskWizard({
   }
 
   async function uploadReference(file: File) {
+    if (contextLockedRef.current) return
     const artifact = await onUploadFile(file, 'quick_reference', accept)
-    if (!artifact || !accept()) return
+    if (!artifact || !accept() || contextLockedRef.current) return
     setReferenceArtifacts((items) => uniqueArtifactsByContent([artifact, ...items]))
   }
 
   const startingRef = useRef(false)
   async function start() {
-    if (!inputArtifact || startingRef.current || !accept()) return
+    if (!inputArtifact || startingRef.current || contextLockedRef.current || !accept()) return
     startingRef.current = true
+    contextLockedRef.current = true
+    setStarting(true)
     setDeliveryError('')
     setDeliveryFiles([])
     setServerDeliveryFiles([])
@@ -177,6 +206,7 @@ export function QuickTaskWizard({
       if (run && accept() && quickTaskIdOfRun(run) === scope.taskId) setStartedRun(run)
     } finally {
       startingRef.current = false
+      if (accept()) setStarting(false)
     }
   }
 
@@ -321,7 +351,10 @@ export function QuickTaskWizard({
     ['passed', 'canceled'].includes(projectStartedRun.status)
     || ['delivered', 'canceled', 'abandoned', 'closed'].includes(String(projectStartedRun.metadata?.translation_task_state || ''))
   ))
-  const canStart = Boolean(inputArtifact && !busy && !startedRunActive && !runBlocksRestart && !deliveryBusy)
+  const awaitingAutoDelivery = projectStartedRun?.status === 'passed' && !deliveryFiles.length && !deliveryError
+  const contextLocked = starting || startedRunActive || deliveryBusy || awaitingAutoDelivery
+  contextLockedRef.current = contextLocked
+  const canStart = Boolean(inputArtifact && !busy && !contextLocked && !runBlocksRestart)
   const resumableCurrentRun = Boolean(
     projectStartedRun
     && quickTaskIdOfRun(projectStartedRun) === scope.taskId
@@ -333,6 +366,10 @@ export function QuickTaskWizard({
       ? `继续 ${lang.short} 翻译`
       : `开始 ${lang.short} 翻译`
   const effectiveStatus = queueJobStatusText(quickQueueJob) || status
+  const runtimeInput = startedRun
+    ? (project.artifacts || []).find((artifact) => artifact.id === startedRun.metadata?.input_artifact_id)
+      || (inputArtifact?.id === startedRun.metadata?.input_artifact_id ? inputArtifact : null)
+    : inputArtifact
   return (
     <>
       <span className="sr-only" data-testid="quick-task-id" data-task-id={scope.taskId}>{scope.taskId}</span>
@@ -358,24 +395,47 @@ export function QuickTaskWizard({
           </button>
         ))}
       </div>
-      <ActionStatus status={localStatus || effectiveStatus} busy={busy || deliveryBusy} />
+      <ActionStatus status={localStatus || effectiveStatus} busy={busy || starting || deliveryBusy} />
+      {starting || startedRun ? (
+        <div className="scan-explain" data-testid="quick-task-runtime" style={{ marginBottom: 12 }}>
+          <strong>{starting ? '正在启动快速任务' : `${quickTaskName(startedRun!)} · ${quickRunStatusLabel(startedRun!)}`}</strong>
+          <span>{languageSpec(normalizeLanguageCode(startedRun?.language) || language).short} · {runtimeInput ? artifactPickerLabel(runtimeInput) : '输入记录不可用'}{startedRun ? ` · ${startedRun.id}` : ''}</span>
+          {contextLocked ? <span>{deliveryBusy || awaitingAutoDelivery ? '正在生成并读回交付，暂不能修改任务内容。' : '任务处理中，前面步骤仅供回看；更换内容请先停止，再新建任务。'}</span> : null}
+          {startedRun ? (
+            <div className="row-actions wrap">
+              {startedRunActive ? <button className="btn btn-ghost" data-testid="quick-task-stop" onClick={stopRun}><Square size={14} aria-hidden="true" />停止任务</button> : null}
+              <button className="btn btn-ghost" data-testid="quick-task-detail" onClick={() => onViewResult(startedRun)}>查看详情</button>
+              {quickStep !== 3 ? <button className="btn btn-ghost" onClick={() => setQuickStep(3)}>返回任务结果</button> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="quick-task-card">
         {quickStep === 1 ? (
           <>
             <div className="panel-title"><span className="badge">STEP 1</span>投入要处理的内容</div>
             <div className="panel-desc">可直接粘贴短文本，也可上传语言表格或 TXT。系统只做本次任务输入，不写入长期语言表资产。</div>
             <div className="segmented-control quick-input-mode">
-              <button data-testid="quick-mode-paste" className={inputMode === 'paste' ? 'active' : ''} onClick={() => setInputMode('paste')}>粘贴文本</button>
-              <button data-testid="quick-mode-upload" className={inputMode === 'upload' ? 'active' : ''} onClick={() => setInputMode('upload')}>上传文件</button>
+              <button data-testid="quick-mode-paste" className={inputMode === 'paste' ? 'active' : ''} disabled={contextLocked} onClick={() => setInputMode('paste')}>粘贴文本</button>
+              <button data-testid="quick-mode-upload" className={inputMode === 'upload' ? 'active' : ''} disabled={contextLocked} onClick={() => setInputMode('upload')}>上传文件</button>
             </div>
             {inputMode === 'paste' ? (
-              <QuickTextInput value={pastedText} onChange={setPastedText} onSubmit={submitPastedText} disabled={busy} artifact={inputArtifact} />
+              <QuickTextInput value={pastedText} onChange={setPastedText} onSubmit={submitPastedText} disabled={busy || contextLocked} readOnly={contextLocked} artifact={inputArtifact} />
             ) : (
               <div className="upload-row">
-                <FileBox label="上传待翻译 / 待校对文件（XLSX/TXT）" onFile={uploadInput} testId="quick-input-upload" />
+                <fieldset disabled={contextLocked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+                  <FileBox label="上传待翻译 / 待校对文件（XLSX/TXT）" onFile={uploadInput} testId="quick-input-upload" />
+                </fieldset>
                 {inputArtifact ? <ArtifactNote artifact={inputArtifact} /> : null}
               </div>
             )}
+            {inputInspectionBusy ? <div className="muted-left" role="status">正在识别输入语言...</div> : null}
+            {inputInspectionError && inputArtifact ? (
+              <div className="warn-line" role="alert">
+                <span>{inputInspectionError}</span>
+                <button className="btn btn-ghost" data-testid="quick-input-retry" disabled={busy || inputInspectionBusy || contextLocked} onClick={() => { void inspectInput(inputArtifact) }}>重试识别</button>
+              </div>
+            ) : null}
           </>
         ) : null}
         {quickStep === 2 ? (
@@ -383,7 +443,9 @@ export function QuickTaskWizard({
             <div className="panel-title"><span className="badge">STEP 2</span>投入可选参考</div>
             <div className="panel-desc">默认已经使用项目提示词、项目术语和译文归档；这里上传的术语表、风格说明或参考素材只作为本次任务的临时约束。</div>
             <div className="quick-reference-row">
-              <FileBox label="上传本次参考（可选）" onFile={uploadReference} testId="quick-reference-upload" />
+              <fieldset disabled={contextLocked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+                <FileBox label="上传本次参考（可选）" onFile={uploadReference} testId="quick-reference-upload" />
+              </fieldset>
               <div className="quick-reference-summary">
                 <strong>已上传 {referenceArtifacts.length} 个参考</strong>
                 <span>不会写入项目资产库；启动时会生成 reference snapshot。</span>
@@ -404,13 +466,13 @@ export function QuickTaskWizard({
               <div className="quick-block">
                 <label>任务目标</label>
                 <div className="segmented-control">
-                  <button data-testid="quick-objective-translate" className={objective === 'translate' ? 'active' : ''} onClick={() => setObjective('translate')}>翻译</button>
-                  <button data-testid="quick-objective-qa" className={objective === 'qa' ? 'active' : ''} onClick={() => setObjective('qa')}>校对</button>
+                  <button data-testid="quick-objective-translate" className={objective === 'translate' ? 'active' : ''} disabled={contextLocked} onClick={() => setObjective('translate')}>翻译</button>
+                  <button data-testid="quick-objective-qa" className={objective === 'qa' ? 'active' : ''} disabled={contextLocked} onClick={() => setObjective('qa')}>校对</button>
                 </div>
               </div>
               <label className="quick-block">
                 <span>目标语言</span>
-                <select value={language} onChange={(event) => setLanguage(normalizeLanguageCode(event.target.value) || 'en')}>
+                <select value={language} disabled={contextLocked} onChange={(event) => setLanguage(normalizeLanguageCode(event.target.value) || 'en')}>
                   {supportedLanguages.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
                 </select>
                 <em>{detected.length ? `已识别：${detected.map((item) => languageSpec(item).short).join(' / ')}` : '未识别语言，可手动选择'}</em>
@@ -426,10 +488,7 @@ export function QuickTaskWizard({
             <div className="row-actions wrap">
               <button className="btn btn-ghost" onClick={() => setQuickStep(2)}>← 上一步</button>
               <button className="btn btn-primary" data-testid="quick-task-start" disabled={!canStart} onClick={start}>{launchLabel}</button>
-              {startedRunActive ? <button className="btn btn-ghost" data-testid="quick-task-stop" onClick={stopRun}><Square size={14} aria-hidden="true" />停止任务</button> : null}
-              <button className="btn btn-ghost" disabled={!startedRun} onClick={() => onViewResult(startedRun)}>查看详情</button>
             </div>
-            {startedRun ? <div className="scan-explain"><strong>{quickTaskName(startedRun)} 已创建</strong><span>{languageSpec(normalizeLanguageCode(startedRun.language) || language).short} · {quickRunStatusLabel(startedRun)} · {startedRun.id}</span></div> : null}
             {deliveryError ? (
               <div className="warn-line quick-delivery-error" data-testid="quick-delivery-error">
                 <span>{deliveryError}</span>
@@ -485,18 +544,20 @@ function QuickTextInput({
   onChange,
   onSubmit,
   disabled,
+  readOnly,
   artifact,
 }: {
   value: string
   onChange: (value: string) => void
   onSubmit: () => void
   disabled: boolean
+  readOnly: boolean
   artifact: Artifact | null
 }) {
   const lineCount = value.split(/\r?\n/).filter((line) => line.trim()).length
   return (
     <div className="quick-text-input-block">
-      <textarea data-testid="quick-text-input" className="quick-text-input" value={value} onChange={(event) => onChange(event.target.value)} placeholder="粘贴要翻译的正文。每个非空行会作为一条翻译输入。" />
+      <textarea data-testid="quick-text-input" className="quick-text-input" value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} placeholder="粘贴要翻译的正文。每个非空行会作为一条翻译输入。" />
       <div className="quick-text-meta">
         <span>{lineCount} 个非空行</span>
         {artifact ? <ArtifactNote artifact={artifact} compact /> : null}

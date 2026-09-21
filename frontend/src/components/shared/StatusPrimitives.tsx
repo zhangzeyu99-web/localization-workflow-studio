@@ -3,12 +3,14 @@ import { archiveSourcePresentation, lineProofreadStage, referenceAuditSummary } 
 import type { LineProofreadState, ReferenceAuditState } from '../../types'
 import { LINE_PROOFREAD_LABEL } from '../../uiText'
 
-export function ArchiveProvenanceBadge({ sourceType }: { sourceType?: string }) {
-  const source = archiveSourcePresentation(sourceType)
+export function ArchiveProvenanceBadge({ sourceType, reviewStatus, languageLabel }: { sourceType?: string; reviewStatus?: string; languageLabel?: string }) {
+  const source = sourceType === 'imported' && reviewStatus === 'pending'
+    ? { label: '外部导入·待复核', detail: '外部导入后待复核，仍可作为软参考，不代表已通过质量检查', tone: 'review' }
+    : archiveSourcePresentation(sourceType)
   return (
     <span className={`provenance-badge ${source.tone}`} title={source.detail} data-testid={`archive-source-${sourceType || 'unknown'}`}>
       {source.tone === 'trusted' ? <CheckCircle2 size={13} aria-hidden="true" /> : source.tone === 'review' ? <ShieldAlert size={13} aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}
-      {source.label}
+      {languageLabel ? `${languageLabel} · ` : ''}{source.label}
     </span>
   )
 }

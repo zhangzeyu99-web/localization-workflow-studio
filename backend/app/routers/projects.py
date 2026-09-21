@@ -42,6 +42,7 @@ from .shared import (
     _unique_path,
     _validate_upload_kind_filename,
     _with_project_stats,
+    _with_project_list_stats,
 )
 from fastapi import (
     APIRouter,
@@ -205,7 +206,7 @@ def _auto_add_creator_as_member(project_id: str) -> None:
 
 @router.get("/api/projects")
 def get_projects() -> list[dict[str, Any]]:
-    return [_with_project_stats(project) for project in _visible_projects(db.list_projects())]
+    return _with_project_list_stats(_visible_projects(db.list_projects()))
 
 
 @router.post("/api/projects")

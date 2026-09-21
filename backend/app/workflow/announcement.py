@@ -63,7 +63,7 @@ from .announcement_shared import (
     _announcement_task_metadata,
 )
 from .common import project_dir, run_dir
-from .delivery import DELIVERED_WITH_ISSUES_SOURCE_TYPE
+from .delivery import DELIVERED_WITH_ISSUES_SOURCE_TYPE, _announcement_delivery_qa_snapshot, _artifact_delivery_file, _register_delivery_snapshot
 from .jsonl_helpers import read_jsonl, write_jsonl
 from .materials import _compact_lookup_text, _read_lookup_material_text
 from .naming import _today_stamp, _visible_language_code
@@ -1045,6 +1045,12 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
     if forced_by_hard_blockers:
         artifact_metadata.update({"forced": True, "hard_blockers": hard_blockers, "source_type": DELIVERED_WITH_ISSUES_SOURCE_TYPE})
     artifact = db.add_artifact(task["project_id"], "公告交付总包", zip_path, "announcement_delivery_package", run_id=run["id"], mime="application/zip", metadata=artifact_metadata)
+    artifact = _register_delivery_snapshot(
+        artifact, task_id=task_id, task_kind="announcement",
+        language=" / ".join(_visible_language_code(language) for language in languages), run_id=run["id"],
+        qa_snapshot=_announcement_delivery_qa_snapshot(task, metadata), files=[_artifact_delivery_file("package", artifact)],
+        qa_summary_artifact_id=qa_artifact_id, output_artifact_ids=output_artifact_ids,
+    )
     for old_artifact in superseded_artifacts:
         if old_artifact["id"] == artifact["id"]:
             continue
@@ -1067,19 +1073,35 @@ def deliver_announcement_task(task_id: str, request: Any) -> dict[str, Any]:
 
 
 def _announcement_hard_blocker_count(task: dict[str, Any], metadata: dict[str, Any]) -> int:
-    counts = [int(metadata.get("hard_blockers") or 0)]
+    def parse_count(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return None
+        try:
+            number = float(value)
+        except (ValueError, OverflowError):
+            return None
+        return int(number) if number >= 0 and number.is_integer() else None
+
+    counts = [parse_count(metadata.get("hard_blockers")) or 0]
     qa_issues = metadata.get("qa_issues")
     if isinstance(qa_issues, list):
         counts.append(sum(1 for issue in qa_issues if str((issue or {}).get("severity") or "hard").lower() == "hard"))
-    for artifact in db.list_artifacts(project_id=task["project_id"], include_superseded=True):
-        artifact_metadata = artifact.get("metadata") or {}
-        if str(artifact_metadata.get("task_id") or "") != str(task["id"]):
-            continue
-        if artifact["kind"] in {"announcement_qa_summary", "announcement_docx_qa_summary"}:
-            counts.append(int(artifact_metadata.get("hard_blockers") or 0))
+    summaries = [
+        artifact for artifact in db.list_artifacts(project_id=task["project_id"], include_superseded=True)
+        if artifact["kind"] in {"announcement_qa_summary", "announcement_docx_qa_summary"}
+        and str((artifact.get("metadata") or {}).get("task_id") or "") == str(task["id"])
+    ]
+    current = next((artifact for artifact in summaries
+                    if artifact["id"] == metadata.get("qa_summary_artifact_id")
+                    and parse_count((artifact.get("metadata") or {}).get("hard_blockers")) is not None), None)
+    for artifact in [current] if current else summaries:
+        counts.append(parse_count((artifact.get("metadata") or {}).get("hard_blockers")) or 0)
     for child in task.get("languages") or []:
         child_metadata = child.get("metadata") or {}
-        counts.append(int(child_metadata.get("hard_blockers") or 0))
+        child_qa_id = child_metadata.get("qa_summary_artifact_id")
+        if current and child_qa_id and child_qa_id != current["id"]:
+            continue
+        counts.append(parse_count(child_metadata.get("hard_blockers")) or 0)
     return max(counts)
 
 

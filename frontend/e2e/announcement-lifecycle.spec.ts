@@ -333,6 +333,7 @@ test('late T1 lookup response cannot replace T2 focus step, run polling, or stat
   await page.goto(baseURL)
   await page.getByRole('button', { name: projectName }).click()
   await page.locator('.announcement-task-row', { hasText: '公告 T1' }).getByRole('button', { name: '继续' }).click()
+  await page.getByRole('button', { name: '确认并继续', exact: true }).click()
   await page.getByRole('button', { name: '反查术语译文' }).click()
   await expect.poll(() => actionRequested).toBe(true)
 

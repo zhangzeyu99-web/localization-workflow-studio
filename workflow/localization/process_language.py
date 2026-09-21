@@ -173,7 +173,7 @@ def run_machine_review(
     print("[8/10] UI长度预算检查")
     _run_ui_length_checks(states, lang)
 
-    print("[9/10] 技能名/地名专名检查")
+    print("[9/10] 技能名/地名/建筑名专名检查")
     _run_name_policy_checks(states, term_lookup, lang)
 
     print("[10/10] 可读缩写/截断词检查")

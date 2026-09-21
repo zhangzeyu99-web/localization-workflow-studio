@@ -2,6 +2,36 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.7.3 - 2026-09-10
+
+- Synchronized committed localization and glossary sources, including reviewed candidate JSON export.
+- Reused canonical source-bound QA rules in product cache validation and delivery readback; retained VN/VI compatibility.
+- Preserved v1.7.2 announcement input and delivery reliability fixes while integrating master workflow hardening.
+- Isolated destructive backend test fixtures from inherited runtime data directories and failed closed on unsafe cloud path resolution.
+- Kept one business implementation for local-off and cloud-required, with unchanged frontend workflow layout.
+
+## 1.7.2 - 2026-08-07
+
+Announcement input and delivery reliability fixes.
+
+- Accepted GB18030 announcement text while preserving UTF-8 and UTF-8 BOM inputs.
+- Prevented oversized sentence-adaptation JSON from being silently truncated at Excel's 32,767-character cell limit.
+- Allowed legacy workbooks with already-truncated optional sentence-adaptation data to continue through QA and output generation.
+- Allowed natural English and Indonesian inflection for common announcement terms while keeping game names and explicitly exact terms strict.
+- Preserved term category and exact-match metadata in newly generated announcement translation workbooks.
+- Added regression coverage for source decoding, oversized workbook cells, legacy workbook recovery, common-term plurals, and exact game-name enforcement.
+- Produced account-enabled and no-account cloud artifacts from the same clean commit and frontend build.
+
+## 1.7.1 - 2026-07-28
+
+Translation-archive identity compatibility fix.
+
+- Allowed distinct translation IDs to share the same normalized Chinese source text without being rejected as duplicate concepts.
+- Made keyed archive imports update by translation ID even when another keyed record already uses the incoming Chinese source.
+- Preserved the existing conflict guard when keyed and unkeyed rows mix the same source identity.
+- Added regression coverage for initial import, cross-language updates, source adoption, and independent re-import of shared-source rows.
+- Produced account-enabled and no-account cloud artifacts from the same clean commit and frontend build.
+
 ## 1.7.0 - 2026-07-27
 
 Proper-name extraction and bilingual-source workflow release.

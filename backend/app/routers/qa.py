@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .. import background_jobs, db, operator_context
+from .. import background_jobs, db, job_queue, operator_context
 from ..schemas import (
     ManualFixRequest,
     ModelFixRequest,
@@ -70,9 +70,16 @@ def qa_cancel(run_id: str) -> dict[str, Any]:
         db.get_run(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
-    canceled = background_jobs.cancel(f"qa:{run_id}")
-    if canceled is None:
-        canceled = background_jobs.cancel(f"model-fix:{run_id}")
+    try:
+        candidates = [f"qa:{run_id}", f"model-fix:{run_id}"]
+        candidates.sort(key=lambda job_id: (job_queue.get_job(job_id) or {}).get("status") not in job_queue.ACTIVE_STATUSES)
+        canceled = None
+        for job_id in candidates:
+            canceled = background_jobs.cancel(job_id)
+            if canceled is not None:
+                break
+    except job_queue.ArchiveAlreadyCommittedError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     if canceled is None:
         raise HTTPException(status_code=404, detail="active QA job not found")
     cancel_quick_task_run(run_id)

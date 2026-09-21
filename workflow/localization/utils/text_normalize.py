@@ -5,6 +5,8 @@ ensuring consistent handling of escapes, placeholders, tags, and punctuation.
 """
 import re
 
+from utils.punctuation_policy import repair_punctuation, transform_unprotected
+
 _BACKSLASH_ESCAPE = re.compile(r'\\([_!#=\[\]{}()\\*+\-.<>|~])')
 _FULLWIDTH_BRACE_MAP = str.maketrans({'｛': '{', '｝': '}'})
 _PLACEHOLDER_COMMA_SPACE = re.compile(r'\{(\d+),\s+([A-Za-z])')
@@ -208,13 +210,14 @@ def build_source_token_map(text: str) -> list[str]:
 
 def normalize_english_punctuation(text: str) -> str:
     """Convert fullwidth punctuation to ASCII for English-like outputs."""
-    normalized = str(text).translate(_FULLWIDTH_TRANSLATION_MAP).replace('、', ',')
-    normalized = re.sub(r'([,;])(?=\S)', r'\1 ', normalized)
-    normalized = re.sub(r'(?<!\d):(?=\S)(?![/\\])', ': ', normalized)
-    normalized = re.sub(r'([(\[])\s+', r'\1', normalized)
-    normalized = re.sub(r'\s+([\])])', r'\1', normalized)
-    normalized = re.sub(r' {2,}', ' ', normalized)
-    return normalized.strip()
+    def normalize_chunk(chunk: str) -> str:
+        chunk = chunk.translate(_FULLWIDTH_TRANSLATION_MAP).replace('、', ',')
+        chunk = re.sub(r'([,;])(?=\S)', r'\1 ', chunk)
+        chunk = re.sub(r'(?<!\d):(?=\S)(?![/\\])', ': ', chunk)
+        chunk = re.sub(r'([(\[])\s+', r'\1', chunk)
+        chunk = re.sub(r'\s+([\])])', r'\1', chunk)
+        return re.sub(r' {2,}', ' ', chunk)
+    return transform_unprotected(str(text), normalize_chunk).strip()
 
 
 def repair_translation_surface(original: str, translation: str, lang: str = 'en') -> str:
@@ -249,6 +252,7 @@ def repair_translation_surface(original: str, translation: str, lang: str = 'en'
 
     if lang in {'en', 'idn', 'vi', 'fr', 'de', 'tr', 'es', 'pt', 'ru'}:
         repaired = normalize_english_punctuation(repaired)
+        repaired = repair_punctuation(repaired, lang)
 
     return repaired
 

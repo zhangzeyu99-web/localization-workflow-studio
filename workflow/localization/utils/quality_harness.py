@@ -19,6 +19,8 @@ from openpyxl import load_workbook
 
 from utils.language_config import normalize_language_code
 from utils.name_policy import evaluate_name_translation, find_name_collisions, resolve_name_type
+from utils.punctuation_policy import punctuation_issues
+from utils.review_consistency import GROUP_HARD_ISSUES, group_issues, history_issues, load_history_rows, normalized
 from utils.quality_harness_rules import (  # noqa: F401  (re-exported)
     BROKEN_BULLET_PATTERN,
     CJK_PATTERN,
@@ -112,6 +114,29 @@ def load_fixture(path: str | Path) -> dict:
 def run_fixture(fixture: dict, lang: str = 'en') -> HarnessResult:
     cases = fixture.get('cases', [])
     result = HarnessResult(passed=True, total_cases=len(cases))
+    from utils.semantic_constraints import semantic_constraint_issues
+    for case in fixture.get('semantic_constraint_cases', []):
+        actual = sorted({kind for kind, _ in semantic_constraint_issues(case['source'], case['target'], case['lang'])})
+        result.total_cases += 1
+        result.issue_counts.update(actual)
+        if actual != sorted(case['expected']):
+            result.passed = False
+            result.failures.append({'id': case['name'], 'expected_issues': case['expected'], 'actual_issues': actual})
+    from utils.quantity_guard import quantity_issues
+    for case in fixture.get('quantity_guard_cases', []):
+        actual = sorted({kind for kind, _ in quantity_issues(case['source'], case['target'], case['lang'])})
+        result.total_cases += 1
+        result.issue_counts.update(actual)
+        if actual != sorted(case['expected']):
+            result.passed = False
+            result.failures.append({'id': case['name'], 'expected_issues': case['expected'], 'actual_issues': actual})
+    for index, case in enumerate(fixture.get('punctuation_policy_cases', [])):
+        actual = sorted(punctuation_issues(case['text'], case['lang'], case.get('mode')))
+        result.total_cases += 1
+        result.issue_counts.update(actual)
+        if actual != sorted(case['expected']):
+            result.passed = False
+            result.failures.append({'id': f'punctuation-{index}', 'expected_issues': case['expected'], 'actual_issues': actual})
     collision_issues: dict[object, list] = {}
     name_rows = [
         {
@@ -163,6 +188,21 @@ def run_fixture(fixture: dict, lang: str = 'en') -> HarnessResult:
                 'actual_issues': actual,
             })
 
+    for case in fixture.get('review_consistency_cases', []):
+        def as_rows(pairs):
+            return [dict(file='fixture', sheet='UI', row=i + 2, id=i + 1,
+                         source=source, translation=target)
+                    for i, (source, target) in enumerate(pairs)]
+
+        rows = as_rows(case['rows'])
+        found = group_issues(rows) + history_issues(rows, as_rows(case.get('history', [])))
+        actual = sorted({issue['check_type'] for issue in found})
+        expected = sorted(case['expected'])
+        result.total_cases += 1
+        result.issue_counts.update(issue['check_type'] for issue in found)
+        if actual != expected:
+            result.passed = False
+            result.failures.append(dict(id=case['name'], expected_issues=expected, actual_issues=actual))
     return result
 
 
@@ -172,6 +212,8 @@ def scan_workbook(
     fail_on: Iterable[str] | None = None,
     term_base: str | Path | Sequence[str | Path] | None = None,
     auto_discover_terms: bool = True,
+    history: Sequence[str | Path] | None = None,
+    punctuation_mode: str | None = None,
 ) -> HarnessResult:
     """Scan a workbook language table.
 
@@ -179,10 +221,11 @@ def scan_workbook(
     simple first-three-column layout: ID, source, target.
     """
     lang = normalize_language_code(lang)
-    fail_set = set(fail_on or DEFAULT_HARD_ISSUES)
+    fail_set = set(fail_on or (DEFAULT_HARD_ISSUES | GROUP_HARD_ISSUES))
     result = HarnessResult(passed=True)
     workbook_path = Path(path)
     wb = load_workbook(workbook_path, read_only=False, data_only=False)
+    scanned_rows: list[dict] = []
 
     try:
         term_sources = _resolve_term_base_paths(workbook_path, term_base, auto_discover_terms)
@@ -219,7 +262,7 @@ def scan_workbook(
                     'source': source,
                     'translation': target,
                 })
-                row_issues = check_row(row_id, source, target, lang=lang)
+                row_issues = check_row(row_id, source, target, lang=lang, punctuation_mode=punctuation_mode)
                 row_issues.extend(_check_ui_length(row_id, source, target, lang=lang))
                 name_type = resolve_name_type(source, name_type_lookup)
                 if name_type:
@@ -263,6 +306,12 @@ def scan_workbook(
                         })
 
             _append_numbered_term_consistency_issues(numbered_rows, result, fail_set, strong_term_lookup, lang=lang)
+            scanned_rows.extend(numbered_rows)
+            for issue in group_issues(numbered_rows):
+                result.issue_counts[issue['check_type']] += 1
+                if issue['check_type'] in fail_set:
+                    result.passed = False
+                    result.issues.append(issue)
             name_row_by_id = {row['id']: row for row in name_rows}
             for issue in find_name_collisions(name_rows, lang=lang):
                 result.issue_counts[issue.check_type] += 1
@@ -282,6 +331,15 @@ def scan_workbook(
                     'translation': row.get('translation', ''),
                     'auto_fix': issue.auto_fix,
                 })
+
+        if history:
+            wanted = {normalized(row['translation']) for row in scanned_rows}
+            historical_rows = load_history_rows(history, lang, wanted)
+            for issue in history_issues(scanned_rows, historical_rows):
+                result.issue_counts[issue['check_type']] += 1
+                result.issues.append(issue)
+                if issue['check_type'] in fail_set:
+                    result.passed = False
 
         if result.rows_scanned == 0:
             result.passed = False

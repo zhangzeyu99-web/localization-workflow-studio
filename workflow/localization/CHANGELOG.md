@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-08-24 - 深校抽样与失败恢复收口
+
+- `sampled` 深校现在审查全部高风险唯一文本，并稳定抽取 10% 低风险唯一文本；`full` 保持全量审校。
+- 风险标签进入审校签名和 workpack，避免显式高风险短文本在去重或抽样时丢失。
+- runner 新增 `reconcile`，仅凭通过的 final cache-lint、深校摘要、apply-dry-run、交付目录和 readback 证据收口恢复任务，并生成 `recovery_retro.json`。
+- 回归：277 项 pytest、64 个 subtests 通过；真实 217 行英语深校任务从 `api_translate_failed` 恢复为 `complete`，无未完成阶段。
+
+## 2026-07-28 - 建筑名移动端地图 UI 精简策略
+
+- 术语表明确分类为建筑名或设施名时，翻译 workpack、AI 审校、机审和最终 workbook 扫描统一启用建筑名策略。
+- 英语正式名优先 2 个核心词 / 18 字符；产品支持独立地图标签时目标不超过 14 字符，等级和阶级优先拆成 UI 徽标。
+- 新增 `building_name_compactness_watch` 软预警；保留建筑功能、关键区分、既有术语和名称唯一性，禁止机械截词或坏缩写。
+- 规则仅由显式分类触发，排除建筑说明和建筑效果，避免误处理普通正文。
+- 回归：256 项 unittest 和 69 个质量 fixture 全部通过。
+
 ## 2026-07-24 - 中英双源翻译与校对
 
 - 标准翻译 harness、AI 审校 CLI、workspace runner 和大文本多语言 V2 新增 `cn / cn+en / en` 三种显式源模式。

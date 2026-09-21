@@ -20,6 +20,13 @@ from utils.large_text_multilingual_executor import (
     start_phase,
 )
 from utils.large_text_multilingual_runner import load_manifest
+from utils.structured_text_template import (
+    ParsedTemplate,
+    ReviewSlot,
+    aligned_review_slots,
+    render_reviewed_target,
+    should_use_template,
+)
 
 
 class ReviewClient(Protocol):
@@ -52,6 +59,38 @@ class ProofreadSummary:
     elapsed_seconds: float
 
 
+def _attach_dialogue_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # 只使用显式场景边界；既有译文是待审证据，不是人物配置真值。
+    groups: dict[tuple[str, str, str], list[int]] = {}
+    contexts: dict[int, dict] = {}
+    for index, row in enumerate(rows):
+        raw = row.get("context") or ""
+        try:
+            context = raw if isinstance(raw, dict) else json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(context, dict) or context.get("type") != "dialogue" or not context.get("scene") or should_use_template(row):
+            continue
+        contexts[index] = context
+        key = (str(row.get("source_file") or ""), str(row.get("sheet") or ""), str(context["scene"]))
+        groups.setdefault(key, []).append(index)
+    result = [dict(row) for row in rows]
+    for indices in groups.values():
+        indices.sort(key=lambda index: (int(rows[index].get("row") or index), index))
+        for position, index in enumerate(indices):
+            selected = indices if len(indices) <= 48 else indices[max(0, position - 8):position + 9]
+            context = contexts[index]
+            result[index]["dialogue_evidence"] = {
+                "scene": context["scene"], "complete_scene": len(selected) == len(indices),
+                "speaker": context.get("speaker", "unknown"),
+                "addressee": context.get("addressee", "unknown"),
+                "turns": [{field: rows[item].get(field) for field in (
+                    "key", "id", "row", "cn", "translation_source", "reference_en", "translations"
+                )} for item in selected],
+            }
+    return result
+
+
 def _review_signature(row: dict[str, Any], target_langs: list[str]) -> str:
     raw = json.dumps(
         {
@@ -61,6 +100,7 @@ def _review_signature(row: dict[str, Any], target_langs: list[str]) -> str:
             "reference_en": row.get("reference_en", ""),
             "reference_en_status": row.get("reference_en_status", "not_requested"),
             "context": row.get("context", ""),
+            "dialogue_evidence": row.get("dialogue_evidence") or {},
             "risk_flags": row.get("risk_flags") or [],
             "tokens": row.get("tokens") or [],
             "term_hits": row.get("term_hits") or [],
@@ -75,6 +115,15 @@ def _review_signature(row: dict[str, Any], target_langs: list[str]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
+def _language_evidence(evidence: object, lang: str) -> dict:
+    if not isinstance(evidence, dict):
+        return {}
+    return {**evidence, "turns": [
+        {**turn, "translations": {lang: (turn.get("translations") or {}).get(lang, "")}}
+        for turn in evidence.get("turns", [])
+    ]}
+
+
 def _review_row(row: dict[str, Any], review_key: str, target_langs: list[str]) -> dict[str, object]:
     return {
         "review_key": review_key,
@@ -84,6 +133,7 @@ def _review_row(row: dict[str, Any], review_key: str, target_langs: list[str]) -
         "reference_en": str(row.get("reference_en") or ""),
         "reference_en_status": str(row.get("reference_en_status") or "not_requested"),
         "context": str(row.get("context") or ""),
+        "dialogue_evidence": row.get("dialogue_evidence") or {},
         "risk_flags": row.get("risk_flags") or [],
         "protected_tokens": row.get("tokens") or [],
         "term_hits": row.get("term_hits") or [],
@@ -113,6 +163,12 @@ def _select_sampled_rows(rows: list[dict[str, object]]) -> list[dict[str, object
     sampled_low = sorted(low_risk, key=lambda row: str(row["review_key"]))[:sample_count]
     selected = {str(row["review_key"]) for row in [*high_risk, *sampled_low]}
     return [row for row in rows if str(row["review_key"]) in selected]
+
+
+def _preserves_protected_tokens(before: str, after: str, tokens: object) -> bool:
+    if not isinstance(tokens, list):
+        return True
+    return all(before.count(str(token)) == after.count(str(token)) for token in tokens if str(token))
 
 
 def _batch_checkpoint(path: Path, version: str, rows: list[dict[str, Any]]) -> Path:
@@ -241,6 +297,10 @@ def _validate_suggestions(
         )
     validated: list[dict[str, Any]] = []
     for row in suggestions:
+        from utils.review_findings import unresolved_review_detail
+        unresolved = unresolved_review_detail(row)
+        if unresolved:
+            raise ValueError(unresolved)
         status = str(row.get("status") or "").upper()
         if status not in {"KEEP", "FIX"}:
             raise ValueError(f"invalid review status: {status}")
@@ -251,6 +311,9 @@ def _validate_suggestions(
                 suggested = current_by_cell.get(cell, "")
             if not suggested:
                 raise ValueError("review suggestion cannot be blank")
+        current = current_by_cell.get((str(row["review_key"]), str(row["lang"]).upper()), "")
+        if status == "KEEP" and current and suggested != current:
+            raise ValueError("KEEP must preserve the current target exactly; use FIX for a change")
         validated.append(
             {
                 "review_key": str(row["review_key"]),
@@ -278,19 +341,45 @@ def _validate_audit(
             f"audit coverage mismatch: missing={sorted(expected - actual)}, extras={sorted(actual - expected)}"
         )
     result: dict[tuple[str, str], dict[str, Any]] = {}
+    trusted_fixes = {(row["review_key"], row["lang"]): row for row in fixes}
     for row in decisions:
+        from utils.review_findings import unresolved_review_detail
+        unresolved = unresolved_review_detail(row)
+        if unresolved:
+            raise ValueError(unresolved)
         decision = str(row.get("decision") or "").upper()
         if decision not in {"ACCEPT", "REVERT", "REVISE"}:
             raise ValueError(f"invalid audit decision: {decision}")
         final = str(row.get("final") or "").strip()
         if decision in {"ACCEPT", "REVISE"} and not final:
             raise ValueError("accepted audit decision requires final text")
+        fix = trusted_fixes[(str(row["review_key"]), str(row["lang"]).upper())]
+        if fix.get('status') == 'KEEP' and decision == 'REVERT':
+            raise ValueError('A KEEP audit must ACCEPT the current target or REVISE it; REVERT is unresolved')
+        from utils.semantic_regression import known_semantic_regressions
+
+        if decision in {"ACCEPT", "REVISE"} and known_semantic_regressions(fix, str(row["lang"]), final):
+            raise ValueError("known semantic regression in accepted audit final")
+        check = row.get("semantic_check")
+        if fix.get("semantic_check_required") and decision in {"ACCEPT", "REVISE"}:
+            if not isinstance(check, dict) or any(
+                not isinstance(check.get(field), str) or not check[field].strip()
+                for field in ("source_meaning", "final_meaning")
+            ) or any(check.get(field) is not True for field in (
+                "meaning_preserved", "roles_preserved", "tone_preserved"
+            )):
+                raise ValueError("dialogue semantic evidence missing or contradicts accepted change")
         normalized = {
             "review_key": str(row["review_key"]),
             "lang": str(row["lang"]).upper(),
             "decision": decision,
             "final": final,
             "reason": str(row.get("reason") or ""),
+            **({"semantic_check": check} if isinstance(check, dict) else {}),
+            **({"independent_target_reading": row["independent_target_reading"]}
+               if isinstance(row.get("independent_target_reading"), dict) else {}),
+            **({"rejected_model_decision": row["rejected_model_decision"]}
+               if isinstance(row.get("rejected_model_decision"), dict) else {}),
         }
         result[(normalized["review_key"], normalized["lang"])] = normalized
     return result
@@ -308,17 +397,67 @@ def run_deep_proofread(
     overall_started = time.perf_counter()
     manifest = load_manifest(manifest_path)
     target_langs = [str(lang).upper() for lang in manifest["inputs"]["target_languages"]]
-    rows = _read_jsonl(initial_cache)
+    rows = _attach_dialogue_evidence(_read_jsonl(initial_cache))
     signatures = [_review_signature(row, target_langs) for row in rows]
     representatives: dict[str, dict[str, Any]] = {}
     for row, signature in zip(rows, signatures, strict=True):
         representatives.setdefault(signature, row)
-    review_rows = [
+    source_review_rows = [
         _review_row(row, signature, target_langs)
         for signature, row in representatives.items()
     ]
     if str(manifest.get("inputs", {}).get("proofread_mode") or "full") == "sampled":
-        review_rows = _select_sampled_rows(review_rows)
+        source_review_rows = _select_sampled_rows(source_review_rows)
+    selected_signatures = [str(row["review_key"]) for row in source_review_rows]
+    review_rows: list[dict[str, object]] = []
+    structured_cells: dict[
+        tuple[str, str], tuple[ParsedTemplate, list[ReviewSlot]]
+    ] = {}
+    structured_signatures: set[str] = set()
+    for signature in selected_signatures:
+        row = representatives[signature]
+        if not should_use_template(row):
+            review_rows.append(_review_row(row, signature, target_langs))
+            continue
+        per_language: dict[str, tuple[ParsedTemplate, list[ReviewSlot]]] = {}
+        source_text = str(row.get("translation_source") or row.get("cn") or "")
+        for lang in target_langs:
+            target_text = str((row.get("translations") or {}).get(lang) or "")
+            per_language[lang] = aligned_review_slots(source_text, target_text)
+        slot_count = len(per_language[target_langs[0]][1])
+        if not slot_count or any(len(value[1]) != slot_count for value in per_language.values()):
+            raise ValueError(f"structured review slot mismatch for source row {row.get('key')}")
+        structured_signatures.add(signature)
+        for lang, value in per_language.items():
+            structured_cells[(signature, lang)] = value
+        for index in range(slot_count):
+            slots = {lang: per_language[lang][1][index] for lang in target_langs}
+            source_slot = slots[target_langs[0]].source
+            if any(slot.source != source_slot for slot in slots.values()):
+                raise ValueError(f"structured review source slot mismatch for row {row.get('key')}")
+            review_key = f"{signature}:segment:{index}"
+            term_hits = [
+                hit
+                for hit in (row.get("term_hits") or [])
+                if isinstance(hit, dict)
+                and str(hit.get("source") or hit.get("CN") or hit.get("term") or "")
+                in source_slot
+            ]
+            review_rows.append(
+                {
+                    "review_key": review_key,
+                    "cn": source_slot,
+                    "translation_source": source_slot,
+                    "source_mode": "cn",
+                    "reference_en": "",
+                    "reference_en_status": "not_requested",
+                    "context": slots[target_langs[0]].source_context,
+                    "risk_flags": row.get("risk_flags") or [],
+                    "protected_tokens": [],
+                    "term_hits": term_hits,
+                    "translations": {lang: slots[lang].target for lang in target_langs},
+                }
+            )
     proof_dir = Path(manifest["work_dir"]) / "deep_proofread"
     proof_dir.mkdir(parents=True, exist_ok=True)
     proofread_lock = _acquire_proofread_lock(proof_dir)
@@ -332,7 +471,7 @@ def run_deep_proofread(
         start_phase(manifest, "subagent_review")
         suggestions: list[dict[str, object]] = []
         review_scope = hashlib.sha256(
-            f"review-v1:{_client_checkpoint_identity(reviewer)}".encode("utf-8")
+            f"review-v6-keep-and-unresolved-integrity:{_client_checkpoint_identity(reviewer)}".encode("utf-8")
         ).hexdigest()[:16]
         review_checkpoint_dir = proof_dir / "review_batches" / review_scope
         review_checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -355,9 +494,11 @@ def run_deep_proofread(
             job: tuple[list[dict[str, object]], str, Path],
         ) -> list[dict[str, Any]]:
             batch, lang, checkpoint = job
+            request_batch = [{**row, "translations": {lang: row["translations"][lang]},
+                              "dialogue_evidence": _language_evidence(row.get("dialogue_evidence"), lang)} for row in batch]
             validation_error: ValueError | None = None
             for _ in range(3):
-                batch_suggestions = reviewer.review_batch(batch, [lang])
+                batch_suggestions = reviewer.review_batch(request_batch, [lang])
                 try:
                     validated_batch = _validate_suggestions(batch, batch_suggestions, [lang])
                     break
@@ -388,7 +529,8 @@ def run_deep_proofread(
             "subagent_review",
             started=review_started,
             metrics={
-                "reviewed_unique_rows": len(review_rows),
+                "reviewed_unique_rows": len(source_review_rows),
+                "reviewed_text_segments": len(review_rows),
                 "reviewed_cells": len(validated),
                 "review_api_batches": len(review_jobs),
                 "review_reused_cells": len(validated)
@@ -403,10 +545,28 @@ def run_deep_proofread(
     merge_started = time.perf_counter()
     try:
         start_phase(manifest, "controller_merge")
-        fixes = [row for row in validated if row["status"] == "FIX"]
+        trusted_rows = {str(row['review_key']): row for row in review_rows}
+        fixes = []
+        for suggestion in validated:
+            trusted = trusted_rows[suggestion['review_key']]
+            # 源文和原译由主控补齐，不能让 reviewer 自述的理由代替独立审计证据。
+            fixes.append({
+                **suggestion,
+                **{field: trusted.get(field) for field in (
+                    'cn', 'translation_source', 'source_mode', 'reference_en',
+                    'reference_en_status', 'context', 'risk_flags',
+                    'protected_tokens', 'term_hits', 'dialogue_evidence',
+                )},
+                'current': (trusted.get('translations') or {}).get(suggestion['lang'], ''),
+                'dialogue_evidence': _language_evidence(trusted.get('dialogue_evidence'), suggestion['lang']),
+                'semantic_check_required': bool(trusted.get('dialogue_evidence')) or any(
+                    'dialogue' in str(flag).lower() or 'idiom' in str(flag).lower()
+                    for flag in (trusted.get('risk_flags') or [])
+                ),
+            })
         decisions: list[dict[str, object]] = []
         audit_scope = hashlib.sha256(
-            f"audit-v1:{_client_checkpoint_identity(auditor)}".encode("utf-8")
+            f"audit-v9-all-reviewed-cells-explicit-verdict:{_client_checkpoint_identity(auditor)}".encode("utf-8")
         ).hexdigest()[:16]
         audit_checkpoint_dir = proof_dir / "audit_batches" / audit_scope
         audit_checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -459,24 +619,47 @@ def run_deep_proofread(
             translations = dict(row.get("translations") or {})
             row_changed = False
             for lang in target_langs:
-                suggestion = suggestions_by_cell.get((signature, lang))
-                if suggestion is None:
-                    continue
-                if suggestion["status"] != "FIX":
-                    continue
-                decision = audit[(signature, lang)]
-                if decision["decision"] == "REVERT":
-                    continue
-                final_text = decision["final"] or suggestion["suggested"]
-                if final_text != translations.get(lang):
+                before = str(translations.get(lang) or "")
+                reasons: list[str] = []
+                audit_reasons: list[str] = []
+                if signature in structured_signatures:
+                    target_template, slots = structured_cells[(signature, lang)]
+                    values = {slot.slot_key: slot.target for slot in slots}
+                    for index, slot in enumerate(slots):
+                        review_key = f"{signature}:segment:{index}"
+                        suggestion = suggestions_by_cell.get((review_key, lang))
+                        if suggestion is None:
+                            continue
+                        decision = audit[(review_key, lang)]
+                        if decision["decision"] == "REVERT":
+                            continue
+                        values[slot.slot_key] = decision["final"] or suggestion["suggested"]
+                        reasons.append(suggestion["reason"])
+                        audit_reasons.append(decision["reason"])
+                    final_text = render_reviewed_target(target_template, slots, values)
+                else:
+                    suggestion = suggestions_by_cell.get((signature, lang))
+                    if suggestion is None:
+                        continue
+                    decision = audit[(signature, lang)]
+                    if decision["decision"] == "REVERT":
+                        continue
+                    final_text = decision["final"] or suggestion["suggested"]
+                    reasons.append(suggestion["reason"])
+                    audit_reasons.append(decision["reason"])
+                if str(row.get("seed_origin") or "") == "glossary_exact":
+                    final_text = before
+                elif not _preserves_protected_tokens(before, final_text, row.get("tokens") or []):
+                    final_text = before
+                if final_text != before:
                     issues.append(
                         {
                             "key": row.get("key"),
                             "lang": lang,
-                            "before": translations.get(lang, ""),
+                            "before": before,
                             "after": final_text,
-                            "reason": suggestion["reason"],
-                            "audit_reason": decision["reason"],
+                            "reason": "; ".join(dict.fromkeys(reasons)),
+                            "audit_reason": "; ".join(dict.fromkeys(audit_reasons)),
                         }
                     )
                     translations[lang] = final_text
@@ -492,10 +675,10 @@ def run_deep_proofread(
             suggestions_jsonl=suggestions_path,
             audit_jsonl=audit_path,
             summary_json=summary_path,
-            reviewed_rows=len(review_rows),
-            reviewed_cells=len(review_rows) * len(target_langs),
-            suggested_changes=len(fixes),
-            reverted_changes=sum(1 for row in audit.values() if row["decision"] == "REVERT"),
+            reviewed_rows=len(source_review_rows),
+            reviewed_cells=len(validated),
+            suggested_changes=sum(row["status"] == "FIX" for row in fixes),
+            reverted_changes=sum(1 for row in fixes if row["status"] == "FIX" and audit[(row["review_key"], row["lang"])]["decision"] == "REVERT"),
             changed_rows=changed_rows,
             changed_cells=changed_cells,
             elapsed_seconds=elapsed,
@@ -506,6 +689,8 @@ def run_deep_proofread(
             "suggestions_jsonl": str(suggestions_path),
             "audit_jsonl": str(audit_path),
             "summary_json": str(summary_path),
+            "audited_cells": len(audit),
+            "audited_keep_cells": sum(row["status"] == "KEEP" for row in fixes),
             "changed_by_language": dict(sorted(changed_by_lang.items())),
             "issues": issues,
         }

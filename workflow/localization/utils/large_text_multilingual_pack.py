@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ from openpyxl import load_workbook
 
 from utils.language_config import SOURCE_HEADERS, normalize_language_code, target_header_candidates
 from utils.large_text_multilingual_gate import protected_tokens
+from utils.quality_harness_terms import name_category_from_note
 from utils.source_reference import (
     EnglishReferenceStatus,
     classify_english_reference,
@@ -21,13 +23,28 @@ from utils.source_reference import (
 TERM_CATEGORY_HEADERS = {"分类", "类别", "术语分类", "category", "type"}
 STRICT_TERM_CATEGORIES = {
     "主角",
+    "角色",
     "角色名",
+    "人名",
+    "人物",
     "人物名",
     "英雄名",
     "怪物名",
     "boss",
     "npc",
+    "character",
+    "character name",
+    "person",
+    "person name",
+    "name",
 }
+
+# 这些称谓可作为角色显示名，但正文中允许大小写、格和亲属称呼的自然变化。
+KINSHIP_TERMS = {
+    "grandma", "grandpa", "grandmother", "grandfather", "mother", "father",
+    "mom", "dad", "aunt", "uncle",
+}
+GENERIC_CHARACTER_CATEGORIES = {"角色", "人物", "character", "person"}
 
 
 @dataclass(frozen=True)
@@ -95,6 +112,10 @@ def _is_strict_term_category(value: object) -> bool:
 def _load_terms(path: Path | None, target_langs: list[str]) -> list[dict[str, Any]]:
     if path is None:
         return []
+    if path.suffix.lower() == ".json":
+        from utils.approved_name_snapshot import load_snapshot
+
+        return load_snapshot(path, target_langs)
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         for sheet in workbook.worksheets:
@@ -105,6 +126,8 @@ def _load_terms(path: Path | None, target_langs: list[str]) -> list[dict[str, An
             id_col = _find_header(headers, {"id", "key", "索引id"})
             source_col = _find_header(headers, {header.lower() for header in SOURCE_HEADERS})
             category_col = _find_header(headers, TERM_CATEGORY_HEADERS)
+            note_col = _find_header(headers, {"备注", "note", "notes"})
+            english_col = _find_header(headers, target_header_candidates("en"))
             if source_col is None:
                 continue
             try:
@@ -131,11 +154,18 @@ def _load_terms(path: Path | None, target_langs: list[str]) -> list[dict[str, An
                         else ""
                     )
                     strict = _is_strict_term_category(category)
+                    if category_col is None and note_col is not None and note_col < len(values):
+                        category = name_category_from_note(values[note_col])
+                        strict = _is_strict_term_category(category)
+                    reference_en = str((values[english_col] if english_col is not None and english_col < len(values) else "") or "").strip()
+                    if category.casefold() in GENERIC_CHARACTER_CATEGORIES and reference_en.casefold() in KINSHIP_TERMS:
+                        strict = False
                     terms[str(source).strip()] = {
                         "translations": translations,
                         "category": category,
                         "required": strict,
                         "strict": strict,
+                        "reference_en": reference_en,
                     }
             return [
                 {"source": source, **metadata}
@@ -192,11 +222,17 @@ def _load_history(history_dirs: list[Path], target_langs: list[str]) -> dict[str
     return memory
 
 
-def _term_hits(text: str, terms: list[dict[str, Any]], limit: int = 12) -> list[dict[str, Any]]:
+def _term_hits(text: str, terms: list[dict[str, Any]], limit: int = 12, *, source_en: str | None = None) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     occupied: list[tuple[int, int]] = []
     for term in terms:
         source = term["source"]
+        english = str(term.get("reference_en") or "")
+        # 英语主源已省略的人名，不从中文参考强行补回；cn/cn+en 保持原约束。
+        if source_en is not None and term.get("strict") and english and not re.search(
+            rf"(?<!\w){re.escape(english)}(?!\w)", source_en, flags=re.IGNORECASE
+        ):
+            continue
         if len(source) < 2 and source != text:
             continue
         start = text.find(source)
@@ -317,7 +353,7 @@ def prepare_pack(
                         "reference_en": reference_en,
                         "reference_en_status": reference_status,
                         "tokens": protected_tokens({"cn": source_text}),
-                        "term_hits": _term_hits(source_text, terms),
+                        "term_hits": _term_hits(source_text, terms, source_en=translation_source if source_mode == "en" else None),
                         "seed_origin": seed_origin,
                         "translations": {},
                     }

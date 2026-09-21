@@ -64,6 +64,15 @@ def test_cloud_data_root_rejects_symlink_into_repository(tmp_path: Path) -> None
         )
 
 
+def test_cloud_data_root_fails_closed_when_path_cannot_be_resolved(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def inaccessible_path(self, strict=False):
+        raise OSError("unresolvable mount point")
+
+    monkeypatch.setattr(Path, "resolve", inaccessible_path)
+    with pytest.raises(RuntimeError, match="path resolution failed"):
+        config._resolve_data_root({"LWS_DEPLOYMENT_MODE": "cloud", "LWS_DATA_ROOT": str(tmp_path / "data")})
+
+
 def test_settings_are_replaced_atomically_and_private_on_posix(tmp_path: Path) -> None:
     target = tmp_path / "settings.local.json"
 
@@ -182,11 +191,13 @@ def test_public_release_docs_match_repository_version() -> None:
     github_guide = (REPO_ROOT / "docs" / "GITHUB_MANAGEMENT.md").read_text(encoding="utf-8")
     pages_index = (REPO_ROOT / "docs" / "index.html").read_text(encoding="utf-8")
 
-    assert f"当前版本：`{version}`" in github_guide
+    # 候选版本也必须与源码一致，但不能为了测试把未发布制品标为正式版。
+    assert any(f"{label}：`{version}`" in github_guide for label in ("当前版本", "当前候选版本"))
     assert "`local/off`" in github_guide
     assert "`cloud/off`" in github_guide
     assert "`cloud/required`" in github_guide
-    assert f"正式版 v{version}" in pages_index
+    assert f"正式版 v{version}" in pages_index or f'class="eyebrow">v{version} ·' in pages_index
+    assert f'href="releases/v{version}.md"' in pages_index
     assert f"<strong>{version}</strong><span>有账号 / 无账号双云端包</span>" in pages_index
 
 

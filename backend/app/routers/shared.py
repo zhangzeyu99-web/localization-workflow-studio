@@ -230,11 +230,35 @@ def _require_project_translation(project_id: str, entry_id: str) -> dict[str, An
     return entry
 
 
+def _with_project_list_stats(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries = db.project_list_stat_inputs([project["id"] for project in projects])
+    for project in projects:
+        summary = summaries[project["id"]]
+        runs = summary["runs"]
+        language_tasks = _language_business_task_count(runs)
+        project["stats"] = {
+            "tasks": language_tasks + summary["announcement_tasks"],
+            "execution_runs": len(runs),
+            "language_tasks": language_tasks,
+            "deliverables": summary["deliverables"] + summary["announcement_deliverables"],
+            "announcement_tasks": summary["announcement_tasks"],
+            "translation_runs": sum(run["kind"] == "translation" for run in runs),
+            "qa_runs": sum(run["kind"] == "qa" for run in runs),
+            "words": summary["words"],
+            "archived_rows": summary["archived_rows"],
+            "langs": summary["langs"],
+            "glossary": summary["glossary"],
+        }
+    return projects
+
+
 def _with_project_stats(
     project: dict[str, Any],
     include_details: bool = False,
     include_archives: bool = True,
 ) -> dict[str, Any]:
+    if not include_details:
+        return _with_project_list_stats([project])[0]
     runs = db.list_runs(project["id"])
     announcement_tasks = list_announcement_tasks(project["id"])
     active_announcement_tasks = [task for task in announcement_tasks if task.get("status") != "canceled"]

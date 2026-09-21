@@ -317,6 +317,7 @@ export type DeliveryFile = {
   path: string
   download_url?: string
   artifact_id?: string
+  available?: boolean
 }
 
 export type DeliveryLanguageResult = {
@@ -559,6 +560,46 @@ export type DeliverableTask = {
   }
 }
 
+export type DeliveryTaskKind = 'translation' | 'quick' | 'merged' | 'announcement'
+
+export type CurrentDeliveryTask = {
+  task_id: string
+  task_kind: DeliveryTaskKind
+  language: string
+  run_id: string
+  status: string
+  qa_status: string
+  qa_hard_errors: number | null
+  qa_soft_warnings?: number | null
+  input_label: string
+  current_version_id: string | null
+  can_generate: boolean
+  task_state?: string
+  current_evidence_complete?: boolean
+  skipped_languages?: string[]
+}
+
+export type DeliveryVersion = {
+  version_id: string
+  task_id: string | null
+  task_kind: DeliveryTaskKind
+  language: string
+  run_id: string
+  generated_at: string
+  qa_snapshot: { status: string; hard_errors: number | null; soft_warnings: number | null }
+  files: DeliveryFile[]
+  is_current: boolean
+  history_complete: boolean
+  available?: boolean
+  language_results?: DeliveryLanguageResult[]
+}
+
+export type DeliveryHistory = {
+  project_id: string
+  current_tasks: CurrentDeliveryTask[]
+  versions: DeliveryVersion[]
+}
+
 export type ProjectTab = 'meta' | 'glossary' | 'translation' | 'qa' | 'archive' | 'delivery'
 
 export type AppView = 'overview' | 'wizard' | 'announcement' | 'quick'
@@ -583,6 +624,8 @@ export type JobQueueEntry = {
   ahead?: number | null
   queued_at?: string | null
   started_at: string | null
+  archive_committed?: boolean
+  can_cancel?: boolean
 }
 
 export type JobQueueLane = {

@@ -12,6 +12,7 @@ import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
 import { ActionStatus, GlossaryPreview, LanguageSelector } from '../shared/WorkflowPrimitives'
 import { ArchiveProvenanceBadge } from '../shared/StatusPrimitives'
 import { ArchiveImportFlow } from './ArchiveImportFlow'
+import { PendingGlossaryReview } from './PendingGlossaryReview'
 import type { ArchiveImportReadbackOptions } from '../../domain/archiveImport'
 import { languageFromValue, normalizeGlossaryNote, rowRecords } from '../../domain/projectAssets'
 import type { Artifact, GlossaryPreviewRow, GlossaryTerm, Project, TranslationEntry, WideGlossaryRow, WideTranslationRow } from '../../types'
@@ -181,6 +182,10 @@ function GlossaryTabImpl({
   const { can } = useAuth()
   const canCurate = can(ASSETS_CURATE)
   const [toolsOpen, setToolsOpen] = useState(false)
+  const [reviewFilter, setReviewFilter] = useState<'confirmed' | 'pending'>('confirmed')
+  const [pendingCount, setPendingCount] = useState<number | null>(null)
+  const [pendingRevision, setPendingRevision] = useState(0)
+  const [pendingEditing, setPendingEditing] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [displayLanguages, setDisplayLanguages] = useState<LanguageCode[]>([])
   const [page, setPage] = useState(1)
@@ -194,7 +199,7 @@ function GlossaryTabImpl({
   const assetRows = useProjectAssetRows(
     project.id,
     'glossary',
-    true,
+    reviewFilter === 'confirmed',
     page,
     WIDE_TABLE_PAGE_SIZE,
     searchQuery,
@@ -208,8 +213,16 @@ function GlossaryTabImpl({
   const colSpan = 5 + visibleLanguages.length
 
   useEffect(() => {
-    if (!searchQuery.trim() && !assetRows.loading) setUnfilteredTotal(assetRows.totalRows)
-  }, [assetRows.loading, assetRows.totalRows, searchQuery])
+    if (reviewFilter === 'confirmed' && !searchQuery.trim() && !assetRows.loading) setUnfilteredTotal(assetRows.totalRows)
+  }, [assetRows.loading, assetRows.totalRows, searchQuery, reviewFilter])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void api<{ project_id: string; total_rows: number }>(`/api/projects/${project.id}/glossary/pending?page_size=1`, { signal: controller.signal })
+      .then((result) => { if (!controller.signal.aborted && result.project_id === project.id) setPendingCount(result.total_rows) })
+      .catch(() => { if (!controller.signal.aborted) setPendingCount(null) })
+    return () => controller.abort()
+  }, [project.id, pendingRevision])
 
   useEffect(() => {
     setSearchQuery('')
@@ -218,12 +231,16 @@ function GlossaryTabImpl({
     setUnfilteredTotal(0)
     setMutationStatus('')
     setMutationError('')
+    setReviewFilter('confirmed')
+    setPendingCount(null)
+    setPendingEditing(false)
   }, [project.id])
 
   function refreshAssets() {
     setMutationStatus('')
     setPage(1)
     assetRows.refresh()
+    setPendingRevision((value) => value + 1)
   }
 
   function toggleDisplayLanguage(code: LanguageCode) {
@@ -308,18 +325,22 @@ function GlossaryTabImpl({
     <>
       <div className="card">
         <div className="card-title">
-          <div className="left">项目术语表（{searchQuery.trim() ? assetRows.totalRows : unfilteredTotal} 个 CN 概念）</div>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 生成 / 导出'}</button>
+          <div className="left">项目术语表（已确认 {reviewFilter === 'confirmed' && searchQuery.trim() ? assetRows.totalRows : unfilteredTotal} 个 CN 概念）</div>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={pendingEditing} onClick={() => setToolsOpen((value) => !value)}>{toolsOpen ? '收起导入/导出' : '导入 / 生成 / 导出'}</button>
         </div>
-        <WideTableSearchBar
+        <div className="row-actions" role="group" aria-label="术语复核筛选">
+          <button type="button" className={reviewFilter === 'confirmed' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'} disabled={pendingEditing} aria-pressed={reviewFilter === 'confirmed'} onClick={() => setReviewFilter('confirmed')}>已确认</button>
+          <button type="button" className={reviewFilter === 'pending' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'} aria-pressed={reviewFilter === 'pending'} onClick={() => setReviewFilter('pending')}>待复核{pendingCount === null ? '' : `（${pendingCount}）`}</button>
+        </div>
+        {reviewFilter === 'confirmed' ? <WideTableSearchBar
           testId="glossary-search"
           value={searchQuery}
           onChange={(value) => { setSearchQuery(value); setPage(1) }}
           totalRows={unfilteredTotal}
           filteredRows={assetRows.totalRows}
           placeholder="强匹配搜索 ID / CN / 译文 / 分类 / 备注"
-        />
-        {toolsOpen ? (
+        /> : null}
+        {toolsOpen && !pendingEditing ? (
           <GlossaryToolsPanel
             project={project}
             termArtifact={termArtifact}
@@ -332,9 +353,11 @@ function GlossaryTabImpl({
             selectedLanguage={selectedLanguage}
             setSelectedLanguage={setSelectedLanguage}
             onAssetChanged={refreshAssets}
+            onReviewPending={() => { setReviewFilter('pending'); setToolsOpen(false); setPendingRevision((value) => value + 1) }}
           />
         ) : null}
         <ActionStatus status={mutationStatus || status} busy={busy} />
+        {reviewFilter === 'pending' ? <PendingGlossaryReview key={project.id} projectId={project.id} canCurate={canCurate} refreshVersion={pendingRevision} onEditingChange={setPendingEditing} onConfirmed={refreshAssets} /> : <>
         {assetRows.loading ? <div className="muted-left" role="status">正在读取项目术语…</div> : null}
         {assetRows.error ? <div className="info-line warn" role="alert">术语读取失败：{assetRows.error}</div> : null}
         {mutationError ? <div className="info-line warn" role="alert">{mutationError}</div> : null}
@@ -406,6 +429,7 @@ function GlossaryTabImpl({
           </table>
         </div>
         <WideTablePager testIdPrefix="glossary" page={page} totalRows={assetRows.totalRows} onPageChange={setPage} />
+        </>}
       </div>
     </>
   )
@@ -421,6 +445,7 @@ export function GlossaryToolsPanel({
   onGlossaryImport,
   selectedLanguage,
   onAssetChanged,
+  onReviewPending,
 }: {
   project: Project
   termArtifact: Artifact | null
@@ -433,6 +458,7 @@ export function GlossaryToolsPanel({
   selectedLanguage: LanguageCode
   setSelectedLanguage: (language: LanguageCode) => void
   onAssetChanged: () => void
+  onReviewPending?: () => void
 }) {
   const [confirmedImportOpen, setConfirmedImportOpen] = useState(false)
   const [candidateLanguage, setCandidateLanguage] = useState<LanguageCode>(selectedLanguage)
@@ -549,8 +575,9 @@ export function GlossaryToolsPanel({
           kind="glossary"
           defaultLanguage={selectedLanguage}
           initialArtifact={termArtifact}
-          onReadback={async () => { await onGlossaryImport({ readbackOnly: true }); onAssetChanged() }}
+          onReadback={async (readbackProject) => { await onGlossaryImport({ readbackOnly: true, readbackProject }); onAssetChanged() }}
           onClose={closeConfirmedImport}
+          onReviewPending={onReviewPending ? () => { setConfirmedImportOpen(false); onReviewPending() } : undefined}
         />
       ) : null}
     </div>
@@ -888,7 +915,7 @@ function TranslationArchiveTabImpl({
           kind="translations"
           defaultLanguage={selectedLanguage}
           initialArtifact={archiveArtifact}
-          onReadback={async () => { await onImportArchive(null, { readbackOnly: true }); refreshAssets() }}
+          onReadback={async (readbackProject) => { await onImportArchive(null, { readbackOnly: true, readbackProject }); refreshAssets() }}
           onClose={closeImport}
         />
       ) : null}
@@ -1108,8 +1135,8 @@ function WideTranslationEntryRowImpl({
       ))}
       <td>
         <div className="provenance-list">
-          {[...new Set(rowRecords<TranslationEntry>(row).map((record) => record.source_type || ''))].map((sourceType) => (
-            <ArchiveProvenanceBadge key={sourceType || 'unknown'} sourceType={sourceType} />
+          {rowRecords<TranslationEntry>(row).map((record) => (
+            <ArchiveProvenanceBadge key={record.id} sourceType={record.source_type} reviewStatus={record.review_status} languageLabel={languageSpec(record.language).short} />
           ))}
         </div>
       </td>

@@ -5,6 +5,7 @@ import type { LanguageCode } from '../../languages'
 import { HISTORY_TABLE_PAGE_SIZE, pagedRows } from '../../assetTableState'
 import type { ArchiveImportReadbackOptions } from '../../domain/archiveImport'
 import { projectActivityRuns, projectRunStatusText, projectRunTitle, visibleAnnouncementTaskCount } from '../../domain/projectActivity'
+import { deliveryProcessingRun } from '../../domain/deliveries'
 import { AnnouncementProjectPanel } from '../announcement/AnnouncementProjectPanel'
 import { GlossaryTab, TranslationArchiveTab, WideTablePager } from '../assets/ProjectAssetTabs'
 import type { ConfirmDialogOptions } from '../modals/ConfirmModal'
@@ -363,6 +364,16 @@ function ProjectOverviewImpl({
           onGoTranslate={() => setTab('translation')}
           onGoQA={() => setTab('qa')}
           onGoArchive={() => setTab('archive')}
+          canRunTasks={canRunTasks}
+          onOpenCurrentTask={(task) => {
+            if (task.task_kind === 'announcement') {
+              const announcement = project.announcement_tasks?.find((item) => item.id === task.task_id)
+              if (announcement) onStartAnnouncementTask(announcement)
+            } else {
+              const run = deliveryProcessingRun(project, task)
+              if (run) onOpenActivityRun(run)
+            }
+          }}
         />
       ) : null}
       {membersOpen ? <ProjectMembersModal key={project.id} projectId={project.id} projectName={project.name} onClose={() => setMembersOpen(false)} /> : null}

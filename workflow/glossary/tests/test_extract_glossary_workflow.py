@@ -60,6 +60,49 @@ class UtilityTests(unittest.TestCase):
         self.assertTrue(MODULE.is_valid_term("\u9644\u9b54"))
         self.assertTrue(MODULE.is_valid_term("\u51b0\u5c01\u6269\u6563"))
 
+    def test_is_valid_term_rejects_reviewed_low_value_ui_phrases(self):
+        rejected = {
+            "可烹饪出的产物",
+            "使用方法",
+            "可制作的菜品",
+            "仓库已满",
+            "棋盘已满",
+            "钻石不足",
+            "体力不足",
+            "加速券不足",
+            "不能放在这里",
+            "无法合成",
+            "未解锁",
+            "新地点奖励",
+            "返回游戏",
+            "选择您的进度",
+            "更多能量",
+            "任务累计奖励",
+            "经营奖励",
+            "新解锁菜单",
+            "今日收入",
+            "今日特惠",
+            "完售",
+            "畅销中",
+            "最划算",
+            "热销",
+            "无尽奖励",
+            "新的轮次",
+            "轮次失败",
+            "卡组完成",
+            "最终大奖",
+            "星星不足",
+            "新生产机",
+            "新料理机",
+        }
+        for term in rejected:
+            with self.subTest(term=term):
+                self.assertFalse(MODULE.is_valid_term(term))
+
+        for term in ("仓库", "棋盘", "钻石", "体力", "料理机", "南瓜少年"):
+            with self.subTest(term=term):
+                self.assertTrue(MODULE.is_valid_term(term))
+
     def test_common_combat_power_term_remains_a_deliverable_attribute(self):
         records = [
             MODULE.Record(row_id="A-1", source="\u6218\u529b", target="S\u1ee9c m\u1ea1nh"),

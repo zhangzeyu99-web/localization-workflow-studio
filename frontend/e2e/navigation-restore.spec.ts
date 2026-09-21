@@ -273,7 +273,7 @@ test('reload restores the exact active quick task and run scope instead of an id
   await page.goto(baseURL)
 
   await expect(page.getByTestId('quick-task-id')).toHaveAttribute('data-task-id', restoredTaskId, { timeout: 10000 })
-  await expect(page.locator('.quick-task-card')).toContainText(restoredRunId)
+  await expect(page.getByTestId('quick-task-runtime')).toContainText(restoredRunId)
   await expect.poll(() => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || '{}').taskScope, storageKey)).toEqual({
     kind: 'quick',
     taskId: restoredTaskId,
@@ -378,7 +378,7 @@ test('an invalid quick scope falls back to the current project lifecycle task', 
   await page.goto(baseURL)
 
   await expect(page.getByTestId('quick-task-id')).toHaveAttribute('data-task-id', fallbackTaskId, { timeout: 10000 })
-  await expect(page.locator('.quick-task-card')).toContainText(fallbackRunId)
+  await expect(page.getByTestId('quick-task-runtime')).toContainText(fallbackRunId)
 })
 
 test('a missing quick task scope restores the current lifecycle task instead of creating idle state', async ({ page, request }) => {
@@ -416,7 +416,7 @@ test('a missing quick task scope restores the current lifecycle task instead of 
   await page.goto(baseURL)
 
   await expect(page.getByTestId('quick-task-id')).toHaveAttribute('data-task-id', taskId, { timeout: 10000 })
-  await expect(page.locator('.quick-task-card')).toContainText(runId)
+  await expect(page.getByTestId('quick-task-runtime')).toContainText(runId)
 })
 
 test('a missing formal task scope restores the current lifecycle task', async ({ page, request }) => {

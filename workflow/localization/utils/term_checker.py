@@ -209,7 +209,10 @@ def _find_term_match(term: str, text: str) -> re.Match | None:
     return _compile_term_pattern(term).search(text)
 
 
-def _extract_quoted_term_segment(text: str, match: re.Match) -> str:
+def _extract_quoted_term_segment(
+    text: str,
+    match: re.Match,
+) -> str:
     for opening, closing in TARGET_QUOTE_PAIRS:
         left = text.rfind(opening, 0, match.start())
         if left < 0:
@@ -221,7 +224,10 @@ def _extract_quoted_term_segment(text: str, match: re.Match) -> str:
     return ''
 
 
-def _extract_structural_term_segment(text: str, match: re.Match) -> str:
+def _extract_structural_term_segment(
+    text: str,
+    match: re.Match,
+) -> str:
     start = 0
     end = len(text)
     for separator in STRUCTURAL_TARGET_SEPARATOR.finditer(text):

@@ -1,9 +1,10 @@
 import { formatDateTime } from '../../domain/format'
 import { projectPromptForLanguage } from '../../domain/projectAssets'
-import { deliverableOutcomePresentation } from '../../domain/workflowPresentation'
+import { currentDeliveryMissingQaSummary, currentDeliveryVersion, deliveryGroupKey, deliveryHasQaIssues, deliveryHistorySections, deliveryProcessingRun, deliveryQaLabel, deliveryTaskKindLabel } from '../../domain/deliveries'
+import { useDeliveryHistory } from '../../hooks/useDeliveryHistory'
 import { languageSpec, type LanguageCode } from '../../languages'
 import { ActionStatus, AssetSelect, FileBox, LanguageSelector, SelectedInput } from '../shared/WorkflowPrimitives'
-import type { AppSettings, Artifact, DeliverableTask, DeliveryFile, Project, QualityIssue, Run, TranslationReadiness } from '../../types'
+import type { AppSettings, Artifact, CurrentDeliveryTask, DeliverableTask, DeliveryFile, DeliveryVersion, Project, QualityIssue, Run, TranslationReadiness } from '../../types'
 import { formalTranslationBlockReason } from './translationGuards'
 import { TaskHistoryTable } from './TaskHistoryTable'
 import { TaskRunSummary } from './TaskRunSummary'
@@ -87,7 +88,9 @@ export function DeliveryTab({
   onRefresh,
   onGoTranslate,
   onGoQA,
-  onGoArchive
+  onGoArchive,
+  onOpenCurrentTask,
+  canRunTasks = true,
 }: {
   project: Project
   deliverables: DeliverableTask[]
@@ -100,106 +103,131 @@ export function DeliveryTab({
   onGoTranslate: () => void
   onGoQA: () => void
   onGoArchive: () => void
+  onOpenCurrentTask?: (task: CurrentDeliveryTask) => void
+  canRunTasks?: boolean
 }) {
+  const history = useDeliveryHistory(project.id, project.updated_at, deliverables)
+  const sections = history.data ? deliveryHistorySections(history.data) : null
+  const loadError = history.error || error
+  const isLoading = history.loading || loading
+  const refresh = () => { onRefresh(); history.refresh() }
   return (
     <div className="card">
       <div className="card-title">
         <div className="left">最终交付</div>
-        {deliverables.length ? <span className="muted-inline">共 {deliverables.length} 个可交付任务</span> : null}
+        {sections ? <span className="muted-inline">{sections.current.length} 个当前结果 · {sections.past.length} 个历史版本</span> : null}
       </div>
-      {loading && !deliverables.length ? (
+      {isLoading && !history.data ? (
         <div className="delivery-empty" data-testid="delivery-loading">
           <div><strong>正在加载交付任务</strong><span>正在读取当前项目的翻译、QA 和公告交付记录。</span></div>
         </div>
       ) : null}
-      {error ? (
+      {loadError ? (
         <div className="delivery-empty" data-testid="delivery-load-error">
-          <div><strong>交付列表加载失败</strong><span>{error}</span></div>
-          <button className="btn btn-primary btn-sm" onClick={onRefresh}>重新加载</button>
+          <div><strong>交付列表加载失败</strong><span>{loadError}</span></div>
+          <button className="btn btn-primary btn-sm" onClick={refresh}>重新加载</button>
         </div>
       ) : null}
-      {!loading && !error && !deliverables.length ? (
+      {!isLoading && !loadError && !sections?.current.length && !sections?.past.length ? (
         <div className="delivery-empty" data-testid="delivery-empty">
           <div>
             <strong>还没有可下载的交付文件</strong>
             <span>先完成翻译或校对。QA 通过可生成标准交付；未通过且保留译文时，也可生成附带问题摘要的交付。</span>
           </div>
           <div className="row-actions">
-            <button className="btn btn-primary btn-sm" data-testid="delivery-empty-translate" onClick={onGoTranslate}>去翻译</button>
-            <button className="btn btn-ghost btn-sm" data-testid="delivery-empty-qa" onClick={onGoQA}>去校对</button>
+            {canRunTasks ? <button className="btn btn-primary btn-sm" data-testid="delivery-empty-translate" onClick={onGoTranslate}>去翻译</button> : null}
+            {canRunTasks ? <button className="btn btn-ghost btn-sm" data-testid="delivery-empty-qa" onClick={onGoQA}>去校对</button> : null}
             <button className="btn btn-ghost btn-sm" data-testid="delivery-empty-archive" onClick={onGoArchive}>看归档</button>
           </div>
         </div>
       ) : null}
       {busy || (status && status !== '准备就绪') ? <ActionStatus status={status} busy={busy} /> : null}
-      <div className="delivery-list delivery-list-compact">
-        {deliverables.map((task) => {
-          const finalFile = task.files.final
-          const changesFile = task.files.changes
-          const packageFile = task.files.package
-          const qaSummaryFile = task.files.qa_summary || null
-          const outputFiles = task.files.outputs || []
-          const hasFinal = Boolean(finalFile?.download_url)
-          const hasChanges = Boolean(changesFile?.download_url)
-          const hasPackage = Boolean(packageFile?.download_url)
-          const hasDelivery = hasFinal || hasPackage
-          const hasQaIssues = task.status === 'failed' || task.qa_status === 'failed' || Number(task.qa_hard_errors || 0) > 0
-          const hasQaSummary = Boolean(qaSummaryFile?.download_url)
-          const missingQaSummary = hasQaIssues && hasDelivery && !hasQaSummary
-          const canRebuildMissingSummary = missingQaSummary && ['T', 'QA'].includes(String(task.task_code || '').toUpperCase())
-          const outcome = deliverableOutcomePresentation(task)
-          const partialMerged = String(task.task_code || '').toUpperCase() === 'ALL' && Boolean(task.skipped_languages?.length)
-          const outcomeSummary = partialMerged
-            ? `已合并 ${(task.merged_languages || []).join(' / ') || task.language}；未合并 ${(task.skipped_languages || []).join(' / ')}。问题原因已写入 QA 摘要。`
-            : missingQaSummary
-            ? canRebuildMissingSummary
-              ? '这份历史交付缺少 QA 摘要，当前文件不完整。请重新生成交付，补齐问题清单后再下载。'
-              : '这份历史交付缺少 QA 摘要，当前文件不完整。请回到对应任务重新生成交付。'
-            : outcome.summary
-          const resultLabel = missingQaSummary
-            ? '历史交付缺少 QA 摘要'
-            : hasPackage
-              ? '已生成公告交付包'
-              : hasDelivery
-                ? (hasChanges ? '已生成最终译文 + 修改记录' : '已生成最终译文')
-                : '待生成'
+      {sections ? <section data-testid="delivery-current">
+        <div className="card-title"><div className="left">当前任务结果</div></div>
+        {!sections.current.length && sections.past.length ? <p className="muted-inline">暂无带任务标识的当前结果；旧记录仅在历史中查看。</p> : null}
+        <div className="delivery-list delivery-list-compact">
+        {sections.current.map((task) => {
+          const version = currentDeliveryVersion(task, history.data!.versions)
+          const hasIssues = deliveryHasQaIssues(task)
+          const partial = task.qa_status === 'mixed' || Boolean(task.skipped_languages?.length)
+          const qaLabel = deliveryQaLabel(task.qa_status, task.qa_hard_errors)
+          const running = ['created', 'queued', 'running'].includes(task.status)
+          const closed = ['canceled', 'abandoned', 'closed'].includes(task.status) || ['canceled', 'abandoned', 'closed'].includes(task.task_state || '')
+          const readOnly = closed || task.status === 'delivered' || task.task_state === 'delivered'
+          const currentSummary = deliverables.find((item) => item.run_id === task.run_id)
+          const currentAnnouncement = task.task_kind === 'announcement' && version
+            ? deliverables.find((item) => item.run_id === task.run_id && item.task_code === 'ANN') : undefined
+          const files = [...(version?.files || []), ...(currentAnnouncement?.files.outputs || []), ...(currentAnnouncement?.files.qa_summary ? [currentAnnouncement.files.qa_summary] : [])]
+          const missingSummary = !closed && task.can_generate && (currentDeliveryMissingQaSummary(task, currentSummary)
+            || hasIssues && files.some((file) => file.filename.endsWith('.xlsx') && ['final', 'merged_final'].includes(file.kind)) && !files.some((file) => file.kind === 'qa_summary' && file.download_url))
+          const canOpen = task.task_kind === 'announcement' ? project.announcement_tasks?.some((item) => item.id === task.task_id) : Boolean(deliveryProcessingRun(project, task))
           return (
-            <div key={task.run_id} className="delivery-card delivery-line">
+            <div key={deliveryGroupKey(task)} className="delivery-card delivery-line" data-testid={`delivery-current-${task.run_id}`}>
               <div className="delivery-head">
                 <div>
-                  <strong>{deliveryTaskTitle(task)}</strong>
-                  <span>{deliveryTaskSubtitle(task)}</span>
+                  <strong>{task.input_label || deliveryTaskKindLabel[task.task_kind]} · {task.language}</strong>
+                  <span title={`任务 ${task.task_id} · Run ${task.run_id}`}>{deliveryTaskKindLabel[task.task_kind]} · {currentSummary?.task_label || `任务 ${task.task_id.slice(-12)}`} · Run {task.run_id.slice(-8)}</span>
                 </div>
-                <span className={`tag ${hasQaIssues ? 'tag-warn' : task.status === 'passed' ? 'tag-done' : 'tag-doing'}`}>{deliveryStatusLabel(task)}</span>
+                <span className={`tag ${hasIssues ? 'tag-warn' : qaLabel === 'QA 已通过' ? 'tag-done' : 'tag-doing'}`}>{readOnly ? '已结束' : running ? '处理中' : hasIssues ? '待处理' : files.length ? '已生成' : '待生成'}</span>
               </div>
-              <div
-                className={`delivery-outcome-strip ${outcome.tone}`}
-                data-testid={missingQaSummary ? 'delivery-missing-qa-summary' : hasQaIssues ? 'delivery-problem-warning' : undefined}
-              >
-                <strong>{partialMerged ? '部分交付' : outcome.label}</strong><span>{outcomeSummary}</span>
+              <div className={`delivery-outcome-strip ${hasIssues || qaLabel !== 'QA 已通过' ? 'warn' : 'ready'}`} data-testid={missingSummary ? 'delivery-missing-qa-summary' : hasIssues ? 'delivery-problem-warning' : undefined}>
+                <strong>{qaLabel}</strong>
+                <span>{readOnly ? '任务已结束；保留历史下载，不从交付页恢复执行。' : running ? '当前执行尚未完成；旧版本不代表本次结果。' : partial ? `未交付语言：${(task.skipped_languages || []).join(' / ') || '请查看 QA 摘要'}。当前下载不是完整多语言交付。` : hasIssues ? '请先处理当前问题；旧通过版本仅供历史参考。' : qaLabel === 'QA 已通过' ? '本次 QA 已通过，可生成或下载当前交付。' : '当前证据不完整，需回到任务重新 QA。'}</span>
+                {readOnly && !closed && hasIssues && task.task_kind === 'translation' && currentSummary?.files.final?.filename.toLowerCase().endsWith('.xlsx') ? <span>如需继续修复，请到“校对”页选择成品，启动新的 QA 后修复；已交付记录保持不变。</span> : null}
+                {readOnly && partial ? <span>未交付语言：{(task.skipped_languages || []).join(' / ') || '请查看 QA 摘要'}。当前下载不是完整多语言交付。</span> : null}
+                {missingSummary ? <span>当前交付不完整，缺少 QA 摘要。请重新生成，补齐问题清单后再下载。</span> : null}
               </div>
               <div className="delivery-line-info">
-                <div><span>任务进度</span><strong>{deliveryProgressLabel(task)}</strong></div>
-                <div><span>交付结果</span><strong>{resultLabel}</strong></div>
+                <div><span>本次 QA</span><strong>必修 {task.qa_hard_errors ?? '未知'} / 建议 {task.qa_soft_warnings ?? '未知'}</strong></div>
+                <div><span>当前交付</span><strong>{version ? formatDateTime(version.generated_at) : '尚未生成'}</strong></div>
               </div>
               <div className="delivery-actions">
-                {packageFile?.download_url ? <a className="btn btn-primary btn-sm" href={packageFile.download_url}>下载交付包</a> : null}
-                {outputFiles.map((file) => file.download_url ? <a key={`${task.run_id}-${file.kind}-${file.filename}`} className="btn btn-ghost btn-sm" href={file.download_url}>下载成品</a> : null)}
-                {qaSummaryFile?.download_url ? <a className="btn btn-ghost btn-sm" href={qaSummaryFile.download_url}>下载 QA 摘要</a> : null}
-                {finalFile?.download_url ? <a className="btn btn-primary btn-sm" href={finalFile.download_url}>下载最终译文</a> : null}
-                {changesFile?.download_url ? <a className="btn btn-ghost btn-sm" href={changesFile.download_url}>下载修改记录</a> : null}
-                {!hasDelivery || canRebuildMissingSummary ? (
-                  <button className="btn btn-primary btn-sm" data-testid={`delivery-generate-${task.run_id}`} disabled={busy} onClick={() => onCreateDelivery(task.run_id)}>
-                    {canRebuildMissingSummary ? '重新生成并补齐摘要' : '生成交付文件'}
-                  </button>
-                ) : null}
+                {canRunTasks && !readOnly && (hasIssues || partial || running || !task.can_generate && !files.length) ? <button className="btn btn-primary btn-sm" disabled={busy || !onOpenCurrentTask || !canOpen} title={!canOpen ? '当前任务详情尚未同步，请刷新项目后再处理。' : undefined} onClick={() => onOpenCurrentTask?.(task)}>处理当前任务</button> : null}
+                <DeliveryDownloadLinks files={files} />
+                {canRunTasks && !closed && task.can_generate ? <button className={`btn ${hasIssues || files.length ? 'btn-ghost' : 'btn-primary'} btn-sm`} data-testid={`delivery-generate-${task.run_id}`} disabled={busy} onClick={async () => { const result = await onCreateDelivery(task.run_id); if (result) history.refresh() }}>
+                  {missingSummary ? '重新生成并补齐摘要' : files.length ? '重新生成交付' : hasIssues ? '生成带问题交付' : '生成交付文件'}
+                </button> : null}
               </div>
             </div>
           )
         })}
-      </div>
+        </div>
+      </section> : null}
+      {sections?.past.length ? <details key={project.id} className="delivery-run-details" data-testid="delivery-history">
+        <summary>历史版本（{sections.past.length}）· 只读查看与下载</summary>
+        <div className="delivery-run-details-body delivery-list delivery-list-compact">
+          {sections.past.map((version) => <HistoricalDelivery key={version.version_id} version={version} previousAvailable={sections.previousAvailable.has(version.version_id)} />)}
+        </div>
+      </details> : null}
     </div>
   )
+}
+
+function DeliveryDownloadLinks({ files }: { files: DeliveryFile[] }) {
+  return <>{files.filter((file) => file.download_url).map((file) => <a key={`${file.kind}:${file.download_url}`} className="btn btn-ghost btn-sm" href={file.download_url} title={file.filename}>
+    {file.kind === 'package' ? '下载交付包' : file.kind === 'qa_summary' ? '下载 QA 摘要' : file.kind === 'changes' ? '下载修改记录' : file.kind.startsWith('output_') ? `下载成品 ${file.kind.slice(7)}` : '下载最终译文'}
+  </a>)}</>
+}
+
+function HistoricalDelivery({ version, previousAvailable }: { version: DeliveryVersion; previousAvailable: boolean }) {
+  const qa = version.qa_snapshot
+  return <div className="delivery-card delivery-line" data-testid={`delivery-version-${version.version_id}`}>
+    <div className="delivery-head">
+      <div>
+        <strong>{deliveryTaskKindLabel[version.task_kind]} · {version.language}</strong>
+        <span title={`版本 ${version.version_id} · 任务 ${version.task_id || '无'} · Run ${version.run_id}`}>版本 {version.version_id.slice(-8)} · {version.generated_at ? formatDateTime(version.generated_at) : '生成时间未知'} · Run {version.run_id.slice(-8) || '未知'}</span>
+      </div>
+      <span className={`tag ${previousAvailable ? 'tag-done' : ''}`}>{previousAvailable ? '上一可用版' : '历史版本'}</span>
+    </div>
+    <div className={`delivery-outcome-strip ${qa.status === 'passed' && qa.hard_errors === 0 ? 'ready' : 'warn'}`}>
+      <strong>当时 {deliveryQaLabel(qa.status, qa.hard_errors)}</strong>
+      <span>{version.history_complete ? `必修 ${qa.hard_errors ?? '未知'} / 建议 ${qa.soft_warnings ?? '未知'}` : '历史信息不完整：缺少当时 QA 快照或任务标识。'}</span>
+      {!version.task_id ? <span>无任务 ID，不作为当前任务恢复依据。</span> : null}
+      {version.language_results?.some((item) => item.status === 'skipped') ? <span>当时未交付：{version.language_results.filter((item) => item.status === 'skipped').map((item) => item.language).join(' / ')}</span> : null}
+      {version.available === false ? <span>部分文件已缺失，仅可下载仍保留的文件。</span> : null}
+    </div>
+    <div className="delivery-actions"><DeliveryDownloadLinks files={version.files} /></div>
+  </div>
 }
 
 export function deliveryTaskTitle(task: DeliverableTask): string {

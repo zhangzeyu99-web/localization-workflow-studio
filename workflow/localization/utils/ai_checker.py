@@ -107,6 +107,20 @@ def _make_name_policy_section(batch_rows: list[dict], lang: str = "en") -> str:
                 "Place-name rule: keep the geographic head and core image compact in natural target-language grammar; "
                 "do not impose an English surface-word count."
             )
+    if "ui_building_name" in name_types:
+        if lang == "en":
+            lines.append(
+                "Building-name rule: treat the name as mobile map UI; prefer no more than 2 readable "
+                "content words and 18 characters for the official name. When the product supports a "
+                "separate map label, target 14 characters and move Lv./I-V tier information to UI badges. "
+                "Do not replace an established building term with an opaque abbreviation."
+            )
+        else:
+            lines.append(
+                "Building-name rule: keep the functional head and distinguishing resource or troop type "
+                "compact in natural target-language grammar; move level/tier information to UI badges when "
+                "the product supports it, and do not impose an English surface-word count."
+            )
     return "\n".join(lines) + "\n\n"
 
 
@@ -317,6 +331,12 @@ def format_batch_prompt(
                     meta.append(
                         f"NAME:{name_type},content_words<={policy.get('preferred_content_words')},"
                         f"chars<={policy.get('max_characters')}"
+                    )
+                elif name_type == "ui_building_name" and "preferred_content_words" in policy:
+                    meta.append(
+                        f"NAME:{name_type},content_words<={policy.get('preferred_content_words')},"
+                        f"chars<={policy.get('max_characters')},"
+                        f"map_chars<={policy.get('map_label_max_characters')}"
                     )
                 else:
                     meta.append(f"NAME:{name_type}")

@@ -1,6 +1,579 @@
 {
   "version": 1,
   "description": "Regression cases distilled from real localization delivery failures.",
+  "semantic_constraint_cases": [
+    {"name": "entity-action-enemy-loss", "source": "编队2英雄攻击敌方基地时攻击力提升", "target": "El ATQ del héroe aumenta al defender la base", "lang": "ES", "expected": ["semantic_entity_number_missing", "semantic_action_condition_missing", "semantic_enemy_scope_missing"]},
+    {"name": "valid-formation", "source": "编队2英雄攻击敌方基地时攻击力提升", "target": "El ATQ de los héroes de la Formación 2 aumenta al atacar una base enemiga", "lang": "ES", "expected": []},
+    {"name": "entity-other-number", "source": "编队2英雄防守基地时攻击力提升", "target": "Hero ATK increases by 2% when defending the base", "lang": "EN", "expected": ["semantic_entity_number_missing"]},
+    {"name": "roman-entity", "source": "编队2英雄防守基地时攻击力提升", "target": "Formation II heroes gain ATK when defending the base", "lang": "EN", "expected": []},
+    {"name": "negation-lost", "source": "无法迁移基地", "target": "Puedes trasladar la base", "lang": "ES", "expected": ["semantic_negation_missing"]},
+    {"name": "negation-kept", "source": "无法迁移基地", "target": "No puedes trasladar la base", "lang": "ES", "expected": []},
+    {"name": "enemy-lost", "source": "攻击敌方基地时防御力提升", "target": "A DEF aumenta ao atacar uma base", "lang": "PT", "expected": ["semantic_enemy_scope_missing"]},
+    {"name": "attack-stat-not-action", "source": "攻击敌方基地时攻击力提升", "target": "Attack increases when defending an enemy base", "lang": "EN", "expected": ["semantic_action_condition_missing"]},
+    {"name": "passive-not-active", "source": "受到敌军进攻时会受伤", "target": "Troops suffer injuries when attacked", "lang": "EN", "expected": []},
+    {"name": "hit-not-attack-condition", "source": "英雄攻击命中时影响额外伤害概率", "target": "Affects the chance of extra damage when Hero ATK hits", "lang": "EN", "expected": []},
+    {"name": "defensive-adjective", "source": "防守战斗时会补充士兵", "target": "Los soldados se reponen durante un combate defensivo", "lang": "ES", "expected": []},
+    {"name": "idiomatic-negation", "source": "牢不可破", "target": "Impregnable", "lang": "EN", "expected": []},
+    {"name": "ban-synonym", "source": "角色被禁止登录", "target": "Este personagem está proibido de fazer login", "lang": "PT", "expected": []},
+    {"name": "only-equivalence", "source": "不是相同的装备无法合成", "target": "Only identical gear can be fused", "lang": "EN", "expected": []}
+  ],
+  "quantity_guard_cases": [
+  {
+    "name": "EN-missing-hour-0",
+    "source": "0小时治疗加速",
+    "target": "Healing Speedup",
+    "lang": "EN",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "EN-valid-hour-0",
+    "source": "0小时治疗加速",
+    "target": "Healing Speedup (0 h)",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "EN-missing-hour-1",
+    "source": "1小时治疗加速",
+    "target": "Healing Speedup",
+    "lang": "EN",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "EN-valid-hour-1",
+    "source": "1小时治疗加速",
+    "target": "Healing Speedup (1 h)",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "EN-missing-hour-3",
+    "source": "3小时治疗加速",
+    "target": "Healing Speedup",
+    "lang": "EN",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "EN-valid-hour-3",
+    "source": "3小时治疗加速",
+    "target": "Healing Speedup (3 h)",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "EN-missing-hour-8",
+    "source": "8小时治疗加速",
+    "target": "Healing Speedup",
+    "lang": "EN",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "EN-valid-hour-8",
+    "source": "8小时治疗加速",
+    "target": "Healing Speedup (8 h)",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "EN-missing-hour-10",
+    "source": "10小时治疗加速",
+    "target": "Healing Speedup",
+    "lang": "EN",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "EN-valid-hour-10",
+    "source": "10小时治疗加速",
+    "target": "Healing Speedup (10 h)",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "EN-missing-hour-15",
+    "source": "15小时治疗加速",
+    "target": "Healing Speedup",
+    "lang": "EN",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "EN-valid-hour-15",
+    "source": "15小时治疗加速",
+    "target": "Healing Speedup (15 h)",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "ES-missing-hour-0",
+    "source": "0小时治疗加速",
+    "target": "Aceleración de curación",
+    "lang": "ES",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "ES-valid-hour-0",
+    "source": "0小时治疗加速",
+    "target": "Aceleración de curación (0 h)",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "ES-missing-hour-1",
+    "source": "1小时治疗加速",
+    "target": "Aceleración de curación",
+    "lang": "ES",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "ES-valid-hour-1",
+    "source": "1小时治疗加速",
+    "target": "Aceleración de curación (1 h)",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "ES-missing-hour-3",
+    "source": "3小时治疗加速",
+    "target": "Aceleración de curación",
+    "lang": "ES",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "ES-valid-hour-3",
+    "source": "3小时治疗加速",
+    "target": "Aceleración de curación (3 h)",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "ES-missing-hour-8",
+    "source": "8小时治疗加速",
+    "target": "Aceleración de curación",
+    "lang": "ES",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "ES-valid-hour-8",
+    "source": "8小时治疗加速",
+    "target": "Aceleración de curación (8 h)",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "ES-missing-hour-10",
+    "source": "10小时治疗加速",
+    "target": "Aceleración de curación",
+    "lang": "ES",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "ES-valid-hour-10",
+    "source": "10小时治疗加速",
+    "target": "Aceleración de curación (10 h)",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "ES-missing-hour-15",
+    "source": "15小时治疗加速",
+    "target": "Aceleración de curación",
+    "lang": "ES",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "ES-valid-hour-15",
+    "source": "15小时治疗加速",
+    "target": "Aceleración de curación (15 h)",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "PT-missing-hour-0",
+    "source": "0小时治疗加速",
+    "target": "Acelerar Cura",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "PT-valid-hour-0",
+    "source": "0小时治疗加速",
+    "target": "Acelerar Cura (0 h)",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "PT-missing-hour-1",
+    "source": "1小时治疗加速",
+    "target": "Acelerar Cura",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "PT-valid-hour-1",
+    "source": "1小时治疗加速",
+    "target": "Acelerar Cura (1 h)",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "PT-missing-hour-3",
+    "source": "3小时治疗加速",
+    "target": "Acelerar Cura",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "PT-valid-hour-3",
+    "source": "3小时治疗加速",
+    "target": "Acelerar Cura (3 h)",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "PT-missing-hour-8",
+    "source": "8小时治疗加速",
+    "target": "Acelerar Cura",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "PT-valid-hour-8",
+    "source": "8小时治疗加速",
+    "target": "Acelerar Cura (8 h)",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "PT-missing-hour-10",
+    "source": "10小时治疗加速",
+    "target": "Acelerar Cura",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "PT-valid-hour-10",
+    "source": "10小时治疗加速",
+    "target": "Acelerar Cura (10 h)",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "PT-missing-hour-15",
+    "source": "15小时治疗加速",
+    "target": "Acelerar Cura",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "PT-valid-hour-15",
+    "source": "15小时治疗加速",
+    "target": "Acelerar Cura (15 h)",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "es-missing-count-and-scope",
+    "source": "攻击1个目标2次，每次造成{0}伤害",
+    "target": "Ataca a 1 objetivo e inflige {0} de daño",
+    "lang": "ES",
+    "expected": [
+      "quantity_count_missing",
+      "quantity_per_hit_missing"
+    ]
+  },
+  {
+    "name": "es-complete-count-and-scope",
+    "source": "攻击1个目标2次，每次造成{0}伤害",
+    "target": "Ataca a 1 objetivo 2 veces e inflige {0} de daño con cada golpe",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "same-number-wrong-role",
+    "source": "攻击2个目标2次",
+    "target": "Ataca a 2 objetivos",
+    "lang": "ES",
+    "expected": [
+      "quantity_count_missing"
+    ]
+  },
+  {
+    "name": "tag-is-not-number",
+    "source": "攻击1个目标2次",
+    "target": "Ataca a 1 objetivo con #G2#{2}#n# de daño",
+    "lang": "ES",
+    "expected": [
+      "quantity_count_missing"
+    ]
+  },
+  {
+    "name": "pt-dos-is-not-two",
+    "source": "攻击1个目标2次",
+    "target": "Ataca 1 alvo dos inimigos",
+    "lang": "PT",
+    "expected": [
+      "quantity_count_missing"
+    ]
+  },
+  {
+    "name": "es-spelled-two",
+    "source": "攻击1个目标2次",
+    "target": "Ataca a un objetivo dos veces",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "pt-spelled-two",
+    "source": "攻击1个目标2次",
+    "target": "Ataca um alvo duas vezes",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "en-twice",
+    "source": "攻击1个目标2次",
+    "target": "Attacks one target twice",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "per-hit-still-required",
+    "source": "攻击1个目标2次，每次造成{0}伤害",
+    "target": "Ataca a 1 objetivo 2 veces e inflige {0} de daño",
+    "lang": "ES",
+    "expected": [
+      "quantity_per_hit_missing"
+    ]
+  },
+  {
+    "name": "wrong-unit",
+    "source": "3小时治疗加速",
+    "target": "Acelerar Cura (3 min)",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "missing-unit",
+    "source": "3小时治疗加速",
+    "target": "Acelerar Cura (3)",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "different-values-swapped-units",
+    "source": "1小时30分钟",
+    "target": "30 h 1 min",
+    "lang": "PT",
+    "expected": [
+      "quantity_duration_mismatch"
+    ]
+  },
+  {
+    "name": "decimal-duration",
+    "source": "持续1.5秒",
+    "target": "Dura 1,5 s",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "EN-each-one",
+    "source": "每完成1次任务",
+    "target": "For each quest completed",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "ES-each-one",
+    "source": "每完成1次任务",
+    "target": "Por cada misión completada",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "PT-each-one",
+    "source": "每完成1次任务",
+    "target": "Para cada missão concluída",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "en-single-hour",
+    "source": "1小时加速",
+    "target": "An hour of speedup",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "es-single-hour",
+    "source": "1小时加速",
+    "target": "Aceleración de una hora",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "pt-single-hour",
+    "source": "1小时加速",
+    "target": "Aceleração de uma hora",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "scope-limit-other-language",
+    "source": "3小时加速",
+    "target": "Accélération",
+    "lang": "FR",
+    "expected": []
+  },
+  {
+    "name": "en-per-time",
+    "source": "攻击1个目标3次，每次造成{0}伤害",
+    "target": "Attacks 1 target 3 times, dealing {0} damage each time",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "en-hourly",
+    "source": "每隔1小时刷新1次",
+    "target": "Refreshes once every hour",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "es-hourly",
+    "source": "每隔1小时刷新1次",
+    "target": "Se actualiza una vez cada hora",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "pt-hourly",
+    "source": "每隔1小时刷新1次",
+    "target": "Atualiza uma vez a cada hora",
+    "lang": "PT",
+    "expected": []
+  },
+  {
+    "name": "en-ordinal-day",
+    "source": "服务器第2天解锁",
+    "target": "Unlocks on server day 2",
+    "lang": "EN",
+    "expected": []
+  },
+  {
+    "name": "es-day-range",
+    "source": "开服1-4天参加活动",
+    "target": "Participa durante los días 1-4 del servidor",
+    "lang": "ES",
+    "expected": []
+  },
+  {
+    "name": "pt-count-before-value",
+    "source": "攻击失败次数调整为3次",
+    "target": "O número de tentativas de ataque fracassadas é ajustado para 3",
+    "lang": "PT",
+    "expected": []
+  }
+],
+  "punctuation_policy_cases": [
+    {"text":"Don't worry.","lang":"en","expected":[]},
+    {"text":"Don’t worry.","lang":"en","expected":["incompatible_punctuation"]},
+    {"text":"Ｌｖ．１２＇","lang":"en","expected":["fullwidth_punctuation"]},
+    {"text":"“Ready”…","lang":"en","expected":["incompatible_punctuation"]},
+    {"text":"ação, mañana, café","lang":"en","expected":[]},
+    {"text":"L’été","lang":"fr","expected":[]},
+    {"text":"L’été","lang":"fr","mode":"ascii","expected":["incompatible_punctuation"]},
+    {"text":"Don’t worry.","lang":"en","mode":"typographic","expected":[]},
+    {"text":"テスト：１２","lang":"ja","expected":[]}
+  ],
+  "name_note_category_cases": [
+    {"value":"英雄名","expected":"角色名"},
+    {"value":"角色名","expected":"角色名"},
+    {"value":"角色确认后再改","expected":""},
+    {"value":"通用词","expected":""}
+  ],
+  "review_consistency_cases": [
+    {"name":"mixed_threshold_styles","rows":[["击败1个9级及以上的怪物","Defeat 1 Monster at Lv. 9 or above"],["击败1个11级及以上的怪物","Defeat 1 Lv. 11+ Monster"]],"expected":["ui_series_inconsistency"]},
+    {"name":"uniform_threshold_styles","rows":[["击败1个9级及以上的怪物","Defeat 1 Lv. 9+ Monster"],["击败1个11级及以上的怪物","Defeat 1 Lv. 11+ Monster"]],"expected":[]},
+    {"name":"roman_series_drift","rows":[["艾拉赠礼Ⅰ","Aria's Gift I"],["艾拉赠礼Ⅱ","Aria's Gifts II"]],"expected":["ui_series_inconsistency"]},
+    {"name":"roman_unicode_equivalence","rows":[["艾拉赠礼Ⅰ","Aria's Gift I"],["艾拉赠礼Ⅱ","Aria's Gift Ⅱ"]],"expected":[]},
+    {"name":"different_mechanics_are_separate","rows":[["击败9级以上怪物","Defeat monsters above Lv. 9"],["击败11级以下怪物","Defeat monsters below Lv. 11"]],"expected":[]},
+    {"name":"renamed_source_reuses_old_translation","rows":[["艾拉赠礼Ⅰ","Lucky Gifts I"]],"history":[["幸运赠礼Ⅰ","Lucky Gifts I"]],"expected":["source_drift_tm_conflict"]},
+    {"name":"same_source_history","rows":[["幸运赠礼Ⅰ","Lucky Gifts I"]],"history":[["幸运赠礼Ⅰ","Lucky Gifts I"]],"expected":[]},
+    {"name":"corrected_name_history","rows":[["艾拉赠礼Ⅰ","Aria's Gift I"]],"history":[["幸运赠礼Ⅰ","Lucky Gifts I"]],"expected":[]},
+    {"name":"shared_short_button_not_source_drift","rows":[["确定","OK"]],"history":[["好的","OK"]],"expected":[]}
+  ],
+  "numeric_word_boundary_cases": [
+    {"text":"one million gold","values":[1000000]},
+    {"text":"two thousand coins and one ticket","values":[2000,1]},
+    {"text":"12 Bäume","values":[12]},
+    {"text":"24 Mũ","values":[24]},
+    {"text":"12B","values":[12000000000]},
+    {"text":"3K金币","values":[3000]}
+  ],
+  "diagnostic_regression_cases": [
+    {"name":"purposive_full_coverage_is_not_census","sampling":"purposive","unresolved":[],"full_semantic_review":false,"resolved_reviewed_cells":1},
+    {"name":"census_unknown_is_not_pass","sampling":"census","unresolved":[["s|1","FR"]],"full_semantic_review":true,"resolved_reviewed_cells":0}
+  ],
+  "semantic_regression_cases": [
+    {"source_mode":"en","translation_source":"Don't worry your pretty little head about it.","lang":"FR","target":"Ne te fais pas de souci pour ta jolie petite tête.","blocked":true},
+    {"source_mode":"en","translation_source":"Don't worry your pretty little head about it.","lang":"FR","target":"Ne fatigue pas ta jolie petite tête avec ça.","blocked":false},
+    {"source_mode":"en","translation_source":"Don't worry your pretty little head about it.","lang":"FR","target":"Ne te fais pas de souci pour ça.","blocked":false},
+    {"source_mode":"en","translation_source":"Don't worry about your head; the doctor checked it.","lang":"FR","target":"Ne te fais pas de souci pour ta tête ; le médecin l'a examinée.","blocked":false}
+  ],
+  "strict_term_category_cases": [
+    {"category": "角色", "required": true},
+    {"category": "人名", "required": true},
+    {"category": "人物", "required": true},
+    {"category": "character", "required": true},
+    {"category": "Character Name", "required": true},
+    {"category": "person", "required": true},
+    {"category": "person name", "required": true},
+    {"category": "name", "required": true},
+    {"category": "角色描述", "required": false},
+    {"category": "角色 soft", "required": false},
+    {"category": "generic character", "required": false},
+    {"category": "character description", "required": false},
+    {"category": "资源", "required": false}
+  ],
   "cases": [
     {
       "id": "bad-title-case-too-many-roles",
@@ -120,7 +693,7 @@
       "id": "bad-clipped-content-empty",
       "source": "\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a",
       "translation": "Cont cann empt",
-      "expected_issues": ["clipped_word"]
+      "expected_issues": ["clipped_word", "semantic_negation_missing"]
     },
     {
       "id": "bad-clipped-contribution",
@@ -276,7 +849,7 @@
       "id": "bad-orphan-leading-clitic",
       "source": "毒舌依旧",
       "translation": "’s poisonous tongue remains the same.",
-      "expected_issues": ["orphan_leading_clitic"]
+      "expected_issues": ["orphan_leading_clitic", "incompatible_punctuation"]
     },
     {
       "id": "bad-leading-lowercase",
@@ -394,6 +967,20 @@
       "source": "太阳神殿",
       "translation": "Temple of the Sun",
       "name_type": "ui_location_name",
+      "expected_issues": []
+    },
+    {
+      "id": "bad-building-name-too-long",
+      "source": "载具组件工厂",
+      "translation": "Support Aircraft Parts Factory",
+      "name_type": "ui_building_name",
+      "expected_issues": ["building_name_compactness_watch"]
+    },
+    {
+      "id": "good-building-name-compact",
+      "source": "载具中心",
+      "translation": "Vehicle Center",
+      "name_type": "ui_building_name",
       "expected_issues": []
     },
     {

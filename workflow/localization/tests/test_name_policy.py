@@ -1,6 +1,7 @@
 import unittest
 
 from utils.name_policy import (
+    BUILDING_NAME_TYPE,
     LOCATION_NAME_TYPE,
     SKILL_NAME_TYPE,
     classify_name_type,
@@ -15,8 +16,11 @@ class NamePolicyTests(unittest.TestCase):
         self.assertEqual(classify_name_type("UI/技能"), SKILL_NAME_TYPE)
         self.assertEqual(classify_name_type("地点名"), LOCATION_NAME_TYPE)
         self.assertEqual(classify_name_type("Map Name"), LOCATION_NAME_TYPE)
+        self.assertEqual(classify_name_type("建筑名"), BUILDING_NAME_TYPE)
+        self.assertEqual(classify_name_type("UI/Facility Name"), BUILDING_NAME_TYPE)
         self.assertEqual(classify_name_type("技能描述"), "")
         self.assertEqual(classify_name_type("地图说明"), "")
+        self.assertEqual(classify_name_type("建筑说明"), "")
         self.assertEqual(classify_name_type("道具/装备/礼包"), "")
 
     def test_skill_name_prefers_two_readable_english_words(self):
@@ -49,6 +53,29 @@ class NamePolicyTests(unittest.TestCase):
 
         self.assertEqual(accepted, [])
         self.assertEqual([issue.check_type for issue in verbose], ["location_name_compactness_watch"])
+
+    def test_building_name_uses_mobile_map_ui_budget(self):
+        accepted = evaluate_name_translation(
+            row_id=4,
+            source="载具中心",
+            translation="Vehicle Center",
+            name_type=BUILDING_NAME_TYPE,
+            lang="en",
+        )
+        verbose = evaluate_name_translation(
+            row_id=5,
+            source="载具组件工厂",
+            translation="Support Aircraft Parts Factory",
+            name_type=BUILDING_NAME_TYPE,
+            lang="en",
+        )
+
+        self.assertEqual(accepted, [])
+        self.assertEqual(
+            [issue.check_type for issue in verbose],
+            ["building_name_compactness_watch"],
+        )
+        self.assertIn("地图短标签建议不超过 14 字符", verbose[0].message)
 
     def test_name_collision_warns_when_different_sources_share_one_target(self):
         issues = find_name_collisions(

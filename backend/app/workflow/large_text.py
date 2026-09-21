@@ -15,88 +15,24 @@ parity tests. If the two disagree, the workflow gate wins.
 """
 from __future__ import annotations
 
-import json
-import re
 from collections import Counter
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
 
+from ..languages import SOURCE_HEADER_ALIASES, target_aliases
+from .large_text_rules.core import (  # noqa: F401 - public helper compatibility
+    SOURCE_HEADERS, TOKEN_RE, _check_required_terms, pair_integrity_issues,
+    is_auto_protected_token, protected_tokens, parse_number_token,
+    numeric_values, source_numeric_values, numeric_value_present, add_issue,
+)
+from .large_text_rules.language_config import target_header_candidates
+from .large_text_rules.review_findings import unresolved_review_detail
+
 WORKFLOW_VERSION = "large_text_product_v1"
 ALLOWED_MODES = {"auto", "strict", "off"}
 
-TOKEN_RE = re.compile(r"\\n|\{[^{}\s]+\}|%[sdif]|##\d+|</?[A-Za-z][^>\s]*[^>]*>|\[[A-Za-z0-9_:/#=.,-]+\]")
-CJK_RE = re.compile(r"[\u3400-\u9fff]")
-NUMBER_RE = re.compile(
-    r"\d+(?:[,.]\d+)?(?:\s*(?:千|万|萬|亿|億|(?i:thousand|million|billion|ribu|rb|juta|miliar|millones|millón|milhao|milhão|milhões|mil)\b)|[KkMBWw](?![A-Za-z]))%?"
-    r"|\d{1,3}(?:[,\s.]\d{3})+(?:[,.]\d+)?%?"
-    r"|\d+(?:[,.]\d+)?%?"
-)
-WORD_MULTIPLIERS = {
-    "thousand": Decimal("1000"),
-    "ribu": Decimal("1000"),
-    "rb": Decimal("1000"),
-    "mil": Decimal("1000"),
-    "million": Decimal("1000000"),
-    "juta": Decimal("1000000"),
-    "millones": Decimal("1000000"),
-    "millón": Decimal("1000000"),
-    "milhao": Decimal("1000000"),
-    "milhão": Decimal("1000000"),
-    "milhões": Decimal("1000000"),
-    "billion": Decimal("1000000000"),
-    "miliar": Decimal("1000000000"),
-}
-NUMBER_WORDS = {
-    "zero": Decimal("0"),
-    "one": Decimal("1"),
-    "once": Decimal("1"),
-    "single": Decimal("1"),
-    "two": Decimal("2"),
-    "three": Decimal("3"),
-    "four": Decimal("4"),
-    "five": Decimal("5"),
-    "six": Decimal("6"),
-    "seven": Decimal("7"),
-    "eight": Decimal("8"),
-    "nine": Decimal("9"),
-    "ten": Decimal("10"),
-    "satu": Decimal("1"),
-    "sekali": Decimal("1"),
-    "dua": Decimal("2"),
-    "tiga": Decimal("3"),
-    "empat": Decimal("4"),
-    "lima": Decimal("5"),
-    "seis": Decimal("6"),
-    "tujuh": Decimal("7"),
-    "delapan": Decimal("8"),
-    "sembilan": Decimal("9"),
-    "sepuluh": Decimal("10"),
-    "uno": Decimal("1"),
-    "una": Decimal("1"),
-    "un": Decimal("1"),
-    "dos": Decimal("2"),
-    "tres": Decimal("3"),
-    "cuatro": Decimal("4"),
-    "cinco": Decimal("5"),
-    "siete": Decimal("7"),
-    "ocho": Decimal("8"),
-    "nueve": Decimal("9"),
-    "diez": Decimal("10"),
-    "um": Decimal("1"),
-    "uma": Decimal("1"),
-    "dois": Decimal("2"),
-    "duas": Decimal("2"),
-    "quatro": Decimal("4"),
-    "sete": Decimal("7"),
-    "oito": Decimal("8"),
-    "nove": Decimal("9"),
-    "dez": Decimal("10"),
-}
-CJK_ALLOWED_LANGS = {"cn", "zh", "zh-cn", "ja", "jp"}
-SOURCE_HEADERS = {"CN", "ZH", "SOURCE", "TEXT", "原文"}
 # Sheets emitted by the local QA harness (workflow/localization/process_language.py)
 # alongside the primary translation sheet. They carry review/reference columns
 # only (no full target-language coverage) and must not be treated as delivery
@@ -177,204 +113,6 @@ def build_large_text_preflight(
     }
 
 
-def is_auto_protected_token(token: str) -> bool:
-    if token.startswith("[") and token.endswith("]"):
-        inner = token[1:-1]
-        return bool(re.search(r"[\d_:/#=.,-]", inner) or (inner.isupper() and len(inner) <= 12))
-    return True
-
-
-def protected_tokens(row: dict[str, Any]) -> list[str]:
-    tokens: list[str] = []
-    raw_tokens = row.get("tokens") or row.get("protected_tokens") or []
-    if isinstance(raw_tokens, str):
-        try:
-            parsed = json.loads(raw_tokens)
-            raw_tokens = parsed if isinstance(parsed, list) else [raw_tokens]
-        except json.JSONDecodeError:
-            raw_tokens = [raw_tokens]
-    if isinstance(raw_tokens, list):
-        tokens.extend(str(token) for token in raw_tokens if str(token))
-    tokens.extend(token for token in TOKEN_RE.findall(source_text(row)) if is_auto_protected_token(token))
-    return sorted(set(tokens), key=len, reverse=True)
-
-
-def parse_number_token(token: str) -> Decimal | None:
-    raw_with_spaces = token.strip()
-    raw = raw_with_spaces.replace(" ", "")
-    if not raw:
-        return None
-
-    if raw.endswith("%"):
-        raw = raw[:-1]
-        raw_with_spaces = raw_with_spaces[:-1].strip()
-
-    suffix = ""
-    word_multiplier: Decimal | None = None
-    lowered = raw_with_spaces.lower()
-    for word, multiplier in sorted(WORD_MULTIPLIERS.items(), key=lambda item: len(item[0]), reverse=True):
-        match = re.search(rf"\s+{re.escape(word)}\.?$", lowered)
-        if match:
-            word_multiplier = multiplier
-            raw = raw_with_spaces[: match.start()].strip().replace(" ", "")
-            break
-    if raw and raw[-1] in "KkMBWw":
-        suffix = raw[-1].upper()
-        raw = raw[:-1]
-    elif raw.endswith(("千", "万", "萬", "亿", "億")):
-        suffix = raw[-1]
-        raw = raw[:-1]
-    if not raw:
-        return None
-
-    has_comma = "," in raw
-    has_dot = "." in raw
-    has_unit = bool(suffix or word_multiplier)
-    if has_unit and (has_comma or has_dot):
-        if has_comma and has_dot:
-            last_comma = raw.rfind(",")
-            last_dot = raw.rfind(".")
-            last_sep = max(last_comma, last_dot)
-            after = raw[last_sep + 1 :]
-            before = re.sub(r"[,.]", "", raw[:last_sep])
-            raw = before + "." + after
-        elif has_comma:
-            raw = raw.replace(",", ".")
-    elif has_comma or has_dot:
-        last_comma = raw.rfind(",")
-        last_dot = raw.rfind(".")
-        last_sep = max(last_comma, last_dot)
-        sep = raw[last_sep]
-        after = raw[last_sep + 1 :]
-        before = raw[:last_sep]
-        thousands_like = len(after) == 3 and all(group.isdigit() for group in re.split(r"[,.]", before) if group)
-        if has_comma and has_dot:
-            if thousands_like:
-                raw = re.sub(r"[,.]", "", raw)
-            else:
-                raw = re.sub(r"[,.]", "", before) + "." + after
-        elif sep == "," and not thousands_like:
-            raw = before.replace(",", "") + "." + after
-        elif thousands_like:
-            raw = re.sub(r"[,.]", "", raw)
-        elif sep == ".":
-            raw = before.replace(".", "") + "." + after
-
-    try:
-        multiplier = word_multiplier or {
-            "千": Decimal("1000"),
-            "万": Decimal("10000"),
-            "萬": Decimal("10000"),
-            "亿": Decimal("100000000"),
-            "億": Decimal("100000000"),
-            "K": Decimal("1000"),
-            "M": Decimal("1000000"),
-            "B": Decimal("1000000000"),
-            "W": Decimal("10000"),
-        }.get(suffix, Decimal(1))
-        return (Decimal(raw) * multiplier).normalize()
-    except InvalidOperation:
-        return None
-
-
-def numeric_values(text: str) -> set[Decimal]:
-    text = text or ""
-    text = re.sub(r"(\d(?:[\d,.]*))(?:<[^>]+>)+\s*([千万萬亿億KkMBWw])", r"\1\2", text)
-    text = re.sub(r"(?<=\d)\uff0c(?=\d{3}(?!\d))", ",", text)
-    text = text.replace("\uff0c", " ")
-    values: set[Decimal] = set()
-    for token in NUMBER_RE.findall(text):
-        parsed = parse_number_token(token)
-        if parsed is not None:
-            values.add(parsed)
-    lowered = text.lower()
-    for word, value in NUMBER_WORDS.items():
-        if re.search(rf"\b{re.escape(word)}\b", lowered):
-            values.add(value)
-    return values
-
-
-def source_numeric_values(row: dict[str, Any]) -> set[Decimal]:
-    src = source_text(row)
-    src = re.sub(r"\d+(?:[,.]\d+)?\s*月", "", src)
-    src = re.sub(r"(?<=\d)\.(?=\d点)", " ", src)
-    values = numeric_values(src)
-    if CJK_RE.search(src):
-        values = {
-            value
-            for value in values
-            if not (
-                value == value.to_integral_value()
-                and Decimal("0") <= value <= Decimal("10")
-                and not re.search(rf"(?<!\d){int(value)}\s*%", src)
-            )
-        }
-    return values
-
-
-def numeric_value_present(value: Decimal, targets: set[Decimal]) -> bool:
-    if value in targets:
-        return True
-    if abs(value) >= Decimal("1000"):
-        for target in targets:
-            if target == 0:
-                continue
-            if abs(target - value) / abs(value) <= Decimal("0.005"):
-                return True
-    if Decimal("1") <= value <= Decimal("99"):
-        if (Decimal("1900") + value) in targets or (Decimal("2000") + value) in targets:
-            return True
-    return False
-
-
-def add_issue(issues: list[dict[str, Any]], issue_type: str, key: str, lang: str, detail: str) -> None:
-    issues.append({"severity": "hard", "type": issue_type, "key": key, "lang": lang, "detail": detail})
-
-
-def _term_hits(row: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = row.get("term_hits") or row.get("term_hits_json") or []
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
-        raw = parsed
-    if not isinstance(raw, list):
-        return []
-    return [hit for hit in raw if isinstance(hit, dict)]
-
-
-def _accepted_term_variants(hit: dict[str, Any], lang: str) -> list[str]:
-    values: list[str] = []
-    translations = hit.get("translations")
-    if isinstance(translations, dict) and translations.get(lang):
-        values.append(str(translations[lang]))
-    if hit.get(lang):
-        values.append(str(hit[lang]))
-
-    variants = hit.get("accepted_variants") or hit.get("variants")
-    if isinstance(variants, dict):
-        raw = variants.get(lang) or []
-    else:
-        raw = variants or []
-    if isinstance(raw, str):
-        values.append(raw)
-    elif isinstance(raw, list):
-        values.extend(str(value) for value in raw if str(value))
-
-    return sorted({value for value in values if value}, key=len, reverse=True)
-
-
-def _check_required_terms(issues: list[dict[str, Any]], row: dict[str, Any], key: str, lang: str, target: str) -> None:
-    for hit in _term_hits(row):
-        if not (hit.get("required") or hit.get("strict")):
-            continue
-        variants = _accepted_term_variants(hit, lang)
-        if variants and not any(variant in target for variant in variants):
-            source = hit.get("source") or hit.get("CN") or hit.get("term") or ""
-            add_issue(issues, "term_missing", key, lang, f"required term not used: {source}")
-
-
 def build_translation_cache_rows(
     workpack_rows: list[dict[str, Any]],
     translated_rows: list[dict[str, Any]],
@@ -399,6 +137,10 @@ def cache_lint_rows(cache_rows: list[dict[str, Any]], *, target_languages: list[
     unauthorized: Counter[str] = Counter()
     langs = [lang.lower() for lang in target_languages]
     requested = set(langs)
+    if not cache_rows:
+        add_issue(issues, "empty_cache", "", "", "cache contains no source rows")
+    if not langs:
+        add_issue(issues, "target_languages_missing", "", "", "no target languages requested")
     for index, row in enumerate(cache_rows, 1):
         key = row_key(row, index)
         if key in seen:
@@ -409,22 +151,20 @@ def cache_lint_rows(cache_rows: list[dict[str, Any]], *, target_languages: list[
             unauthorized[lang] += 1
             add_issue(issues, "unauthorized_language", key, lang, "translation cache contains a language that was not requested")
 
-        src_numbers = source_numeric_values(row)
-        tokens = protected_tokens(row)
+        unresolved = unresolved_review_detail(row)
+        if unresolved:
+            add_issue(issues, "unresolved_review_finding", key, "", unresolved)
         for lang in langs:
             target = row_translation(row, lang).strip()
+            if row.get("opaque_payload_preserved") is True:
+                if target != source_text(row).strip():
+                    add_issue(issues, "opaque_payload_changed", key, lang, "opaque source payload must be preserved exactly")
+                continue
             if not target:
                 add_issue(issues, "empty_translation", key, lang, "target translation is empty")
                 continue
-            if lang not in CJK_ALLOWED_LANGS and CJK_RE.search(target):
-                add_issue(issues, "cjk_residue", key, lang, "target translation still contains Chinese/Japanese ideographs")
-            for token in tokens:
-                if token and token not in target:
-                    add_issue(issues, "protected_token_missing", key, lang, f"missing protected token {token}")
-            target_numbers = numeric_values(target)
-            missing_numbers = {number for number in src_numbers if not numeric_value_present(number, target_numbers)}
-            if missing_numbers:
-                add_issue(issues, "number_missing", key, lang, f"missing numeric value(s): {sorted(str(value) for value in missing_numbers)}")
+            for issue_type, detail in pair_integrity_issues(row, lang, target):
+                add_issue(issues, issue_type, key, lang, detail)
             _check_required_terms(issues, row, key, lang, target)
     by_type = Counter(issue["type"] for issue in issues)
     return {
@@ -441,15 +181,23 @@ def cache_lint_rows(cache_rows: list[dict[str, Any]], *, target_languages: list[
 
 def _looks_like_translation_sheet(headers: list[str], target_langs: list[str]) -> bool:
     header_set = {header for header in headers if header}
-    if header_set.intersection(set(target_langs)):
+    aliases = {name for lang in target_langs for name in _delivery_target_headers(lang)}
+    if header_set.intersection(aliases):
         return True
-    return bool(header_set.intersection(SOURCE_HEADERS))
+    return bool(header_set.intersection(SOURCE_HEADERS | {name.upper() for name in SOURCE_HEADER_ALIASES}))
+
+
+def _delivery_target_headers(lang: str) -> set[str]:
+    # Studio uses VN internally; retain product aliases alongside upstream VI.
+    return {name.upper() for name in set(target_aliases(lang)) | target_header_candidates(lang)}
 
 
 def readback_gate_files(paths: list[Path], *, target_languages: list[str]) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     files: list[dict[str, Any]] = []
     targets = [lang.upper() for lang in target_languages]
+    checked_cells = 0
+    checked_workbooks = 0
     for path in paths:
         path = Path(path)
         files.append({"name": path.name, "bytes": path.stat().st_size if path.exists() else 0})
@@ -459,6 +207,7 @@ def readback_gate_files(paths: list[Path], *, target_languages: list[str]) -> di
         if path.suffix.lower() not in {".xlsx", ".xlsm"}:
             continue
         workbook = load_workbook(path, read_only=True, data_only=True)
+        recognized = False
         try:
             for sheet in workbook.worksheets:
                 if sheet.title in REVIEW_ONLY_SHEET_TITLES:
@@ -467,10 +216,21 @@ def readback_gate_files(paths: list[Path], *, target_languages: list[str]) -> di
                 headers = [str(value).strip().upper() if value is not None else "" for value in first_row]
                 if not _looks_like_translation_sheet(headers, targets):
                     continue
-                col_by_lang = {header: index for index, header in enumerate(headers) if header}
+                recognized = True
+                source_headers = SOURCE_HEADERS | {name.upper() for name in SOURCE_HEADER_ALIASES}
+                source_col = next((index for index, header in enumerate(headers) if header in source_headers), None)
+                if source_col is None:
+                    add_issue(issues, "source_column_missing", f"{path.name}:{sheet.title}", "", "cannot validate targets without a source column")
+                    continue
+                id_col = next((index for index, header in enumerate(headers) if header in {"ID", "KEY", "索引ID"}), None)
                 target_columns: list[tuple[str, int]] = []
                 for lang in targets:
-                    col_index = col_by_lang.get(lang)
+                    candidates = _delivery_target_headers(lang)
+                    matches = [index for index, header in enumerate(headers) if header in candidates and index != id_col]
+                    if len(matches) > 1:
+                        add_issue(issues, "ambiguous_target_column", f"{path.name}:{sheet.title}", lang, "multiple columns match target language")
+                        continue
+                    col_index = matches[0] if matches else None
                     if col_index is None:
                         add_issue(issues, "target_column_missing", f"{path.name}:{sheet.title}", lang, "target language column is missing")
                         continue
@@ -478,16 +238,32 @@ def readback_gate_files(paths: list[Path], *, target_languages: list[str]) -> di
                 if not target_columns:
                     continue
                 for row_index, row_values in enumerate(sheet.iter_rows(min_row=2, values_only=True), 2):
+                    source = row_values[source_col] if source_col < len(row_values) else None
+                    row_id = row_values[id_col] if id_col is not None and id_col < len(row_values) else None
+                    if (source is None or str(source).strip() == "") and (row_id is None or str(row_id).strip() == ""):
+                        continue
                     for lang, col_index in target_columns:
+                        checked_cells += 1
                         value = row_values[col_index] if col_index < len(row_values) else None
                         if value is None or str(value).strip() == "":
                             add_issue(issues, "blank_target_cell", f"{path.name}:{sheet.title}!R{row_index}C{col_index + 1}", lang, "target cell is blank")
+                        else:
+                            for issue_type, detail in pair_integrity_issues({"cn": str(source or "")}, lang, str(value)):
+                                add_issue(issues, issue_type, f"{path.name}:{sheet.title}!R{row_index}C{col_index + 1}", lang, detail)
+            if recognized:
+                checked_workbooks += 1
+            else:
+                add_issue(issues, "translation_sheet_missing", path.name, "", "no recognized source/target sheet")
         finally:
             workbook.close()
+    if not checked_workbooks or not checked_cells:
+        add_issue(issues, "empty_delivery", "", "", "no translated cells were checked")
     by_type = Counter(issue["type"] for issue in issues)
     return {
         "workflow": WORKFLOW_VERSION,
         "files": files,
+        "checked_workbooks": checked_workbooks,
+        "checked_target_cells": checked_cells,
         "target_languages": target_languages,
         "hard_blockers": len(issues),
         "hard_by_type": dict(sorted(by_type.items())),

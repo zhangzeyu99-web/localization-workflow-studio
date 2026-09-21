@@ -10,6 +10,7 @@ from openpyxl import Workbook, load_workbook
 from utils.large_text_multilingual_gate import (
     apply_dry_run,
     cache_lint,
+    numeric_values,
     preflight,
     readback_gate,
 )
@@ -23,6 +24,48 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class LargeTextMultilingualGateTests(unittest.TestCase):
+    def test_spelled_multiplier_preserves_amount_without_phantom_small_number(self) -> None:
+        from utils.large_text_multilingual_gate import pair_integrity_issues
+
+        self.assertEqual(numeric_values("获得 one million 金币"), {1000000})
+        self.assertEqual(pair_integrity_issues({"cn": "获得 one million 金币"}, "EN", "Get 1,000,000 gold"), [])
+        self.assertEqual(pair_integrity_issues({"cn": "获得100万金币"}, "EN", "Get one million gold"), [])
+        self.assertTrue(pair_integrity_issues({"cn": "获得 one million 金币"}, "EN", "Get one gold"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "delivery.xlsx"
+            book = Workbook()
+            book.active.append(["ID", "CN", "EN"])
+            book.active.append([1, "获得 one million 金币", "Get 1,000,000 gold"])
+            book.save(path)
+            book.close()
+            self.assertTrue(readback_gate(Path(tmp), target_langs=["EN"])["readback_verified"])
+
+    def test_numeric_unit_does_not_consume_accented_word_initial(self) -> None:
+        fixtures = json.loads((Path(__file__).resolve().parents[1]/'fixtures/quality_regression.json').read_text(encoding='utf-8'))
+        for case in fixtures['numeric_word_boundary_cases']:
+            self.assertEqual(numeric_values(case['text']), set(case['values']))
+        for text, expected in [('12 Bäume', 12), ('24 Mũ', 24), ('3 Kılıç', 3), ('4 Wände', 4), ('5 B\u0301onus', 5)]:
+            self.assertEqual(numeric_values(text), {expected}, text)
+        for text, expected in [('12B', 12000000000), ('2 M', 2000000), ('3K金币', 3000)]:
+            self.assertEqual(numeric_values(text), {expected}, text)
+
+    def test_numeric_values_does_not_join_numbers_across_line_breaks(self) -> None:
+        values = numeric_values("奖励*1\n成功率100%")
+
+        self.assertNotIn(1100, values)
+        self.assertIn(1, values)
+        self.assertIn(100, values)
+        self.assertIn(1100, numeric_values("1 100"))
+        self.assertIn(1100, numeric_values("1,100"))
+        self.assertIn(1100, numeric_values("1\u202f100"))
+
+    def test_numeric_values_treats_fullwidth_comma_as_punctuation(self) -> None:
+        values = numeric_values("获得棋子*1，100%概率获得奖励")
+
+        self.assertNotIn(1100, values)
+        self.assertIn(1, values)
+        self.assertIn(100, values)
+
     def test_cache_lint_recomputes_term_hits_and_blocks_missing_strict_term(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

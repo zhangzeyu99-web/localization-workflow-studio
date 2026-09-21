@@ -10,6 +10,7 @@ from typing import Any
 from openpyxl import Workbook, load_workbook
 
 from .. import db
+from ..archive_batch_engine import ArchiveCommitCanceled
 from ..config import LOCALIZATION_ROOT, load_settings
 from ..languages import SOURCE_HEADER_ALIASES, require_supported_language, target_aliases, workflow_language_code
 from ..translation_batches import manage_project_prompt_context as _manage_project_prompt_context
@@ -495,12 +496,17 @@ def run_qa_sync(run_id: str, settings: dict[str, Any] | None = None, cancel_even
     if status == "passed" and qa_result.get("qa_final_artifact") and not is_quick_task_run(run):
         from .asset_import_export import archive_translation_artifact
 
-        archive_result = archive_translation_artifact(
-            project["id"],
-            qa_result["qa_final_artifact"]["id"],
-            language=run.get("language") or "en",
-            source_type="qa_passed",
-        )
+        try:
+            archive_result = archive_translation_artifact(
+                project["id"],
+                qa_result["qa_final_artifact"]["id"],
+                language=run.get("language") or "en",
+                source_type="qa_passed",
+                run_id=run_id,
+                cancel_event=cancel_event,
+            )
+        except ArchiveCommitCanceled as exc:
+            raise QaCanceled() from exc
     db.merge_run_metadata(
         run_id,
         {

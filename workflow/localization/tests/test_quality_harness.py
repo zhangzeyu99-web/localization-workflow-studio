@@ -356,6 +356,7 @@ class QualityHarnessTests(unittest.TestCase):
             ws.append([1, "终焉之境", "Realm of the Final Ending"])
             ws.append([2, "烈焰斩", "Flame Strike"])
             ws.append([3, "火焰冲击", "Flame Strike"])
+            ws.append([4, "载具组件工厂", "Support Aircraft Parts Factory"])
             wb.save(workbook_path)
             wb.close()
 
@@ -366,12 +367,14 @@ class QualityHarnessTests(unittest.TestCase):
             term_ws.append(["终焉之境", "Realm of the Final Ending", "技能名"])
             term_ws.append(["烈焰斩", "Flame Strike", "技能名"])
             term_ws.append(["火焰冲击", "Flame Strike", "技能名"])
+            term_ws.append(["载具组件工厂", "Support Aircraft Parts Factory", "建筑名"])
             term_wb.save(term_path)
             term_wb.close()
 
             result = scan_workbook(workbook_path, term_base=term_path)
 
             self.assertEqual(result.issue_counts["skill_name_word_count_watch"], 1)
+            self.assertEqual(result.issue_counts["building_name_compactness_watch"], 1)
             self.assertEqual(result.issue_counts["name_translation_collision_watch"], 2)
 
     def test_scan_workbook_uses_non_read_only_and_fails_empty_scan(self):

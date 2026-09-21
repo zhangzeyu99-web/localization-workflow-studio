@@ -129,6 +129,7 @@ CAPABILITY_BY_ROUTE: dict[RouteKey, str] = {
     ("POST", "/api/projects/{project_id}/announcement-terms"): TASK_RUN,
     # -- delivery --
     ("GET", "/api/projects/{project_id}/deliverables"): PROJECT_READ,
+    ("GET", "/api/projects/{project_id}/delivery-history"): PROJECT_READ,
     ("POST", "/api/projects/{project_id}/delivery-package"): TASK_RUN,
     ("POST", "/api/projects/{project_id}/delivery-package/merged"): TASK_RUN,
     ("GET", "/api/projects/{project_id}/delivery/{filename}"): TASK_RUN,
@@ -136,6 +137,7 @@ CAPABILITY_BY_ROUTE: dict[RouteKey, str] = {
     ("GET", "/api/projects/{project_id}/glossary"): PROJECT_READ,
     ("POST", "/api/projects/{project_id}/glossary"): ASSETS_CURATE,
     ("GET", "/api/projects/{project_id}/glossary/wide"): PROJECT_READ,
+    ("GET", "/api/projects/{project_id}/glossary/pending"): PROJECT_READ,
     ("GET", "/api/projects/{project_id}/glossary/by-source-key"): PROJECT_READ,
     ("PATCH", "/api/projects/{project_id}/glossary/by-source-key"): ASSETS_CURATE,
     ("DELETE", "/api/projects/{project_id}/glossary/by-source-key"): ASSETS_CURATE,

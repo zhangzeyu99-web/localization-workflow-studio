@@ -42,6 +42,45 @@ LEVEL_BATCH_ITEM_TERM_RE = re.compile(
     r"[\u4e00-\u9fff]{0,8}(?:\u6b66\u5668|\u88c5\u5907)$"
 )
 
+# Exact phrases removed during a reviewed delivery. Keep this narrow so a
+# generic status word does not suppress a project-specific system or event name.
+LOW_VALUE_UI_PHRASES = frozenset(
+    {
+        "可烹饪出的产物",
+        "使用方法",
+        "可制作的菜品",
+        "仓库已满",
+        "棋盘已满",
+        "钻石不足",
+        "体力不足",
+        "加速券不足",
+        "不能放在这里",
+        "无法合成",
+        "未解锁",
+        "新地点奖励",
+        "返回游戏",
+        "选择您的进度",
+        "更多能量",
+        "任务累计奖励",
+        "经营奖励",
+        "新解锁菜单",
+        "今日收入",
+        "今日特惠",
+        "完售",
+        "畅销中",
+        "最划算",
+        "热销",
+        "无尽奖励",
+        "新的轮次",
+        "轮次失败",
+        "卡组完成",
+        "最终大奖",
+        "星星不足",
+        "新生产机",
+        "新料理机",
+    }
+)
+
 AUTO_ID_HEADERS = ["ID", "id", "\u7d22\u5f15ID", "\u552f\u4e00\u6807\u8bc6ID"]
 AUTO_SOURCE_HEADERS = ["CN", "cn", "zh", "source", "Chinese", "\u4e2d\u6587", "\u7b80\u4f53\u4e2d\u6587", "ori_string"]
 AUTO_TARGET_HEADERS = ["EN", "en", "target", "translation", "English", "\u82f1\u6587", "\u82f1\u8bed", "\u5185\u5bb9", "text"]

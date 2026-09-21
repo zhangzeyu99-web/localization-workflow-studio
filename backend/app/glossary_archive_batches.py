@@ -25,6 +25,16 @@ from .workflow.table_helpers import LANGUAGE_ORDER, _read_glossary_rows
 
 ARCHIVE_KIND = "glossary"
 CHANGE_SAMPLE_LIMIT = 50
+CHANGE_SAMPLE_PRIORITY = {
+    "conflict": 0,
+    "protected": 1,
+    "clear": 2,
+    "deactivate": 3,
+    "update": 4,
+    "insert": 5,
+    "unchanged": 6,
+    "skip": 7,
+}
 CSV_SHEET_KEY = "__csv__"
 JSON_SHEET_KEY = "__json__"
 DIRECT_GLOSSARY_KINDS = frozenset(
@@ -703,7 +713,7 @@ def analyze_glossary_archive(project_id: str, request: Any) -> dict[str, Any]:
             "target": item["target"],
             "explicit_empty": item["explicit_empty"],
         }
-        for item in items[:CHANGE_SAMPLE_LIMIT]
+        for item in sorted(items, key=lambda item: CHANGE_SAMPLE_PRIORITY[item["planned_action"]])[:CHANGE_SAMPLE_LIMIT]
     ]
     return {
         "batch_id": batch_id,

@@ -16,7 +16,7 @@ import {
 import { formalTranslationBlockReason } from '../components/translationWizard/translationGuards'
 import { isQuickTaskRun } from '../domain/quickTaskLifecycle'
 import type { ArchiveImportReadbackOptions } from '../domain/archiveImport'
-import { translationTaskIdOfRun } from '../domain/translationTaskLifecycle'
+import { createTranslationTaskId, translationTaskIdOfRun } from '../domain/translationTaskLifecycle'
 import { languageQuery, languageSpec, normalizeLanguageArray, normalizeLanguageCode, type LanguageCode } from '../languages'
 import type { ConfirmDialogOptions } from '../components/modals/ConfirmModal'
 import { issueCountPhrase } from '../uiText'
@@ -43,6 +43,8 @@ export interface UseTranslationActionsParams {
   currentIdRef: { current: string }
   translationTaskId: string
   translationTaskIdRef: { current: string }
+  isWizard: boolean
+  captureTranslationAction: (projectId: string, taskId: string, run?: Run | null) => () => boolean
   sourceArtifact: Artifact | null
   termArtifact: Artifact | null
   qaArtifact: Artifact | null
@@ -82,7 +84,7 @@ export interface UseTranslationActionsParams {
   setPrimaryLanguage: (language: LanguageCode) => void
   setPrimaryLanguages: (languages: LanguageCode[], primary?: LanguageCode | null) => void
   confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>
-  refreshCurrent: (projectId?: string) => Promise<Project | null>
+  refreshCurrent: (projectId?: string, readbackProject?: Project) => Promise<Project | null>
   loadQualityIssues: (runId: string, projectId?: string, accept?: () => boolean) => Promise<QualityIssue[]>
   upload: (file: File, kind: string, purpose?: string, accept?: () => boolean) => Promise<Artifact | null>
 }
@@ -97,6 +99,8 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     currentIdRef,
     translationTaskId,
     translationTaskIdRef,
+    isWizard,
+    captureTranslationAction,
     sourceArtifact,
     termArtifact,
     qaArtifact,
@@ -144,12 +148,31 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   // Shared re-entry lock for the formal translation start actions.
   const translateStartingRef = useRef(false)
   const taskStillCurrent = (projectId: string, taskId: string) => {
-    if (latestRun && isQuickTaskRun(latestRun)) {
+    if (latestRun && isQuickTaskRun(latestRun) && translationTaskIdOfRun(latestRun) === taskId) {
       const quickTaskId = translationTaskIdOfRun(latestRun)
       return Boolean(quickTaskId) && quickTaskId === taskId && isCurrentQuickTaskAction(latestRun)
     }
     return isCurrentTranslationTask(projectId, taskId)
       && (!taskId || translationTaskIdRef.current === taskId)
+  }
+
+  function captureTaskGuard(projectId: string, taskId: string, run?: Run | null) {
+    const accept = captureTranslationAction(projectId, taskId, run)
+    return (targetProjectId: string, targetTaskId: string) => targetProjectId === projectId && targetTaskId === taskId && accept()
+  }
+
+  function newFormalTaskId(sourceRun?: Run | null): string {
+    if (isWizard) return translationTaskId
+    return translationTaskIdOfRun(sourceRun) || createTranslationTaskId()
+  }
+
+  function currentFormalContinuation(inputArtifact?: Artifact | null): Run | null {
+    const sourceIds = latestRun ? [latestRun.metadata?.input_artifact_id, latestRun.metadata?.parent_input_artifact_id, latestRun.metadata?.multilingual_source_artifact_id] : []
+    return latestRun && !isQuickTaskRun(latestRun) && translationTaskId
+      && translationTaskIdOfRun(latestRun) === translationTaskId
+      && (!inputArtifact || sourceIds.includes(inputArtifact.id))
+      && !['delivered', 'canceled', 'abandoned', 'closed'].includes(String(latestRun.metadata?.translation_task_state || ''))
+      ? latestRun : null
   }
 
   async function refreshTranslationReadiness(
@@ -399,7 +422,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     return languages.filter((language, index) => languages.indexOf(language) === index)
   }
 
-  async function confirmTermGapBeforeTranslate(language: LanguageCode): Promise<boolean> {
+  async function confirmTermGapBeforeTranslate(language: LanguageCode, accept: () => boolean = () => true): Promise<boolean> {
     if (!current || termArtifact) return true
     let confirmedTerms: number
     if (current.glossary) {
@@ -416,6 +439,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         confirmedTerms = Number(current.stats.glossary || 0)
       }
     }
+    if (!accept()) return false
     const readyCandidates = glossaryCandidates.filter((item) =>
       item.status === 'pending' &&
       (item.language || language) === language &&
@@ -428,6 +452,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
       '建议返回「术语候选」步骤先确认术语。仍要继续无术语翻译吗？',
       { title: '有未确认的候选术语', confirmLabel: '继续翻译', cancelLabel: '先去确认术语', tone: 'warn' }
     )
+    if (!accept()) return false
     if (!shouldContinue) {
       setStep(5)
       setStatusForProject(current.id, '已暂停翻译：请先在「术语候选」步骤确认候选术语，再启动 AI 翻译。')
@@ -435,9 +460,9 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     return shouldContinue
   }
 
-  async function confirmTermGapForLanguages(languages: LanguageCode[]): Promise<boolean> {
+  async function confirmTermGapForLanguages(languages: LanguageCode[], accept: () => boolean): Promise<boolean> {
     for (const language of languages) {
-      if (!(await confirmTermGapBeforeTranslate(language))) return false
+      if (!(await confirmTermGapBeforeTranslate(language, accept))) return false
     }
     return true
   }
@@ -458,11 +483,15 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   async function runTranslateInner(taskCode: 'A' | 'T') {
     if (!current || !sourceArtifact) return
     const projectId = current.id
-    const taskId = translationTaskId
+    const continuation = currentFormalContinuation(sourceArtifact)
+    const taskId = newFormalTaskId(continuation && isTranslationRunResumable(continuation)
+      && matchesTranslationRun(continuation, selectedLanguage, sourceArtifact.id, 'translation_run', translationTaskId) ? continuation : null)
+    if (!taskId) { setStatus('历史任务缺少任务 ID，请新建翻译任务后继续。'); return }
+    const taskStillCurrent = captureTaskGuard(projectId, taskId)
     const selectedBatchSize = effectiveBatchSize(settings, translationBatchSize)
     const readiness = translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === selectedBatchSize
       ? translationReadiness
-      : await refreshTranslationReadiness(sourceArtifact.id, projectId)
+      : await refreshTranslationReadiness(sourceArtifact.id, projectId, selectedLanguage, true, taskId)
     if (!taskStillCurrent(projectId, taskId)) return
     if (readiness && canSkipModelTranslation(readiness)) {
       setQaArtifact(sourceArtifact)
@@ -475,7 +504,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
       setStatus(`无法开始翻译：${blockReason}`)
       return
     }
-    const confirmedTermGap = await confirmTermGapBeforeTranslate(selectedLanguage)
+    const confirmedTermGap = await confirmTermGapBeforeTranslate(selectedLanguage, () => taskStillCurrent(projectId, taskId))
     if (!confirmedTermGap || !taskStillCurrent(projectId, taskId)) return
     setBusy(true)
     setStatusForProject(projectId, `${currentLang.short} 翻译前检查通过，准备分批翻译：${readiness?.source_rows || 0} 行，预计 ${readiness?.estimated_batches || '-'} 批。`)
@@ -571,12 +600,14 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   async function startMultilingualTranslationQueueInner(taskCode: 'A' | 'T') {
     if (!current || !sourceArtifact) return
     const projectId = current.id
-    const taskId = translationTaskId
+    const taskId = newFormalTaskId(currentFormalContinuation(sourceArtifact))
+    if (!taskId) { setStatus('历史任务缺少任务 ID，请新建翻译任务后继续。'); return }
+    const taskStillCurrent = captureTaskGuard(projectId, taskId)
     const languages = selectedQueueLanguages()
     const selectedBatchSize = effectiveBatchSize(settings, translationBatchSize)
     const readiness = translationReadiness?.artifact_id === sourceArtifact.id && translationReadiness.batch_size === selectedBatchSize
       ? translationReadiness
-      : await refreshTranslationReadiness(sourceArtifact.id, projectId)
+      : await refreshTranslationReadiness(sourceArtifact.id, projectId, selectedLanguage, true, taskId)
     if (!taskStillCurrent(projectId, taskId)) return
     const blockReason = formalTranslationBlockReason(settings, sourceArtifact, current, readiness)
     if (blockReason) {
@@ -586,7 +617,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     setBusyForProject(projectId, true)
     setStatusForProject(projectId, `正在启动多语言翻译队列：${languages.map((language) => languageSpec(language).short).join(' / ')}`)
     try {
-      const confirmedTermGap = await confirmTermGapForLanguages(languages)
+      const confirmedTermGap = await confirmTermGapForLanguages(languages, () => taskStillCurrent(projectId, taskId))
       if (!confirmedTermGap || !taskStillCurrent(projectId, taskId)) return
       const result = await api<MultilingualQueueStatus>(`/api/projects/${current.id}/multilingual/translate/start`, {
         method: 'POST',
@@ -628,6 +659,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     if (!run) return
     const projectId = run.project_id
     const taskId = translationTaskIdOfRun(run) || translationTaskId
+    const taskStillCurrent = captureTaskGuard(projectId, taskId, run)
     setBusy(true)
     setStatus('正在取消后台翻译任务...')
     try {
@@ -646,9 +678,19 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     const inputQaArtifact = overrideArtifact || qaArtifact
     if (!current || !inputQaArtifact) return
     const projectId = current.id
-    const taskId = translationTaskId
+    const sourceRun = (current.runs || []).find((run) => run.id === inputQaArtifact.run_id
+      && ['translation', 'qa'].includes(run.kind) && translationTaskIdOfRun(run)) || null
+    const sourceClosed = sourceRun && ['delivered', 'canceled', 'abandoned', 'closed'].includes(String(sourceRun.metadata?.translation_task_state || ''))
+    const isQuickTaskDetail = sourceRun && latestRun?.id === sourceRun.id && isQuickTaskRun(latestRun)
+      && translationTaskIdOfRun(latestRun) === translationTaskIdOfRun(sourceRun)
+    if (sourceRun && isQuickTaskDetail && sourceClosed) { setStatus('已结束的快速任务仅保留只读结果，请新建快速任务。'); return }
+    const continuation = sourceRun && !sourceClosed && (!isWizard || translationTaskIdOfRun(sourceRun) === translationTaskId) ? sourceRun : null
+    const taskId = newFormalTaskId(continuation)
+    if (!taskId) { setStatus('历史任务缺少任务 ID，请新建翻译任务后继续。'); return }
+    const taskStillCurrent = captureTaskGuard(projectId, taskId, continuation)
+    if (!taskStillCurrent(projectId, taskId)) return
     if (artifactRole(inputQaArtifact) === 'language_source') {
-      const readiness = await refreshTranslationReadiness(inputQaArtifact.id, projectId)
+      const readiness = await refreshTranslationReadiness(inputQaArtifact.id, projectId, selectedLanguage, true, taskId)
       if (!taskStillCurrent(projectId, taskId)) return
       if (!canSkipModelTranslation(readiness)) {
         setSourceArtifact(inputQaArtifact)
@@ -657,9 +699,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         return
       }
     }
-    const sourceRunId = inputQaArtifact.run_id && (current.runs || []).some((run) => run.id === inputQaArtifact.run_id && run.kind === 'translation')
-      ? inputQaArtifact.run_id
-      : null
+    const sourceRunId = continuation?.id || null
     if (overrideArtifact) setQaArtifact(overrideArtifact)
     setBusy(true)
     setStatusForProject(projectId, '正在对已有译文表格执行 QA...')
@@ -673,7 +713,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
           language: selectedLanguage,
           input_artifact_id: inputQaArtifact.id,
           term_artifact_id: termArtifact?.id || null,
-          task_origin: sourceRunId ? 'translation_continuation' : 'direct_import',
+          task_origin: continuation && isQuickTaskRun(continuation) ? 'quick_task' : sourceRunId ? 'translation_continuation' : 'direct_import',
           source_run_id: sourceRunId,
           task_code: taskCode,
           translation_task_id: taskId || null,
@@ -699,6 +739,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
     if (!run) return
     const projectId = run.project_id
     const taskId = translationTaskIdOfRun(run) || translationTaskId
+    const taskStillCurrent = captureTaskGuard(projectId, taskId, run)
     setBusy(true)
     setStatus('正在取消 QA 任务...')
     try {
@@ -716,12 +757,18 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   async function startMultilingualQAQueue(taskCode: 'QA' = 'QA') {
     if (!current) return
     const projectId = current.id
-    const taskId = translationTaskId
     const inputArtifact = sourceArtifact || qaArtifact
     if (!inputArtifact) {
       setStatusForProject(projectId, '请先选择语言表或已译表格，再运行多语言 QA。')
       return
     }
+    const sourceRun = (current.runs || []).find((run) => run.id === inputArtifact.run_id
+      && !isQuickTaskRun(run) && translationTaskIdOfRun(run)
+      && !['delivered', 'canceled', 'abandoned', 'closed'].includes(String(run.metadata?.translation_task_state || '')))
+      || currentFormalContinuation(inputArtifact)
+    const taskId = newFormalTaskId(sourceRun)
+    if (!taskId) { setStatus('历史任务缺少任务 ID，请新建翻译任务后继续。'); return }
+    const taskStillCurrent = captureTaskGuard(projectId, taskId)
     const languages = selectedQueueLanguages()
     setBusyForProject(projectId, true)
     setStatusForProject(projectId, `正在启动多语言 QA 队列：${languages.map((language) => languageSpec(language).short).join(' / ')}`)
@@ -738,7 +785,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         })
       })
       if (!taskStillCurrent(projectId, taskId)) return
-      const firstRunId = result.languages.find((item) => item.qa_run_id || item.run_id)?.qa_run_id || result.languages.find((item) => item.run_id)?.run_id
+      const firstRunId = result.languages.find((item) => item.run_id)?.run_id || result.languages.find((item) => item.qa_run_id)?.qa_run_id
       if (firstRunId) {
         const run = await api<Run>(`/api/runs/${firstRunId}`)
         if (taskStillCurrent(projectId, taskId)) setLatestRun(run)
@@ -757,7 +804,9 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   async function applyManualFixes(fixes: { issue_id?: string; sheet: string; row: number; translation: string; note?: string }[]) {
     if (!current || !latestRun || !fixes.length) return
     const projectId = current.id
-    const taskId = translationTaskIdOfRun(latestRun) || translationTaskId
+    const taskId = translationTaskIdOfRun(latestRun)
+    if (!taskId) { setStatus('历史任务缺少任务 ID，仅保留只读结果；请新建任务后修复。'); return }
+    const taskStillCurrent = captureTaskGuard(projectId, taskId, latestRun)
     setBusy(true)
     setStatusForProject(projectId, '正在保存手工修复...')
     try {
@@ -793,7 +842,9 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   async function applyModelFixes() {
     if (!current || !latestRun) return
     const projectId = current.id
-    const taskId = translationTaskIdOfRun(latestRun) || translationTaskId
+    const taskId = translationTaskIdOfRun(latestRun)
+    if (!taskId) { setStatus('历史任务缺少任务 ID，仅保留只读结果；请新建任务后修复。'); return }
+    const taskStillCurrent = captureTaskGuard(projectId, taskId, latestRun)
     setBusy(true)
     setStatusForProject(projectId, '正在启动模型修复后台任务...')
     try {
@@ -902,7 +953,7 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   ): Promise<boolean> => {
     if (!current) return false
     if (options?.readbackOnly) {
-      await refreshCurrent(current.id)
+      await refreshCurrent(current.id, options.readbackProject)
       return true
     }
     const targetArtifact = artifactOverride || archiveArtifact
@@ -987,9 +1038,11 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   async function createDeliveryPackage(runId: string): Promise<DeliveryFile[] | null> {
     if (!current) return null
     const projectId = current.id
-    const requestTaskId = translationTaskId
     const targetRun = [latestRun, ...(current.runs || [])].find((run) => run?.id === runId) || null
     const targetTaskId = translationTaskIdOfRun(targetRun)
+    if (!targetTaskId) { setStatus('历史任务缺少任务 ID，仅保留既有交付下载；请新建任务后生成。'); return null }
+    const requestTaskId = targetTaskId
+    const taskStillCurrent = captureTaskGuard(projectId, requestTaskId, targetRun)
     setBusy(true)
     setStatus('正在生成最终交付文件...')
     try {
@@ -1000,9 +1053,9 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
         setGeneratedDelivery({ projectId, runId, translationTaskId: generatedTask?.translation_task_id || targetTaskId || undefined, files })
         try {
           const refreshed = await loadDeliverables(projectId)
-          setDeliverables(mergeGeneratedDeliveryTask(refreshed, generatedTask))
+          if (taskStillCurrent(projectId, requestTaskId)) setDeliverables(mergeGeneratedDeliveryTask(refreshed, generatedTask))
         } catch {
-          setDeliverables((previous) => mergeGeneratedDeliveryTask(previous, generatedTask))
+          if (taskStillCurrent(projectId, requestTaskId)) setDeliverables((previous) => mergeGeneratedDeliveryTask(previous, generatedTask))
         }
       }
       await refreshCurrent(projectId)
@@ -1034,7 +1087,9 @@ export function useTranslationActions(params: UseTranslationActionsParams) {
   async function createMergedDeliveryPackage(): Promise<DeliveryFile[] | null> {
     if (!current || !sourceArtifact) return null
     const projectId = current.id
-    const taskId = translationTaskId
+    const taskId = translationTaskId || translationTaskIdOfRun(latestRun)
+    if (!taskId || (latestRun && isQuickTaskRun(latestRun))) { setStatus('请先选择具有任务 ID 的正式翻译任务，再生成多语言交付。'); return null }
+    const taskStillCurrent = captureTaskGuard(projectId, taskId, latestRun)
     const languages = selectedQueueLanguages()
     const deliveryRunId = latestRun?.id || (current.runs || []).find((run) => (
       ['translation', 'qa'].includes(run.kind)

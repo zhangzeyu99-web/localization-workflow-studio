@@ -3,6 +3,7 @@ import { api } from '../apiClient'
 import { announcementActionLabel, announcementActionSummary, errorText } from '../appText'
 import { artifactPickerLabel, uniqueArtifactsByContent } from '../domain/artifacts'
 import { unfinishedAnnouncementConflictTaskId } from '../domain/announcementTaskLifecycle'
+import { announcementTermsVersion } from '../domain/announcementTermsReview'
 import type { AnnouncementSessionScope } from '../domain/announcementTaskLifecycle'
 import type { ConfirmDialogOptions } from '../components/modals/ConfirmModal'
 import type { LanguageCode } from '../languages'
@@ -215,8 +216,16 @@ export function useAnnouncementActions(params: UseAnnouncementActionsParams) {
         body: JSON.stringify(payload)
       })
       if (isCurrentAnnouncementSession(session) && result.run) setLatestRun({ ...result.run, artifacts: result.artifacts || [] })
-      await refreshCurrent()
+      const refreshed = await refreshCurrent()
       if (!isCurrentAnnouncementSession(session)) return null
+      if (['extract-terms', 'import-terms'].includes(endpoint) && result.task) {
+        const latestTask = refreshed?.announcement_tasks?.find((task) => task.id === taskId)
+        if (!latestTask || ['canceled', 'delivered'].includes(latestTask.status)
+          || announcementTermsVersion(latestTask) !== announcementTermsVersion(result.task)) {
+          setStatusForProject(projectId, '服务器术语结果已更新，请核对当前结果后再继续；未保存编辑已保留。')
+          return null
+        }
+      }
       const summary = announcementActionSummary(endpoint, result.summary)
       const taskStatus = String(result.task?.status || '')
       if (endpoint.startsWith('translate/') && ['queued', 'running'].includes(taskStatus)) {

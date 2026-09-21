@@ -438,6 +438,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--delivery-dir", type=Path)
     run.add_argument("--batch-size", type=int, default=60)
     run.add_argument("--workers", type=int, default=4)
+    run.add_argument("--proofread-batch-size", type=int, default=30)
+    run.add_argument("--proofread-workers", type=int, default=8)
     run.add_argument("--source-mode", choices=["cn", "cn+en", "en"], default="cn")
     run.add_argument("--out", type=Path)
 
@@ -520,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
             delivery_dir=args.delivery_dir,
             batch_size=args.batch_size,
             workers=args.workers,
+            proofread_batch_size=args.proofread_batch_size,
+            proofread_workers=args.proofread_workers,
             source_mode=args.source_mode,
         )
         payload = asdict(result)

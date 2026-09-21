@@ -23,6 +23,7 @@ from utils.large_text_multilingual_executor import (
 from utils.large_text_multilingual_gate import apply_dry_run, cache_lint, readback_gate
 from utils.large_text_multilingual_pack import prepare_pack
 from utils.large_text_multilingual_proofread import AuditClient, ReviewClient, run_deep_proofread
+from utils.large_text_residue_repair import repair_cache_residue
 from utils.large_text_multilingual_runner import build_manifest, load_manifest, save_manifest
 from utils.xlsx_translation_writeback import verify_translation_cache, write_translation_workbooks
 
@@ -149,6 +150,19 @@ def run_pipeline(
         batch_size=batch_size,
         workers=workers,
     )
+
+    residue_report_path = work_dir / "local_residue_repairs.json"
+    residue_report = repair_cache_residue(
+        translation.cache_jsonl,
+        target_langs=target_langs,
+        report_path=residue_report_path,
+    )
+    manifest = load_manifest(manifest_path)
+    manifest.setdefault("artifacts", {})["local_residue_repairs"] = str(residue_report_path)
+    manifest.setdefault("phase_metrics", {})["local_residue_repair"] = {
+        "changed_cells": residue_report["changed_cells"]
+    }
+    save_manifest(manifest)
 
     initial_lint_path = work_dir / "cache_lint.json"
 

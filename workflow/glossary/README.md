@@ -32,6 +32,8 @@ Main supported workflows:
 - Optional AI supplement interface for announcement leak-checking, sentence-level term splitting, confidence notes, and project-name translation warnings.
 - Local harness regression for core extraction, observation feedback, announcement lookup, and AI supplement behavior.
 
+既有术语补全与优化审核见[执行规范](docs/existing-glossary-review.md)：区分补空、差异审核和获批应用，使用具体中文理由，默认交付不含保留项的干净审核表。此规范是执行要求，不宣称 CLI 已自动实现语义审批。
+
 ## Why This Project Exists
 
 Localization teams often store useful term decisions inside huge language tables, chat threads, or ad hoc spreadsheets. This project turns that mess into a repeatable workflow that:

@@ -465,6 +465,10 @@ def _build_style_profile(
         "name_policy": {
             "skill_names": "explicit_glossary_category_only; prefer_two_readable_words",
             "location_names": "explicit_glossary_category_only; prefer_two_content_words",
+            "building_names": (
+                "explicit_glossary_category_only; prefer_two_content_words; "
+                "treat_as_mobile_map_ui; separate_level_and_tier_badges_when_supported"
+            ),
             "priority": "meaning_and_uniqueness_before_length",
         },
         "calibration_samples": samples,

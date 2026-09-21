@@ -1,10 +1,10 @@
 import type { LanguageCode } from '../languages'
-import type { Artifact } from '../types'
+import type { Artifact, Project } from '../types'
 
 export type ArchiveImportKind = 'translations' | 'glossary'
 export type ArchiveImportStage = 'source' | 'settings' | 'preview' | 'success'
 export type ArchiveImportMode = 'merge' | 'snapshot'
-export type ArchiveImportReadbackOptions = { readbackOnly?: boolean }
+export type ArchiveImportReadbackOptions = { readbackOnly?: boolean; readbackProject?: Project }
 
 export type ArchiveImportSettings = {
   mode: ArchiveImportMode

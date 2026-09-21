@@ -9,7 +9,7 @@ export function useProjectListPolling(
 ) {
   const syncProjectList = (signal?: AbortSignal) => {
     if (document.hidden) return
-    refreshProjects(currentIdRef.current, signal).catch(() => undefined)
+    return refreshProjects(currentIdRef.current, signal).catch(() => undefined)
   }
 
   useEffect(() => {
@@ -26,5 +26,5 @@ export function useProjectListPolling(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  usePolling((isStale, signal) => { if (!isStale()) syncProjectList(signal) }, { intervalMs: 10000, enabled: true }, [])
+  usePolling((isStale, signal) => { if (!isStale()) return syncProjectList(signal) }, { intervalMs: 10000, enabled: true }, [])
 }

@@ -16,6 +16,7 @@ SRC_SURVIVAL = "\u7d2f\u8ba1\u53c2\u4e0e{0}\u6b21\u6c42\u751f\u4e4b\u8def"
 SRC_RICH = "[size=80][c0]\u81ea\u9009\u4f20\u8bf4\u6280\u80fd[s0][/size]"
 SRC_SKILL = "\u7ec8\u7109\u4e4b\u5883"
 SRC_LOCATION = "\u592a\u9633\u795e\u6bbf"
+SRC_BUILDING = "\u8f7d\u5177\u4e2d\u5fc3"
 
 
 def _write_language_workbook(path: Path) -> None:
@@ -47,6 +48,7 @@ def _write_name_policy_language_workbook(path: Path) -> None:
     ws.append(["ID", "Cn", "En"])
     ws.append([4, SRC_SKILL, ""])
     ws.append([5, SRC_LOCATION, ""])
+    ws.append([6, SRC_BUILDING, ""])
     wb.save(path)
 
 
@@ -57,6 +59,7 @@ def _write_name_policy_term_workbook(path: Path) -> None:
     ws.append(["ID", "CN", "EN", "EN2", "\u5206\u7c7b"])
     ws.append([4, SRC_SKILL, "Final Realm", "", "\u6280\u80fd\u540d"])
     ws.append([5, SRC_LOCATION, "Temple of the Sun", "", "\u5730\u70b9\u540d"])
+    ws.append([6, SRC_BUILDING, "Vehicle Center", "", "\u5efa\u7b51\u540d"])
     wb.save(path)
 
 
@@ -169,7 +172,7 @@ class TranslationHarnessTests(unittest.TestCase):
             self.assertIn("Survival Road", [term["target"] for term in rows[1]["term_hits"]])
             self.assertIn("[size=80]", rows[2]["tags"])
 
-    def test_prepare_adds_explicit_skill_and_location_name_policy(self):
+    def test_prepare_adds_explicit_skill_location_and_building_name_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             lang_path = tmp_path / "lang.xlsx"
@@ -193,6 +196,13 @@ class TranslationHarnessTests(unittest.TestCase):
             self.assertEqual(rows[0]["name_policy"]["preferred_words"], 2)
             self.assertEqual(rows[1]["text_type"], "ui_location_name")
             self.assertEqual(rows[1]["name_policy"]["preferred_content_words"], 2)
+            self.assertEqual(rows[2]["text_type"], "ui_building_name")
+            self.assertEqual(rows[2]["name_policy"]["preferred_content_words"], 2)
+            self.assertEqual(rows[2]["name_policy"]["map_label_max_characters"], 14)
+            self.assertEqual(
+                rows[2]["name_policy"]["tier_policy"],
+                "separate_ui_badge_when_supported",
+            )
             self.assertEqual(rows[0]["term_hits"][0]["category"], "\u6280\u80fd\u540d")
 
     def test_prepare_cn_plus_en_keeps_chinese_primary_and_adds_english_reference(self):

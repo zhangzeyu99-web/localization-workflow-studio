@@ -10,6 +10,7 @@ from pathlib import Path
 
 from utils.large_text_multilingual_proofread import run_deep_proofread
 from utils.large_text_multilingual_runner import build_manifest
+from utils.structured_text_template import technical_tokens
 
 
 def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -57,7 +58,7 @@ class Auditor:
             {
                 "review_key": row["review_key"],
                 "lang": row["lang"],
-                "decision": "ACCEPT" if row["lang"] == "EN" else "REVERT",
+                "decision": "ACCEPT" if row["lang"] == "EN" or row['status'] == 'KEEP' else "REVERT",
                 "final": row["suggested"],
                 "reason": "meaning preserved" if row["lang"] == "EN" else "meaning narrowed",
             }
@@ -80,6 +81,270 @@ class FailingAuditor:
 
 
 class LargeTextMultilingualProofreadTests(unittest.TestCase):
+    def test_auditor_receives_trusted_source_current_and_dialogue_context(self) -> None:
+        testcase = self
+        class GenderReviewer:
+            checkpoint_identity = 'gender-reviewer'
+            def review_batch(self, rows, target_langs):
+                return [{'review_key': row['review_key'], 'lang': 'RU', 'status': 'FIX',
+                         'suggested': 'Я выбирала.', 'reason': 'likely female speaker',
+                         'context': 'untrusted replacement context', 'current': 'not the original'}
+                        for row in rows]
+
+        class EvidenceAuditor:
+            checkpoint_identity = 'evidence-auditor'
+            def audit_batch(self, suggestions):
+                for row in suggestions:
+                    testcase.assertEqual(row['current'], 'Я выбирал.')
+                    testcase.assertEqual(row['translation_source'], 'I made the choice.')
+                    testcase.assertEqual(row['source_mode'], 'en')
+                    testcase.assertEqual(row['cn'], '我做出了选择。')
+                    testcase.assertEqual(row['context'], 'Speaker: Adrian, male. Addressee: Ella, female.')
+                    testcase.assertEqual(row['protected_tokens'], [])
+                    testcase.assertEqual(row['risk_flags'], ['dialogue'])
+                return [{'review_key': row['review_key'], 'lang': row['lang'],
+                         'decision': 'REVERT', 'final': row['current'], 'reason': 'speaker evidence contradicts suggestion'}
+                        for row in suggestions]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items, initial = root/'items.jsonl', root/'initial.jsonl'
+            rows = [{'key':'1','cn':'我做出了选择。','translation_source':'I made the choice.',
+                     'reference_en':'I made the choice.','source_mode':'en',
+                     'context':'Speaker: Adrian, male. Addressee: Ella, female.',
+                     'tokens':[], 'risk_flags':['dialogue'], 'translations':{'RU':'Я выбирал.'}}]
+            write_jsonl(items, rows)
+            write_jsonl(initial, rows)
+            manifest=build_manifest(work_dir=root/'work',items_jsonl=items,source_rows_jsonl=None,
+                target_langs=['RU'],workbook_count=1,relay_config=None,proofread_mode='full',source_mode='en')
+            summary=run_deep_proofread(Path(manifest['manifest_path']),initial_cache=initial,
+                reviewer=GenderReviewer(),auditor=EvidenceAuditor())
+            self.assertEqual(summary.changed_cells,0)
+            self.assertEqual(summary.reverted_changes,1)
+            self.assertEqual(json.loads(summary.final_cache.read_text(encoding='utf-8'))['translations']['RU'],'Я выбирал.')
+
+    def test_controller_reverts_suggestion_that_changes_literal_newline_token(self) -> None:
+        class NewlineReviewer:
+            checkpoint_identity = "newline-reviewer"
+
+            def review_batch(self, rows, target_langs):  # type: ignore[no-untyped-def]
+                return [
+                    {
+                        "review_key": row["review_key"],
+                        "lang": target_langs[0],
+                        "status": "FIX",
+                        "suggested": "First line\nSecond line",
+                        "reason": "style",
+                    }
+                    for row in rows
+                ]
+
+        class AcceptingAuditor:
+            checkpoint_identity = "newline-auditor"
+
+            def audit_batch(self, suggestions):  # type: ignore[no-untyped-def]
+                return [
+                    {
+                        "review_key": row["review_key"],
+                        "lang": row["lang"],
+                        "decision": "ACCEPT",
+                        "final": row["suggested"],
+                        "reason": "accepted",
+                    }
+                    for row in suggestions
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.jsonl"
+            initial = root / "initial.jsonl"
+            rows = [
+                {
+                    "key": "1",
+                    "cn": r"第一行\n第二行",
+                    "context": "ui",
+                    "tokens": [r"\n"],
+                    "translations": {"EN": r"Line one\nLine two"},
+                }
+            ]
+            write_jsonl(items, rows)
+            write_jsonl(initial, rows)
+            manifest = build_manifest(
+                work_dir=root / "work",
+                items_jsonl=items,
+                source_rows_jsonl=None,
+                target_langs=["EN"],
+                workbook_count=1,
+                relay_config=None,
+                proofread_mode="full",
+            )
+
+            summary = run_deep_proofread(
+                Path(manifest["manifest_path"]),
+                initial_cache=initial,
+                reviewer=NewlineReviewer(),
+                auditor=AcceptingAuditor(),
+            )
+
+            output = json.loads(summary.final_cache.read_text(encoding="utf-8"))
+            self.assertEqual(output["translations"]["EN"], r"Line one\nLine two")
+            self.assertEqual(summary.changed_cells, 0)
+
+    def test_controller_keeps_exact_glossary_seed_locked(self) -> None:
+        class GlossaryReviewer:
+            checkpoint_identity = "glossary-reviewer"
+
+            def review_batch(self, rows, target_langs):  # type: ignore[no-untyped-def]
+                return [
+                    {
+                        "review_key": row["review_key"],
+                        "lang": target_langs[0],
+                        "status": "FIX",
+                        "suggested": "Titan's Warblade",
+                        "reason": "style",
+                    }
+                    for row in rows
+                ]
+
+        class AcceptingAuditor:
+            checkpoint_identity = "glossary-auditor"
+
+            def audit_batch(self, suggestions):  # type: ignore[no-untyped-def]
+                return [
+                    {
+                        "review_key": row["review_key"],
+                        "lang": row["lang"],
+                        "decision": "ACCEPT",
+                        "final": row["suggested"],
+                        "reason": "accepted",
+                    }
+                    for row in suggestions
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.jsonl"
+            initial = root / "initial.jsonl"
+            rows = [
+                {
+                    "key": "1",
+                    "cn": "泰坦战刃",
+                    "context": "ui",
+                    "seed_origin": "glossary_exact",
+                    "translations": {"EN": "Titan Warblade"},
+                }
+            ]
+            write_jsonl(items, rows)
+            write_jsonl(initial, rows)
+            manifest = build_manifest(
+                work_dir=root / "work",
+                items_jsonl=items,
+                source_rows_jsonl=None,
+                target_langs=["EN"],
+                workbook_count=1,
+                relay_config=None,
+                proofread_mode="full",
+            )
+
+            summary = run_deep_proofread(
+                Path(manifest["manifest_path"]),
+                initial_cache=initial,
+                reviewer=GlossaryReviewer(),
+                auditor=AcceptingAuditor(),
+            )
+
+            output = json.loads(summary.final_cache.read_text(encoding="utf-8"))
+            self.assertEqual(output["translations"]["EN"], "Titan Warblade")
+            self.assertEqual(summary.changed_cells, 0)
+
+    def test_structured_deep_review_never_exposes_or_rebuilds_code(self) -> None:
+        class PlainReviewer:
+            checkpoint_identity = "plain-structured-reviewer"
+
+            def review_batch(self, rows, target_langs):  # type: ignore[no-untyped-def]
+                suggestions = []
+                for row in rows:
+                    for field in ("cn", "translation_source", "context"):
+                        value = str(row.get(field) or "")
+                        if any(token in value for token in ("<", "{", "[")):
+                            raise AssertionError(f"reviewer received structure: {value}")
+                    current = row["translations"][target_langs[0]]
+                    fix = row["cn"] == "今日打包"
+                    suggestions.append(
+                        {
+                            "review_key": row["review_key"],
+                            "lang": target_langs[0],
+                            "status": "FIX" if fix else "KEEP",
+                            "suggested": "Daily Bundle" if fix else current,
+                            "reason": "terminology" if fix else "ok",
+                        }
+                    )
+                return suggestions
+
+        class PlainAuditor:
+            checkpoint_identity = "plain-structured-auditor"
+
+            def audit_batch(self, suggestions):  # type: ignore[no-untyped-def]
+                for row in suggestions:
+                    if any(token in str(row.get("suggested") or "") for token in ("<", "{", "[")):
+                        raise AssertionError("auditor received structure")
+                return [
+                    {
+                        "review_key": row["review_key"],
+                        "lang": row["lang"],
+                        "decision": "ACCEPT",
+                        "final": row["suggested"],
+                        "reason": "clear improvement",
+                    }
+                    for row in suggestions
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.jsonl"
+            initial = root / "initial.jsonl"
+            source = json.dumps(
+                ["<color=#<@1>><@2>今日打包</color>", "章节一"],
+                ensure_ascii=False,
+            )
+            target = json.dumps(
+                ["<color=#<@1>><@2>Daily Pack</color>", "Chapter I"],
+                ensure_ascii=False,
+            )
+            rows = [
+                {
+                    "key": "1",
+                    "cn": source,
+                    "context": "ui",
+                    "term_hits": [],
+                    "translations": {"EN": target},
+                }
+            ]
+            write_jsonl(items, rows)
+            write_jsonl(initial, rows)
+            manifest = build_manifest(
+                work_dir=root / "work",
+                items_jsonl=items,
+                source_rows_jsonl=None,
+                target_langs=["EN"],
+                workbook_count=1,
+                relay_config=None,
+                proofread_mode="full",
+            )
+
+            summary = run_deep_proofread(
+                Path(manifest["manifest_path"]),
+                initial_cache=initial,
+                reviewer=PlainReviewer(),
+                auditor=PlainAuditor(),
+            )
+
+            output = json.loads(summary.final_cache.read_text(encoding="utf-8"))
+            final_text = output["translations"]["EN"]
+            self.assertEqual(technical_tokens(final_text), technical_tokens(source))
+            self.assertEqual(json.loads(final_text)[0], "<color=#<@1>><@2>Daily Bundle</color>")
+            self.assertEqual(summary.changed_cells, 1)
+
     def test_sampled_mode_reviews_high_risk_rows_and_ten_percent_of_low_risk_rows(self) -> None:
         class RecordingReviewer(Reviewer):
             checkpoint_identity = "sampled-reviewer"

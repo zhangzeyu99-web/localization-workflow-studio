@@ -17,6 +17,7 @@ export function ActiveJobsPanel({
   const count = allQueueJobs(queues).length
 
   async function cancel(job: JobQueueEntry) {
+    if (job.can_cancel === false || job.archive_committed) return
     setCancelingJobId(job.job_id)
     try {
       await onCancel(job)
@@ -54,10 +55,11 @@ export function ActiveJobsPanel({
                             type="button"
                             className="btn btn-ghost btn-sm active-jobs-cancel"
                             data-testid={`queue-cancel-${job.job_id}`}
-                            disabled={cancelingJobId === job.job_id}
+                            disabled={cancelingJobId === job.job_id || job.can_cancel === false || job.archive_committed}
+                            title={job.archive_committed ? '归档已经提交，不能再取消；请等待任务完成。' : undefined}
                             onClick={() => void cancel(job)}
                           >
-                            {cancelingJobId === job.job_id ? '取消中...' : '取消'}
+                            {job.archive_committed ? '已提交' : cancelingJobId === job.job_id ? '取消中...' : '取消'}
                           </button>
                         </div>
                       </div>

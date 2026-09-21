@@ -1128,14 +1128,14 @@ test('formal translation remains actionable after returning from a project whose
   await page.route('**/api/runs', async (route) => {
     if (route.request().method() !== 'POST') return route.continue()
     formalCreateBody = route.request().postDataJSON()
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(formalRun) })
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...formalRun, metadata: { ...formalRun.metadata, translation_task_id: formalCreateBody?.translation_task_id } }) })
   })
   await page.route(`**/api/runs/${formalRun.id}/translate/start`, async (route) => {
     formalStartCalls += 1
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ ...formalRun, status: 'queued', updated_at: '2026-07-15T13:00:01Z' }),
+      body: JSON.stringify({ ...formalRun, metadata: { ...formalRun.metadata, translation_task_id: formalCreateBody?.translation_task_id }, status: 'queued', updated_at: '2026-07-15T13:00:01Z' }),
     })
   })
 
@@ -1149,7 +1149,8 @@ test('formal translation remains actionable after returning from a project whose
   await expect(page.getByTestId('formal-translate')).toBeEnabled()
   await page.getByTestId('formal-translate').click()
   await expect.poll(() => formalStartCalls, { timeout: 3000 }).toBe(1)
-  expect(formalCreateBody?.translation_task_id ?? null).toBeNull()
+  expect(formalCreateBody?.translation_task_id).toMatch(/^translation-task-/)
+  expect(formalCreateBody?.translation_task_id).not.toBe(quickRun.metadata.translation_task_id)
 })
 
 test('direct QA starts normally after returning from a project whose latest run is a delivered quick QA', async ({ page, request }) => {
@@ -1211,14 +1212,14 @@ test('direct QA starts normally after returning from a project whose latest run 
   await page.route('**/api/runs', async (route) => {
     if (route.request().method() !== 'POST') return route.continue()
     qaCreateBody = route.request().postDataJSON()
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(formalQaRun) })
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...formalQaRun, metadata: { ...formalQaRun.metadata, translation_task_id: qaCreateBody?.translation_task_id } }) })
   })
   await page.route(`**/api/runs/${formalQaRun.id}/qa/start`, async (route) => {
     qaStartCalls += 1
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ ...formalQaRun, status: 'queued', updated_at: '2026-07-15T13:00:01Z' }),
+      body: JSON.stringify({ ...formalQaRun, metadata: { ...formalQaRun.metadata, translation_task_id: qaCreateBody?.translation_task_id }, status: 'queued', updated_at: '2026-07-15T13:00:01Z' }),
     })
   })
 
@@ -1233,5 +1234,8 @@ test('direct QA starts normally after returning from a project whose latest run 
   await page.getByTestId('qa-rerun').click()
   await expect.poll(() => qaCreateBody, { timeout: 3000 }).not.toBeNull()
   await expect.poll(() => qaStartCalls, { timeout: 3000 }).toBe(1)
-  expect(qaCreateBody?.translation_task_id ?? null).toBeNull()
+  expect(qaCreateBody?.translation_task_id).toMatch(/^translation-task-/)
+  expect(qaCreateBody?.translation_task_id).not.toBe(quickRun.metadata.translation_task_id)
+  expect(qaCreateBody?.source_run_id).toBeNull()
+  expect(qaCreateBody?.task_origin).toBe('direct_import')
 })

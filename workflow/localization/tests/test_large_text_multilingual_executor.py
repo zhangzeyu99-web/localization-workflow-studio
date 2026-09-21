@@ -12,6 +12,7 @@ from utils.large_text_multilingual_executor import (
     translate_manifest,
 )
 from utils.large_text_multilingual_runner import build_manifest
+from utils.structured_text_template import technical_tokens
 
 
 def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -73,6 +74,58 @@ class IdentifiedClient(FakeClient):
 
 
 class LargeTextMultilingualExecutorTests(unittest.TestCase):
+    def test_structured_rows_send_only_plain_text_and_rebuild_programmatically(self) -> None:
+        class PlainTextOnlyClient(FakeClient):
+            def translate_batch(self, rows, target_langs):  # type: ignore[no-untyped-def]
+                for row in rows:
+                    for field in ("cn", "translation_source", "context"):
+                        value = str(row.get(field) or "")
+                        self.assertNotIn("<", value)
+                        self.assertNotIn("{", value)
+                        self.assertNotIn("[", value)
+                return super().translate_batch(rows, target_langs)
+
+            def assertNotIn(self, member: str, container: str) -> None:
+                if member in container:
+                    raise AssertionError(f"model received structural syntax: {container}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.jsonl"
+            source = json.dumps(
+                ["<color=#<@1>><@2>今日打包</color>", "章节一"],
+                ensure_ascii=False,
+            )
+            write_jsonl(
+                items,
+                [{"key": "1", "cn": source, "context": "ui", "term_hits": []}],
+            )
+            manifest = build_manifest(
+                work_dir=root / "work",
+                items_jsonl=items,
+                source_rows_jsonl=None,
+                target_langs=["EN"],
+                workbook_count=1,
+                relay_config=None,
+                proofread_mode="basic",
+            )
+
+            summary = translate_manifest(
+                Path(manifest["manifest_path"]),
+                relay_config=None,
+                client=PlainTextOnlyClient(),
+            )
+
+            output = json.loads(summary.cache_jsonl.read_text(encoding="utf-8"))
+            translated = output["translations"]["EN"]
+            self.assertEqual(technical_tokens(translated), technical_tokens(source))
+            self.assertEqual(len(json.loads(translated)), 2)
+            self.assertIn("EN:今日打包", translated)
+            self.assertEqual(
+                translated,
+                source.replace("今日打包", "EN:今日打包").replace("章节一", "EN:章节一"),
+            )
+
     def test_openai_client_retries_response_without_choices(self) -> None:
         class FakeResponse:
             def __init__(self, body: dict[str, object]) -> None:

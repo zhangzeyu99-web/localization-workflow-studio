@@ -6,6 +6,7 @@ from ..workflow import (
     build_merged_delivery_package,
     build_delivery_package,
     list_project_deliverables,
+    list_project_delivery_history,
     project_dir,
     user_facing_error,
 )
@@ -22,6 +23,14 @@ from fastapi.responses import FileResponse
 from typing import Any
 
 router = APIRouter()
+
+@router.get("/api/projects/{project_id}/delivery-history")
+def get_project_delivery_history(project_id: str) -> dict[str, Any]:
+    try:
+        return list_project_delivery_history(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
 
 @router.get("/api/projects/{project_id}/deliverables")
 def get_project_deliverables(project_id: str) -> dict[str, Any]:

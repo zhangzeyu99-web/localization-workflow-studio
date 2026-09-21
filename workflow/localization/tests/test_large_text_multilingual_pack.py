@@ -38,6 +38,34 @@ def create_reference_workbook(path: Path, *, missing_reference: bool = False) ->
 
 
 class LargeTextMultilingualPackTests(unittest.TestCase):
+    def test_declared_character_category_aliases_reach_cache_gate(self) -> None:
+        from utils.large_text_multilingual_gate import cache_lint
+        from utils.large_text_multilingual_pack import _term_hits
+
+        fixture = json.loads((Path(__file__).parents[1] / 'fixtures' / 'quality_regression.json').read_text(encoding='utf-8'))
+        for case in fixture['strict_term_category_cases']:
+            with self.subTest(category=case['category']), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                term_base = root / 'terms.xlsx'
+                workbook = Workbook()
+                workbook.active.append(['CN', 'EN', 'FR', '分类'])
+                workbook.active.append(['艾拉', 'Ella', 'Ella', case['category']])
+                workbook.save(term_base)
+                workbook.close()
+                terms = _load_terms(term_base, ['FR'])
+                self.assertIs(terms[0]['strict'], case['required'])
+                row = {'key': '1', 'cn': '你好，艾拉', 'source_mode': 'en',
+                       'translation_source': 'Hello, Ella.',
+                       'term_hits': _term_hits('你好，艾拉', terms),
+                       'translations': {'FR': 'Bonjour, Emma.'}}
+                cache = root / 'cache.jsonl'
+                cache.write_text(json.dumps(row, ensure_ascii=False) + '\n', encoding='utf-8')
+                report = cache_lint(cache, target_langs=['FR'], term_base=term_base)
+                self.assertEqual(report['hard_by_type'], {'term_missing': 1} if case['required'] else {})
+                row['translations']['FR'] = 'Bonjour, Ella.'
+                cache.write_text(json.dumps(row, ensure_ascii=False) + '\n', encoding='utf-8')
+                self.assertEqual(cache_lint(cache, target_langs=['FR'], term_base=term_base)['hard_blockers'], 0)
+
     def test_load_terms_ignores_stale_xlsx_dimension_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "terms.xlsx"
@@ -57,6 +85,42 @@ class LargeTextMultilingualPackTests(unittest.TestCase):
             terms = _load_terms(rewritten, ["EN"])
 
             self.assertEqual([term["source"] for term in terms], ["双生魔偶"])
+
+    def test_english_primary_names_and_kinship_are_contextual(self) -> None:
+        from utils.large_text_multilingual_gate import cache_lint
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            terms_path = root / 'terms.xlsx'
+            workbook = Workbook()
+            workbook.active.append(['CN', 'EN', 'FR', '分类'])
+            workbook.active.append(['艾拉', 'Ella', 'Ella', '角色'])
+            workbook.active.append(['姥姥', 'Grandma', 'Mamie', '角色'])
+            workbook.active.append(['艾拉奶奶', 'Grandma Ella', 'Mamie Ella', '角色'])
+            workbook.save(terms_path)
+            workbook.close()
+            terms = {term['source']: term for term in _load_terms(terms_path, ['FR'])}
+            self.assertFalse(terms['姥姥']['strict'])
+            self.assertTrue(terms['艾拉奶奶']['strict'])
+            self.assertEqual(terms['艾拉']['reference_en'], 'Ella')
+            for mode in ('en', 'cn+en'):
+                source = root / f'{mode}.xlsx'
+                workbook = Workbook()
+                workbook.active.append(['ID', 'CN', 'EN', 'FR'])
+                workbook.active.append([1, '艾拉说过了', 'You already said that.', None])
+                workbook.active.append([2, '艾拉说过了', "Ella's already said that.", None])
+                workbook.active.append([3, '看望姥姥', 'Visit Grandma.', None])
+                workbook.save(source)
+                workbook.close()
+                pack = prepare_pack(inputs=[source], term_base=terms_path, history_dirs=[], target_langs=['FR'], work_dir=root/mode, source_mode=mode)
+                rows = [json.loads(line) for line in pack.items_jsonl.read_text(encoding='utf-8').splitlines()]
+                self.assertEqual(len(rows[0]['term_hits']), 0 if mode == 'en' else 1)
+                self.assertEqual(len(rows[1]['term_hits']), 1)
+                for row, value in zip(rows, ['Tu l’as déjà dit.', 'Ella l’a déjà dit.', 'Rendre visite à mamie.']):
+                    row['translations'] = {'FR': value}
+                cache = root / f'{mode}.jsonl'
+                cache.write_text(''.join(json.dumps(row, ensure_ascii=False)+'\n' for row in rows), encoding='utf-8')
+                report = cache_lint(cache, target_langs=['FR'], term_base=terms_path)
+                self.assertEqual(report['hard_by_type'], {} if mode == 'en' else {'term_missing': 1})
 
     def test_load_terms_marks_main_character_names_as_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Megaphone } from 'lucide-react'
 import { announcementLanguages, languageChipTitle, languageSpec, normalizeLanguageArray, normalizeLanguageCode, supportedLanguages, type LanguageCode } from '../../languages'
 import { artifactDownloadHref, artifactFileName, artifactLanguageLabel, artifactPickerLabel, isAnnouncementSourceDocument, isGeneratedAnnouncementTermsArtifact, pickerArtifacts } from '../../domain/artifacts'
 import { aiProviderConfigurationReminder, isAiProviderReady, providerLabel } from '../../domain/providerSettings'
 import { announcementStatusLabel } from '../../domain/announcementText'
+import { announcementReviewStep, announcementTermsVersion, confirmAnnouncementTerms } from '../../domain/announcementTermsReview'
 import { queueJobForTarget, queueJobStatusText } from '../../domain/jobQueues'
 import { activeAnnouncementTasks, announcementLanguageSummary, announcementTaskCanCancel } from './AnnouncementProjectPanel'
 import { ActionStatus, ArtifactNote, FileBox, FileBoxWithTemplate, TranslationProgressBar } from '../shared/WorkflowPrimitives'
@@ -40,26 +41,31 @@ export function isAnnouncementTranslationResumable(task: AnnouncementTask | null
   return false
 }
 
-function toNumber(value: unknown): number {
-  const parsed = Number(value || 0)
-  return Number.isFinite(parsed) ? parsed : 0
+function hardBlockerNumber(value: unknown): number | null {
+  if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
 }
 
 function announcementHardBlockerCount(task: AnnouncementTask | null): number {
   if (!task) return 0
   const metadata = task.metadata || {}
-  const counts = [toNumber(metadata.hard_blockers)]
+  const counts = [hardBlockerNumber(metadata.hard_blockers) ?? 0]
   const qaIssues = metadata.qa_issues
   if (Array.isArray(qaIssues)) {
     counts.push(qaIssues.filter((issue) => String((issue as Record<string, unknown>)?.severity || 'hard').toLowerCase() === 'hard').length)
   }
+  const summaries = (task.artifacts || []).filter((artifact) => ['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind))
+  const current = summaries.find((artifact) => artifact.id === metadata.qa_summary_artifact_id
+    && artifact.project_id === task.project_id && artifact.metadata?.task_id === task.id
+    && hardBlockerNumber(artifact.metadata?.hard_blockers) !== null)
   for (const language of task.languages || []) {
-    counts.push(toNumber(language.metadata?.hard_blockers))
+    const childQaId = language.metadata?.qa_summary_artifact_id
+    if (current && childQaId && childQaId !== current.id) continue
+    counts.push(hardBlockerNumber(language.metadata?.hard_blockers) ?? 0)
   }
-  for (const artifact of task.artifacts || []) {
-    if (['announcement_qa_summary', 'announcement_docx_qa_summary'].includes(artifact.kind)) {
-      counts.push(toNumber(artifact.metadata?.hard_blockers))
-    }
+  for (const artifact of current ? [current] : summaries) {
+    counts.push(hardBlockerNumber(artifact.metadata?.hard_blockers) ?? 0)
   }
   return Math.max(...counts)
 }
@@ -120,6 +126,14 @@ export function AnnouncementWizard({
   const [step, setStep] = useState(1)
   const [taskId, setTaskId] = useState(initialTaskId || tasks[0]?.id || '')
   const activeTask = allTasks.find((task) => task.id === taskId) || null
+  const scope = useMemo(() => ({}), [project.id, initialTaskId, taskId])
+  const scopeRef = useRef<object | null>(scope)
+  const termsEditingRef = useRef({ scope, editing: false })
+  scopeRef.current = scope
+  useEffect(() => {
+    scopeRef.current = scope
+    return () => { scopeRef.current = null }
+  }, [scope])
   const effectiveStatus = queueJobStatusText(queueJobForTarget(jobQueues, activeTask?.id, project.id)) || status
   const [sourceArtifactId, setSourceArtifactId] = useState(activeTask?.source_artifact_id || '')
   const [constraintArtifactIds, setConstraintArtifactIds] = useState<string[]>(announcementTaskConstraintIds(activeTask))
@@ -168,7 +182,12 @@ export function AnnouncementWizard({
 
   useEffect(() => {
     if (!activeTask) return
-    setStep(activeTask.current_step || 1)
+    if (step === 4 && activeTask.status !== 'delivered' && termsEditingRef.current.scope === scope && termsEditingRef.current.editing) return
+    setStep(announcementReviewStep(activeTask))
+  }, [scope, activeTask?.id, activeTask?.status, activeTask?.current_step, activeTask?.metadata?.terms_artifact_id])
+
+  useEffect(() => {
+    if (!activeTask) return
     setSourceArtifactId(activeTask.source_artifact_id || '')
     setConstraintArtifactIds(announcementTaskConstraintIds(activeTask))
     setSelectedLanguages(activeTask.selected_languages?.length ? activeTask.selected_languages : normalizeLanguageArray((activeTask.metadata || {}).detected_languages))
@@ -211,7 +230,8 @@ export function AnnouncementWizard({
   }
 
   async function run(endpoint: string, nextStep?: number, extra: Record<string, unknown> = {}) {
-    if (!activeTask) return
+    if (!activeTask) return null
+    const requestScope = scope
     const result = await onTaskAction(activeTask.id, endpoint, {
       language_table_artifact_ids: activeConstraintArtifactIds,
       constraint_artifact_ids: activeConstraintArtifactIds,
@@ -222,19 +242,35 @@ export function AnnouncementWizard({
       ai_supplement_response_artifact_id: aiSupplementResponseArtifactId || undefined,
       ...extra
     })
+    if (scopeRef.current !== requestScope) return null
+    if (result?.task && (result.task.id !== activeTask.id || result.task.project_id !== project.id)) return null
     if (result?.task) setTaskId(result.task.id)
-    if (result && nextStep) setStep(Math.max(nextStep, Number(result.task?.current_step || 0)))
+    if (result && nextStep) setStep(['extract-terms', 'import-terms'].includes(endpoint) ? 4 : Math.max(nextStep, Number(result.task?.current_step || 0)))
+    return result
   }
 
   async function importExtractedTermsFile(file: File) {
-    if (!activeTask) return
+    if (!activeTask) return null
+    const requestScope = scope
     const artifact = await onUploadTermsFile(file)
-    if (!artifact) return
-    await run('import-terms', 4, { terms_artifact_id: artifact.id })
+    if (!artifact || scopeRef.current !== requestScope) return null
+    return (await run('import-terms', 4, { terms_artifact_id: artifact.id }))?.task || null
   }
 
   async function saveEditedTerms(terms: AnnouncementTermRow[], languages: LanguageCode[]) {
-    await run('import-terms', 4, { terms, languages })
+    return (await run('import-terms', 4, { terms, languages }))?.task || null
+  }
+
+  async function uploadAiSupplementResponse(file: File) {
+    const requestScope = scope
+    const artifact = await onUploadResponse(file)
+    if (artifact && scopeRef.current === requestScope) setAiSupplementResponseArtifactId(artifact.id)
+  }
+
+  function continueAfterTerms(task: AnnouncementTask) {
+    if (scopeRef.current !== scope || task.id !== activeTask?.id || task.project_id !== project.id) return
+    confirmAnnouncementTerms(task)
+    setStep(5)
   }
 
   return (
@@ -250,7 +286,7 @@ export function AnnouncementWizard({
         <button className="btn btn-ghost" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />返回项目概览</button>
       </div>
 
-      <PhaseStepper step={step} steps={announcementSteps} onStepChange={setStep} />
+      <PhaseStepper step={step} steps={announcementSteps} maxStep={activeTask?.status === 'terms_ready' && announcementReviewStep(activeTask) === 4 ? 4 : 9} onStepChange={setStep} />
       {busy || (effectiveStatus && effectiveStatus !== '准备就绪') ? <ActionStatus status={effectiveStatus} busy={busy} /> : null}
       {activeTask ? (
         <div
@@ -261,7 +297,7 @@ export function AnnouncementWizard({
           onPointerCancel={onCancelAnnouncementHold}
         >
           <span>当前公告任务：{activeTask.title || activeTask.id}</span>
-          <em>STEP {activeTask.current_step || 1}/9 · {announcementStatusLabel(activeTask.status)}{announcementTaskCanCancel(activeTask) ? ' · 长按取消' : ''}</em>
+          <em>STEP {step}/9 · {announcementStatusLabel(activeTask.status)}{announcementTaskCanCancel(activeTask) ? ' · 长按取消' : ''}</em>
         </div>
       ) : null}
 
@@ -353,13 +389,16 @@ export function AnnouncementWizard({
             </>
           ) : step === 4 ? (
             <AnnouncementTermsStep
+              key={`${project.id}:${taskId}`}
               activeTask={activeTask}
               busy={busy}
               effectiveLanguages={effectiveLanguages}
               onExtract={(enabled, responseArtifactId) => run('extract-terms', 4, { ai_supplement: enabled, ai_supplement_response_artifact_id: responseArtifactId || undefined })}
               onImportFile={importExtractedTermsFile}
-              onUploadAiSupplementResponse={async (file) => { const artifact = await onUploadResponse(file); if (artifact) setAiSupplementResponseArtifactId(artifact.id) }}
+              onUploadAiSupplementResponse={uploadAiSupplementResponse}
               onSaveTerms={saveEditedTerms}
+              onContinue={continueAfterTerms}
+              onEditingChange={(editing) => { termsEditingRef.current = { scope, editing } }}
               aiSupplement={aiSupplement}
               setAiSupplement={setAiSupplement}
               aiSupplementResponseArtifactId={aiSupplementResponseArtifactId}
@@ -501,6 +540,8 @@ export function AnnouncementTermsStep({
   onImportFile,
   onUploadAiSupplementResponse,
   onSaveTerms,
+  onContinue,
+  onEditingChange,
   aiSupplement,
   setAiSupplement,
   aiSupplementResponseArtifactId
@@ -508,20 +549,37 @@ export function AnnouncementTermsStep({
   activeTask: AnnouncementTask | null
   busy: boolean
   effectiveLanguages: LanguageCode[]
-  onExtract: (aiSupplement: boolean, aiSupplementResponseArtifactId: string) => void
-  onImportFile: (file: File) => void
+  onExtract: (aiSupplement: boolean, aiSupplementResponseArtifactId: string) => Promise<AnnouncementTaskResult | null>
+  onImportFile: (file: File) => Promise<AnnouncementTask | null>
   onUploadAiSupplementResponse: (file: File) => void
-  onSaveTerms: (terms: AnnouncementTermRow[], languages: LanguageCode[]) => void
+  onSaveTerms: (terms: AnnouncementTermRow[], languages: LanguageCode[]) => Promise<AnnouncementTask | null>
+  onContinue: (task: AnnouncementTask) => void
+  onEditingChange: (editing: boolean) => void
   aiSupplement: boolean
   setAiSupplement: (value: boolean) => void
   aiSupplementResponseArtifactId: string
 }) {
-  const [draftTerms, setDraftTerms] = useState<AnnouncementTermRow[]>([])
+  const taskScope = `${activeTask?.project_id || ''}:${activeTask?.id || ''}`
+  const scope = useMemo(() => ({}), [taskScope])
+  const scopeRef = useRef<object | null>(scope)
+  scopeRef.current = scope
+  const incomingLanguages = announcementTermLanguages(activeTask, effectiveLanguages)
+  const incomingTerms = announcementTermsFromTask(activeTask)
+  const incomingSignature = announcementTermsSignature(incomingTerms, incomingLanguages)
+  const incomingVersion = announcementTermsVersion(activeTask)
+  const [baseline, setBaseline] = useState(() => ({ taskScope, version: incomingVersion, signature: incomingSignature, languages: incomingLanguages }))
+  const [draftTerms, setDraftTerms] = useState<AnnouncementTermRow[]>(incomingTerms)
+  const [pending, setPending] = useState(false)
+  const pendingRef = useRef(false)
+  const [actionError, setActionError] = useState('')
+  const languages = baseline.languages
+  const dirty = announcementTermsSignature(draftTerms, languages) !== baseline.signature
+  const conflict = dirty && (incomingVersion !== baseline.version || incomingSignature !== baseline.signature)
+  const editingBusy = busy || pending
   // Editable rows are expensive to render (one input per language column);
   // paginate large temp glossaries instead of mounting hundreds of rows.
   const TERMS_PAGE_SIZE = 50
   const [termsPage, setTermsPage] = useState(0)
-  const languages = announcementTermLanguages(activeTask, effectiveLanguages)
   const meta = activeTask?.metadata || {}
   const exportArtifact = activeTask?.artifacts?.find((artifact) => artifact.id === meta.terms_artifact_id)
     || activeTask?.artifacts?.find((artifact) => artifact.kind === 'announcement_terms_workbook')
@@ -549,9 +607,65 @@ export function AnnouncementTermsStep({
   const projectNameMissing = Boolean(aiMeta.project_name_translation_missing)
 
   useEffect(() => {
-    setDraftTerms(announcementTermsFromTask(activeTask))
+    scopeRef.current = scope
+    pendingRef.current = false
+    setPending(false)
+    return () => { scopeRef.current = null }
+  }, [scope])
+
+  useEffect(() => {
+    onEditingChange(dirty || pending)
+    return () => onEditingChange(false)
+  }, [taskScope, dirty, pending])
+
+  useEffect(() => {
+    if (baseline.taskScope !== taskScope || !dirty) acceptTerms(activeTask)
+  }, [taskScope, incomingVersion, incomingSignature])
+
+  function acceptTerms(task: AnnouncementTask | null) {
+    const terms = announcementTermsFromTask(task)
+    const nextLanguages = announcementTermLanguages(task, effectiveLanguages)
+    setBaseline({ taskScope, version: announcementTermsVersion(task), signature: announcementTermsSignature(terms, nextLanguages), languages: nextLanguages })
+    setDraftTerms(terms)
     setTermsPage(0)
-  }, [activeTask?.id, activeTask?.updated_at])
+    setActionError('')
+  }
+
+  async function perform(action: () => Promise<AnnouncementTask | null>, continueAfterSave = false) {
+    if (editingBusy || pendingRef.current) return
+    const requestScope = scope
+    pendingRef.current = true
+    setPending(true)
+    setActionError('')
+    try {
+      const task = await action()
+      if (scopeRef.current !== requestScope) return
+      if (!task || task.id !== activeTask?.id || task.project_id !== activeTask.project_id) {
+        setActionError('操作未完成，已保留当前编辑，请重试。')
+        return
+      }
+      acceptTerms(task)
+      if (continueAfterSave) onContinue(task)
+    } catch {
+      if (scopeRef.current === requestScope) setActionError('操作未完成，已保留当前编辑，请重试。')
+    } finally {
+      if (scopeRef.current === requestScope) {
+        pendingRef.current = false
+        setPending(false)
+      }
+    }
+  }
+
+  function extractTerms() {
+    if (dirty) return
+    void perform(async () => (await onExtract(aiSupplement, aiSupplementResponseArtifactId))?.task || null)
+  }
+
+  function continueTerms() {
+    if (!activeTask || editingBusy || conflict || (!extracted && !dirty)) return
+    if (dirty) void perform(() => onSaveTerms(draftTerms, languages), true)
+    else onContinue(activeTask)
+  }
 
   function updateTerm(index: number, patch: Partial<AnnouncementTermRow>) {
     setDraftTerms((prev) => prev.map((term, termIndex) => termIndex === index ? { ...term, ...patch } : term))
@@ -589,13 +703,13 @@ export function AnnouncementTermsStep({
   return (
     <>
       <div className="panel-title"><span className="badge">STEP 4</span>术语提取</div>
-      <div className="panel-desc">本步只做一件事：从公告原文生成任务内临时术语表。检查表格后保存，下一步再反查译文；不会写回项目术语库。</div>
+      <div className="panel-desc">提取或导入后留在本页核对；有修改时保存并继续，无修改时确认并继续，再进入译文反查。不会写回项目术语库。</div>
       <div className="announcement-terms-guide">
         <div>
           <strong>生成临时公告术语表</strong>
           <span>先从公告原文提取术语；如果没有命中，也可以手动新增或导入已有结果。</span>
         </div>
-        <button className="btn btn-primary" disabled={busy} onClick={() => onExtract(aiSupplement, aiSupplementResponseArtifactId)}>{aiSupplement ? '提取术语并 AI 复查' : '仅本地提取术语'}</button>
+        <button className={`btn ${extracted || dirty ? 'btn-ghost' : 'btn-primary'}`} disabled={editingBusy || dirty} onClick={extractTerms}>{aiSupplement ? '提取术语并 AI 复查' : '仅本地提取术语'}</button>
       </div>
       <div className="announcement-terms-summary">
         <div><strong>源格式</strong><span>{activeTask.source_format?.toUpperCase() || '-'}</span></div>
@@ -610,30 +724,33 @@ export function AnnouncementTermsStep({
         <div className="announcement-terms-empty">
           <div>
             <strong>没有命中可确认术语</strong>
-            <span>这不是失败。可以手动新增术语、导入已提取术语表，或直接进入「译文反查」步骤做译文反查。</span>
+            <span>这不是失败。可以手动新增、导入已有结果，或点击“确认并继续”进入译文反查。</span>
           </div>
           <div className="row-actions wrap">
-            <button className="btn btn-primary" disabled={busy} onClick={addTerm}>+ 新增术语</button>
-            <button className="btn btn-ghost" disabled={busy} onClick={() => onExtract(aiSupplement, aiSupplementResponseArtifactId)}>重新提取</button>
+            <button className="btn btn-ghost" disabled={editingBusy} onClick={addTerm}>+ 新增术语</button>
+            <button className="btn btn-ghost" disabled={editingBusy || dirty} onClick={extractTerms}>重新提取</button>
           </div>
         </div>
       ) : null}
       <div className="announcement-terms-editor-head">
         <div>
           <strong>临时术语表</strong>
-          <span>{hasTerms ? '可直接编辑下方表格；保存后会重新生成导出表，不会写入项目术语库。' : '暂无术语行；可新增、导入，或直接继续下一步。'}</span>
+          <span>{dirty ? '有未保存编辑；请先保存，再重新提取或导入。' : hasTerms ? '核对无误后继续；修改仅用于本次公告，不写入项目术语库。' : extracted ? '暂无术语行，可直接确认并继续。' : '请先提取、导入或手动新增术语。'}</span>
         </div>
         <div className="row-actions wrap">
-          <button className="btn btn-primary" disabled={busy || !draftTerms.length} onClick={() => onSaveTerms(draftTerms, languages)}>保存编辑</button>
-          <button className="btn btn-ghost" disabled={busy} onClick={addTerm}>+ 新增术语</button>
+          <button className="btn btn-primary" disabled={editingBusy || conflict || (!extracted && !dirty)} onClick={continueTerms}>{dirty ? '保存并继续' : '确认并继续'}</button>
+          <button className="btn btn-ghost" disabled={editingBusy || !dirty || conflict} onClick={() => void perform(() => onSaveTerms(draftTerms, languages))}>保存编辑</button>
+          <button className="btn btn-ghost" disabled={editingBusy} onClick={addTerm}>+ 新增术语</button>
           {exportArtifact ? <a className="btn btn-ghost" href={artifactDownloadHref(exportArtifact)}>导出 XLSX</a> : null}
         </div>
       </div>
+      {actionError ? <div className="warn-line" role="alert">{actionError}</div> : null}
+      {conflict ? <div className="warn-line" role="alert">服务器术语结果已更新，当前编辑已保留。请先核对新结果，避免覆盖其他修改。<button className="btn btn-ghost btn-sm" disabled={editingBusy} onClick={() => acceptTerms(activeTask)}>放弃编辑并载入最新结果</button></div> : null}
       <details className="asset-list gap-top optional-panel" open={!draftTerms.length || Boolean(aiPacketArtifact || aiReportArtifact)}>
         <summary>更多操作：导入已有术语 / AI 复查设置 / 审计产物</summary>
-        <div className="announcement-more-grid">
+        <fieldset className="announcement-more-grid" disabled={editingBusy || dirty} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
           <div>
-            <FileBoxWithTemplate label="上传已提取术语表（XLSX）" onFile={onImportFile} templateKind="announcement-terms" />
+            <FileBoxWithTemplate label="上传已提取术语表（XLSX）" onFile={(file) => { if (!dirty) void perform(() => onImportFile(file)) }} templateKind="announcement-terms" />
           </div>
           <div className="asset-list compact-asset-list">
             <label className="check-row">
@@ -648,7 +765,7 @@ export function AnnouncementTermsStep({
               <FileBox label="上传外部 AI 结果 JSON（可选）" onFile={onUploadAiSupplementResponse} />
             </div>
           </div>
-        </div>
+        </fieldset>
       </details>
       {!draftTerms.length ? (
         <div className="muted-empty-card gap-top">暂无术语表行。可点击“新增术语”补充，或在“更多操作”里上传 announcement_terms.xlsx。</div>
@@ -669,13 +786,13 @@ export function AnnouncementTermsStep({
                 const index = termsPage * TERMS_PAGE_SIZE + pageIndex
                 return (
                   <tr key={`${index}-${term.id || ''}`}>
-                    <td><input value={term.id || ''} onChange={(event) => updateTerm(index, { id: event.target.value })} /></td>
-                    <td><input value={term.source || ''} onChange={(event) => updateTerm(index, { source: event.target.value })} /></td>
+                    <td><input disabled={editingBusy} value={term.id || ''} onChange={(event) => updateTerm(index, { id: event.target.value })} /></td>
+                    <td><input disabled={editingBusy} value={term.source || ''} onChange={(event) => updateTerm(index, { source: event.target.value })} /></td>
                     {languages.map((language) => (
-                      <td key={language}><input value={(term.translations || {})[language] || ''} onChange={(event) => updateTranslation(index, language, event.target.value)} /></td>
+                      <td key={language}><input disabled={editingBusy} value={(term.translations || {})[language] || ''} onChange={(event) => updateTranslation(index, language, event.target.value)} /></td>
                     ))}
                     <td>{term.hit_count ?? '-'}</td>
-                    <td><button className="btn btn-ghost btn-sm" onClick={() => removeTerm(index)}>删除</button></td>
+                    <td><button className="btn btn-ghost btn-sm" disabled={editingBusy} onClick={() => removeTerm(index)}>删除</button></td>
                   </tr>
                 )
               })}
@@ -692,6 +809,10 @@ export function AnnouncementTermsStep({
       )}
     </>
   )
+}
+
+function announcementTermsSignature(terms: AnnouncementTermRow[], languages: LanguageCode[]): string {
+  return JSON.stringify([languages, terms.map((term) => [term.id || '', term.source || '', languages.map((language) => term.translations?.[language] || '')])])
 }
 
 export function announcementTermsFromTask(task: AnnouncementTask | null): AnnouncementTermRow[] {

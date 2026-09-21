@@ -34,6 +34,7 @@ import { artifactForProject, preferredTranslationResultArtifact, runForProject }
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
 import { projectQueueJobCount, queueJobKindLabel } from './domain/jobQueues'
 import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
+import { captureTranslationActionScope, type TranslationActionScope } from './domain/translationActionScope'
 import { scopeProjectToLanguage } from './domain/projectAssets'
 import { announcementTaskStatusConflict, selectAnnouncementTaskLifecycle, type AnnouncementSessionScope } from './domain/announcementTaskLifecycle'
 import {
@@ -51,6 +52,7 @@ import {
   findUnfinishedFormalTask,
   formalTranslationTasks,
   runMatchesTranslationTask,
+  translationTaskIdOfRun,
   translationTaskResumeStep,
   type FormalTranslationTask,
   type TranslationTaskSession,
@@ -108,6 +110,12 @@ function App() {
   const currentIdRef = useRef('')
   const [translationTaskId, setTranslationTaskId] = useState('')
   const translationTaskIdRef = useRef('')
+  const [overviewTranslationTaskId, setOverviewTranslationTaskId] = useState('')
+  const overviewTranslationTaskIdRef = useRef('')
+  const translationActionScopeRef = useRef<TranslationActionScope>({ projectId: '', taskId: '' })
+  const translationActionEnvironment = useMemo(() => ({}), [currentId, view])
+  const translationActionEnvironmentRef = useRef(translationActionEnvironment)
+  translationActionEnvironmentRef.current = translationActionEnvironment
   const translationTaskSessionsRef = useRef(new Map<string, TranslationTaskSession>())
   const restoredNavigationRef = useRef<SessionNavigation | null | undefined>(undefined)
   if (restoredNavigationRef.current === undefined) restoredNavigationRef.current = readSessionNavigation()
@@ -173,8 +181,8 @@ function App() {
   const currentScoped = useMemo(() => current ? scopeProjectToLanguage(current, selectedLanguage) : undefined, [current, selectedLanguage])
   const currentLang = languageSpec(selectedLanguage)
   const selectedQualityRun = useMemo(
-    () => current ? findVisibleQualityRun(current, selectedLanguage, scopedSourceArtifact?.id, view === 'wizard' ? translationTaskId : undefined) : null,
-    [current, selectedLanguage, scopedSourceArtifact?.id, view, translationTaskId]
+    () => current ? findVisibleQualityRun(current, selectedLanguage, scopedSourceArtifact?.id, view === 'wizard' ? translationTaskId : overviewTranslationTaskId || undefined) : null,
+    [current, selectedLanguage, scopedSourceArtifact?.id, view, translationTaskId, overviewTranslationTaskId]
   )
 
   const setPrimaryLanguage = useCallback((language: LanguageCode) => {
@@ -289,6 +297,38 @@ function App() {
       && (!taskId || translationTaskIdRef.current === taskId)
   }, [currentTaskSession?.id, isCurrentProject])
 
+  const activateOverviewTranslationTask = useCallback((taskId: string) => {
+    translationActionScopeRef.current = { projectId: currentIdRef.current, taskId }
+    overviewTranslationTaskIdRef.current = taskId
+    setOverviewTranslationTaskId(taskId)
+  }, [])
+
+  const isCurrentTranslationAction = useCallback((projectId: string, taskId: string): boolean => {
+    if (translationActionEnvironmentRef.current !== translationActionEnvironment || !isCurrentProject(projectId)) return false
+    if (view === 'wizard') return isCurrentTranslationTask(projectId, taskId)
+    return view === 'overview' && (!taskId || overviewTranslationTaskIdRef.current === taskId)
+  }, [translationActionEnvironment, view, isCurrentProject, isCurrentTranslationTask])
+
+  const captureTranslationAction = useCallback((projectId: string, taskId: string, run?: Run | null): (() => boolean) => {
+    const quickScope = quickTaskSessionRef.current
+    if (view === 'overview' && !(run && isQuickTaskRun(run))) {
+      if (!run && overviewTranslationTaskIdRef.current !== taskId) {
+        setLatestRun(null)
+        setQualityIssues([])
+        setGeneratedDelivery(null)
+      }
+      activateOverviewTranslationTask(taskId)
+      quickTaskDetailRef.current = { projectId: '', taskId: '', runId: '' }
+    } else {
+      translationActionScopeRef.current = { projectId, taskId }
+    }
+    return captureTranslationActionScope(translationActionScopeRef, translationActionEnvironmentRef, () => (
+      run && isQuickTaskRun(run)
+        ? quickTaskSessionRef.current === quickScope && isCurrentQuickTaskAction(run)
+        : isCurrentTranslationAction(projectId, taskId)
+    ))
+  }, [view, activateOverviewTranslationTask, isCurrentQuickTaskAction, isCurrentTranslationAction])
+
   const isCurrentRunScope = useCallback((run: Run): boolean => {
     if (!isCurrentProject(run.project_id)) return false
     if (view === 'quick') {
@@ -300,6 +340,7 @@ function App() {
       const taskId = String(run.metadata?.task_id || run.metadata?.announcement_task_id || '')
       return Boolean(announcementFocusTaskIdRef.current) && taskId === announcementFocusTaskIdRef.current
     }
+    if (view === 'overview' && overviewTranslationTaskIdRef.current) return runMatchesTranslationTask(run, overviewTranslationTaskIdRef.current)
     if (view !== 'wizard' || !translationTaskIdRef.current) return true
     return runMatchesTranslationTask(run, translationTaskIdRef.current)
   }, [announcementSessionGeneration, quickTaskSession?.generation, isCurrentProject, view])
@@ -332,6 +373,9 @@ function App() {
   }, [isCurrentProject])
 
   const resetProjectTransientState = useCallback((message = '准备就绪') => {
+    overviewTranslationTaskIdRef.current = ''
+    translationActionScopeRef.current = { projectId: '', taskId: '' }
+    setOverviewTranslationTaskId('')
     setBusy(false)
     setStatus(message)
     setSourceArtifact(null)
@@ -416,7 +460,7 @@ function App() {
         ? (quickTaskDetailRef.current.projectId === current?.id && quickTaskDetailRef.current.runId === scopedLatestRun.id ? scopedLatestRun : null)
         : scopedLatestRun
   const pollingLatestRun = actionLatestRun && isQuickTaskRun(actionLatestRun) && !isCurrentQuickTaskAction(actionLatestRun) ? null : actionLatestRun
-  const actionTranslationTaskId = view === 'wizard' ? translationTaskId : ''
+  const actionTranslationTaskId = view === 'wizard' ? translationTaskId : overviewTranslationTaskId
   const {
     refreshTranslationReadiness, selectSourceArtifact, selectQaArtifact, syncLanguageFromArtifact,
     classifySourceArtifact, inspectTranslationTargets, startQuickTask, runTranslate,
@@ -425,10 +469,12 @@ function App() {
     importTranslationArchive, skipQAArchive, addTranslationEntry, updateTranslationEntry, deleteTranslationEntry,
     refreshDeliverables, loadDeliverables, createDeliveryPackage, finishWizardDelivery, createMergedDeliveryPackage
   } = useTranslationActions({
-    current, currentIdRef, translationTaskId: actionTranslationTaskId, translationTaskIdRef,
+    current, currentIdRef, translationTaskId: actionTranslationTaskId,
+    translationTaskIdRef: view === 'wizard' ? translationTaskIdRef : overviewTranslationTaskIdRef,
+    isWizard: view === 'wizard', captureTranslationAction,
     sourceArtifact: scopedSourceArtifact, termArtifact: scopedTermArtifact, qaArtifact: scopedQaArtifact, archiveArtifact: scopedArchiveArtifact, latestRun: actionLatestRun,
     translationReadiness, glossaryCandidates, settings, translationBatchSize, tab, selectedLanguage,
-    selectedLanguages, lineProofread, currentLang, isCurrentProject, isCurrentTranslationTask,
+    selectedLanguages, lineProofread, currentLang, isCurrentProject, isCurrentTranslationTask: isCurrentTranslationAction,
     isCurrentQuickTaskAction,
     setSourceArtifact, setQaArtifact, setArchiveArtifact, setTranslationReadiness, setSourceInputNotice,
     setInvalidSourceArtifactIds, setStep, setBusy, setStatus, setStatusForProject, setBusyForProject,
@@ -784,6 +830,11 @@ function App() {
       : { projectId: '', taskId: '', runId: '' }
     const artifacts = runArtifacts(current, run.id)
     const hydratedRun = { ...run, artifacts }
+    activateOverviewTranslationTask(isQuickTaskRun(run) ? '' : translationTaskIdOfRun(run))
+    if (!isQuickTaskRun(run) && run.kind === 'translation') {
+      const sourceId = String(run.metadata?.parent_input_artifact_id || run.metadata?.multilingual_source_artifact_id || run.metadata?.input_artifact_id || '')
+      setSourceArtifact((current.artifacts || []).find((artifact) => artifact.id === sourceId) || null)
+    }
     setLatestRun(hydratedRun)
     setQualityIssues([])
     setBusy(false)
@@ -798,7 +849,7 @@ function App() {
       setTab('translation')
     }
     setView('overview')
-  }, [current, beginQuickTaskSession, setPrimaryLanguage])
+  }, [current, beginQuickTaskSession, setPrimaryLanguage, activateOverviewTranslationTask])
 
   useEffect(() => {
     const restored = restoredNavigationRef.current
@@ -1081,6 +1132,14 @@ function App() {
       const inputArtifact = artifacts.find((artifact) => artifact.id === inputArtifactId) || null
       setLatestRun(hydratedRun)
       setQaArtifact(preferredTranslationResultArtifact(current, hydratedRun) || inputArtifact)
+    } else if (view === 'overview' && overviewTranslationTaskId) {
+      const focusedRun = (current.runs || []).find((run) => runMatchesTranslationTask(run, overviewTranslationTaskId))
+      if (focusedRun) {
+        const hydratedRun = { ...focusedRun, artifacts: runArtifacts(current, focusedRun.id) }
+        setLatestRun(hydratedRun)
+        const result = preferredTranslationResultArtifact(current, hydratedRun)
+        if (result) setQaArtifact(result)
+      }
     } else if (session) {
       const source = artifacts.find((artifact) => artifact.id === session.sourceArtifactId) || null
       const task = formalTranslationTasks(current).find((item) => item.id === session.id) || null
@@ -1104,7 +1163,7 @@ function App() {
     setDeliverablesError('')
     setSourceInputNotice(null)
     setInvalidSourceArtifactIds([])
-  }, [current?.id, current?.artifacts?.length, current?.runs?.length, view, announcementSessionGeneration, setPrimaryLanguages])
+  }, [current?.id, current?.artifacts?.length, current?.runs?.length, view, overviewTranslationTaskId, announcementSessionGeneration, setPrimaryLanguages])
 
   useEffect(() => {
     if (!current?.id) return
@@ -1213,7 +1272,7 @@ function App() {
     loadQualityIssues,
     refreshCurrent,
     refreshDeliverables,
-    () => refreshProjects(currentIdRef.current)
+    () => refreshProjects(currentIdRef.current, undefined, { fresh: true })
   )
 
   useAnnouncementTaskPolling(

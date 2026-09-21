@@ -44,6 +44,16 @@ ARCHIVE_KIND = "translations"
 CSV_SHEET_KEY = "__csv__"
 JSON_SHEET_KEY = "__json__"
 CHANGE_SAMPLE_LIMIT = 50
+CHANGE_SAMPLE_PRIORITY = {
+    "conflict": 0,
+    "protected": 1,
+    "clear": 2,
+    "deactivate": 3,
+    "update": 4,
+    "insert": 5,
+    "unchanged": 6,
+    "skip": 7,
+}
 PROTECTED_TRANSLATION_SOURCES = frozenset(
     {
         "manual",
@@ -1312,7 +1322,7 @@ def analyze_translation_archive(
             "target": item["target"],
             "explicit_empty": item["explicit_empty"],
         }
-        for item in items[:CHANGE_SAMPLE_LIMIT]
+        for item in sorted(items, key=lambda item: CHANGE_SAMPLE_PRIORITY[item["planned_action"]])[:CHANGE_SAMPLE_LIMIT]
     ]
     return {
         "batch_id": batch_id,
@@ -1397,8 +1407,13 @@ def _translation_adapter() -> ArchiveEntityAdapter:
     )
 
 
-def commit_translation_archive(project_id: str, token: str, *, compact: bool = False) -> dict[str, Any]:
-    return commit_archive_batch(project_id, token, _translation_adapter(), compact=compact)
+def commit_translation_archive(
+    project_id: str, token: str, *, compact: bool = False,
+    run_id: str | None = None, cancel_event: Any | None = None,
+) -> dict[str, Any]:
+    return commit_archive_batch(
+        project_id, token, _translation_adapter(), compact=compact, run_id=run_id, cancel_event=cancel_event,
+    )
 
 
 def list_translation_import_batches(project_id: str, *, compact: bool = False) -> dict[str, Any]:

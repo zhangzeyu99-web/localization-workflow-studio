@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -20,6 +21,13 @@ JobRecord = dict[str, Any]
 JobHandler = Callable[[JobRecord, threading.Event], None]
 
 
+class ArchiveAlreadyCommittedError(ValueError):
+    def __init__(self, job_id: str, archive_commit: dict[str, Any]) -> None:
+        message = "译文归档已提交，任务正在完成或已完成，不能再取消；已归档结果会保留。"
+        super().__init__(message)
+        self.detail = {"code": "archive_already_committed", "message": message, "job_id": job_id, **archive_commit}
+
+
 @dataclass
 class _RunningJob:
     job_id: str
@@ -32,6 +40,12 @@ _HANDLERS: dict[str, JobHandler] = {}
 _RUNNING: dict[str, _RunningJob] = {}
 _THREADS: set[threading.Thread] = set()
 _STOPPING = False
+_CURRENT_EXECUTION: ContextVar[tuple[str, str] | None] = ContextVar("job_queue_execution", default=None)
+
+
+def current_execution() -> tuple[str, str] | None:
+    """Return the dispatcher-owned job and submission identity for this worker."""
+    return _CURRENT_EXECUTION.get()
 
 
 def _validate_lane(lane: str) -> None:
@@ -44,6 +58,11 @@ def _record(row: Any) -> JobRecord:
     result["cancel_requested"] = bool(result.get("cancel_requested"))
     result["payload"] = json.loads(result.pop("payload_json", "{}") or "{}")
     return result
+
+
+def archive_committed(job_id: str) -> bool:
+    job = get_job(job_id)
+    return bool(((job or {}).get("payload") or {}).get("archive_commit"))
 
 
 def enqueue_job(
@@ -336,17 +355,20 @@ def dispatch_lane(lane: str) -> bool:
 
         def run() -> None:
             failed = False
+            execution_token = _CURRENT_EXECUTION.set((claimed["job_id"], claimed["queued_at"]))
             try:
                 handler(claimed, cancel_event)
             except Exception:
                 logger.exception("job handler failed: %s", claimed["job_id"])
                 failed = True
             finally:
+                _CURRENT_EXECUTION.reset(execution_token)
                 with _RUNTIME_LOCK:
                     stopping = _STOPPING
-                if not stopping:
-                    current = get_job(claimed["job_id"])
-                    canceled = cancel_event.is_set() or bool((current or {}).get("cancel_requested"))
+                current = get_job(claimed["job_id"])
+                committed = bool(((current or {}).get("payload") or {}).get("archive_commit"))
+                if not stopping or committed:
+                    canceled = not committed and (cancel_event.is_set() or bool((current or {}).get("cancel_requested")))
                     _finish_job(claimed["job_id"], "canceled" if canceled else ("failed" if failed else "completed"))
                 with _RUNTIME_LOCK:
                     active = _RUNNING.get(lane)
@@ -385,7 +407,11 @@ def cancel_job(job_id: str, *, canceled_by: str = "") -> JobRecord | None:
     timestamp = db.now_iso()
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT lane, status FROM job_queue WHERE job_id = ?", (job_id,)).fetchone()
+        row = conn.execute("SELECT * FROM job_queue WHERE job_id = ?", (job_id,)).fetchone()
+        if row is not None:
+            archive_commit = json.loads(row["payload_json"] or "{}").get("archive_commit")
+            if archive_commit:
+                raise ArchiveAlreadyCommittedError(job_id, archive_commit)
         if row is None or row["status"] not in ACTIVE_STATUSES:
             return None
         if row["status"] == "queued":

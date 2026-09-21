@@ -143,7 +143,7 @@ def cancel(job_id: str) -> dict[str, Any] | None:
 
 def _cancel(job_id: str) -> dict[str, Any] | None:
     existing = job_queue.get_job(job_id)
-    if existing is None or existing.get("status") not in job_queue.ACTIVE_STATUSES:
+    if existing is None:
         return None
     canceled_by = operator_context.require_operator_for_cloud()
     queue_job = job_queue.cancel_job(job_id, canceled_by=canceled_by)
@@ -191,8 +191,6 @@ def _cancel(job_id: str) -> dict[str, Any] | None:
         run_id = str(existing["target_id"])
         if kind == "model_fix" and queued_cancel:
             audit["model_fix_status"] = "canceled"
-        elif kind == "model_fix":
-            audit["model_fix_status"] = "cancel_requested"
         if not queued_cancel:
             audit["cancel_requested_by"] = canceled_by
         run = db.get_run(run_id)
@@ -292,7 +290,10 @@ def _translation_task_terminal_state(run_id: str) -> str:
 
 
 def _cancel_run_before_work(run_id: str) -> None:
-    _cancel_run_scope(run_id, {"canceled_at": db.now_iso()})
+    audit = {"canceled_at": db.now_iso()}
+    if (db.get_run(run_id).get("metadata") or {}).get("model_fix_status") in {"queued", "running", "cancel_requested"}:
+        audit["model_fix_status"] = "canceled"
+    _cancel_run_scope(run_id, audit)
 
 
 def _cancel_run_scope(run_id: str, audit: dict[str, Any]) -> bool:
@@ -317,7 +318,7 @@ def _translation_handler(record: dict[str, Any], cancel_event: threading.Event) 
             request = TranslateRequest.model_validate(record.get("payload") or {})
             workflow.run_translate_sync(record["target_id"], request, cancel_event=cancel_event)
         except Exception as exc:
-            if cancel_event.is_set():
+            if cancel_event.is_set() and not job_queue.archive_committed(str(record.get("job_id") or "")):
                 _cancel_run_scope(record["target_id"], {"canceled_at": db.now_iso()})
                 return
             current = db.get_run(record["target_id"])
@@ -330,7 +331,7 @@ def _translation_handler(record: dict[str, Any], cancel_event: threading.Event) 
                 if not updated:
                     return
             raise
-        if cancel_event.is_set():
+        if cancel_event.is_set() and not job_queue.archive_committed(str(record.get("job_id") or "")):
             _cancel_run_scope(record["target_id"], {"canceled_at": db.now_iso()})
 
     _run_as_submitted_operator(record, execute)
@@ -363,7 +364,7 @@ def _qa_handler(record: dict[str, Any], cancel_event: threading.Event) -> None:
             if not updated:
                 return
             raise
-        if cancel_event.is_set():
+        if cancel_event.is_set() and not job_queue.archive_committed(str(record.get("job_id") or "")):
             _cancel_run_scope(run_id, {"canceled_at": db.now_iso()})
 
     _run_as_submitted_operator(record, execute)
@@ -395,13 +396,13 @@ def _model_fix_handler(record: dict[str, Any], cancel_event: threading.Event) ->
             if not started:
                 return
             result = workflow.apply_model_fixes(run_id, request, settings=settings, cancel_event=cancel_event)
-            if cancel_event.is_set():
+            if cancel_event.is_set() and not job_queue.archive_committed(str(record.get("job_id") or "")):
                 _cancel_run_before_work(run_id)
                 return
             qa_result = result.get("qa_result") or {}
             qa_run = qa_result.get("run") or {}
             terminal_status = str(qa_run.get("status") or "needs_input")
-            if cancel_event.is_set():
+            if cancel_event.is_set() and not job_queue.archive_committed(str(record.get("job_id") or "")):
                 _cancel_run_before_work(run_id)
                 return
             _run, finished = db.update_run_if_task_open(
@@ -419,8 +420,10 @@ def _model_fix_handler(record: dict[str, Any], cancel_event: threading.Event) ->
             )
             if not finished:
                 return
+        except workflow.QaCanceled:
+            _cancel_run_before_work(run_id)
         except Exception as exc:
-            if cancel_event.is_set():
+            if cancel_event.is_set() and not job_queue.archive_committed(str(record.get("job_id") or "")):
                 _cancel_run_before_work(run_id)
                 return
             friendly = workflow.user_facing_error(exc)

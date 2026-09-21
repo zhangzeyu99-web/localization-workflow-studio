@@ -10,6 +10,7 @@ import {
   type ArchiveImportSummary,
 } from '../../domain/archiveImport'
 import { useArchiveImportFlow } from '../../hooks/useArchiveImportFlow'
+import { api } from '../../apiClient'
 import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
 import type { Artifact, Project } from '../../types'
 import '../../styles/archive-import.css'
@@ -21,6 +22,7 @@ type ArchiveImportFlowProps = {
   initialArtifact?: Artifact | null
   onReadback?: (project: Project) => void | Promise<void>
   onClose: () => void
+  onReviewPending?: () => void
 }
 
 const stageLabels: Array<{ key: ArchiveImportStage; index: string; label: string }> = [
@@ -92,6 +94,7 @@ export function ArchiveImportFlow({
   initialArtifact = null,
   onReadback,
   onClose,
+  onReviewPending,
 }: ArchiveImportFlowProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const snapshotConfirmRef = useRef<HTMLDivElement | null>(null)
@@ -99,6 +102,9 @@ export function ArchiveImportFlow({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null)
   const commitButtonRef = useRef<HTMLButtonElement | null>(null)
   const [snapshotConfirmOpen, setSnapshotConfirmOpen] = useState(false)
+  const [pendingReviewCount, setPendingReviewCount] = useState<number | null>(null)
+  const [pendingReviewError, setPendingReviewError] = useState(false)
+  const [pendingReviewRetry, setPendingReviewRetry] = useState(0)
   const flow = useArchiveImportFlow({
     projectId: project.id,
     kind,
@@ -117,6 +123,18 @@ export function ArchiveImportFlow({
     return allowed
   }, [kind, project.artifacts, state.artifact])
   const datasets = flow.lineages
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setPendingReviewCount(null)
+    setPendingReviewError(false)
+    if (kind !== 'glossary' || state.stage !== 'success' || !state.result?.batch_id) return () => controller.abort()
+    const params = new URLSearchParams({ batch_id: state.result.batch_id, page_size: '1' })
+    void api<{ project_id: string; total_rows: number }>(`/api/projects/${project.id}/glossary/pending?${params}`, { signal: controller.signal })
+      .then((result) => { if (!controller.signal.aborted && result.project_id === project.id) setPendingReviewCount(result.total_rows) })
+      .catch(() => { if (!controller.signal.aborted) setPendingReviewError(true) })
+    return () => controller.abort()
+  }, [kind, project.id, state.stage, state.result?.batch_id, pendingReviewRetry])
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => (sourceSelectRef.current || closeButtonRef.current)?.focus())
@@ -444,6 +462,11 @@ export function ArchiveImportFlow({
                 ))}
               </div>
               {state.readbackWarning ? <div className="archive-import-conflicts" role="alert">{state.readbackWarning}</div> : null}
+              {kind === 'glossary' ? <div className="info-line" role="status">
+                {pendingReviewError ? <><span>待复核数量读取失败，导入已提交。</span><button type="button" className="btn btn-sm" onClick={() => setPendingReviewRetry((value) => value + 1)}>重试读取待复核数量</button></>
+                  : pendingReviewCount === null ? '正在核对待复核数量…'
+                    : pendingReviewCount > 0 ? `本批次 ${pendingReviewCount} 条语言记录待复核；确认前不参与术语匹配或导出。` : '本批次暂无待复核术语。'}
+              </div> : null}
             </section>
           ) : null}
         </div>
@@ -460,7 +483,10 @@ export function ArchiveImportFlow({
             {state.stage === 'success' ? (
               <>
                 {state.readbackWarning ? <button type="button" className="btn btn-ghost" disabled={Boolean(state.busy)} onClick={() => void flow.retryReadback()}>重试读回</button> : null}
-                <button type="button" className="btn btn-primary" onClick={closeDialog}>关闭并查看归档</button>
+                {kind === 'glossary' && (pendingReviewCount || pendingReviewError) && onReviewPending ? <>
+                  <button type="button" className="btn btn-ghost" onClick={closeDialog}>稍后处理</button>
+                  <button type="button" className="btn btn-primary" onClick={() => { flow.close(); onReviewPending() }}>查看待复核术语</button>
+                </> : <button type="button" className="btn btn-primary" onClick={closeDialog}>关闭并查看归档</button>}
               </>
             ) : (
               <>

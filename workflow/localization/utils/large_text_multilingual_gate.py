@@ -19,14 +19,20 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+from utils.punctuation_policy import punctuation_issues
+from utils.quantity_guard import quantity_issues, visible_text, WORDS
+from utils.review_findings import unresolved_review_detail
+from utils.semantic_constraints import semantic_constraint_issues
+from utils.language_config import target_header_candidates
 
 
-TOKEN_RE = re.compile(r"\\n|<@\d+>|\{[^{}\s]+\}|%[sdif]|##\d+|</?[A-Za-z][^>\s]*[^>]*>|\[[A-Za-z0-9_:/#=.,-]+\]")
+TOKEN_RE = re.compile(r"\\n|<@\d+>|\{[^{}\s]+\}|%[sdif]|##\d+|#[A-Za-z]\d*#|</?[A-Za-z][^>\s]*[^>]*>|\[[A-Za-z0-9_:/#=.,-]+\]")
 CJK_RE = re.compile(r"[\u3400-\u9fff]")
 MOJIBAKE_RE = re.compile(r"\ufffd|\x00|\?{3}")
 NUMBER_RE = re.compile(
-    r"\d+(?:[,.]\d+)?(?:\s*(?:千|万|萬|亿|億|(?i:thousand|million|billion|ribu|rb|juta|miliar|millones|millón|milhao|milhão|milhões|mil|тыс|тысяч|тысяча|тысячи|млн|миллион|миллиона|миллионов|млрд|миллиард|миллиарда|миллиардов)\b\.?|[KkMBWw](?![A-Za-z])))%?"
-    r"|\d{1,3}(?:[,\s.]\d{3})+(?:[,.]\d+)?%?"
+    # 拉丁扩展及组合重音仍是词的一部分，不能把 Bäume/Mũ 的首字母识别为单位。
+    r"\d+(?:[,.]\d+)?(?:\s*(?:千|万|萬|亿|億|(?i:thousand|million|billion|ribu|rb|juta|miliar|millones|millón|milhao|milhão|milhões|mil|тыс|тысяч|тысяча|тысячи|млн|миллион|миллиона|миллионов|млрд|миллиард|миллиарда|миллиардов)\b\.?|[KkMBWw](?![A-Za-z\u00c0-\u024f\u1e00-\u1eff\u0300-\u036f])))%?"
+    r"|\d{1,3}(?:[,. \u00a0\u202f]\d{3})+(?:[,.]\d+)?%?"
     r"|\d+(?:[,.]\d+)?%?"
 )
 WORD_MULTIPLIERS = {
@@ -104,13 +110,13 @@ NUMBER_WORDS = {
 }
 CJK_ALLOWED_LANGS = {"CN", "ZH", "ZH-CN", "JA", "JP"}
 PROCESS_SUFFIXES = {".jsonl", ".log", ".tmp", ".bak", ".manifest"}
-SOURCE_HEADERS = {"CN", "ZH", "SOURCE", "TEXT", "原文"}
+SOURCE_HEADERS = {"CN", "ZH", "SOURCE", "TEXT", "原文", "中文", "简体中文", "CN配置"}
 SUPPORT_WORKBOOK_NAMES = {"qa摘要.xlsx", "qa_summary.xlsx"}
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for line_no, line in enumerate(path.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1):
+    for line_no, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
         if not line.strip():
             continue
         try:
@@ -177,7 +183,7 @@ def is_auto_protected_token(token: str) -> bool:
 
 def parse_number_token(token: str) -> Decimal | None:
     raw_with_spaces = token.strip()
-    raw = raw_with_spaces.replace(" ", "")
+    raw = re.sub(r"[ \u00a0\u202f]", "", raw_with_spaces)
     if not raw:
         return None
 
@@ -192,7 +198,7 @@ def parse_number_token(token: str) -> Decimal | None:
         match = re.search(rf"\s+{re.escape(word)}\.?$", lowered)
         if match:
             word_multiplier = multiplier
-            raw = raw_with_spaces[: match.start()].strip().replace(" ", "")
+            raw = re.sub(r"[ \u00a0\u202f]", "", raw_with_spaces[: match.start()].strip())
             break
     if raw and raw[-1] in "KkMBWw":
         suffix = raw[-1].upper()
@@ -253,8 +259,19 @@ def parse_number_token(token: str) -> Decimal | None:
         return None
 
 
+def normalize_spelled_multipliers(text: str) -> str:
+    # 数词属于数量单位时先合并，不能把 one million 中的 one 当作独立的 1。
+    words = "zero|one|two|three|four|five|six|seven|eight|nine|ten"
+    return re.sub(
+        rf"\b({words})\s+(thousand|million|billion)\b",
+        lambda match: str(int(NUMBER_WORDS[match[1].lower()] * WORD_MULTIPLIERS[match[2].lower()])),
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
 def numeric_values(text: str) -> set[Decimal]:
-    text = text or ""
+    text = normalize_spelled_multipliers(text or "")
     text = re.sub(r"(\d(?:[\d,.]*))(?:<[^>]+>)+\s*([千万萬亿億KkMBWw])", r"\1\2", text)
     word_suffixes = "|".join(re.escape(word) for word in sorted(WORD_MULTIPLIERS, key=len, reverse=True))
     text = re.sub(
@@ -263,8 +280,7 @@ def numeric_values(text: str) -> set[Decimal]:
         text,
         flags=re.IGNORECASE,
     )
-    text = re.sub(r"(?<=\d)\uff0c(?=\d{3}(?!\d))", ",", text)
-    text = text.replace("\uff0c", " ")
+    text = text.replace("\uff0c", ";")
     values = set()
     for token in NUMBER_RE.findall(text):
         parsed = parse_number_token(token)
@@ -277,12 +293,15 @@ def numeric_values(text: str) -> set[Decimal]:
     return values
 
 
-def source_numeric_values(row: dict[str, Any]) -> set[Decimal]:
+def source_numeric_values(row: dict[str, Any], *, preserve_small: bool = False) -> set[Decimal]:
     src = source_text(row)
     src = re.sub(r"\d+(?:[,.]\d+)?\s*月", "", src)
     src = re.sub(r"(?<=\d)\.(?=\d点)", " ", src)
+    # In CN item lists, *10,5分钟 separates quantity 10 from the next item.
+    if src.count('*') > 1:
+        src = re.sub(r'(\*\d+),(?=\d+(?:分钟|小时|[KkMWw]))', r'\1;', src)
     values = numeric_values(src)
-    if CJK_RE.search(src):
+    if CJK_RE.search(src) and not preserve_small:
         values = {
             value
             for value in values
@@ -403,7 +422,68 @@ def _check_required_terms(issues: list[dict[str, Any]], row: dict[str, Any], key
         variants = _accepted_term_variants(hit, lang)
         if variants and not any(variant in target for variant in variants):
             source = hit.get("source") or hit.get("CN") or hit.get("term") or ""
+            # 主控语境裁决只豁免这一格的精确源/译文，不能扩成全局代词变体。
+            waivers = row.get("term_waivers") or []
+            if any(isinstance(waiver, dict)
+                   and waiver.get("source") == source and waiver.get("lang") == lang
+                   and waiver.get("target") == target
+                   and waiver.get("cn") == source_text(row)
+                   and waiver.get("translation_source") == row.get("translation_source", row.get("cn", ""))
+                   and waiver.get("context") == row.get("context", "")
+                   and isinstance(waiver.get("reason"), str) and waiver["reason"].strip()
+                   for waiver in waivers):
+                continue
             add_issue(issues, "term_missing", key, lang, f"required term not used: {source}")
+
+
+def pair_integrity_issues(row: dict[str, Any], lang: str, target: str, punctuation_mode: str | None = None) -> list[tuple[str, str]]:
+    """Shared source/target checks for cache validation and actual file readback."""
+    source = source_text(row)
+    issues = list(punctuation_issues(target, lang, punctuation_mode).items())
+    if lang.upper() not in CJK_ALLOWED_LANGS and CJK_RE.search(target):
+        issues.append(("cjk_residue", "target still contains CJK ideographs"))
+    if MOJIBAKE_RE.search(target):
+        issues.append(("mojibake", "target contains replacement, null, or repeated question marks"))
+    from utils.semantic_regression import known_semantic_regressions
+    issues.extend(("known_semantic_regression", detail) for detail in known_semantic_regressions(row, lang, target))
+    tokens = protected_tokens(row)
+    for token in tokens:
+        required = max(1, source.count(token))
+        actual = target.count(token)
+        if actual < required:
+            issues.append(("protected_token_missing", f"missing protected token {token}: expected {required}, got {actual}"))
+        elif actual > required:
+            issues.append(("protected_token_extra", f"extra protected token {token}: expected {required}, got {actual}"))
+    source_markup = any(re.match(r"</?[A-Za-z]", token) for token in tokens)
+    for token in set(TOKEN_RE.findall(target)) - set(tokens):
+        if not is_auto_protected_token(token):
+            continue
+        if token.startswith(("{", "<@", "%", "#")) or (not source_markup and re.match(r"</?[A-Za-z]", token)):
+            issues.append(("protected_token_extra", f"unexpected protected token {token}"))
+    base_lang = lang.lower().replace('_', '-').split('-')[0]
+    source_visible, target_visible = visible_text(source), visible_text(target)
+    if base_lang == 'en':
+        target_visible = normalize_spelled_multipliers(target_visible)
+    target_numbers = numeric_values(target_visible)
+    if base_lang in WORDS:
+        # Strip cross-language words (PT "dos" is a preposition, ES "dos" is 2).
+        target_numbers = {value for token in NUMBER_RE.findall(target_visible) if (value := parse_number_token(token)) is not None}
+        words = {**WORDS[base_lang], **({'once': 1, 'twice': 2, 'single': 1} if base_lang == 'en' else {})}
+        target_numbers.update(Decimal(value) for word, value in words.items() if re.search(rf'\b{re.escape(word)}\b', target_visible, re.I))
+        if re.search(r'每[^，。；\n]{0,16}1\s*(?:次|个|名|辆)', source_visible):
+            each = r'\b(?:each|every|per)\b' if base_lang == 'en' else r'\bcada\b'
+            if re.search(each, target_visible, re.I): target_numbers.add(Decimal(1))
+    source_row = {**row, 'cn': source_visible}
+    missing = {value for value in source_numeric_values(source_row, preserve_small=base_lang in WORDS) if not numeric_value_present(value, target_numbers)}
+    if missing:
+        issues.append(("number_missing", f"missing numeric value(s): {sorted(str(value) for value in missing)}"))
+    issues.extend(quantity_issues(source, target, lang))
+    issues.extend(semantic_constraint_issues(source, target, lang))
+    from utils.variable_checker import check_bbcode_tags, check_newlines
+    issues.extend((issue.check_type, issue.message) for issue in check_bbcode_tags(0, source, target) + check_newlines(0, source, target))
+    if source.count('\n') != target.count('\n'):
+        issues.append(('newline_mismatch', f"Physical newline count mismatch: source={source.count(chr(10))}, target={target.count(chr(10))}"))
+    return list(dict.fromkeys(issues))
 
 
 def cache_lint(
@@ -411,9 +491,15 @@ def cache_lint(
     *,
     target_langs: list[str],
     term_base: Path | None = None,
+    punctuation_mode: str | None = None,
 ) -> dict[str, Any]:
     rows = read_jsonl(cache_jsonl)
+    target_langs = parse_langs(target_langs)
     issues: list[dict[str, Any]] = []
+    if not rows:
+        add_issue(issues, "empty_cache", "", "", "cache contains no source rows")
+    if not target_langs:
+        add_issue(issues, "target_languages_missing", "", "", "no target languages requested")
     seen: set[str] = set()
     unauthorized = Counter()
     requested = set(target_langs)
@@ -436,7 +522,11 @@ def cache_lint(
 
         effective_row = row
         if match_terms is not None:
-            expected_hits = match_terms(source_text(row), terms)
+            expected_hits = match_terms(
+                source_text(row), terms,
+                source_en=str(row.get("translation_source") or row.get("reference_en") or "")
+                if row.get("source_mode") == "en" else None,
+            )
             actual_hits = _term_hits(row)
             expected_snapshot = json.dumps(expected_hits, ensure_ascii=False, sort_keys=True)
             actual_snapshot = json.dumps(actual_hits, ensure_ascii=False, sort_keys=True)
@@ -450,8 +540,9 @@ def cache_lint(
                 )
             effective_row = {**row, "term_hits": expected_hits}
 
-        src_numbers = source_numeric_values(row)
-        tokens = protected_tokens(row)
+        unresolved = unresolved_review_detail(row)
+        if unresolved:
+            add_issue(issues, "unresolved_review_finding", key, "", unresolved)
         for lang in target_langs:
             target = row_translation(row, lang).strip()
             if row.get("opaque_payload_preserved") is True:
@@ -461,34 +552,8 @@ def cache_lint(
             if not target:
                 add_issue(issues, "empty_translation", key, lang, "target translation is empty")
                 continue
-            if lang.upper() not in CJK_ALLOWED_LANGS and CJK_RE.search(target):
-                add_issue(issues, "cjk_residue", key, lang, "target translation still contains Chinese/Japanese ideographs")
-            if MOJIBAKE_RE.search(target):
-                add_issue(issues, "mojibake", key, lang, "target translation contains replacement, null, or repeated question-mark characters")
-            for token in tokens:
-                if token and token not in target:
-                    add_issue(issues, "protected_token_missing", key, lang, f"missing protected token {token}")
-            target_tokens = {
-                token
-                for token in TOKEN_RE.findall(target)
-                if is_auto_protected_token(token)
-            }
-            source_token_set = set(tokens)
-            source_markup = {
-                token for token in source_token_set if re.match(r"</?[A-Za-z]", token)
-            }
-            extra_tokens = {
-                token
-                for token in target_tokens - source_token_set
-                if token.startswith("<@")
-                or (not source_markup and re.match(r"</?[A-Za-z]", token))
-            }
-            for token in sorted(extra_tokens):
-                add_issue(issues, "protected_token_extra", key, lang, f"unexpected protected token {token}")
-            target_numbers = numeric_values(target)
-            missing_numbers = {number for number in src_numbers if not numeric_value_present(number, target_numbers)}
-            if missing_numbers:
-                add_issue(issues, "number_missing", key, lang, f"missing numeric value(s): {sorted(str(value) for value in missing_numbers)}")
+            for issue_type, detail in pair_integrity_issues(row, lang, target, punctuation_mode):
+                add_issue(issues, issue_type, key, lang, detail)
             _check_required_terms(issues, effective_row, key, lang, target)
 
     by_type = Counter(issue["type"] for issue in issues)
@@ -523,6 +588,8 @@ def copy_cell_style(src: Any, dst: Any) -> None:
 
 
 def apply_dry_run(template_xlsx: Path, output_xlsx: Path) -> dict[str, Any]:
+    if template_xlsx.resolve() == output_xlsx.resolve():
+        raise ValueError("dry-run output must not overwrite the source workbook")
     workbook = load_workbook(template_xlsx)
     try:
         sheet = workbook.active
@@ -560,14 +627,17 @@ def is_process_file(path: Path) -> bool:
 
 def _looks_like_translation_sheet(headers: list[str], target_langs: list[str]) -> bool:
     header_set = {header.upper() for header in headers if header}
-    if header_set.intersection(set(target_langs)):
+    aliases = {name.upper() for lang in target_langs for name in target_header_candidates(lang)}
+    if header_set.intersection(aliases):
         return True
     return bool(header_set.intersection(SOURCE_HEADERS))
 
 
-def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, Any]:
+def readback_gate(delivery_dir: Path, *, target_langs: list[str], punctuation_mode: str | None = None) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     files = []
+    checked_cells = 0
+    checked_workbooks = 0
     if not delivery_dir.exists():
         add_issue(issues, "delivery_dir_missing", str(delivery_dir), "", "delivery directory does not exist")
         return {"delivery_dir": str(delivery_dir), "exists": False, "hard_blockers": len(issues), "issues": issues, "files": files}
@@ -582,24 +652,34 @@ def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, A
             continue
 
         workbook = load_workbook(path, read_only=True, data_only=True)
+        recognized = False
         try:
             for sheet in workbook.worksheets:
                 first_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
                 headers = [str(value).strip().upper() if value is not None else "" for value in first_row]
                 if not _looks_like_translation_sheet(headers, target_langs):
                     continue
+                recognized = True
                 col_by_lang = {header: index for index, header in enumerate(headers) if header}
                 source_col = next(
                     (index for index, header in enumerate(headers) if header in SOURCE_HEADERS),
                     None,
                 )
+                if source_col is None:
+                    add_issue(issues, "source_column_missing", f"{path.name}:{sheet.title}", "", "cannot validate targets without a source column")
+                    continue
                 id_col = next(
                     (index for index, header in enumerate(headers) if header in {"ID", "KEY", "索引ID"}),
                     None,
                 )
                 target_columns: list[tuple[str, int]] = []
                 for lang in target_langs:
-                    col_index = col_by_lang.get(lang.upper())
+                    candidates = {name.upper() for name in target_header_candidates(lang)}
+                    matches = [i for i, header in enumerate(headers) if header in candidates and i != id_col]
+                    if len(matches) > 1:
+                        add_issue(issues, "ambiguous_target_column", f"{path.name}:{sheet.title}", lang, "multiple columns match target language")
+                        continue
+                    col_index = matches[0] if matches else None
                     if col_index is None:
                         add_issue(issues, "target_column_missing", f"{path.name}:{sheet.title}", lang, "target language column is missing")
                         continue
@@ -615,17 +695,30 @@ def readback_gate(delivery_dir: Path, *, target_langs: list[str]) -> dict[str, A
                         ):
                             continue
                     for lang, col_index in target_columns:
+                        checked_cells += 1
                         value = row_values[col_index] if col_index < len(row_values) else None
                         if value is None or str(value).strip() == "":
                             add_issue(issues, "blank_target_cell", f"{path.name}:{sheet.title}!R{row_index}C{col_index + 1}", lang, "target cell is blank")
+                        else:
+                            pair = {"cn": str(source or "")}
+                            for issue_type, detail in pair_integrity_issues(pair, lang, str(value), punctuation_mode):
+                                add_issue(issues, issue_type, f"{path.name}:{sheet.title}!R{row_index}C{col_index + 1}", lang, detail)
+            if recognized:
+                checked_workbooks += 1
+            else:
+                add_issue(issues, "translation_sheet_missing", path.name, "", "no recognized source/target sheet")
         finally:
             workbook.close()
 
+    if not checked_workbooks or not checked_cells:
+        add_issue(issues, "empty_delivery", str(delivery_dir), "", "no translated cells were checked")
     by_type = Counter(issue["type"] for issue in issues)
     return {
         "delivery_dir": str(delivery_dir),
         "exists": True,
         "file_count": len(files),
+        "checked_workbooks": checked_workbooks,
+        "checked_target_cells": checked_cells,
         "files": files,
         "target_languages": target_langs,
         "hard_blockers": len(issues),
@@ -663,6 +756,7 @@ def main(argv: list[str] | None = None) -> int:
     lint.add_argument("--cache-jsonl", required=True, type=Path)
     lint.add_argument("--target-langs", required=True)
     lint.add_argument("--term-base", type=Path)
+    lint.add_argument("--punctuation-mode", choices=["ascii", "typographic"])
     lint.add_argument("--out", type=Path)
     lint.add_argument("--quiet", action="store_true")
 
@@ -675,6 +769,7 @@ def main(argv: list[str] | None = None) -> int:
     readback = sub.add_parser("readback-gate", help="Verify final delivery directory is clean and target columns are filled.")
     readback.add_argument("--delivery-dir", required=True, type=Path)
     readback.add_argument("--target-langs", required=True)
+    readback.add_argument("--punctuation-mode", choices=["ascii", "typographic"])
     readback.add_argument("--out", type=Path)
     readback.add_argument("--quiet", action="store_true")
 
@@ -694,6 +789,7 @@ def main(argv: list[str] | None = None) -> int:
             args.cache_jsonl,
             target_langs=parse_langs(args.target_langs),
             term_base=args.term_base,
+            punctuation_mode=args.punctuation_mode,
         )
         write_or_print(result, args.out, quiet=args.quiet)
         return 0 if result["hard_blockers"] == 0 else 1
@@ -702,7 +798,7 @@ def main(argv: list[str] | None = None) -> int:
         write_or_print(result, args.out, quiet=args.quiet)
         return 0
     if args.command == "readback-gate":
-        result = readback_gate(args.delivery_dir, target_langs=parse_langs(args.target_langs))
+        result = readback_gate(args.delivery_dir, target_langs=parse_langs(args.target_langs), punctuation_mode=args.punctuation_mode)
         write_or_print(result, args.out, quiet=args.quiet)
         return 0 if result["hard_blockers"] == 0 else 1
     return 2

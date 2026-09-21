@@ -160,6 +160,12 @@ def sync(target: SyncTarget, dry_run: bool = False) -> int:
             print(f"  ! {rel}")
         return 1
     print(f"[{target.name}] readback OK: {len(src_files)} files hash-verified")
+    if target.name == "localization":
+        # Keep the product runtime's pure rules in lockstep with the snapshot.
+        import runpy
+
+        module = runpy.run_path(str(STUDIO_ROOT / "scripts" / "sync_large_text_product_rules.py"))
+        return module["sync_product_rules"]()
     return 0
 
 

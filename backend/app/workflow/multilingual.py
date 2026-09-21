@@ -139,9 +139,10 @@ def _start_multilingual_qa_queue(project_id: str, payload: MultilingualQueueRequ
     created = []
     run_ids = []
     for language in selected:
-        if _find_passed_or_deliverable_run(project_id, payload.input_artifact_id, language, payload.translation_task_id):
+        current_run = _find_current_run(project_id, payload.input_artifact_id, language, payload.translation_task_id)
+        if current_run and current_run.get("status") == "passed":
             continue
-        existing_qa = _find_qa_run(project_id, payload.input_artifact_id, language, payload.translation_task_id)
+        existing_qa = current_run if current_run and current_run.get("kind") == "qa" else None
         if existing_qa:
             if existing_qa.get("status") != "passed":
                 run_ids.append(existing_qa["id"])
@@ -307,9 +308,7 @@ def _language_status(
 ) -> dict[str, Any]:
     translation_run = _find_translation_run(project_id, input_artifact_id, language, translation_task_id)
     qa_run = _find_qa_run(project_id, input_artifact_id, language, translation_task_id)
-    deliverable_run = _find_passed_or_deliverable_run(project_id, input_artifact_id, language, translation_task_id)
-    active_run = qa_run or translation_run
-    run_for_status = deliverable_run or active_run
+    run_for_status = _find_current_run(project_id, input_artifact_id, language, translation_task_id)
     progress = ((translation_run or {}).get("metadata") or {}).get("translation_progress") or {}
     quality = ((run_for_status or {}).get("metadata") or {}).get("quality_summary") or {}
     status = run_for_status.get("status") if run_for_status else "pending"
@@ -323,7 +322,7 @@ def _language_status(
         "translation_run_id": translation_run.get("id") if translation_run else None,
         "qa_run_id": qa_run.get("id") if qa_run else None,
         "status": status,
-        "step": "qa" if qa_run else ("translation" if translation_run else "pending"),
+        "step": run_for_status["kind"] if run_for_status else "pending",
         "can_continue": bool(run_for_status and run_for_status.get("status") in {"failed", "needs_input", "canceled"}),
         "error": ((run_for_status or {}).get("metadata") or {}).get("error") or "",
         "progress": progress,
@@ -360,11 +359,17 @@ def _find_child_run(
     project_id: str,
     input_artifact_id: str,
     language: str,
-    kind: str,
+    kind: str | None,
     translation_task_id: str | None = None,
 ) -> dict[str, Any] | None:
-    for run in db.list_runs(project_id):
-        if run.get("kind") != kind or require_supported_language(run.get("language") or "en") != language:
+    # Queue submissions identify retries; unrelated metadata edits do not supersede QA.
+    runs = sorted(
+        db.list_runs(project_id),
+        key=lambda run: str((run.get("metadata") or {}).get("queued_at") or run.get("created_at") or ""),
+        reverse=True,
+    )
+    for run in runs:
+        if run.get("kind") not in ((kind,) if kind else ("translation", "qa")) or require_supported_language(run.get("language") or "en") != language:
             continue
         if not _matches_translation_task(run, translation_task_id):
             continue
@@ -379,19 +384,13 @@ def _find_child_run(
     return None
 
 
-def _find_passed_or_deliverable_run(
+def _find_current_run(
     project_id: str,
     input_artifact_id: str,
     language: str,
     translation_task_id: str | None = None,
 ) -> dict[str, Any] | None:
-    for kind in ("qa", "translation"):
-        run = _find_child_run(project_id, input_artifact_id, language, kind, translation_task_id)
-        if not run:
-            continue
-        if run.get("status") == "passed" or _run_final_artifact(run):
-            return run
-    return None
+    return _find_child_run(project_id, input_artifact_id, language, None, translation_task_id)
 
 
 def _qa_input_artifact(

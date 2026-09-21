@@ -707,3 +707,213 @@ def test_multilingual_qa_skips_languages_without_translated_input(tmp_path: Path
     result = response.json()
     assert result["created_run_ids"] == []
     assert {item["status"] for item in result["languages"]} == {"pending"}
+
+
+@pytest.mark.parametrize(
+    ("run_kind", "artifact_kind"),
+    [("translation", "raw_translated_workbook"), ("translation", "qa_final_workbook"), ("qa", "qa_final_workbook")],
+)
+def test_multilingual_qa_requeues_failed_language_with_existing_output(
+    tmp_path: Path,
+    run_kind: str,
+    artifact_kind: str,
+) -> None:
+    project = db.insert_project("multi failed QA retry", "QA", "")
+    source = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN"])
+    run = db.insert_run(
+        project["id"],
+        run_kind,
+        "en",
+        metadata={
+            "input_artifact_id": source["id"],
+            "translation_task_id": "task-failed-qa-retry",
+            "quality_summary": {"passed": False, "hard_errors": 1},
+        },
+    )
+    db.update_run(run["id"], status="failed")
+    db.add_artifact(project["id"], "existing output", Path(source["path"]), artifact_kind, run_id=run["id"])
+    job_queue.clear_handlers()
+
+    result = multilingual.start_multilingual_qa_queue(
+        project["id"],
+        multilingual.MultilingualQueueRequest(
+            input_artifact_id=source["id"],
+            languages=["en"],
+            translation_task_id="task-failed-qa-retry",
+        ),
+    )
+
+    assert result["queue_started"] is True
+    assert result["languages"][0]["status"] == "queued"
+    if run_kind == "qa":
+        assert result["created_run_ids"] == []
+        assert result["languages"][0]["qa_run_id"] == run["id"]
+    else:
+        assert result["created_run_ids"] == [result["languages"][0]["qa_run_id"]]
+
+
+@pytest.mark.parametrize("older_run_kind", ["translation", "qa"])
+def test_multilingual_qa_does_not_hide_new_failure_behind_older_passed_run(
+    tmp_path: Path,
+    older_run_kind: str,
+) -> None:
+    project = db.insert_project("multi newest QA result", "QA", "")
+    source = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN"])
+    metadata = {"input_artifact_id": source["id"], "translation_task_id": "task-newest-qa"}
+    older = db.insert_run(project["id"], older_run_kind, "en", metadata=metadata)
+    db.update_run(older["id"], status="passed")
+    db.add_artifact(project["id"], "older output", Path(source["path"]), "qa_final_workbook", run_id=older["id"])
+    latest = db.insert_run(
+        project["id"],
+        "qa",
+        "en",
+        metadata={**metadata, "quality_summary": {"passed": False, "hard_errors": 1}},
+    )
+    db.update_run(latest["id"], status="failed")
+    db.add_artifact(project["id"], "latest output", Path(source["path"]), "qa_final_workbook", run_id=latest["id"])
+    job_queue.clear_handlers()
+
+    status = multilingual.multilingual_status(project["id"], source["id"], ["en"], "task-newest-qa")
+    assert status["languages"][0]["run_id"] == latest["id"]
+    assert status["languages"][0]["status"] == "failed"
+    result = multilingual.start_multilingual_qa_queue(
+        project["id"],
+        multilingual.MultilingualQueueRequest(
+            input_artifact_id=source["id"], languages=["en"], translation_task_id="task-newest-qa",
+        ),
+    )
+
+    assert result["queue_started"] is True
+    assert result["created_run_ids"] == []
+    assert result["languages"][0]["qa_run_id"] == latest["id"]
+    assert result["languages"][0]["status"] == "queued"
+
+
+@pytest.mark.parametrize("latest_status", ["failed", "needs_input"])
+def test_multilingual_qa_uses_new_translation_instead_of_older_passed_qa(
+    tmp_path: Path,
+    latest_status: str,
+) -> None:
+    project = db.insert_project("multi retranslation QA", "QA", "")
+    source = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN"])
+    metadata = {"input_artifact_id": source["id"], "translation_task_id": "task-retranslation-qa"}
+    older = db.insert_run(project["id"], "qa", "en", metadata=metadata)
+    db.update_run(older["id"], status="passed")
+    db.add_artifact(project["id"], "older output", Path(source["path"]), "qa_final_workbook", run_id=older["id"])
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/runs",
+            json={"project_id": project["id"], "kind": "translation", "language": "en", **metadata},
+        )
+    finally:
+        client.close()
+    assert response.status_code == 200, response.text
+    latest = response.json()
+    db.update_run(latest["id"], status=latest_status)
+    output = db.add_artifact(
+        project["id"], "latest output", Path(source["path"]), "raw_translated_workbook", run_id=latest["id"],
+    )
+    job_queue.clear_handlers()
+
+    status = multilingual.multilingual_status(project["id"], source["id"], ["en"], "task-retranslation-qa")
+    assert status["languages"][0]["run_id"] == latest["id"]
+    assert status["languages"][0]["status"] == latest_status
+    assert status["languages"][0]["step"] == "translation"
+    result = multilingual.start_multilingual_qa_queue(
+        project["id"],
+        multilingual.MultilingualQueueRequest(
+            input_artifact_id=source["id"], languages=["en"], translation_task_id="task-retranslation-qa",
+        ),
+    )
+
+    assert result["queue_started"] is True
+    assert result["created_run_ids"] == [result["languages"][0]["qa_run_id"]]
+    qa_run = db.get_run(result["created_run_ids"][0])
+    assert qa_run["metadata"]["input_artifact_id"] == output["id"]
+    assert qa_run["metadata"]["source_run_id"] == latest["id"]
+
+
+@pytest.mark.parametrize("passed_run_kind", ["translation", "qa"])
+def test_multilingual_qa_keeps_current_passed_result_idempotent(
+    tmp_path: Path,
+    passed_run_kind: str,
+) -> None:
+    project = db.insert_project("multi passed QA skip", "QA", "")
+    source = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN"])
+    metadata = {"input_artifact_id": source["id"], "translation_task_id": "task-passed-qa"}
+    older = db.insert_run(project["id"], "qa", "en", metadata=metadata)
+    db.update_run(older["id"], status="failed")
+    current = db.insert_run(
+        project["id"],
+        passed_run_kind,
+        "en",
+        metadata={**metadata, "quality_summary": {"passed": True, "hard_errors": 0}},
+    )
+    db.update_run(current["id"], status="passed")
+    db.add_artifact(project["id"], "current output", Path(source["path"]), "qa_final_workbook", run_id=current["id"])
+    db.merge_run_metadata(older["id"], {"audit_note": "unrelated metadata update"})
+    job_queue.clear_handlers()
+    request = multilingual.MultilingualQueueRequest(
+        input_artifact_id=source["id"], languages=["en"], translation_task_id="task-passed-qa",
+    )
+
+    for _ in range(2):
+        result = multilingual.start_multilingual_qa_queue(project["id"], request)
+        assert result["queue_started"] is False
+        assert result["created_run_ids"] == []
+        assert result["languages"][0]["run_id"] == current["id"]
+        assert result["languages"][0]["status"] == "passed"
+        assert result["active_job_id"] is None
+
+
+@pytest.mark.parametrize("resumed_status", ["failed", "needs_input"])
+def test_multilingual_translation_resume_supersedes_newer_passed_qa(
+    tmp_path: Path,
+    resumed_status: str,
+) -> None:
+    project = db.insert_project("multi resumed translation QA", "QA", "")
+    source = _add_language_table(project["id"], tmp_path / "source.xlsx", ["EN"])
+    metadata = {"input_artifact_id": source["id"], "translation_task_id": "task-resumed-translation"}
+    translation = db.insert_run(project["id"], "translation", "en", metadata=metadata)
+    db.update_run(translation["id"], status="failed")
+    output = db.add_artifact(
+        project["id"], "translation output", Path(source["path"]), "raw_translated_workbook", run_id=translation["id"],
+    )
+    previous_qa = db.insert_run(
+        project["id"], "qa", "en", metadata={**metadata, "source_run_id": translation["id"]},
+    )
+    db.update_run(previous_qa["id"], status="passed")
+    job_queue.clear_handlers()
+    payload = {"input_artifact_id": source["id"], "languages": ["en"], "translation_task_id": metadata["translation_task_id"]}
+    client = TestClient(app)
+    try:
+        resumed = client.post(f"/api/projects/{project['id']}/multilingual/translate/start", json=payload)
+        assert resumed.status_code == 200, resumed.text
+        result = resumed.json()
+        assert result["created_run_ids"] == []
+        assert result["queue_started"] is True
+        assert result["languages"][0]["run_id"] == translation["id"]
+        assert result["languages"][0]["status"] == "queued"
+        assert result["languages"][0]["step"] == "translation"
+
+        job_queue.set_job_status(result["active_job_id"], "completed")
+        db.update_run(translation["id"], status=resumed_status)
+        db.merge_run_metadata(previous_qa["id"], {"audit_note": "unrelated metadata update"})
+        status = client.get(
+            f"/api/projects/{project['id']}/multilingual/status",
+            params={**payload, "languages": "en"},
+        ).json()
+        assert status["languages"][0]["run_id"] == translation["id"]
+        assert status["languages"][0]["status"] == resumed_status
+
+        restarted = client.post(f"/api/projects/{project['id']}/multilingual/qa/start", json=payload)
+        assert restarted.status_code == 200, restarted.text
+        result = restarted.json()
+        assert result["queue_started"] is True
+        assert result["created_run_ids"] == [result["languages"][0]["qa_run_id"]]
+        qa_run = db.get_run(result["created_run_ids"][0])
+        assert qa_run["metadata"]["input_artifact_id"] == output["id"]
+        assert qa_run["metadata"]["source_run_id"] == translation["id"]
+    finally:
+        client.close()

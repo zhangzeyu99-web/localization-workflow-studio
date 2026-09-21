@@ -1026,6 +1026,91 @@ def test_rollback_preflights_no_id_source_identity_uniqueness() -> None:
     assert response.json()["detail"]["code"] == "rollback_constraint_conflict"
 
 
+def test_translation_preview_prioritizes_update_after_fifty_unchanged_rows() -> None:
+    source_rows = [[f"A-{index:03d}", f"源文{index}", f"Target {index}"] for index in range(51)]
+    with TestClient(app) as client:
+        project = _create_project(client)
+        base = _upload(client, project["id"], "base.xlsx", [["ID", "CN", "EN"], *source_rows])
+        base_analysis = _analyze(client, project["id"], base["id"])
+        _commit(client, project["id"], base_analysis["token"])
+
+        source_rows[-1][2] = "Updated target"
+        changed = _upload(client, project["id"], "changed.xlsx", [["ID", "CN", "EN"], *source_rows])
+        analysis = _analyze(client, project["id"], changed["id"])
+
+        assert analysis["summary"]["unchanged"] == 50
+        assert analysis["summary"]["update"] == 1
+        assert len(analysis["changes"]) == 50
+        assert analysis["changes"][0] == {
+            "ordinal": 50,
+            "action": "update",
+            "language": "en",
+            "entry_key": "A-050",
+            "source": "源文50",
+            "target": "Updated target",
+            "explicit_empty": False,
+        }
+        result = _commit(client, project["id"], analysis["token"])
+        assert result["changed_count"] == 1
+        entries = client.get(f"/api/projects/{project['id']}/translations").json()
+        assert len(entries) == 51
+        assert next(entry for entry in entries if entry["entry_key"] == "A-050")["target"] == "Updated target"
+
+
+def test_snapshot_preview_prioritizes_risk_without_changing_commit_guards() -> None:
+    source_rows = [[f"A-{index:03d}", f"源文{index}", f"Target {index}"] for index in range(54)]
+    with TestClient(app) as client:
+        project = _create_project(client)
+        base = _upload(client, project["id"], "base.xlsx", [["ID", "CN", "EN"], *source_rows])
+        base_analysis = _analyze(client, project["id"], base["id"])
+        base_result = _commit(client, project["id"], base_analysis["token"])
+        protected = next(entry for entry in base_result["entries"] if entry["entry_key"] == "A-053")
+        marked_manual = client.patch(
+            f"/api/projects/{project['id']}/translations/{protected['id']}",
+            json={"target": "Manual target"},
+        )
+        assert marked_manual.status_code == 200, marked_manual.text
+
+        snapshot_rows = [
+            *source_rows[:50],
+            ["A-050", "源文50", "Updated target"],
+            ["A-051", "源文51", ""],
+            ["A-053", "源文53", "Override target"],
+            ["A-054", "源文54", "New target"],
+        ]
+        snapshot = _upload(client, project["id"], "snapshot.xlsx", [["ID", "CN", "EN"], *snapshot_rows])
+        options = {"mode": "snapshot", "dataset_key": base_analysis["dataset_key"], "languages": ["en"]}
+        analysis = _analyze(client, project["id"], snapshot["id"], **options)
+
+        assert [change["action"] for change in analysis["changes"][:5]] == [
+            "protected", "clear", "deactivate", "update", "insert",
+        ]
+        assert len(analysis["changes"]) == 50
+        assert analysis["summary"]["unchanged"] == 50
+        for action in ("protected", "clear", "deactivate", "update", "insert"):
+            assert analysis["summary"][action] == 1
+        assert analysis["can_commit"] is False
+        blocked = client.post(
+            f"/api/projects/{project['id']}/translations/import/commit",
+            json={"token": analysis["token"]},
+        )
+        assert blocked.status_code == 409
+        assert len(client.get(f"/api/projects/{project['id']}/translations").json()) == 54
+
+        allowed = _analyze(client, project["id"], snapshot["id"], override_protected=True, **options)
+        assert [change["action"] for change in allowed["changes"][:5]] == [
+            "clear", "deactivate", "update", "update", "insert",
+        ]
+        assert [change["entry_key"] for change in allowed["changes"][2:4]] == ["A-050", "A-053"]
+        assert allowed["can_commit"] is True
+        result = _commit(client, project["id"], allowed["token"])
+        assert result["changed_count"] == 5
+        entries = client.get(f"/api/projects/{project['id']}/translations").json()
+        assert len(entries) == 53
+        assert not {"A-051", "A-052"}.intersection(entry["entry_key"] for entry in entries)
+        assert next(entry for entry in entries if entry["entry_key"] == "A-053")["review_status"] == "pending"
+
+
 def test_analyze_persists_all_items_while_returning_only_bounded_change_samples() -> None:
     source_rows = [[f"A-{index:03d}", f"源文{index}", f"Target {index}"] for index in range(75)]
     with TestClient(app) as client:

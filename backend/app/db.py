@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import unicodedata
@@ -572,6 +573,87 @@ def list_projects() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
         return [project_row_to_dict(row) for row in rows]
+
+
+def project_list_stat_inputs(project_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Read only summary counts and run ancestry, without hydrating task details."""
+    result = {
+        project_id: {
+            "runs": [], "deliverables": 0, "announcement_tasks": 0,
+            "announcement_deliverables": 0, "words": "0", "archived_rows": 0,
+            "langs": 0, "glossary": 0,
+        }
+        for project_id in project_ids
+    }
+    if not result:
+        return result
+    with connect() as conn:
+        # Keep counts from the same read snapshot, and stay below SQLite's
+        # conservative parameter limit even for a large project workspace.
+        conn.execute("BEGIN")
+        ids = list(result)
+        for offset in range(0, len(ids), 500):
+            selected = ids[offset:offset + 500]
+            placeholders = ",".join("?" for _ in selected)
+            for row in conn.execute(
+                f"""
+                SELECT project_id, id, kind,
+                  json_object(
+                    'source_run_id', json_extract(metadata_json, '$.source_run_id'),
+                    'manual_fix_source_run_id', json_extract(metadata_json, '$.manual_fix_source_run_id'),
+                    'model_fix_source_run_id', json_extract(metadata_json, '$.model_fix_source_run_id'),
+                    'announcement_task_id', json_extract(metadata_json, '$.announcement_task_id'),
+                    'task_id', json_extract(metadata_json, '$.task_id')
+                  ) AS metadata_json
+                FROM runs WHERE project_id IN ({placeholders}) ORDER BY created_at DESC
+                """, selected,
+            ):
+                result[row["project_id"]]["runs"].append({
+                    "id": row["id"], "kind": row["kind"], "metadata": json.loads(row["metadata_json"]),
+                })
+            for row in conn.execute(
+                f"""
+                SELECT project_id, COUNT(*) AS tasks,
+                  SUM(CASE WHEN status = 'delivered'
+                    AND COALESCE(json_extract(metadata_json, '$.delivery_artifact_id'), '') <> ''
+                    THEN 1 ELSE 0 END) AS deliveries
+                FROM announcement_tasks
+                WHERE project_id IN ({placeholders}) AND status <> 'canceled' GROUP BY project_id
+                """, selected,
+            ):
+                result[row["project_id"]].update({
+                    "announcement_tasks": row["tasks"], "announcement_deliverables": row["deliveries"],
+                })
+            for row in conn.execute(
+                f"""
+                SELECT artifacts.project_id, COUNT(DISTINCT artifacts.run_id) AS count
+                FROM artifacts JOIN runs ON runs.id = artifacts.run_id
+                WHERE artifacts.project_id IN ({placeholders})
+                  AND artifacts.kind IN ('qa_final_workbook', 'qa_result')
+                  AND runs.kind IN ('translation', 'qa') GROUP BY artifacts.project_id
+                """, selected,
+            ):
+                result[row["project_id"]]["deliverables"] = row["count"]
+            for row in conn.execute(
+                f"""
+                SELECT project_id, COUNT(*) AS archived_rows, COUNT(DISTINCT language) AS langs,
+                  COALESCE(SUM(LENGTH(REPLACE(REPLACE(REPLACE(REPLACE(
+                    source, ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), ''))), 0) AS source_chars
+                FROM translation_entries WHERE project_id IN ({placeholders})
+                  AND active = 1 AND TRIM(source) <> '' AND TRIM(target) <> '' GROUP BY project_id
+                """, selected,
+            ):
+                result[row["project_id"]].update({
+                    "archived_rows": row["archived_rows"], "langs": row["langs"], "words": str(row["source_chars"]),
+                })
+            for row in conn.execute(
+                f"""
+                SELECT project_id, COUNT(*) AS count FROM glossary_terms
+                WHERE project_id IN ({placeholders}) AND confirmed = 1 AND active = 1 GROUP BY project_id
+                """, selected,
+            ):
+                result[row["project_id"]]["glossary"] = row["count"]
+    return result
 
 
 def update_project(project_id: str, updates: dict[str, Any]) -> dict[str, Any]:
@@ -1996,6 +2078,79 @@ def list_glossary_terms(project_id: str, language: str | None = None) -> list[di
             payload["confirmed"] = bool(payload["confirmed"])
             result.append(payload)
         return result
+
+
+def glossary_term_revision(term: dict[str, Any]) -> str:
+    snapshot = {key: value for key, value in term.items() if key != "revision"}
+    snapshot["confirmed"] = bool(snapshot.get("confirmed"))
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+class GlossaryRevisionConflictError(Exception):
+    def __init__(self, expected_revision: str, current_revision: str) -> None:
+        super().__init__(expected_revision, current_revision)
+        self.expected_revision = expected_revision
+        self.current_revision = current_revision
+
+
+def update_project_glossary_term(
+    project_id: str, term_id: str, payload: dict[str, Any], *, expected_revision: str | None = None,
+) -> dict[str, Any]:
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        term = get_glossary_term(term_id, conn=conn)
+        if term["project_id"] != project_id:
+            raise KeyError(term_id)
+        revision = glossary_term_revision(term)
+        if expected_revision is not None and expected_revision != revision:
+            raise GlossaryRevisionConflictError(expected_revision, revision)
+        if expected_revision is None and not term["confirmed"] and term.get("review_status") == "pending":
+            raise ValueError("待复核术语必须提供 expected_revision，请刷新后重新确认。")
+        updated = update_glossary_term(term_id, payload, conn=conn)
+        return {**updated, "revision": glossary_term_revision(updated)}
+
+
+def list_pending_glossary_terms(
+    project_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 100,
+    q: str = "",
+    language: str | None = None,
+    batch_id: str | None = None,
+) -> dict[str, Any]:
+    clauses = ["project_id = ?", "active = 1", "confirmed = 0", "source_type = 'imported'", "review_status = 'pending'"]
+    values: list[Any] = [project_id]
+    if language:
+        clauses.append("language = ?")
+        values.append(normalize_language(language))
+    if batch_id:
+        clauses.append("last_import_batch_id = ?")
+        values.append(batch_id)
+    query = unicode_casefold(str(q or "").strip())
+    if query:
+        pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        fields = ("term_key", "source", "target", "category", "note")
+        clauses.append("(" + " OR ".join(f"unicode_casefold({field}) LIKE ? ESCAPE '\\'" for field in fields) + ")")
+        values.extend([pattern] * len(fields))
+    where = " AND ".join(clauses)
+    with connect() as conn:
+        conn.execute("BEGIN")
+        get_project(project_id, conn=conn)
+        total_rows = int(conn.execute(f"SELECT COUNT(*) FROM glossary_terms WHERE {where}", values).fetchone()[0])
+        rows = conn.execute(
+            f"SELECT * FROM glossary_terms WHERE {where} ORDER BY unicode_casefold(source), language, id LIMIT ? OFFSET ?",
+            [*values, page_size, (page - 1) * page_size],
+        ).fetchall()
+    items = []
+    for row in rows:
+        term = dict(row)
+        term["confirmed"] = bool(term["confirmed"])
+        items.append({**term, "revision": glossary_term_revision(term)})
+    return {
+        "project_id": project_id, "items": items, "total_rows": total_rows,
+        "page": page, "page_size": page_size, "total_pages": max(1, (total_rows + page_size - 1) // page_size),
+    }
 
 
 def dedupe_project_glossary_terms(

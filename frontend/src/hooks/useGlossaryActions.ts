@@ -39,7 +39,7 @@ export interface UseGlossaryActionsParams {
   setGlossaryCandidates: (candidates: GlossaryCandidate[]) => void
   setQaArtifact: (artifact: Artifact | null) => void
   refreshCurrent: (projectId?: string) => Promise<Project | null>
-  refreshProjectSnapshot: (projectId: string) => Promise<Project | null>
+  refreshProjectSnapshot: (projectId: string, signal?: AbortSignal, readbackProject?: Project) => Promise<Project | null>
   syncLanguageFromArtifact: (artifact: Artifact) => Promise<LanguageCode>
   refreshTranslationReadiness: (artifactId: string, projectId?: string, language?: LanguageCode, autoCorrectLanguage?: boolean, taskId?: string) => Promise<TranslationReadiness | null>
 }
@@ -221,7 +221,7 @@ export function useGlossaryActions(params: UseGlossaryActionsParams) {
     if (!current) return false
     const projectId = current.id
     if (options?.readbackOnly) {
-      const refreshed = await refreshProjectSnapshot(projectId)
+      const refreshed = await refreshProjectSnapshot(projectId, undefined, options.readbackProject)
       if (!refreshed) throw new Error('当前项目术语归档读回失败。')
       return true
     }

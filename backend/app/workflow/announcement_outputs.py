@@ -25,6 +25,22 @@ from .common import _CJK_RE
 from .jsonl_helpers import read_jsonl
 from .table_helpers import _wide_source_key
 
+_EXCEL_CELL_TEXT_LIMIT = 32767
+
+
+def _announcement_sentence_adaptations_cell_value(value: dict[str, Any]) -> str:
+    serialized = json.dumps(value, ensure_ascii=False)
+    return serialized if len(serialized) <= _EXCEL_CELL_TEXT_LIMIT else "{}"
+
+
+def _read_announcement_sentence_adaptations_cell(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _project_archive_by_language(project_id: str, languages: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
     result: dict[str, dict[str, dict[str, Any]]] = {}
     for language in languages:
@@ -74,7 +90,7 @@ def _write_announcement_translation_workbook(path: Path, task: dict[str, Any], s
                 segment.get("source", ""),
                 json.dumps(protected_tokens, ensure_ascii=False),
                 json.dumps(term_hits, ensure_ascii=False),
-                json.dumps(sentence_adaptations, ensure_ascii=False),
+                _announcement_sentence_adaptations_cell_value(sentence_adaptations),
                 *["" for _ in languages],
             ]
         )
@@ -108,9 +124,20 @@ def _announcement_segment_term_hits(segment: dict[str, Any], language: str, look
         target = str(term.get("target") or "").strip()
         hit_count, first_position = _announcement_term_occurs(source, term_source)
         if term_source and target and hit_count:
-            hits.append({"source": term_source, "target": target, "first_position": first_position, "hit_count": hit_count})
+            hit = {"source": term_source, "target": target, "first_position": first_position, "hit_count": hit_count}
+            for field in ("category", "constraint", "name_type", "exact_match"):
+                if term.get(field) not in (None, ""):
+                    hit[field] = term[field]
+            hits.append(hit)
     selected = _suppress_overlapping_lookup_hits(hits, text=source)
-    return [{"source": hit["source"], "target": hit["target"]} for hit in selected]
+    return [
+        {
+            key: hit[key]
+            for key in ("source", "target", "category", "constraint", "name_type", "exact_match")
+            if key in hit
+        }
+        for hit in selected
+    ]
 
 
 def _normalize_sentence_adaptation_text(value: Any) -> str:
@@ -228,7 +255,7 @@ def _read_announcement_translation_workbook(path: Path, languages: list[str]) ->
                 "source": str(ws.cell(row_idx, header_index["CN"]).value or ""),
                 "protected_tokens": json.loads(str(ws.cell(row_idx, header_index["protected_tokens"]).value or "[]")),
                 "term_hits": json.loads(str(ws.cell(row_idx, header_index["term_hits_json"]).value or "{}")),
-                "sentence_adaptations": json.loads(str(ws.cell(row_idx, header_index["sentence_adaptations_json"]).value or "{}")) if "sentence_adaptations_json" in header_index else {},
+                "sentence_adaptations": _read_announcement_sentence_adaptations_cell(ws.cell(row_idx, header_index["sentence_adaptations_json"]).value) if "sentence_adaptations_json" in header_index else {},
                 "translations": translations,
             }
     finally:
@@ -318,14 +345,81 @@ def _repair_announcement_translation_text(current: str, *, source: str, language
     return text.strip()
 
 
-def _announcement_mandatory_target_occurs(translation: str, target: str, language: str) -> bool:
+def _announcement_term_requires_exact_match(term_hit: dict[str, Any]) -> bool:
+    explicit = term_hit.get("exact_match")
+    if isinstance(explicit, bool):
+        return explicit
+    if explicit not in (None, ""):
+        normalized_explicit = str(explicit).strip().casefold()
+        if normalized_explicit in {"true", "1", "yes"}:
+            return True
+        if normalized_explicit in {"false", "0", "no"}:
+            return False
+
+    metadata = " ".join(
+        str(term_hit.get(field) or "").strip().casefold()
+        for field in ("category", "constraint", "name_type")
+        if str(term_hit.get(field) or "").strip()
+    )
+    if metadata:
+        if any(marker in metadata for marker in ("非游戏名", "not a game name", "inexact", "普通术语")):
+            return False
+        return any(
+            marker in metadata
+            for marker in (
+                "游戏名",
+                "game name",
+                "game title",
+                "proper name",
+                "proper noun",
+                "fixed name",
+                "exact match",
+            )
+        ) or str(term_hit.get("name_type") or "").strip().casefold() == "game"
+
+    return len(str(term_hit.get("target") or "").split()) > 1
+
+
+def _announcement_inflected_target_variants(target: str) -> set[str]:
+    tokens = target.split()
+    if not tokens or not tokens[-1].isalpha():
+        return {target}
+    last = tokens[-1]
+    lowered = last.casefold()
+    if lowered.endswith("ies") and len(last) > 3:
+        singular = last[:-3] + "y"
+    elif lowered.endswith("es") and lowered[:-2].endswith(("s", "x", "z", "ch", "sh")):
+        singular = last[:-2]
+    elif lowered.endswith("s") and not lowered.endswith("ss"):
+        singular = last[:-1]
+    else:
+        singular = last
+    if lowered.endswith("y") and len(last) > 1 and lowered[-2] not in "aeiou":
+        plural = last[:-1] + "ies"
+    elif lowered.endswith(("s", "x", "z", "ch", "sh")):
+        plural = last + "es"
+    else:
+        plural = last + "s"
+    return {
+        " ".join([*tokens[:-1], variant])
+        for variant in (last, singular, plural)
+        if variant
+    }
+
+
+def _announcement_mandatory_target_occurs(translation: str, target: str, language: str, term_hit: dict[str, Any] | None = None) -> bool:
     folded_translation = translation.casefold()
-    folded_target = target.casefold()
     if language not in {"en", "idn"}:
-        return folded_target in folded_translation
-    left_boundary = r"(?<!\w)" if re.match(r"\w", folded_target) else ""
-    right_boundary = r"(?!\w)" if re.search(r"\w$", folded_target) else ""
-    return re.search(f"{left_boundary}{re.escape(folded_target)}{right_boundary}", folded_translation) is not None
+        return target.casefold() in folded_translation
+    hit = {**(term_hit or {}), "target": target}
+    variants = {target} if _announcement_term_requires_exact_match(hit) else _announcement_inflected_target_variants(target)
+    for variant in variants:
+        folded_target = variant.casefold()
+        left_boundary = r"(?<!\w)" if re.match(r"\w", folded_target) else ""
+        right_boundary = r"(?!\w)" if re.search(r"\w$", folded_target) else ""
+        if re.search(f"{left_boundary}{re.escape(folded_target)}{right_boundary}", folded_translation) is not None:
+            return True
+    return False
 
 
 def _validate_announcement_translation_rows(segments: list[dict[str, Any]], rows: dict[str, dict[str, Any]], languages: list[str]) -> list[dict[str, Any]]:
@@ -351,7 +445,7 @@ def _validate_announcement_translation_rows(segments: list[dict[str, Any]], rows
             lang_hits = (row.get("term_hits") or {}).get(language) or []
             for hit in lang_hits:
                 target = str(hit.get("target") or "").strip()
-                if target and not _announcement_mandatory_target_occurs(translation, target, language):
+                if target and not _announcement_mandatory_target_occurs(translation, target, language, hit):
                     issues.append({**base, "check_type": "term_missing", "message": f"Missing term target: {target}"})
     return issues
 

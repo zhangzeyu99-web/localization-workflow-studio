@@ -3,13 +3,19 @@ from __future__ import annotations
 import gc
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("LWS_DATA_ROOT", str(Path(os.environ.get("TEMP", ".")) / f"lws-test-data-{os.getpid()}"))
-os.environ.setdefault("LWS_ENABLE_TEST_PROVIDER", "1")
+# Never inherit the desktop/server's business data directory into destructive
+# test fixtures. Establish isolation before any app/config module is imported.
+_TEST_DATA_ROOT = Path(tempfile.mkdtemp(prefix="lws-pytest-"))
+os.environ["LWS_DATA_ROOT"] = str(_TEST_DATA_ROOT)
+os.environ["LWS_ENABLE_TEST_PROVIDER"] = "1"
+os.environ.pop("LWS_DEPLOYMENT_MODE", None)
+os.environ.pop("LWS_AUTH_MODE", None)
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +89,13 @@ def wait_for_background_jobs(timeout: float = 15.0) -> None:
 
 
 def reset_data_root(path: Path) -> None:
+    resolved = path.resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if not resolved.is_relative_to(temp_root):
+        raise RuntimeError(f"Refusing to clean a non-temporary data directory: {resolved}")
+    relative = resolved.relative_to(temp_root)
+    if not relative.parts or not relative.parts[0].startswith(("lws-", "pytest-of-")):
+        raise RuntimeError(f"Refusing to clean a directory not owned by tests: {resolved}")
     wait_for_background_jobs()
     gc.collect()
     if not path.exists():

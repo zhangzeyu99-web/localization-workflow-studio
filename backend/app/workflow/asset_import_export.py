@@ -256,7 +256,10 @@ def import_translation_archive(project_id: str, request: Any, source_type: str =
     return {**result, "artifact_id": request.artifact_id}
 
 
-def archive_translation_artifact(project_id: str, artifact_id: str, language: str = "en", source_type: str = "qa_passed") -> dict[str, Any]:
+def archive_translation_artifact(
+    project_id: str, artifact_id: str, language: str = "en", source_type: str = "qa_passed", *,
+    run_id: str | None = None, cancel_event: Any | None = None,
+) -> dict[str, Any]:
     class Request:
         pass
 
@@ -285,7 +288,10 @@ def archive_translation_artifact(project_id: str, artifact_id: str, language: st
             "summary": analysis["summary"],
             "conflicts": analysis["conflicts"],
         }
-    return {**commit_translation_archive(project_id, analysis["token"]), "artifact_id": artifact_id}
+    return {
+        **commit_translation_archive(project_id, analysis["token"], run_id=run_id, cancel_event=cancel_event),
+        "artifact_id": artifact_id,
+    }
 
 
 def export_translation_archive(project_id: str, fmt: str, language: str | None = None) -> dict[str, Any] | Path:

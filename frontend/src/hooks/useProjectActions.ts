@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from '../apiClient'
 import { errorText } from '../appText'
@@ -91,6 +91,12 @@ export function useProjectActions(params: UseProjectActionsParams) {
     runGlossaryExtract
   } = params
   const projectListRefreshRequestRef = useRef(0)
+  const projectListInFlightRef = useRef<{ controller: AbortController; promise: Promise<void> } | null>(null)
+
+  useEffect(() => () => {
+    projectListInFlightRef.current?.controller.abort()
+    projectListInFlightRef.current = null
+  }, [])
 
   const cancelProjectDeleteHold = useCallback(() => {
     if (deleteHoldTimer.current !== null) {
@@ -112,17 +118,37 @@ export function useProjectActions(params: UseProjectActionsParams) {
     }, 850)
   }, [busy, cancelProjectDeleteHold, deleteHoldTimer, longPressTriggeredProjectId, setDeleteHoldProjectId, setDeleteProjectTarget])
 
-  const refreshProjects = useCallback(async (selectId?: string, signal?: AbortSignal) => {
+  const refreshProjects = useCallback((selectId?: string, signal?: AbortSignal, options?: { fresh?: boolean }): Promise<void> => {
+    if (signal?.aborted) return Promise.resolve()
+    const pending = projectListInFlightRef.current
+    if (pending && !pending.controller.signal.aborted && !options?.fresh) return pending.promise
+    // A post-mutation refresh must read after the write, not reuse an older
+    // snapshot. Ordinary focus/visibility/timer refreshes share this request.
+    pending?.controller.abort()
     const requestId = ++projectListRefreshRequestRef.current
-    const loaded = await api<Project[]>('/api/projects', signal ? { signal } : undefined)
-    if (requestId !== projectListRefreshRequestRef.current) return
-    const preferred = selectId && loaded.some((item) => item.id === selectId)
-      ? selectId
-      : (loaded.some((item) => item.id === currentIdRef.current) ? currentIdRef.current : '')
-    const nextId = preferred || loaded[0]?.id || ''
-    setProjects((prev) => mergeProjectListSummaries(prev, loaded))
-    currentIdRef.current = nextId
-    setCurrentId(nextId)
+    const activeAtStart = currentIdRef.current
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    signal?.addEventListener('abort', abort, { once: true })
+    const promise = api<Project[]>('/api/projects', { signal: controller.signal }).then((loaded) => {
+      if (controller.signal.aborted || requestId !== projectListRefreshRequestRef.current) return
+      const activeId = currentIdRef.current
+      const requestedId = activeId === activeAtStart ? selectId : activeId
+      const preferred = requestedId && loaded.some((item) => item.id === requestedId)
+        ? requestedId
+        : (loaded.some((item) => item.id === activeId) ? activeId : '')
+      const nextId = preferred || loaded[0]?.id || ''
+      setProjects((prev) => mergeProjectListSummaries(prev, loaded))
+      currentIdRef.current = nextId
+      setCurrentId(nextId)
+    }).catch((error) => {
+      if (!controller.signal.aborted) throw error
+    }).finally(() => {
+      signal?.removeEventListener('abort', abort)
+      if (requestId === projectListRefreshRequestRef.current) projectListInFlightRef.current = null
+    })
+    projectListInFlightRef.current = { controller, promise }
+    return promise
   }, [currentIdRef, setProjects, setCurrentId])
 
   const selectProject = useCallback((project: Project, event: React.MouseEvent<HTMLButtonElement>) => {
@@ -145,22 +171,18 @@ export function useProjectActions(params: UseProjectActionsParams) {
     setStatus(`正在删除项目“${targetName}”...`)
     try {
       await api(`/api/projects/${targetId}`, { method: 'DELETE' })
-      const loaded = await api<Project[]>('/api/projects')
       const activeId = currentIdRef.current
-      const nextId = loaded.some((item) => item.id === activeId && item.id !== targetId) ? activeId : loaded[0]?.id || ''
-      setProjects((prev) => mergeProjectListSummaries(prev, loaded))
-      currentIdRef.current = nextId
-      setCurrentId(nextId)
       if (targetId === activeId) {
         setView('overview')
         setTab('meta')
       }
+      await refreshProjects(undefined, undefined, { fresh: true })
       longPressTriggeredProjectId.current = ''
       setDeleteProjectTarget(null)
       setStatus(`项目“${targetName}”已删除`)
     } catch (error) {
       if (/not found/i.test(errorText(error))) {
-        await refreshProjects()
+        await refreshProjects(undefined, undefined, { fresh: true })
         longPressTriggeredProjectId.current = ''
         setDeleteProjectTarget(null)
         setStatus(`项目“${targetName}”已不存在，列表已刷新。`)
@@ -172,22 +194,24 @@ export function useProjectActions(params: UseProjectActionsParams) {
     }
   }, [setBusy, setStatus, currentIdRef, setProjects, setCurrentId, setView, setTab, longPressTriggeredProjectId, setDeleteProjectTarget, refreshProjects])
 
-  const refreshCurrent = useCallback(async (projectId = currentIdRef.current): Promise<Project | null> => {
+  const refreshCurrent = useCallback(async (projectId = currentIdRef.current, readbackProject?: Project): Promise<Project | null> => {
     if (!projectId) return null
-    const loaded = await api<Project>(`/api/projects/${projectId}?include_archives=false`)
+    if (readbackProject && readbackProject.id !== projectId) throw new Error('归档读回快照与当前项目不匹配。')
+    const loaded = readbackProject ?? await api<Project>(`/api/projects/${projectId}?include_archives=false`)
     if (!isCurrentProject(projectId)) return loaded
     setProjects((prev) => prev.map((p) => (p.id === loaded.id ? mergeProjectSummary(p, loaded) : p)))
     return loaded
   }, [currentIdRef, isCurrentProject, setProjects])
 
-  const refreshProjectSnapshot = useCallback(async (projectId: string, signal?: AbortSignal): Promise<Project | null> => {
+  const refreshProjectSnapshot = useCallback(async (projectId: string, signal?: AbortSignal, readbackProject?: Project): Promise<Project | null> => {
     if (!projectId) return null
     try {
-      const loaded = await api<Project>(`/api/projects/${projectId}?include_archives=false`, signal ? { signal } : undefined)
+      if (readbackProject && readbackProject.id !== projectId) throw new Error('归档读回快照与当前项目不匹配。')
+      const loaded = readbackProject ?? await api<Project>(`/api/projects/${projectId}?include_archives=false`, signal ? { signal } : undefined)
       setProjects((prev) => prev.map((p) => (p.id === loaded.id ? mergeProjectSummary(p, loaded) : p)))
       return loaded
     } catch (error) {
-      if (/not found/i.test(errorText(error))) await refreshProjects()
+      if (/not found/i.test(errorText(error))) await refreshProjects(undefined, undefined, { fresh: true })
       return null
     }
   }, [setProjects, refreshProjects])
@@ -213,13 +237,16 @@ export function useProjectActions(params: UseProjectActionsParams) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates)
       })
-      await refreshCurrent()
+      await Promise.all([
+        refreshCurrent(current.id),
+        refreshProjects(undefined, undefined, { fresh: true })
+      ])
       setStatus('项目元信息已保存')
     } catch (error) {
       setStatus(`项目元信息保存失败：${errorText(error)}`)
       throw error
     }
-  }, [current, refreshCurrent, setStatus])
+  }, [current, refreshCurrent, refreshProjects, setStatus])
 
   const loadQualityIssues = useCallback(async (runId: string, projectId = currentIdRef.current, accept: () => boolean = () => true): Promise<QualityIssue[]> => {
     try {
@@ -244,7 +271,7 @@ export function useProjectActions(params: UseProjectActionsParams) {
       })
     })
     setNewProjectOpen(false)
-    await refreshProjects(created.id)
+    await refreshProjects(created.id, undefined, { fresh: true })
     setView('overview')
     setTab('meta')
     setStatus(created.duplicate ? `项目“${created.name}”已存在，已切换到已有项目。` : `项目“${created.name}”已创建。`)
