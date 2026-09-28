@@ -131,6 +131,7 @@ export function queueJobStatusText(job: JobQueueEntry | null | undefined): strin
   if (!job) return ''
   const operator = job.operator_name || '未署名用户'
   if (job.archive_committed) return `归档已提交，正在完成 · 操作人 ${operator}`
+  if (job.cancel_requested) return `正在停止，等待当前步骤结束 · 操作人 ${operator}`
   if (job.status === 'running') return `运行中 · 操作人 ${operator}`
   const position = Math.max(1, Number(job.position) || 1)
   const ahead = Math.max(0, Number(job.ahead) || 0)

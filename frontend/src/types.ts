@@ -625,6 +625,7 @@ export type JobQueueEntry = {
   queued_at?: string | null
   started_at: string | null
   archive_committed?: boolean
+  cancel_requested?: boolean
   can_cancel?: boolean
 }
 

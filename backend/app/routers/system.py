@@ -249,7 +249,8 @@ def _queue_entry(entry: dict[str, Any], *, position: int | None = None, ahead: i
         "queued_at": entry.get("queued_at"),
         "started_at": entry.get("started_at"),
         "archive_committed": bool((entry.get("payload") or {}).get("archive_commit")),
-        "can_cancel": entry.get("status") in job_queue.ACTIVE_STATUSES and not bool((entry.get("payload") or {}).get("archive_commit")),
+        "cancel_requested": bool(entry.get("cancel_requested")),
+        "can_cancel": entry.get("status") in job_queue.ACTIVE_STATUSES and not entry.get("cancel_requested") and not bool((entry.get("payload") or {}).get("archive_commit")),
     }
 
 

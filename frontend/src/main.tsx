@@ -32,7 +32,7 @@ import { OperatorIdentityControl } from './components/system/OperatorIdentityCon
 import { artifactsByRole, newestArtifact, runArtifacts, uniqueArtifactsByContent } from './domain/artifacts'
 import { artifactForProject, preferredTranslationResultArtifact, runForProject } from './domain/projectState'
 import { projectTranslationPassedStatusText } from './domain/projectActivity'
-import { projectQueueJobCount, queueJobKindLabel } from './domain/jobQueues'
+import { allQueueJobs, projectQueueJobCount, queueJobKindLabel } from './domain/jobQueues'
 import { canSkipModelTranslation, findVisibleQualityRun } from './domain/translationFlow'
 import { captureTranslationActionScope, type TranslationActionScope } from './domain/translationActionScope'
 import { scopeProjectToLanguage } from './domain/projectAssets'
@@ -105,6 +105,10 @@ function App() {
   const [runtimeVersion, setRuntimeVersion] = useState<AppRuntimeVersion | null>(null)
   const [freqOpen, setFreqOpen] = useState(false)
   const [activeJobsPanelOpen, setActiveJobsPanelOpen] = useState(false)
+  const [requestedQueueJobIds, setRequestedQueueJobIds] = useState(new Set<string>())
+  const pendingQueueJobIdsRef = useRef(new Set<string>())
+  const [cancelingQueueJobIds, setCancelingQueueJobIds] = useState(new Set<string>())
+  const [queueCancelErrors, setQueueCancelErrors] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('准备就绪')
   const currentIdRef = useRef('')
@@ -876,21 +880,41 @@ function App() {
   }, [])
 
   useProjectListPolling(refreshProjects, currentIdRef)
-  const { queues: jobQueues, refresh: refreshJobQueues } = useActiveJobsPolling()
+  const { queues: jobQueues, connection: queueConnection, refresh: refreshJobQueues } = useActiveJobsPolling()
+
+  useEffect(() => {
+    if (queueConnection.failed || queueConnection.lastUpdated === null) return
+    const activeIds = new Set(allQueueJobs(jobQueues).map(job => job.job_id))
+    setRequestedQueueJobIds(previous => {
+      const remaining = new Set([...previous].filter(id => activeIds.has(id)))
+      return remaining.size === previous.size ? previous : remaining
+    })
+  }, [jobQueues, queueConnection.failed, queueConnection.lastUpdated])
 
   const cancelQueueJob = useCallback(async (job: JobQueueEntry) => {
-    const accepted = await confirm(
-      `确定取消“${job.project_name || '未知项目'}”的${queueJobKindLabel(job.job_kind)}任务吗？`,
-      { title: '取消后台任务', confirmLabel: '确认取消', cancelLabel: '返回', tone: 'warn' }
-    )
-    if (!accepted) return
+    if (job.can_cancel === false || job.archive_committed || job.cancel_requested || pendingQueueJobIdsRef.current.has(job.job_id) || requestedQueueJobIds.has(job.job_id)) return false
+    pendingQueueJobIdsRef.current.add(job.job_id)
+    setCancelingQueueJobIds(new Set(pendingQueueJobIdsRef.current))
+    setQueueCancelErrors(previous => ({ ...previous, [job.job_id]: '' }))
     try {
+      const accepted = await confirm(
+        `确定取消“${job.project_name || '未知项目'}”的${queueJobKindLabel(job.job_kind)}任务吗？`,
+        { title: '取消后台任务', confirmLabel: '确认取消', cancelLabel: '返回', tone: 'warn' }
+      )
+      if (!accepted) return false
       await api(`/api/system/job-queues/${encodeURIComponent(job.job_id)}/cancel`, { method: 'POST' }, '取消后台任务')
+      // The accepted write remains a fact even if readback fails or the panel closes.
+      setRequestedQueueJobIds(previous => new Set([...previous, job.job_id]))
       await refreshJobQueues()
+      return true
     } catch (error) {
-      setStatus(`取消后台任务失败：${error instanceof Error ? error.message : String(error)}`)
+      setQueueCancelErrors(previous => ({ ...previous, [job.job_id]: error instanceof Error ? error.message : '取消失败，请重试。' }))
+      return false
+    } finally {
+      pendingQueueJobIdsRef.current.delete(job.job_id)
+      setCancelingQueueJobIds(new Set(pendingQueueJobIdsRef.current))
     }
-  }, [confirm, refreshJobQueues])
+  }, [confirm, refreshJobQueues, requestedQueueJobIds])
 
   useEffect(() => {
     currentIdRef.current = currentId
@@ -1306,8 +1330,8 @@ function App() {
           <div className="header-actions">
             <span className={`status ${busy ? 'running' : ''}`} role="status" aria-live="polite">{busy ? <span className="loading" /> : null}{status}</span>
             <div className="active-jobs-anchor">
-              <ActiveJobsBadge queues={jobQueues} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
-              {activeJobsPanelOpen ? <ActiveJobsPanel queues={jobQueues} onClose={() => setActiveJobsPanelOpen(false)} onCancel={cancelQueueJob} /> : null}
+              <ActiveJobsBadge queues={jobQueues} connection={queueConnection} open={activeJobsPanelOpen} onToggle={() => setActiveJobsPanelOpen((value) => !value)} />
+              {activeJobsPanelOpen ? <ActiveJobsPanel queues={jobQueues} connection={queueConnection} requestedJobIds={requestedQueueJobIds} cancelingJobIds={cancelingQueueJobIds} cancelErrors={queueCancelErrors} onRefresh={refreshJobQueues} onClose={() => setActiveJobsPanelOpen(false)} onCancel={cancelQueueJob} /> : null}
             </div>
             <span
               className={versionMismatch ? 'runtime-version-badge version-mismatch' : 'runtime-version-badge'}

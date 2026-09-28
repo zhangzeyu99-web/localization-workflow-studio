@@ -1715,6 +1715,16 @@ a {
   backdrop-filter: none;
 }
 
+.confirm-modal .confirm-modal-message {
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.confirm-modal .btn {
+  min-height: 44px;
+  font-size: 16px;
+}
+
 .active-jobs-item,
 .ai-audit-body,
 .audit-item,
@@ -1744,6 +1754,64 @@ a {
 
 .active-jobs-item-state {
   color: #0f766e;
+}
+
+.active-jobs-item-state.is-stale {
+  color: #687680;
+}
+
+.active-jobs-badge {
+  min-height: 44px;
+  padding: 8px 10px;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.active-jobs-badge.is-stale {
+  border-color: #eed5a2;
+  background: #fffbeb;
+  color: #854d0e;
+}
+
+.queue-freshness {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 14px;
+  border: 1px solid #eed5a2;
+  border-radius: 6px;
+  background: #fffbeb;
+  color: #854d0e;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.queue-freshness div { min-width: 0; flex: 1; }
+.header .active-jobs-panel p {
+  display: block;
+  font-size: 16px;
+  line-height: 1.6;
+}
+.queue-freshness p { margin: 4px 0 0; color: inherit; }
+.queue-freshness button { flex-shrink: 0; }
+.active-jobs-panel .btn-sm {
+  min-height: 44px;
+  padding: 8px 12px;
+  font-size: 16px;
+}
+.active-jobs-panel .active-jobs-panel-head strong,
+.active-jobs-panel .job-queue-lane-head strong,
+.active-jobs-panel .job-queue-lane-head span,
+.active-jobs-panel .active-jobs-item-project,
+.active-jobs-panel .active-jobs-item-kind,
+.active-jobs-panel .active-jobs-item-time,
+.active-jobs-panel .active-jobs-item-state,
+.active-jobs-panel .active-jobs-empty { font-size: 16px; }
+.active-jobs-panel .queue-cancel-error { margin: 4px 0 0; color: #b42318; }
+@media (max-width: 540px) {
+  .active-jobs-item-bottom { flex-wrap: wrap; }
+  .active-jobs-panel .active-jobs-cancel { margin-left: auto; }
 }
 
 .active-jobs-item-kind,
@@ -1918,6 +1986,15 @@ details > summary {
 
   .header-actions {
     width: 100%;
+    position: relative;
+  }
+
+  /* Keep the queue below the confirmation dialog when the header is no longer sticky. */
+  .header-actions:has(.active-jobs-panel) { z-index: 20; }
+  .active-jobs-anchor { position: static; }
+  .active-jobs-panel {
+    width: calc(100vw - 28px);
+    max-height: min(640px, calc(100dvh - 220px));
   }
 
   .status {
