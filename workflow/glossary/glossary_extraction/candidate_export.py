@@ -185,6 +185,13 @@ def export_candidates(
     output_path: Path,
     review_file: Path | None = None,
 ) -> dict[str, object]:
+    # Reject aliases before reading or writing: a JSON output must never destroy
+    # source workbooks, the maintained glossary, or the review decisions.
+    output = output_path.resolve()
+    protected = [*input_paths, existing_glossary, *([review_file] if review_file else [])]
+    for source in protected:
+        if output == source.resolve() or (output.exists() and source.exists() and output.samefile(source)):
+            raise ValueError(f"candidate output must not overwrite an input: {source}")
     existing_cn, existing_rows, existing_entries = load_existing_glossary(
         existing_glossary,
         target_languages,

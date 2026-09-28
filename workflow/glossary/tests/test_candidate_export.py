@@ -166,3 +166,34 @@ def test_category_and_common_action_do_not_auto_approve_permanent_terms() -> Non
         assert auto_decision(cn, set())[0] == 'needs_context'
     assert auto_decision('已领取', set())[0] == 'reject'
     assert auto_decision('购买', {'购买'})[2] == 'existing_glossary'
+
+
+def test_candidate_export_rejects_all_input_aliases_before_writing(tmp_path: Path) -> None:
+    import os
+    import pytest
+    from glossary_extraction.candidate_export import export_candidates
+
+    source, glossary, review = (tmp_path / name for name in ("source.xlsx", "glossary.xlsx", "review.json"))
+    write_book(source, ["ID", "CN", "EN"], [[1, "火焰试炼", "Flame Trial"]])
+    write_book(glossary, ["ID", "CN", "EN"], [[1, "竞技场", "Arena"]])
+    review.write_text('{"decisions": {}}', encoding="utf-8")
+    before = {p: p.read_bytes() for p in (source, glossary, review)}
+    outputs = [source, glossary, review, tmp_path / "child" / ".." / source.name]
+    (tmp_path / "child").mkdir()
+    if os.name == "nt":
+        outputs.append(source.with_name(source.name.upper()))
+    alias = tmp_path / "hard-link.json"
+    try:
+        os.link(glossary, alias)
+    except OSError:
+        pass  # Some filesystems do not support hard links; direct aliases still run.
+    else:
+        outputs.append(alias)
+    for output in outputs:
+        with pytest.raises(ValueError, match="must not overwrite an input"):
+            export_candidates([source], glossary, ["EN"], output, review)
+        assert all(path.read_bytes() == data for path, data in before.items())
+    safe = tmp_path / "candidates.json"
+    result = export_candidates([source], glossary, ["EN"], safe, review)
+    assert json.loads(safe.read_text(encoding="utf-8"))["summary"] == result["summary"]
+    assert all(path.read_bytes() == data for path, data in before.items())
