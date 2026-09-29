@@ -369,24 +369,14 @@ python3.11 scripts/stability_check.py --base-url https://ai-lwstudio.example.com
 
 ## 测试
 
-后端与集成测试：
+精简后的后端核心回归（普通改动可指定受影响的测试文件）：
 
 ```powershell
 cd D:\codex\localization-workflow-studio
 python -m pytest -q
 ```
 
-工作流基线测试：
-
-```powershell
-Push-Location workflow\localization
-python -m pytest -q
-Pop-Location
-
-Push-Location workflow\glossary
-python -m pytest -q
-Pop-Location
-```
+工作流单元测试留在各自维护源，Studio 不同步 `workflow/*/tests`。修改维护源时在那里运行受影响测试，再通过原同步入口更新 Studio。
 
 前端构建：
 
@@ -405,7 +395,9 @@ npm run e2e
 
 `frontend/playwright.config.ts` 会为 E2E 自动启动测试后端和前端，并使用临时数据目录。
 
-CI 会在 GitHub Actions 上跑 Python tests、workflow tests、frontend build 和浏览器 E2E。
+当前套件保留队列取消与恢复、任务终态、翻译与交付、指定语言列隔离、归档读回/回滚、基础认证以及主要 UI 流程。已移除大量细项、权限矩阵、部署单测和重复变体；这不是原覆盖范围的等价替代。普通改动只运行受影响入口；精简套件与发布门禁在 CI/发布时运行。
+
+普通 push/PR 的 CI 运行精简的后端核心回归、前端构建与核心浏览器 E2E；仅 tag 或手动 `workflow_dispatch` 执行打包与双运行时发布 smoke。包完整性由打包器现有验包入口负责，CI 不另算目录/ZIP 哈希或生成重复身份记录。
 
 ## GitHub Pages
 

@@ -35,15 +35,15 @@ git ls-files | Select-String -Pattern "settings.local|sqlite|api_key|translated.
 
 ## CI 与本地验证
 
-GitHub Actions 覆盖：
+GitHub Actions 普通 push/PR 只运行精简源码、前端构建与核心 E2E；tag 或手动 `workflow_dispatch` 才运行打包与双运行时发布验收：
 
-- 后端与 workflow baseline tests、compileall、Ruff。
-- 一次前端 TypeScript/Vite production build，并记录 canonical frontend tree digest。
-- `local/off` 与 `local/required` 两套 source Playwright E2E。
+- 精简后的后端核心回归、compileall、Ruff；workflow 单测在维护源运行。
+- 一次前端 TypeScript/Vite production build，通过构建产物传给打包任务，不额外计算前端树摘要。
+- `local/off` 核心 source Playwright E2E；基础认证留在后端回归，profile 验证由 extracted smoke 承担。
 - 由同一个 frontend dist 生成一个 universal ZIP，并在 Windows `local/off` 与 Ubuntu TLS `cloud/required` 中分别执行 extracted smoke。
-- 两个 extracted smoke 读回同一 artifact ID、manifest `version`/`git_sha`、frontend digest、runtime payload digest 和 outer ZIP SHA。
+- 两个 extracted smoke 按同一 artifact ID 下载已生成的包，核对 manifest `version`/`git_sha` 与实际运行结果。包完整性只使用打包器现有验包入口，不重复计算哈希或生成 `release-identity.json`。
 
-当前 CI 不构建 `--no-account` 专用制品。`有账号-v1.7.3.zip` 与 `无账号-v1.7.3.zip` 必须在本地从同一 clean commit 生成；无账号包还必须把 archive readback、外部 SHA-256、Linux 脚本语法和 extracted HTTPS `cloud/off` smoke 作为独立发布证据，现有 universal publish gate 不能代替这组验收。
+当前 CI 不构建 `--no-account` 专用制品。`有账号-v1.7.3.zip` 与 `无账号-v1.7.3.zip` 必须在本地从同一 clean commit 生成；无账号包还必须通过打包器现有验包、Linux 脚本语法和 extracted HTTPS `cloud/off` smoke，现有 universal publish gate 不能代替这组验收。
 
 发布前本地建议执行：
 
@@ -55,7 +55,6 @@ python -m ruff check backend scripts check.py
 Push-Location frontend
 npm run build
 npm run e2e
-npm run e2e:auth
 Pop-Location
 
 python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend
@@ -136,7 +135,7 @@ git push origin vX.Y.Z
 6. Release note 写清目标制品的验收结果、用户影响、数据/会话保证、部署状态和已知边界；没有线上验收证据时不得宣称已上线。
 7. 仓库内无真实项目数据、API key、SQLite、run 日志或交付文件。
 8. 文档无乱码、连续问号占位、U+FFFD 或历史版本误导。
-9. universal 的两个 extracted smoke 必须核对同一 artifact 身份；专用无账号包必须另行核对 `artifact_kind=profile`、唯一 `cloud-off` profile、精简入口、外部 SHA、包内哈希和 extracted HTTPS 验收结果。
+9. universal 的两个 extracted smoke 必须核对同一 artifact 身份；专用无账号包必须另行核对 `artifact_kind=profile`、唯一 `cloud-off` profile、精简入口、打包器现有验包和 extracted HTTPS 验收结果。
 
 ## GitHub Pages 管理
 

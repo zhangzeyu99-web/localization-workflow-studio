@@ -12,11 +12,12 @@
 
 ## Validation
 
-- [ ] `python -m pytest -q`
-- [ ] `python -m pytest -q workflow\localization`
-- [ ] `python -m pytest -q workflow\glossary`
-- [ ] `npm run build` in `frontend`
-- [ ] Browser E2E, when UI/workflow behavior changes
+Record the checks relevant to this change; ordinary changes do not require every gate.
+
+- [ ] Affected backend core tests (`python -m pytest backend/tests/<file>.py -q`)
+- [ ] Affected workflow tests in the upstream maintenance repository, if changed
+- [ ] Frontend build or affected core browser E2E, if changed
+- [ ] Release gates, only when releasing
 
 ## Workflow Impact
 

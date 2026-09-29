@@ -1,6 +1,8 @@
 # 工作流同步基线（2026-09-10）
 
-最新增量同步记录见文末「2026-09-21 增量同步」；以下原有章节保留当时基线，不表示源仓库当前工作区可以直接镜像。
+2026-09-29 当前规则：工作台仅同步运行所需代码，不再复制上游 `tests/`；已有重复测试已移除，测试仍在原维护源维护。同步仅直接读回本次复制文件，不计算 SHA 或扫描整库哈希。集成验收使用工作台精简后的相关用例。
+
+以下同步基线和测试数字是历史记录，不是后续任务的全量执行要求，也不表示源仓库当前工作区可以直接镜像。
 
 ## 来源与范围
 
@@ -28,10 +30,9 @@
 
 ```powershell
 python scripts/sync_large_text_product_rules.py --check
-python -m pytest backend/tests/test_workflow_sync_rules.py -q
 ```
 
-第一项必须为零漂移，第二项验证产品行为。生成目录为 `backend/app/workflow/large_text_rules`，只能通过生成器更新。
+涉及这些规则变更时，用上述入口检查生成结果；产品行为由当前精简集成测试验证。生成目录为 `backend/app/workflow/large_text_rules`，只能通过生成器更新。
 
 注意：本轮英文数量单位补丁仍在源库 `fix/studio-sync-number-multiplier-20260910` 分支。后续同步前须先合入该补丁，不能直接从较旧 main 覆盖。
 

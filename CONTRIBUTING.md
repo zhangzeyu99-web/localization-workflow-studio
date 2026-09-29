@@ -47,7 +47,7 @@ Use `examples/synthetic-language.xlsx` or new synthetic fixtures for public test
 
 ## Validation Commands
 
-Run the checks that match your change.
+Run only the checks that match your change. The compact suite covers representative core paths; it does not retain the former exhaustive variants. Use a test file or `-k` to select affected behavior for ordinary changes.
 
 Backend and integration tests:
 
@@ -55,21 +55,7 @@ Backend and integration tests:
 python -m pytest -q
 ```
 
-Localization workflow:
-
-```powershell
-Push-Location workflow\localization
-python -m pytest -q
-Pop-Location
-```
-
-Glossary workflow:
-
-```powershell
-Push-Location workflow\glossary
-python -m pytest -q
-Pop-Location
-```
+Workflow tests live in their maintenance repositories and are not copied into Studio. Run affected upstream tests there before synchronizing runtime files.
 
 Frontend:
 
@@ -79,11 +65,10 @@ npm run build
 cd ..
 ```
 
-Browser E2E after backend and frontend are running:
+Core browser E2E (starts isolated test servers and temporary data):
 
 ```powershell
 cd frontend
-$env:E2E_BASE_URL = "http://127.0.0.1:5173"
 npm run e2e
 cd ..
 ```

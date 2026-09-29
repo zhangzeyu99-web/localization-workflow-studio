@@ -69,18 +69,19 @@ GIT_SHA="$(.venv/bin/python -c 'import json; print(json.load(open("PACKAGE_MANIF
 
 ### Source E2E 与 extracted smoke
 
-Task 6 的 source browser gates 使用以下真实命令：
+普通 UI 改动只选受影响场景；发布前的核心 source browser gate 使用以下命令：
 
 ```powershell
 npm run e2e --prefix frontend
-npm run e2e:auth --prefix frontend
 ```
 
-各 extracted smoke 都必须运行 `frontend/e2e/runtime-profile-smoke.spec.ts`：按目标制品设置 `LWS_EXPECT_RUNTIME_PROFILE=local-off`、`cloud-off` 或 `cloud-required` 后，执行 `npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line`。universal 的 profile smoke 必须核对同一份 manifest 与 digest；专用无账号包的 `cloud-off` smoke 还必须核对 manifest 只声明 `cloud-off`。
+各 extracted smoke 都必须运行 `frontend/e2e/runtime-profile-smoke.spec.ts`：按目标制品设置 `LWS_EXPECT_RUNTIME_PROFILE=local-off`、`cloud-off` 或 `cloud-required` 后，执行 `npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line`。universal 的两套 profile smoke 必须下载同一个 artifact ID 并核对 manifest 的版本和提交；包完整性由打包器在生成时验证，不在每个 smoke 重算哈希。专用无账号包的 `cloud-off` smoke 还必须核对 manifest 只声明 `cloud-off`。
 
 双 lane 队列场景务必在隔离实例（临时数据目录、独立端口）上跑，不要对生产库跑。Linux 验收机可直接运行 `python3.11 scripts/concurrency_smoke.py --port 18800`。
 
-## 必测项
+## 发布验收项
+
+以下是发布与部署的业务验收范围，不代表精简自动套件逐项覆盖，也不是每次普通改动都要运行的清单。精简套件的保留范围与取舍见 [README 测试说明](../README.md#测试)。
 
 1. `/api/version` 能返回当前版本和提交号。
 2. `/api/health` 数据目录可写、上传目录可写、数据库可连。
@@ -122,7 +123,7 @@ npm run e2e:auth --prefix frontend
 - 页面能打开但 `/api/version` 404。
 - `/api/version` 或 `/api/health` 的 deployment/auth/runtime profile 与本次期望不一致，或两个响应互相不一致。
 - 非法 deployment/auth 组合没有在启动阶段被拒绝；合法 `cloud/off` 应正常启动。
-- 两个 extracted smoke 不是同一个 artifact，或 manifest `version`/`git_sha`、frontend digest、runtime payload digest、outer ZIP SHA 任一不一致。
+- 两个 extracted smoke 下载的 artifact ID 不同，或 manifest `version`/`git_sha` 与预期或实际运行实例不一致。
 - 上传自检失败。
 - 数据目录不可写。
 - provider 未配置但尝试跑正式 AI 翻译。

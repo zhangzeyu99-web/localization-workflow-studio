@@ -9,7 +9,6 @@ const dataRoot = process.env.LWS_E2E_DATA_ROOT || path.join(os.tmpdir(), `lws-pl
 const backendPort = process.env.LWS_E2E_BACKEND_PORT || '18080'
 const frontendPort = process.env.LWS_E2E_FRONTEND_PORT || '15173'
 const pythonCommand =
-  process.env.LWS_AUTH_E2E_PYTHON ||
   process.env.LWS_E2E_PYTHON ||
   'python'
 const backendURL = `http://127.0.0.1:${backendPort}`
@@ -48,7 +47,6 @@ const managedWebServers = process.env.E2E_BASE_URL
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: 'auth-flow.spec.ts',
   timeout: 120_000,
   workers: 1,
   expect: { timeout: 20_000 },

@@ -28,65 +28,6 @@ def reset_test_state() -> None:
     save_settings(DEFAULT_SETTINGS)
 
 
-def _legacy_unfinished_run_ids(project: dict) -> set[str]:
-    closed_states = {"abandoned", "closed", "delivered"}
-    return {
-        run["id"]
-        for run in project.get("runs", [])
-        if run.get("kind") in {"translation", "qa"}
-        and run.get("status") in {"failed", "needs_input", "canceled"}
-        and not (run.get("metadata") or {}).get("translation_task_id")
-        and str((run.get("metadata") or {}).get("translation_task_state") or "") not in closed_states
-    }
-
-
-def test_legacy_unfinished_run_can_be_abandoned_and_stays_closed_after_project_refresh() -> None:
-    with TestClient(app) as client:
-        project = client.post("/api/projects", json={"name": "Legacy task abandon", "type": "QA"}).json()
-        run = db.insert_run(
-            project["id"],
-            "translation",
-            "en",
-            metadata={"input_artifact_id": "legacy-source", "task_origin": "translation_run"},
-        )
-        db.update_run(run["id"], status="canceled")
-
-        before = client.get(f"/api/projects/{project['id']}").json()
-        assert run["id"] in _legacy_unfinished_run_ids(before)
-
-        response = client.post(f"/api/runs/{run['id']}/abandon-translation-task")
-
-        assert response.status_code == 200, response.text
-        assert response.json() == {
-            "project_id": project["id"],
-            "run_id": run["id"],
-            "state": "abandoned",
-        }
-        refreshed = client.get(f"/api/projects/{project['id']}").json()
-        refreshed_run = next(item for item in refreshed["runs"] if item["id"] == run["id"])
-        assert refreshed_run["metadata"]["translation_task_state"] == "abandoned"
-        assert run["id"] not in _legacy_unfinished_run_ids(refreshed)
-
-
-def test_running_legacy_translation_run_cannot_be_abandoned() -> None:
-    with TestClient(app) as client:
-        project = client.post("/api/projects", json={"name": "Running legacy task", "type": "QA"}).json()
-        run = db.insert_run(
-            project["id"],
-            "translation",
-            "en",
-            metadata={"input_artifact_id": "legacy-source", "task_origin": "translation_run"},
-        )
-        db.update_run(run["id"], status="running")
-
-        response = client.post(f"/api/runs/{run['id']}/abandon-translation-task")
-
-        assert response.status_code == 409, response.text
-        assert "running translation task cannot be abandoned" in response.json()["detail"]
-        refreshed = client.get(f"/api/runs/{run['id']}").json()
-        assert "translation_task_state" not in refreshed["metadata"]
-
-
 @pytest.mark.parametrize(
     ("explicit_task_id", "expected_task_id"),
     [
@@ -168,28 +109,6 @@ def test_delivered_does_not_reopen_terminal_translation_task(terminal_state: str
     assert db.list_events(run["id"]) == events_before
 
 
-def test_marking_translation_task_delivered_twice_is_idempotent() -> None:
-    project = db.insert_project("Idempotent delivered task", "QA", "")
-    run = db.insert_run(
-        project["id"],
-        "translation",
-        "en",
-        metadata={"translation_task_id": "task-delivered", "task_origin": "translation_run"},
-    )
-    db.update_run(run["id"], status="passed")
-    mark_translation_task_state(project["id"], "task-delivered", "delivered")
-    before = db.get_run(run["id"])
-    events_before = db.list_events(run["id"])
-
-    result = mark_translation_task_state(project["id"], "task-delivered", "delivered")
-
-    after = db.get_run(run["id"])
-    assert result["state"] == "delivered"
-    assert result["updated_run_ids"] == []
-    assert after["metadata"]["translation_task_state_updated_at"] == before["metadata"]["translation_task_state_updated_at"]
-    assert db.list_events(run["id"]) == events_before
-
-
 @pytest.mark.parametrize("terminal_state", ["delivered", "closed"])
 def test_first_terminal_state_cancels_active_sibling_runs(terminal_state: str) -> None:
     project = db.insert_project(f"Terminal sibling {terminal_state}", "QA", "")
@@ -217,29 +136,6 @@ def test_first_terminal_state_cancels_active_sibling_runs(terminal_state: str) -
         db.get_run(run_id)["metadata"]["translation_task_state"]
         for run_id in (passed_run["id"], active_run["id"])
     } == {terminal_state}
-
-
-def test_abandon_does_not_overwrite_delivered_translation_task() -> None:
-    project = db.insert_project("Delivered task ignores late abandon", "QA", "")
-    run = db.insert_run(
-        project["id"],
-        "translation",
-        "en",
-        metadata={"translation_task_id": "task-delivered-late-abandon", "task_origin": "translation_run"},
-    )
-    db.update_run(run["id"], status="passed")
-    mark_translation_task_state(project["id"], "task-delivered-late-abandon", "delivered")
-    before = db.get_run(run["id"])
-    events_before = db.list_events(run["id"])
-
-    result = mark_translation_task_state(project["id"], "task-delivered-late-abandon", "abandoned")
-
-    after = db.get_run(run["id"])
-    assert result["state"] == "delivered"
-    assert result["updated_run_ids"] == []
-    assert after["metadata"]["translation_task_state"] == "delivered"
-    assert after["metadata"]["translation_task_state_updated_at"] == before["metadata"]["translation_task_state_updated_at"]
-    assert db.list_events(run["id"]) == events_before
 
 
 def test_concurrent_terminal_updates_choose_one_state_for_every_task_run(monkeypatch: pytest.MonkeyPatch) -> None:

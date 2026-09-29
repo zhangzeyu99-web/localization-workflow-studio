@@ -5,25 +5,22 @@ Single maintenance sources:
 - glossary:     D:\\codex\\glossary-extraction-workflow      -> workflow/glossary
 
 The embedded copies are sync artifacts. Never edit them directly; edit the
-source repository, run its tests, then run this script and its verification.
+source repository, check the affected behavior, then run this script.
 
 Usage:
     python scripts/sync_workflow_sources.py glossary
     python scripts/sync_workflow_sources.py localization
     python scripts/sync_workflow_sources.py all [--dry-run]
 
-After syncing `localization` you MUST run the backend suite
-(`python -m pytest backend/tests -q`) because the product invokes
-process_language.py / run_quality_harness.py / run_translation_harness.py
-as subprocesses. After syncing `glossary`, run the embedded tests
-(`python -m pytest workflow/glossary/tests -q`).
+Upstream test suites stay in their maintenance repositories and are not copied.
+After synchronization, run only the affected Studio integration checks.
+Copied files are read back directly; no whole-tree hash scan is performed.
 """
 from __future__ import annotations
 
 import argparse
 import filecmp
 import fnmatch
-import hashlib
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,7 +65,7 @@ TARGETS = {
         source=Path(r"D:\codex\glossary-extraction-workflow"),
         dest=STUDIO_ROOT / "workflow" / "glossary",
         exclude_dirs=set(COMMON_EXCLUDE_DIRS),
-        exclude_top={".gitignore"},
+        exclude_top={".gitignore", "tests"},
         exclude_globs=("*.log",),
     ),
     "localization": SyncTarget(
@@ -79,6 +76,7 @@ TARGETS = {
         # Repo-private assets stay in the source repo only.
         exclude_top={
             ".gitignore",
+            "tests",
             "docs",
             "tools",
             "examples",
@@ -90,11 +88,6 @@ TARGETS = {
         exclude_globs=("*.log", "*.pdf", "*.xlsx", "*.docx", "*说明*.md"),
     ),
 }
-
-
-def _norm_hash(path: Path) -> str:
-    data = path.read_bytes().replace(b"\r\n", b"\n")
-    return hashlib.sha1(data).hexdigest()
 
 
 def _in_scope(target: SyncTarget, rel: Path) -> bool:
@@ -153,13 +146,13 @@ def sync(target: SyncTarget, dry_run: bool = False) -> int:
     if dry_run:
         return 0
 
-    mismatches = [rel for rel, src in src_files.items() if _norm_hash(src) != _norm_hash(target.dest / rel)]
+    mismatches = [rel for rel in copied if not filecmp.cmp(src_files[rel], target.dest / rel, shallow=False)]
     if mismatches:
         print(f"[{target.name}] READBACK FAILED: {len(mismatches)} mismatched files")
         for rel in mismatches:
             print(f"  ! {rel}")
         return 1
-    print(f"[{target.name}] readback OK: {len(src_files)} files hash-verified")
+    print(f"[{target.name}] readback OK: {len(copied)} copied files")
     if target.name == "localization":
         # Keep the product runtime's pure rules in lockstep with the snapshot.
         import runpy
@@ -180,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in names:
         rc |= sync(TARGETS[name], dry_run=args.dry_run)
     if rc == 0 and not args.dry_run:
-        print("Next: run the verification suites listed in the module docstring.")
+        print("Next: check only the affected Studio integration behavior.")
     return rc
 
 

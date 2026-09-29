@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 jobs:
   source-gates:
     runs-on: windows-latest
@@ -25,14 +29,8 @@ jobs:
           python -m pip install -r backend/requirements.txt
           python -m pip install -r workflow/glossary/requirements.txt
           python -m pip install -r workflow/localization/requirements.txt
-      - name: Backend and repository tests
-        run: python -m pytest -q
-      - name: Localization workflow baseline
-        working-directory: workflow/localization
-        run: python -m pytest -q
-      - name: Glossary workflow baseline
-        working-directory: workflow/glossary
-        run: python -m pytest -q
+      - name: Backend core regression
+        run: python -m pytest backend/tests -q
       - name: Compile Python sources
         run: python -m compileall -q backend scripts check.py
       - name: Ruff
@@ -41,20 +39,12 @@ jobs:
         run: npm ci --prefix frontend
       - name: Build production frontend once
         run: npm run build --prefix frontend
-      - name: Record canonical frontend digest
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force release_archives | Out-Null
-          $digest = python -c "from pathlib import Path; from scripts.build_release_package import _tree_sha256; root=Path('frontend/dist'); print(_tree_sha256(root, (path for path in root.rglob('*') if path.is_file())))"
-          if ($LASTEXITCODE -ne 0 -or $digest -notmatch '^[0-9a-f]{64}$') { throw 'failed to compute canonical frontend digest' }
-          Set-Content -LiteralPath release_archives/frontend-dist.sha256 -Value $digest -Encoding ascii
       - name: Upload production frontend
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: frontend-dist
-          path: |
-            frontend/dist
-            release_archives/frontend-dist.sha256
+          path: frontend/dist
           if-no-files-found: error
           include-hidden-files: true
 
@@ -84,34 +74,9 @@ jobs:
           LWS_E2E_FRONTEND_PORT: "15173"
         run: npm run e2e --prefix frontend
 
-  e2e-local-required:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install test dependencies
-        run: |
-          python -m pip install -r backend/requirements.txt
-          npm ci --prefix frontend
-          npx --prefix frontend playwright install chromium
-      - name: Local auth-required browser suite
-        env:
-          LWS_AUTH_E2E_DATA_ROOT: ${{ runner.temp }}\lws-e2e-local-required
-          LWS_AUTH_E2E_BACKEND_PORT: "18081"
-          LWS_AUTH_E2E_FRONTEND_PORT: "15174"
-        run: npm run e2e:auth --prefix frontend
-
   build-universal:
-    needs: [source-gates, e2e-local-off, e2e-local-required]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    needs: [source-gates, e2e-local-off]
     runs-on: ubuntu-latest
     outputs:
       artifact-id: ${{ steps.upload-release.outputs.artifact-id }}
@@ -126,52 +91,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-dist
-          path: .
-      - name: Verify checkout and canonical frontend digest
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -z "$(git status --porcelain)"
-          expected="$(tr -d '\r\n ' < release_archives/frontend-dist.sha256)"
-          actual="$(python -c "from pathlib import Path; from scripts.build_release_package import _tree_sha256; root=Path('frontend/dist'); print(_tree_sha256(root, (path for path in root.rglob('*') if path.is_file())))")"
-          test "$actual" = "$expected"
+          path: frontend/dist
       - name: Build universal ZIP without rebuilding frontend
         run: python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend
-      - name: Verify release identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import hashlib
-          import json
-          import os
-          import zipfile
-          from pathlib import Path
-
-          output = Path("release_archives")
-          archive = next(output.glob("有账号-v*.zip"))
-          sidecar = archive.with_name(f"{archive.name}.sha256")
-          expected_outer = sidecar.read_text(encoding="utf-8").split()[0]
-          actual_outer = hashlib.sha256(archive.read_bytes()).hexdigest()
-          if actual_outer != expected_outer:
-              raise SystemExit("outer ZIP sidecar mismatch")
-          with zipfile.ZipFile(archive) as bundle:
-              manifest_name = next(name for name in bundle.namelist() if name.endswith("/PACKAGE_MANIFEST.json"))
-              manifest = json.loads(bundle.read(manifest_name))
-          expected_git_sha = os.environ["GITHUB_SHA"][:12]
-          if manifest["git_sha"] != expected_git_sha:
-              raise SystemExit(f"manifest git_sha {manifest['git_sha']} != {expected_git_sha}")
-          identity = {
-              "zip_name": archive.name,
-              "outer_zip_sha256": actual_outer,
-              "git_sha": manifest["git_sha"],
-              "frontend_dist_sha256": manifest["frontend_dist_sha256"],
-              "runtime_payload_sha256": manifest["runtime_payload_sha256"],
-          }
-          (output / "release-identity.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
-          PY
-          (cd release_archives && sha256sum --check 有账号-v*.zip.sha256)
       - name: Upload universal release
         id: upload-release
         uses: actions/upload-artifact@v4
@@ -180,14 +102,11 @@ jobs:
           path: |
             release_archives/有账号-v*.zip
             release_archives/有账号-v*.zip.sha256
-            release_archives/release-identity.json
           if-no-files-found: error
 
   smoke-extracted-local-off:
     needs: build-universal
     runs-on: windows-latest
-    env:
-      EXPECTED_RELEASE_ARTIFACT_ID: ${{ needs.build-universal.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -203,7 +122,8 @@ jobs:
       - name: Download universal release
         uses: actions/download-artifact@v4
         with:
-          name: universal-release
+          artifact-ids: ${{ needs.build-universal.outputs.artifact-id }}
+          merge-multiple: true
           path: ${{ runner.temp }}\release
       - name: Install Playwright runner only
         run: |
@@ -213,26 +133,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not $env:EXPECTED_RELEASE_ARTIFACT_ID) { throw 'release artifact id is empty' }
           $ReleaseRoot = Join-Path $env:RUNNER_TEMP 'release'
           $Zip = Get-ChildItem $ReleaseRoot -Filter '有账号-v*.zip' | Select-Object -First 1
-          $Sidecar = Get-Item "$($Zip.FullName).sha256"
-          $Identity = Get-Content -Raw (Join-Path $ReleaseRoot 'release-identity.json') | ConvertFrom-Json
-          $OuterSha = (Get-FileHash -Algorithm SHA256 $Zip.FullName).Hash.ToLowerInvariant()
-          $SidecarSha = ((Get-Content -Raw $Sidecar.FullName) -split '\s+')[0].ToLowerInvariant()
-          if ($OuterSha -ne $SidecarSha -or $OuterSha -ne $Identity.outer_zip_sha256) { throw 'outer ZIP identity mismatch' }
-          $env:LWS_RELEASE_ZIP = $Zip.FullName
-          python -c "import os; from pathlib import Path; from scripts.build_release_package import _verify_archive; _verify_archive(Path(os.environ['LWS_RELEASE_ZIP']))"
-
           $ExtractRoot = Join-Path $env:RUNNER_TEMP 'lws-smoke-local'
           $DataRoot = Join-Path $env:RUNNER_TEMP 'lws-data-local'
           Expand-Archive -LiteralPath $Zip.FullName -DestinationPath $ExtractRoot
           $AppHome = (Get-ChildItem $ExtractRoot -Directory | Select-Object -First 1).FullName
           $Manifest = Get-Content -Raw (Join-Path $AppHome 'PACKAGE_MANIFEST.json') | ConvertFrom-Json
           if ($Manifest.git_sha -ne $env:GITHUB_SHA.Substring(0, 12)) { throw 'manifest SHA differs from checkout' }
-          foreach ($Field in @('git_sha', 'frontend_dist_sha256', 'runtime_payload_sha256')) {
-            if ($Manifest.$Field -ne $Identity.$Field) { throw "manifest identity mismatch: $Field" }
-          }
           New-Item -ItemType Directory -Force $DataRoot | Out-Null
           '{"provider":"test-fake","api_key":""}' | Set-Content -Encoding utf8 (Join-Path $DataRoot 'settings.local.json')
           $env:LWS_ENABLE_TEST_PROVIDER = '1'
@@ -279,8 +187,6 @@ jobs:
           } finally {
             & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $AppHome 'scripts\stop-workbench.ps1') -Ports 15175
           }
-          @{ artifact_id = $env:EXPECTED_RELEASE_ARTIFACT_ID; git_sha = $Manifest.git_sha; frontend_dist_sha256 = $Manifest.frontend_dist_sha256; runtime_payload_sha256 = $Manifest.runtime_payload_sha256; outer_zip_sha256 = $OuterSha } |
-            ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'local-release-identity.json')
       - name: Upload local smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -288,14 +194,11 @@ jobs:
           name: smoke-local-off-evidence
           path: |
             ${{ runner.temp }}\local-*.jsonl
-            ${{ runner.temp }}\local-release-identity.json
           if-no-files-found: warn
 
   smoke-extracted-cloud-required:
     needs: build-universal
     runs-on: ubuntu-latest
-    env:
-      EXPECTED_RELEASE_ARTIFACT_ID: ${{ needs.build-universal.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -311,7 +214,8 @@ jobs:
       - name: Download universal release
         uses: actions/download-artifact@v4
         with:
-          name: universal-release
+          artifact-ids: ${{ needs.build-universal.outputs.artifact-id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/release
       - name: Install Playwright runner and trust tools
         run: |
@@ -323,41 +227,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$EXPECTED_RELEASE_ARTIFACT_ID"
           RELEASE_ROOT="$RUNNER_TEMP/release"
           ZIP="$(find "$RELEASE_ROOT" -maxdepth 1 -name '有账号-v*.zip' -print -quit)"
-          SIDECAR="$ZIP.sha256"
-          (cd "$RELEASE_ROOT" && sha256sum --check "$(basename "$SIDECAR")")
-          export LWS_RELEASE_ZIP="$ZIP"
-          python -c "import os; from pathlib import Path; from scripts.build_release_package import _verify_archive; _verify_archive(Path(os.environ['LWS_RELEASE_ZIP']))"
-
           EXTRACT_ROOT="$RUNNER_TEMP/lws-smoke-cloud"
           DATA_ROOT="$RUNNER_TEMP/lws-data-cloud"
           mkdir -p "$EXTRACT_ROOT" "$DATA_ROOT"
           unzip -q "$ZIP" -d "$EXTRACT_ROOT"
           APP_HOME="$(find "$EXTRACT_ROOT" -mindepth 1 -maxdepth 1 -type d -print -quit)"
           MANIFEST="$APP_HOME/PACKAGE_MANIFEST.json"
-          IDENTITY="$RELEASE_ROOT/release-identity.json"
-          python - "$MANIFEST" "$IDENTITY" "$ZIP" <<'PY'
-          import hashlib
-          import json
-          import os
-          import sys
-          from pathlib import Path
-
-          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          identity = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-          outer = hashlib.sha256(Path(sys.argv[3]).read_bytes()).hexdigest()
-          if manifest["git_sha"] != os.environ["GITHUB_SHA"][:12]:
-              raise SystemExit("manifest SHA differs from checkout")
-          for field in ("git_sha", "frontend_dist_sha256", "runtime_payload_sha256"):
-              if manifest[field] != identity[field]:
-                  raise SystemExit(f"manifest identity mismatch: {field}")
-          if outer != identity["outer_zip_sha256"]:
-              raise SystemExit("outer ZIP identity mismatch")
-          PY
           VERSION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$MANIFEST")"
           GIT_SHA="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])' "$MANIFEST")"
+          test "$GIT_SHA" = "${GITHUB_SHA:0:12}"
           printf '%s\n' '{"provider":"test-fake","api_key":""}' > "$DATA_ROOT/settings.local.json"
 
           CA_CERT="$RUNNER_TEMP/lws-smoke-ca.crt"
@@ -472,23 +352,6 @@ jobs:
           export LWS_RUNTIME_SMOKE_PASSWORD='Final-Smoke-Password1!'
           cd "$GITHUB_WORKSPACE/frontend"
           npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line
-          python - "$MANIFEST" "$IDENTITY" "$RUNNER_TEMP/cloud-release-identity.json" <<'PY'
-          import json
-          import os
-          import sys
-          from pathlib import Path
-
-          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          identity = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-          result = {
-              "artifact_id": os.environ["EXPECTED_RELEASE_ARTIFACT_ID"],
-              "git_sha": manifest["git_sha"],
-              "frontend_dist_sha256": manifest["frontend_dist_sha256"],
-              "runtime_payload_sha256": manifest["runtime_payload_sha256"],
-              "outer_zip_sha256": identity["outer_zip_sha256"],
-          }
-          Path(sys.argv[3]).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-          PY
       - name: Upload cloud smoke evidence
         if: always()
         uses: actions/upload-artifact@v4

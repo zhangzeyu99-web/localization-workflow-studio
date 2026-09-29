@@ -293,15 +293,9 @@ Invoke-RestMethod -Method Patch `
 
 重启后端。运行中的 FastAPI 进程可能已经加载了旧配置。
 
-### workflow 测试导入失败
+### workflow 测试位置
 
-不要从仓库根目录直接跑 `python -m pytest -q workflow\localization`。进入 workflow 目录后执行：
-
-```powershell
-Push-Location workflow\localization
-python -m pytest -q
-Pop-Location
-```
+Studio 的同步目录只携带运行文件，不再同步维护源测试。修改 workflow 后，在对应维护源仓库运行受影响测试，再同步并验证 Studio 中受影响的调用链。
 
 ### 真实数据混入公开仓库
 

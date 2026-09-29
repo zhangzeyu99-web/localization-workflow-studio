@@ -1,25 +1,9 @@
-﻿# 同步说明（请勿直接修改本目录）
+# 工作流同步说明
 
-本目录是术语提取工作流的**同步产物**，不是维护源。
+本目录是术语提取与公告术语反查的运行时同步副本，维护源为 `D:\codex\glossary-extraction-workflow`。业务逻辑只在维护源修改；工作台侧的同步规则维护于 `scripts/sync_workflow_sources.py`。
 
-- 维护源（single maintenance source）：`D:\codex\glossary-extraction-workflow`（远端 https://github.com/zhangzeyu99-web/glossary-extraction-workflow ）
-- 职责：项目 brief 生成 + 术语提取/公告术语反查。
-- 同步方向：只允许 源仓库 → 本目录。任何直接改本目录的行为都是错误，会在下次同步时被覆盖。
-
-## 给 AI/Agent 的规则
-
-1. 需要改术语提取逻辑时：到 `D:\codex\glossary-extraction-workflow` 修改，跑 `python -m pytest -q`（44+）和 harness fixtures 全绿。
-2. 源仓库提交后，在 studio 仓库根执行统一同步脚本：
-
-```powershell
-python scripts/sync_workflow_sources.py glossary
-```
-
-3. 脚本会自动做镜像复制 + 逐文件哈希读回校验（失败即非零退出）。
-4. 同步后在本目录跑读回测试：`python -m pytest workflow/glossary/tests -q`。
-5. 同步范围：源仓库全部内容，除仓库管理文件（`.git/`、`.github/`、`.gitignore`）、缓存（`__pycache__/`、`.pytest_cache/`）、过程目录（`tmp/`、`output/`）和本文件（`SYNC.md` 保留在 studio 侧）。
-
-## 当前同步基线
-
-- 源版本：见本目录 `VERSION` 与 `CHANGELOG.md`（随同步带入）。
-- 最近一次同步：2026-07-09（统一脚本接管，此前为 robocopy 手工命令）。
+- 源仓库修改后只检查受影响行为，再运行 `python scripts/sync_workflow_sources.py glossary`。
+- 测试在原维护源保留；`tests/` 不进入同步范围。2026-09-29 按用户要求移除工作台内已有测试副本，后续同步不再带回。
+- 脚本只直接读回本次复制的文件，不生成 SHA 或全目录哈希清单。
+- 同步影响工作台运行入口时，检查工作台对应的精简集成用例；不重复运行上下游整套测试。
+- 具体排除项以 `TARGETS` 配置为准；产品所需 scripts、utils、templates、fixtures 保留，`SYNC.md` 在工作台侧维护。

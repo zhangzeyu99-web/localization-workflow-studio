@@ -100,27 +100,13 @@ The mock provider exists for CI, local E2E, and no-key validation only. It must 
 
 ## Run Tests
 
-All backend and integration tests:
+Compact backend core regression:
 
 ```powershell
 python -m pytest -q
 ```
 
-Localization workflow tests:
-
-```powershell
-Push-Location workflow\localization
-python -m pytest -q
-Pop-Location
-```
-
-Glossary workflow tests:
-
-```powershell
-Push-Location workflow\glossary
-python -m pytest -q
-Pop-Location
-```
+Upstream workflow tests run in their maintenance repositories, not the synchronized Studio directories. See [Testing](../README.md#测试) for retained coverage and selection.
 
 Frontend build:
 
@@ -130,11 +116,10 @@ npm run build
 cd ..
 ```
 
-Browser E2E after backend and frontend are running:
+Core browser E2E (starts isolated test servers and temporary data):
 
 ```powershell
 cd frontend
-$env:E2E_BASE_URL = "http://127.0.0.1:5173"
 npm run e2e
 ```
 

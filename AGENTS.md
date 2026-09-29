@@ -5,8 +5,8 @@
 - `workflow/localization` 和 `workflow/glossary` 是**同步产物**，禁止直接修改；两者的维护源分别是：
   - 本地化工作流（翻译校对/大文本）：`D:\project\localization-workflow-project`（github.com/zhangzeyu99-web/localization-workflow）
   - 术语提取（项目 brief/术语提取）：`D:\codex\glossary-extraction-workflow`（github.com/zhangzeyu99-web/glossary-extraction-workflow）
-- 修改流程：改源仓库 → 源仓库测试全绿并提交 → 在 studio 根跑 `python scripts/sync_workflow_sources.py <localization|glossary|all>`（自动镜像 + 哈希读回校验）→ 跑同步后门禁。
-- 同步后门禁：glossary 跑 `python -m pytest workflow/glossary/tests -q`；localization 必须额外跑 `python -m pytest backend/tests -q`（`process_language.py`、`run_quality_harness.py`、`run_translation_harness.py` 是 backend subprocess 依赖）。
+- 修改流程：改源仓库 → 源仓库受影响行为验证通过并提交 → 在 studio 根跑 `python scripts/sync_workflow_sources.py <localization|glossary|all>`（复用既有同步入口，不额外计算目录或文件哈希）→ 仅验证受影响行为。
+- 上游测试只在维护源保留，不同步进 `workflow/*/tests`；工作台保留自己的精简集成测试。修改 `process_language.py`、`run_quality_harness.py`、`run_translation_harness.py` 等 subprocess 接口时，运行受影响的工作台用例，不重复跑上游整套。
 - 细则见各目录 `SYNC.md`；每个入口脚本的 `Boundary:` docstring 标注 product-runtime / agent-only 归属。
 
 ## 翻译执行边界
@@ -22,6 +22,5 @@
 
 - 产品内长文本/多语言工作流以 `backend/app/workflow/multilingual.py` 和 `backend/app/workflow/translation_orchestrator.py` 为准，Codex/Agent 不是产品运行依赖。
 - Agent 处理本地大 workbook/DOCX 任务时，使用 `workflow/localization/scripts/run_large_text_multilingual_runner.py` 生成 manifest，用 `run_large_text_multilingual_gate.py` 做 preflight/cache-lint/apply-dry-run/readback-gate，用 `run_large_text_multilingual_retro.py` 做复盘。
-- API 负责语义翻译；本地 gate 只做可确定检查，不把 Google 或外部机翻作为初译来源。
 - 深度逐句校对只有在用户明确要求时启用 subagent；subagent 只能输出 JSONL 审校建议，不直接写最终文件，主控合并后必须重跑结构 QA。
 - 最终交付目录只保留最终文件和 QA 摘要，不混入 manifest、workpack、response、jsonl、log 等过程文件。
