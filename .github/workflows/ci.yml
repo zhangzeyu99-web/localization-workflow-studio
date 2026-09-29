@@ -1,19 +1,111 @@
 name: CI
 
-# Temporary validation: retry Windows only, using the original immutable package.
 on:
+  push:
+  pull_request:
   workflow_dispatch:
-
-permissions:
-  contents: read
-  actions: read
 
 env:
   PYTHONUTF8: "1"
   PYTHONIOENCODING: utf-8
 
 jobs:
+  source-gates:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Python dependencies
+        run: |
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r workflow/glossary/requirements.txt
+          python -m pip install -r workflow/localization/requirements.txt
+      - name: Backend core regression
+        run: python -m pytest backend/tests -q
+      - name: Compile Python sources
+        run: python -m compileall -q backend scripts check.py
+      - name: Ruff
+        run: python -m ruff check backend scripts check.py
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+      - name: Build production frontend once
+        run: npm run build --prefix frontend
+      - name: Upload production frontend
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+          include-hidden-files: true
+
+  e2e-local-off:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r backend/requirements.txt
+          npm ci --prefix frontend
+          npx --prefix frontend playwright install chromium
+      - name: Local auth-off browser suite
+        env:
+          LWS_E2E_DATA_ROOT: ${{ runner.temp }}\lws-e2e-local-off
+          LWS_E2E_BACKEND_PORT: "18080"
+          LWS_E2E_FRONTEND_PORT: "15173"
+        run: npm run e2e --prefix frontend
+
+  build-universal:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    needs: [source-gates, e2e-local-off]
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload-release.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download exact production frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+      - name: Build universal ZIP without rebuilding frontend
+        run: python scripts/build_release_package.py --output-dir release_archives --no-rebuild-frontend
+      - name: Upload universal release
+        id: upload-release
+        uses: actions/upload-artifact@v4
+        with:
+          name: universal-release
+          path: |
+            release_archives/有账号-v*.zip
+            release_archives/有账号-v*.zip.sha256
+          if-no-files-found: error
+
   smoke-extracted-local-off:
+    needs: build-universal
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,10 +122,8 @@ jobs:
       - name: Download universal release
         uses: actions/download-artifact@v4
         with:
-          artifact-ids: "11012099711"
+          artifact-ids: ${{ needs.build-universal.outputs.artifact-id }}
           merge-multiple: true
-          github-token: ${{ github.token }}
-          run-id: "36519850677"
           path: ${{ runner.temp }}\release
       - name: Install Playwright runner only
         run: |
@@ -50,7 +140,7 @@ jobs:
           Expand-Archive -LiteralPath $Zip.FullName -DestinationPath $ExtractRoot
           $AppHome = (Get-ChildItem $ExtractRoot -Directory | Select-Object -First 1).FullName
           $Manifest = Get-Content -Raw (Join-Path $AppHome 'PACKAGE_MANIFEST.json') | ConvertFrom-Json
-          if ($Manifest.git_sha -ne '3339c44409ba') { throw 'manifest SHA differs from checkout' }
+          if ($Manifest.git_sha -ne $env:GITHUB_SHA.Substring(0, 12)) { throw 'manifest SHA differs from checkout' }
           New-Item -ItemType Directory -Force $DataRoot | Out-Null
           '{"provider":"test-fake","api_key":""}' | Set-Content -Encoding utf8 (Join-Path $DataRoot 'settings.local.json')
           $env:LWS_ENABLE_TEST_PROVIDER = '1'
@@ -106,3 +196,178 @@ jobs:
           path: |
             ${{ runner.temp }}\local-*.jsonl
           if-no-files-found: warn
+
+  smoke-extracted-cloud-required:
+    needs: build-universal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Download universal release
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build-universal.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+      - name: Install Playwright runner and trust tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3-tools
+          npm ci --prefix frontend
+          npx --prefix frontend playwright install chromium
+      - name: Smoke extracted cloud-required runtime over TLS
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_ROOT="$RUNNER_TEMP/release"
+          ZIP="$(find "$RELEASE_ROOT" -maxdepth 1 -name '有账号-v*.zip' -print -quit)"
+          EXTRACT_ROOT="$RUNNER_TEMP/lws-smoke-cloud"
+          DATA_ROOT="$RUNNER_TEMP/lws-data-cloud"
+          mkdir -p "$EXTRACT_ROOT" "$DATA_ROOT"
+          unzip -q "$ZIP" -d "$EXTRACT_ROOT"
+          APP_HOME="$(find "$EXTRACT_ROOT" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          MANIFEST="$APP_HOME/PACKAGE_MANIFEST.json"
+          VERSION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$MANIFEST")"
+          GIT_SHA="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["git_sha"])' "$MANIFEST")"
+          test "$GIT_SHA" = "${GITHUB_SHA:0:12}"
+          printf '%s\n' '{"provider":"test-fake","api_key":""}' > "$DATA_ROOT/settings.local.json"
+
+          CA_CERT="$RUNNER_TEMP/lws-smoke-ca.crt"
+          CA_KEY="$RUNNER_TEMP/lws-smoke-ca.key"
+          SERVER_CERT="$RUNNER_TEMP/lws-smoke-server.crt"
+          SERVER_KEY="$RUNNER_TEMP/lws-smoke-server.key"
+          SERVER_CSR="$RUNNER_TEMP/lws-smoke-server.csr"
+          SERVER_EXT="$RUNNER_TEMP/lws-smoke-server.ext"
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
+            -keyout "$CA_KEY" -out "$CA_CERT" -subj '/CN=LWS Smoke Root CA' \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,cRLSign'
+          openssl req -new -newkey rsa:2048 -sha256 -nodes \
+            -keyout "$SERVER_KEY" -out "$SERVER_CSR" -subj '/CN=localhost'
+          printf '%s\n' \
+            'basicConstraints=critical,CA:FALSE' \
+            'keyUsage=critical,digitalSignature,keyEncipherment' \
+            'extendedKeyUsage=serverAuth' \
+            'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            > "$SERVER_EXT"
+          openssl x509 -req -sha256 -days 1 \
+            -in "$SERVER_CSR" -CA "$CA_CERT" -CAkey "$CA_KEY" -CAcreateserial \
+            -out "$SERVER_CERT" -extfile "$SERVER_EXT"
+          openssl verify -CAfile "$CA_CERT" "$SERVER_CERT"
+
+          sudo cp "$CA_CERT" /usr/local/share/ca-certificates/lws-smoke-ca.crt
+          sudo update-ca-certificates
+          NSS_DB="$HOME/.pki/nssdb"
+          mkdir -p "$NSS_DB"
+          if [ ! -f "$NSS_DB/cert9.db" ]; then
+            certutil -d "sql:$NSS_DB" -N --empty-password
+          fi
+          certutil -d "sql:$NSS_DB" -D -n 'LWS Smoke CA' 2>/dev/null || true
+          certutil -d "sql:$NSS_DB" -A -t 'C,,' -n 'LWS Smoke CA' -i "$CA_CERT"
+          certutil -d "sql:$NSS_DB" -L -n 'LWS Smoke CA' >/dev/null
+
+          export LWS_DEPLOYMENT_MODE=cloud
+          export LWS_AUTH_MODE=required
+          export LWS_SERVE_FRONTEND=1
+          export LWS_DATA_ROOT="$DATA_ROOT"
+          export LWS_GIT_SHA="$GIT_SHA"
+          export LWS_ADMIN_USER=smoke-admin
+          export LWS_ADMIN_PASSWORD='Initial-Smoke-Password1!'
+          export LWS_ENABLE_TEST_PROVIDER=1
+          export NO_PROXY=localhost,127.0.0.1
+
+          cd "$APP_HOME"
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r workflow/glossary/requirements.txt
+          python -m pip install -r workflow/localization/requirements.txt
+          export SSL_CERT_FILE="$CA_CERT"
+          export NODE_EXTRA_CA_CERTS="$CA_CERT"
+          python -m uvicorn app.main:app --app-dir backend \
+            --host 127.0.0.1 --port 18443 --workers 1 \
+            --ssl-keyfile "$SERVER_KEY" --ssl-certfile "$SERVER_CERT" \
+            > "$RUNNER_TEMP/lws-cloud-backend.log" 2>&1 &
+          BACKEND_PID=$!
+          trap 'kill "$BACKEND_PID" 2>/dev/null || true' EXIT
+
+          for attempt in $(seq 1 60); do
+            curl --silent --show-error --fail --cacert "$CA_CERT" https://localhost:18443/api/health >/dev/null && break
+            test "$attempt" -lt 60 || { cat "$RUNNER_TEMP/lws-cloud-backend.log"; exit 1; }
+            sleep 1
+          done
+          anonymous_status="$(curl --silent --show-error --cacert "$CA_CERT" -o /dev/null -w '%{http_code}' https://localhost:18443/api/projects)"
+          test "$anonymous_status" = 401
+
+          COOKIE_JAR="$RUNNER_TEMP/lws-smoke-cookie.jar"
+          curl --silent --show-error --fail --cacert "$CA_CERT" -c "$COOKIE_JAR" \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"smoke-admin","password":"Initial-Smoke-Password1!"}' \
+            https://localhost:18443/api/auth/login >/dev/null
+          curl --silent --show-error --fail --cacert "$CA_CERT" -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+            -H 'Content-Type: application/json' \
+            -d '{"current_password":"Initial-Smoke-Password1!","new_password":"Final-Smoke-Password1!"}' \
+            https://localhost:18443/api/auth/change-password >/dev/null
+
+          python check.py \
+            --base-url https://localhost:18443 \
+            --expect-deployment-mode cloud \
+            --expect-auth-mode required \
+            --expect-runtime-profile cloud-required \
+            --expect-version "$VERSION" \
+            --expect-git-sha "$GIT_SHA" \
+            --check-frontend-assets frontend/dist/assets \
+            --auth-user smoke-admin \
+            --auth-password 'Final-Smoke-Password1!' | tee "$RUNNER_TEMP/cloud-deployment-check.jsonl"
+
+          python scripts/stability_check.py \
+            --base-url https://localhost:18443 \
+            --auth-user smoke-admin \
+            --auth-password 'Final-Smoke-Password1!' | tee "$RUNNER_TEMP/cloud-stability-check.jsonl"
+          grep -q '^deleted_project=' "$RUNNER_TEMP/cloud-stability-check.jsonl"
+          curl --silent --show-error --fail --cacert "$CA_CERT" -b "$COOKIE_JAR" https://localhost:18443/api/system/active-jobs > "$RUNNER_TEMP/cloud-active-jobs.json"
+          curl --silent --show-error --fail --cacert "$CA_CERT" -b "$COOKIE_JAR" https://localhost:18443/api/projects > "$RUNNER_TEMP/cloud-projects.json"
+          python - "$RUNNER_TEMP/cloud-active-jobs.json" "$RUNNER_TEMP/cloud-projects.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          active_jobs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          projects = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          if active_jobs:
+              raise SystemExit("active jobs remain after stability smoke")
+          if any(project.get("name", "").startswith("STABILITY-") for project in projects):
+              raise SystemExit("stability project remains after cleanup")
+          PY
+
+          export E2E_BASE_URL=https://localhost:18443
+          export LWS_EXPECT_RUNTIME_PROFILE=cloud-required
+          export LWS_RUNTIME_SMOKE_USER=smoke-admin
+          export LWS_RUNTIME_SMOKE_PASSWORD='Final-Smoke-Password1!'
+          cd "$GITHUB_WORKSPACE/frontend"
+          npx playwright test e2e/runtime-profile-smoke.spec.ts --config=playwright.config.ts --reporter=line
+      - name: Upload cloud smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-cloud-required-evidence
+          path: |
+            ${{ runner.temp }}/cloud-*.json
+            ${{ runner.temp }}/cloud-*.jsonl
+            ${{ runner.temp }}/lws-cloud-backend.log
+          if-no-files-found: warn
+
+  publish-gate:
+    needs: [smoke-extracted-local-off, smoke-extracted-cloud-required]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm universal artifact passed both runtime smokes
+        run: echo "universal-release passed local-off and cloud-required smoke gates"
