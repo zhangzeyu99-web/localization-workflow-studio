@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page, type Response } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -3735,4 +3735,161 @@ test('mobile project tabs and history table stay readable', async ({ page, reque
   expect(metrics.wrapperOverflow).toBeGreaterThan(0)
   expect(metrics.tableWidth).toBeGreaterThanOrEqual(679)
   expect(metrics.tagHeight).toBeLessThanOrEqual(30)
+})
+
+test('confirmed glossary edits preserve an empty note', async ({ page, request }) => {
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: `E2E Glossary Empty Note ${Date.now()}`, type: 'glossary', description: 'Target-only edits preserve an empty note.' },
+  }).then((response) => response.json())
+  const term = await request.post(`${baseURL}/api/projects/${project.id}/glossary`, {
+    data: { term_key: 'term.start', source: '开始游戏', target: 'Start Game', language: 'en', source_type: 'manual', confirmed: true, note: '' },
+  }).then((response) => response.json())
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: project.name }).click()
+  await page.getByRole('button', { name: '术语表', exact: true }).click()
+  const row = page.locator('table.glossary-table > tbody > tr').first()
+  const isRowSave = (response: Response) => response.request().method() === 'PATCH'
+    && new URL(response.url()).pathname === `/api/projects/${project.id}/glossary/by-source-key`
+
+  const noteCell = row.locator(':scope > td').nth(4)
+  await expect(noteCell).toHaveText('-')
+  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  await expect(row.locator('input').nth(4)).toHaveValue('')
+  await row.locator('input').nth(2).fill('Start Game Revised')
+  const targetOnlySaved = page.waitForResponse(isRowSave)
+  await row.getByRole('button', { name: '保存', exact: true }).click()
+  const targetOnlyResponse = await targetOnlySaved
+  expect(targetOnlyResponse.ok()).toBeTruthy()
+  expect(targetOnlyResponse.request().postDataJSON()).toMatchObject({ shared: { note: '' }, targets: { en: 'Start Game Revised' } })
+  await expect(row.getByText('Start Game Revised', { exact: true })).toBeVisible()
+  await expect(noteCell).toHaveText('-')
+  const targetOnlyReadback = await request.get(`${baseURL}/api/projects/${project.id}/glossary`).then(response => response.json())
+  expect(targetOnlyReadback.find((item: { id: string }) => item.id === term.id)).toMatchObject({ target: 'Start Game Revised', note: '' })
+})
+
+test('translation archive editing restores canceled drafts and resolves revision conflicts', async ({ page, request }) => {
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: `E2E Archive Editing ${Date.now()}`, type: 'QA', description: 'Archive cancel and concurrent edit recovery.' },
+  }).then(response => response.json())
+  const original = { entry_key: 'reward.1', source: '领取奖励', target: 'Claim Reward', note: 'Original note' }
+  const entryResponse = await request.post(`${baseURL}/api/projects/${project.id}/translations`, {
+    data: { ...original, language: 'en', source_type: 'manual' },
+  })
+  expect(entryResponse.ok()).toBeTruthy()
+  const entry = await entryResponse.json()
+  const archivePath = `/api/projects/${project.id}/translations`
+  const browserPatches: string[] = []
+  page.on('request', outgoing => {
+    if (outgoing.method() === 'PATCH' && new URL(outgoing.url()).pathname.startsWith(archivePath)) browserPatches.push(outgoing.url())
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: project.name }).click()
+  await page.getByRole('button', { name: '译文归档', exact: true }).click()
+  const row = page.locator('table.translation-archive-table > tbody > tr').first()
+  const conflict = page.getByTestId('translation-edit-conflict')
+  const isRowSave = (response: Response) => response.request().method() === 'PATCH'
+    && new URL(response.url()).pathname === `${archivePath}/by-source-key`
+
+  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  for (const [index, value] of ['discarded.key', '不要保存的原文', 'Discarded target', 'Discarded note'].entries()) {
+    await row.locator('input').nth(index).fill(value)
+  }
+  await row.getByRole('button', { name: '取消', exact: true }).click()
+  // Read immediately: cancel must restore the row without a refresh or another edit.
+  expect(await row.locator(':scope > td').nth(0).innerText()).toBe(original.entry_key)
+  expect(await row.locator(':scope > td').nth(1).innerText()).toBe(original.source)
+  expect(await row.locator(':scope > td').nth(2).innerText()).toBe(original.target)
+  expect(await row.locator(':scope > td').nth(4).innerText()).toBe(original.note)
+  await expect(row.locator('input')).toHaveCount(0)
+  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  for (const [index, value] of Object.values(original).entries()) await expect(row.locator('input').nth(index)).toHaveValue(value)
+  expect(browserPatches).toEqual([])
+  const canceledReadback = await request.get(`${baseURL}${archivePath}`).then(response => response.json())
+  expect(canceledReadback.find((item: { id: string }) => item.id === entry.id)).toMatchObject(original)
+
+  await row.locator('input').nth(2).fill('My Archive Draft')
+  const remoteUpdate = await request.patch(`${baseURL}${archivePath}/${entry.id}`, { data: { target: 'Server Archive Latest' } })
+  expect(remoteUpdate.ok()).toBeTruthy()
+  const rejected = page.waitForResponse(isRowSave)
+  await row.getByRole('button', { name: '保存', exact: true }).click()
+  expect((await rejected).status()).toBe(409)
+  await expect(conflict).toContainText('你的草稿已保留')
+  await expect(row.locator('input').nth(2)).toHaveValue('My Archive Draft')
+  const comparison = conflict.getByRole('table', { name: '译文归档冲突对照' })
+  await expect(comparison).toContainText('Server Archive Latest')
+  await expect(comparison).toContainText('My Archive Draft')
+  let persisted = await request.get(`${baseURL}${archivePath}`).then(response => response.json())
+  expect(persisted.find((item: { id: string }) => item.id === entry.id).target).toBe('Server Archive Latest')
+  const saved = page.waitForResponse(isRowSave)
+  await conflict.getByRole('button', { name: '用我的草稿重新保存', exact: true }).click()
+  expect((await saved).ok()).toBeTruthy()
+  await expect(conflict).toHaveCount(0)
+  await expect(row.getByText('My Archive Draft', { exact: true })).toBeVisible()
+  persisted = await request.get(`${baseURL}${archivePath}`).then(response => response.json())
+  expect(persisted.find((item: { id: string }) => item.id === entry.id)).toMatchObject({ ...original, target: 'My Archive Draft' })
+
+  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  await row.locator('input').nth(2).fill('Discard This Archive Draft')
+  const latestUpdate = await request.patch(`${baseURL}${archivePath}/${entry.id}`, { data: { target: 'Adopt Archive Latest' } })
+  expect(latestUpdate.ok()).toBeTruthy()
+  const secondConflict = page.waitForResponse(isRowSave)
+  await row.getByRole('button', { name: '保存', exact: true }).click()
+  expect((await secondConflict).status()).toBe(409)
+  await expect(row.locator('input').nth(2)).toHaveValue('Discard This Archive Draft')
+  await expect(comparison).toContainText('Adopt Archive Latest')
+  await expect(comparison).toContainText('Discard This Archive Draft')
+  expect(browserPatches).toHaveLength(3)
+  await conflict.getByRole('button', { name: '采用最新内容', exact: true }).click()
+  await expect(conflict).toHaveCount(0)
+  await expect(row.locator('input').nth(2)).toHaveValue('Adopt Archive Latest')
+  persisted = await request.get(`${baseURL}${archivePath}`).then(response => response.json())
+  expect(persisted.find((item: { id: string }) => item.id === entry.id)).toMatchObject({ ...original, target: 'Adopt Archive Latest' })
+  expect(browserPatches).toHaveLength(3)
+  await row.getByRole('button', { name: '取消', exact: true }).click()
+  expect(await row.locator(':scope > td').nth(2).innerText()).toBe('Adopt Archive Latest')
+  await expect(row.locator('input')).toHaveCount(0)
+  expect(browserPatches).toHaveLength(3)
+})
+
+test('translation archive expanding languages preserves existing translations while editing', async ({ page, request }) => {
+  const project = await request.post(`${baseURL}/api/projects`, {
+    data: { name: `E2E Archive Languages ${Date.now()}`, type: 'QA', description: 'Preserve saved translations when expanding language columns during editing.' },
+  }).then(response => response.json())
+  const archivePath = `/api/projects/${project.id}/translations`
+  const shared = { entry_key: 'reward.multilang', source: '领取奖励', note: 'Shared note', source_type: 'manual' }
+  const originalTargets = { en: 'Claim Reward', fr: 'Récupérer la récompense' }
+  for (const [language, target] of Object.entries(originalTargets)) {
+    const created = await request.post(`${baseURL}${archivePath}`, { data: { ...shared, language, target } })
+    expect(created.ok()).toBeTruthy()
+  }
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(baseURL)
+  await page.getByRole('button', { name: project.name }).click()
+  await page.getByRole('button', { name: '译文归档', exact: true }).click()
+  const row = page.locator('table.translation-archive-table > tbody > tr').first()
+  const frenchToggle = page.getByTestId('archive-display-lang-fr')
+  await expect(frenchToggle).toHaveAttribute('aria-pressed', 'false')
+  await expect(row.locator(':scope > td')).toHaveCount(6)
+  await expect(row.locator(':scope > td').nth(2)).toHaveText(originalTargets.en)
+  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  await row.locator('input').nth(2).fill('Claim Updated Reward')
+  await frenchToggle.click()
+  await expect(frenchToggle).toHaveAttribute('aria-pressed', 'true')
+  await expect(row.locator('input').nth(2)).toHaveValue('Claim Updated Reward')
+  await expect(row.locator('input').nth(3)).toHaveValue(originalTargets.fr)
+  const saving = page.waitForResponse(response => response.request().method() === 'PATCH'
+    && new URL(response.url()).pathname === `${archivePath}/by-source-key`)
+  await row.getByRole('button', { name: '保存', exact: true }).click()
+  const saved = await saving
+  expect(saved.ok()).toBeTruthy()
+  expect(saved.request().postDataJSON()).toMatchObject({ targets: { en: 'Claim Updated Reward', fr: originalTargets.fr } })
+  await expect(row.locator('input')).toHaveCount(0)
+  await expect(row.locator(':scope > td').nth(2)).toHaveText('Claim Updated Reward')
+  await expect(row.locator(':scope > td').nth(3)).toHaveText(originalTargets.fr)
+  const persisted = await request.get(`${baseURL}${archivePath}`).then(response => response.json())
+  expect(persisted).toHaveLength(2)
+  expect(persisted.find((item: { language: string }) => item.language === 'en')).toMatchObject({ entry_key: shared.entry_key, source: shared.source, target: 'Claim Updated Reward' })
+  expect(persisted.find((item: { language: string }) => item.language === 'fr')).toMatchObject({ entry_key: shared.entry_key, source: shared.source, target: originalTargets.fr })
 })

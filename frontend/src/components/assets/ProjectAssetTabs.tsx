@@ -14,7 +14,7 @@ import { ArchiveProvenanceBadge } from '../shared/StatusPrimitives'
 import { ArchiveImportFlow } from './ArchiveImportFlow'
 import { PendingGlossaryReview } from './PendingGlossaryReview'
 import type { ArchiveImportReadbackOptions } from '../../domain/archiveImport'
-import { languageFromValue, normalizeGlossaryNote, rowRecords } from '../../domain/projectAssets'
+import { languageFromValue, rowRecords } from '../../domain/projectAssets'
 import type { Artifact, GlossaryPreviewRow, GlossaryTerm, Project, TranslationEntry, WideGlossaryRow, WideTranslationRow } from '../../types'
 
 type GlossaryWideDraft = {
@@ -30,6 +30,21 @@ type TranslationWideDraft = {
   source: string
   note: string
   targets: Record<LanguageCode, string>
+}
+
+type AssetSaveResult = 'saved' | 'conflict' | 'failed'
+type TranslationLatestRow = { row: WideTranslationRow | null; revision: string }
+
+function translationRowDraft(row: WideTranslationRow): TranslationWideDraft {
+  return {
+    entry_key: row.entry_key || '',
+    source: row.source || '',
+    note: row.note || '',
+    targets: supportedLanguages.reduce((targets, language) => {
+      targets[language.code] = row.translations[language.code]?.target || ''
+      return targets
+    }, {} as Record<LanguageCode, string>),
+  }
 }
 
 function isArchiveRevisionConflict(error: unknown): boolean {
@@ -609,7 +624,7 @@ function WideGlossaryTermRowImpl({
     term_key: row.term_key || '',
     source: row.source || '',
     category: row.category || '',
-    note: normalizeGlossaryNote(row.note),
+    note: row.note || '',
     targets: supportedLanguages.reduce((acc, lang) => {
       acc[lang.code] = row.translations[lang.code]?.target || ''
       return acc
@@ -621,7 +636,7 @@ function WideGlossaryTermRowImpl({
       term_key: row.term_key || '',
       source: row.source || '',
       category: row.category || '',
-      note: normalizeGlossaryNote(row.note),
+      note: row.note || '',
       targets: supportedLanguages.reduce((acc, lang) => {
         acc[lang.code] = row.translations[lang.code]?.target || ''
         return acc
@@ -844,7 +859,25 @@ function TranslationArchiveTabImpl({
     }
   }
 
-  async function saveWideRow(row: WideTranslationRow, draft: TranslationWideDraft, targetLanguages: LanguageCode[]): Promise<boolean> {
+  async function loadLatestTranslationRow(row: WideTranslationRow): Promise<TranslationLatestRow> {
+    const query = new URLSearchParams({ q: row.source, page_size: '200', languages: supportedLanguages.map((language) => language.code).join(',') })
+    let latestRevision = ''
+    for (let currentPage = 1, totalPages = 1; currentPage <= totalPages; currentPage += 1) {
+      query.set('page', String(currentPage))
+      const latest = await api<{ rows: WideTranslationRow[]; revision: string; total_pages: number }>(
+        `/api/projects/${project.id}/translations/wide?${query.toString()}`,
+        undefined,
+        '读取译文归档最新内容',
+      )
+      const latestRow = latest.rows.find((item) => item.source_key === row.source_key)
+      if (latestRow) return { row: latestRow, revision: latest.revision }
+      latestRevision = latest.revision
+      totalPages = latest.total_pages
+    }
+    return { row: null, revision: latestRevision }
+  }
+
+  async function saveWideRow(row: WideTranslationRow, draft: TranslationWideDraft, targetLanguages: LanguageCode[], expectedRevision: string): Promise<AssetSaveResult> {
     setMutationError('')
     const targets = targetLanguages.reduce<Record<string, string>>((result, language) => {
       if (row.translations[language]?.record) result[language] = draft.targets[language] || ''
@@ -857,7 +890,7 @@ function TranslationArchiveTabImpl({
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            expected_revision: assetRows.revision,
+            expected_revision: expectedRevision,
             shared: { entry_key: draft.entry_key, source: draft.source, note: draft.note },
             targets,
           }),
@@ -865,15 +898,14 @@ function TranslationArchiveTabImpl({
         '保存译文多语言行',
       )
       refreshAssets()
-      return true
+      return 'saved'
     } catch (error) {
       if (isArchiveRevisionConflict(error)) {
-        refreshAssets()
-        setMutationError('归档内容已变化，已刷新列表；请重新编辑后保存。')
+        return 'conflict'
       } else {
         setMutationError(`保存译文失败：${errorText(error)}`)
       }
-      return false
+      return 'failed'
     }
   }
 
@@ -984,10 +1016,12 @@ function TranslationArchiveTabImpl({
                   <WideTranslationEntryRow
                     key={row.source_key}
                     row={row}
+                    revision={assetRows.revision}
                     visibleLanguages={visibleLanguages}
                     canCurate={canCurate}
                     selectedLanguage={selectedLanguage}
                     onSave={saveWideRow}
+                    onLoadLatest={loadLatestTranslationRow}
                     onDelete={onDeleteTranslation}
                     onDeleteAll={deleteAllLanguages}
                     onChanged={refreshAssets}
@@ -1040,53 +1074,119 @@ export function TranslationArchiveExportPanel({
 
 function WideTranslationEntryRowImpl({
   row,
+  revision,
   visibleLanguages,
   canCurate = true,
   selectedLanguage,
   onSave,
+  onLoadLatest,
   onDelete,
   onDeleteAll,
   onChanged,
 }: {
   row: WideTranslationRow
+  revision: string
   visibleLanguages: LanguageCode[]
   canCurate?: boolean
   selectedLanguage: LanguageCode
-  onSave: (row: WideTranslationRow, draft: TranslationWideDraft, targetLanguages: LanguageCode[]) => Promise<boolean>
+  onSave: (row: WideTranslationRow, draft: TranslationWideDraft, targetLanguages: LanguageCode[], expectedRevision: string) => Promise<AssetSaveResult>
+  onLoadLatest: (row: WideTranslationRow) => Promise<TranslationLatestRow>
   onDelete: (entry: TranslationEntry) => Promise<boolean>
   onDeleteAll: (row: WideTranslationRow) => Promise<boolean>
   onChanged: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
-  const [draft, setDraft] = useState({
-    entry_key: row.entry_key || '',
-    source: row.source || '',
-    note: row.note || '',
-    targets: supportedLanguages.reduce((acc, lang) => {
-      acc[lang.code] = row.translations[lang.code]?.target || ''
-      return acc
-    }, {} as Record<LanguageCode, string>)
-  })
+  const [draft, setDraft] = useState(() => translationRowDraft(row))
+  const loadedLanguages = useRef(new Set(Object.keys(row.translations)))
+  const [editRevision, setEditRevision] = useState(revision)
+  const [conflict, setConflict] = useState(false)
+  const [latest, setLatest] = useState<TranslationLatestRow | null>(null)
+  const [latestError, setLatestError] = useState('')
+  const pending = useRef(false)
 
   useEffect(() => {
-    setDraft({
-      entry_key: row.entry_key || '',
-      source: row.source || '',
-      note: row.note || '',
-      targets: supportedLanguages.reduce((acc, lang) => {
-        acc[lang.code] = row.translations[lang.code]?.target || ''
-        return acc
-      }, {} as Record<LanguageCode, string>)
-    })
-    setEditing(false)
-  }, [row.source_key, row.entry_key, row.source, row.note, JSON.stringify(row.translations)])
+    if (!editing) {
+      setDraft(translationRowDraft(row))
+      loadedLanguages.current = new Set(Object.keys(row.translations))
+      return
+    }
+    // Newly displayed languages need their saved values, without replacing an existing draft.
+    const addedLanguages = supportedLanguages.filter(({ code }) => row.translations[code] && !loadedLanguages.current.has(code))
+    if (addedLanguages.length) {
+      setDraft((value) => ({
+        ...value,
+        targets: addedLanguages.reduce((targets, { code }) => ({ ...targets, [code]: row.translations[code]!.target }), value.targets),
+      }))
+      addedLanguages.forEach(({ code }) => loadedLanguages.current.add(code))
+    }
+  }, [editing, row.source_key, row.entry_key, row.source, row.note, JSON.stringify(row.translations)])
 
-  async function save() {
+  function beginEditing() {
+    setDraft(translationRowDraft(row))
+    loadedLanguages.current = new Set(Object.keys(row.translations))
+    setEditRevision(revision)
+    setConflict(false)
+    setLatest(null)
+    setLatestError('')
+    setEditing(true)
+  }
+
+  function cancelEditing() {
+    setDraft(translationRowDraft(row))
+    setConflict(false)
+    setLatest(null)
+    setLatestError('')
+    setEditing(false)
+  }
+
+  async function readLatest() {
+    setLatest(null)
+    setLatestError('')
+    try {
+      setLatest(await onLoadLatest(row))
+    } catch (error) {
+      setLatestError(`最新内容读取失败：${errorText(error)}。你的草稿仍保留。`)
+    }
+  }
+
+  async function save(useDraft = false) {
+    if (pending.current || (conflict && (!useDraft || !latest?.row))) return
+    pending.current = true
     setActionBusy(true)
     try {
-      if (await onSave(row, draft, visibleLanguages)) setEditing(false)
+      const result = await onSave(row, draft, visibleLanguages, useDraft ? latest!.revision : editRevision)
+      if (result === 'saved') {
+        setConflict(false)
+        setEditing(false)
+      } else if (result === 'conflict') {
+        setConflict(true)
+        await readLatest()
+      }
     } finally {
+      pending.current = false
+      setActionBusy(false)
+    }
+  }
+
+  function adoptLatest() {
+    if (!latest?.row || actionBusy) return
+    setDraft(translationRowDraft(latest.row))
+    loadedLanguages.current = new Set(Object.keys(latest.row.translations))
+    setEditRevision(latest.revision)
+    setConflict(false)
+    setLatest(null)
+    onChanged()
+  }
+
+  async function retryReadLatest() {
+    if (pending.current) return
+    pending.current = true
+    setActionBusy(true)
+    try {
+      await readLatest()
+    } finally {
+      pending.current = false
       setActionBusy(false)
     }
   }
@@ -1112,19 +1212,30 @@ function WideTranslationEntryRowImpl({
   }
 
   function sharedCell(key: 'entry_key' | 'source' | 'note') {
-    if (!editing) return <span className="readonly-cell">{draft[key] || '-'}</span>
-    return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
+    if (!editing) return <span className="readonly-cell">{row[key] || '-'}</span>
+    return <input className="cell-input" value={draft[key]} disabled={actionBusy} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
   }
 
   function targetCell(code: LanguageCode) {
-    if (!editing) return <span className="readonly-cell">{draft.targets[code] || '-'}</span>
+    if (!editing) return <span className="readonly-cell">{row.translations[code]?.target || '-'}</span>
     if (!row.translations[code]?.record) {
       return <input className="cell-input" value="" disabled aria-label={`${languageSpec(code).short} 无归档记录`} title="无该语言记录，请先手动新增" placeholder="无该语言记录" />
     }
-    return <input className="cell-input" value={draft.targets[code] || ''} onChange={(event) => setDraft((value) => ({ ...value, targets: { ...value.targets, [code]: event.target.value } }))} />
+    return <input className="cell-input" value={draft.targets[code] || ''} disabled={actionBusy} onChange={(event) => setDraft((value) => ({ ...value, targets: { ...value.targets, [code]: event.target.value } }))} />
   }
 
+  const latestDraft = latest?.row ? translationRowDraft(latest.row) : null
+  const differences = latestDraft ? [
+    ...(['entry_key', 'source', 'note'] as const).map((key) => ({
+      label: { entry_key: '编号', source: '中文', note: '备注' }[key],
+      remote: latestDraft[key],
+      local: draft[key],
+    })),
+    ...visibleLanguages.map((language) => ({ label: languageSpec(language).short, remote: latestDraft.targets[language], local: draft.targets[language] })),
+  ].filter((item) => item.remote !== item.local) : []
+
   return (
+    <>
     <tr className={row.conflicts.length ? 'has-conflict' : ''}>
       <td>{sharedCell('entry_key')}{row.conflicts.length ? <span className="conflict-badge" title={row.conflicts.map((item) => `${item.field}: ${item.values.join(' / ')}`).join('\n')}>字段冲突</span> : null}</td>
       <td>{sharedCell('source')}</td>
@@ -1147,17 +1258,17 @@ function WideTranslationEntryRowImpl({
             <>
               {editing ? (
                 <>
-                  <button type="button" className="btn btn-primary btn-sm" disabled={actionBusy} onClick={save}>保存</button>
-                  <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={() => setEditing(false)}>取消</button>
+                  <button type="button" className="btn btn-primary btn-sm" disabled={actionBusy || conflict} onClick={() => void save()}>保存</button>
+                  {!conflict ? <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={cancelEditing}>取消</button> : null}
                 </>
               ) : (
-                <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={() => setEditing(true)}>编辑</button>
+                <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={beginEditing}>编辑</button>
               )}
               <button
                 type="button"
                 className="btn btn-sm"
                 aria-label={`删除当前语言（${languageSpec(selectedLanguage).short}）`}
-                disabled={actionBusy || !row.translations[selectedLanguage]?.record}
+                disabled={actionBusy || conflict || !row.translations[selectedLanguage]?.record}
                 onClick={() => void removeCurrentLanguage()}
               >
                 删 {languageSpec(selectedLanguage).short}
@@ -1166,7 +1277,7 @@ function WideTranslationEntryRowImpl({
                 type="button"
                 className="btn btn-sm btn-danger"
                 aria-label="删除全部语言"
-                disabled={actionBusy}
+                disabled={actionBusy || conflict}
                 onClick={() => void removeAllLanguages()}
               >
                 删全部
@@ -1176,6 +1287,28 @@ function WideTranslationEntryRowImpl({
         </div>
       </td>
     </tr>
+    {conflict ? <tr data-testid="translation-edit-conflict">
+      <td colSpan={5 + visibleLanguages.length}>
+        <div className="warn-line" role="alert">译文归档已有更新，你的草稿已保留。请核对最新内容后选择处理方式。</div>
+        {actionBusy ? <div className="muted-left" role="status">正在读取最新内容…</div> : null}
+        {latestError ? <div className="info-line warn" role="alert">{latestError}</div> : null}
+        {latest && !latest.row ? <div className="info-line warn">原记录已删除或中文已变更，无法直接重新保存。请保留所需草稿，再返回列表定位记录。</div> : null}
+        {latestDraft ? <>
+          {differences.length ? <table aria-label="译文归档冲突对照">
+            <thead><tr><th>字段</th><th>服务器最新</th><th>我的草稿</th></tr></thead>
+            <tbody>{differences.map((item) => <tr key={item.label}><td>{item.label}</td><td>{item.remote || '（空）'}</td><td>{item.local || '（空）'}</td></tr>)}</tbody>
+          </table> : <div className="muted-left">当前记录内容与你的草稿一致；本次更新来自归档的其他记录。</div>}
+        </> : null}
+        <div className="row-actions wrap">
+          {latest?.row ? <>
+            <button type="button" className="btn btn-ghost btn-sm" disabled={actionBusy} onClick={adoptLatest}>采用最新内容</button>
+            <button type="button" className="btn btn-primary btn-sm" disabled={actionBusy} onClick={() => void save(true)}>用我的草稿重新保存</button>
+          </> : <button type="button" className="btn btn-ghost btn-sm" disabled={actionBusy} onClick={() => void retryReadLatest()}>重试读取最新内容</button>}
+          <button type="button" className="btn btn-ghost btn-sm" disabled={actionBusy} onClick={() => { cancelEditing(); onChanged() }}>放弃草稿并刷新列表</button>
+        </div>
+      </td>
+    </tr> : null}
+    </>
   )
 }
 

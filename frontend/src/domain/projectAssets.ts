@@ -65,7 +65,7 @@ export function glossaryWideRows(project: Project): WideGlossaryRow[] {
       source: pickSharedValue(rows, 'source'),
       term_key: pickSharedValue(rows, 'term_key'),
       category: pickSharedValue(rows, 'category'),
-      note: normalizeGlossaryNote(pickSharedValue(rows, 'note')),
+      note: pickSharedValue(rows, 'note'),
       translations,
       languages: supportedLanguages.map((item) => item.code).filter((lang) => Boolean(translations[lang])),
       conflicts: sharedConflicts(rows, ['source', 'term_key', 'category', 'note'])
