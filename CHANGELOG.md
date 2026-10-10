@@ -2,6 +2,15 @@
 
 All notable changes are tracked here. The project uses semantic versioning while the public API is still pre-1.0.
 
+## 1.7.4 - 2026-10-10
+
+- Removed the arbitrary 1,000-row glossary import rejection and separated source storage from reviewed archive writes.
+- Added language and worksheet inspection, editable or ignorable row conflicts, and explicit duplicate-row choices before commit.
+- Preserved malformed source rows for review instead of silently dropping missing source text or guessing invalid JSON languages.
+- Kept manually selected language scopes, existing translations in newly displayed languages, and cancelled candidate drafts consistent.
+- Recovered uncertain import submissions from the original persisted batch and retained safe same-token retries.
+- Kept account-enabled and no-account deployment profiles separate, without including local projects or provider credentials.
+
 ## 1.7.3 - 2026-09-10
 
 - Synchronized committed localization and glossary sources, including reviewed candidate JSON export.

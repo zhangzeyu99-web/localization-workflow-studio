@@ -164,7 +164,7 @@ def test_official_glossary_template_preview_and_import_skip_guide_sheet() -> Non
     assert rows[("联盟", "ja")]["target"] == "同盟"
 
 
-def test_complete_language_table_guard_still_applies_after_skipping_guide_sheet() -> None:
+def test_large_confirmed_glossary_preview_skips_guide_sheet_without_archiving() -> None:
     data_rows: list[list[object]] = [["ID", "CN", "EN"]]
     data_rows.extend([[f"A-{index}", f"源文{index}", f"Target {index}"] for index in range(1001)])
     content = _workbook_bytes(
@@ -181,12 +181,13 @@ def test_complete_language_table_guard_still_applies_after_skipping_guide_sheet(
             json={"artifact_id": artifact["id"]},
         )
 
-    assert preview.status_code == 400, preview.text
-    assert "完整语言表" in str(preview.json()["detail"])
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["languages"] == ["en"]
+    assert preview.json()["rows"][0]["source"] == "源文0"
     assert db.list_glossary_terms(project["id"]) == []
 
 
-def test_complete_language_table_guard_applies_to_csv() -> None:
+def test_large_confirmed_glossary_csv_preview_does_not_archive() -> None:
     lines = ["ID,CN,EN"]
     lines.extend(f"A-{index},源文{index},Target {index}" for index in range(1001))
     content = ("\n".join(lines) + "\n").encode("utf-8-sig")
@@ -198,12 +199,13 @@ def test_complete_language_table_guard_applies_to_csv() -> None:
             json={"artifact_id": artifact["id"]},
         )
 
-    assert preview.status_code == 400, preview.text
-    assert "完整语言表" in str(preview.json()["detail"])
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["languages"] == ["en"]
+    assert preview.json()["rows"][0]["source"] == "源文0"
     assert db.list_glossary_terms(project["id"]) == []
 
 
-def test_complete_language_table_guard_blocks_wide_json_but_allows_long_glossary_export_shape() -> None:
+def test_large_glossary_upload_allows_wide_and_long_json_without_archiving() -> None:
     wide_rows = [
         {"ID": f"A-{index}", "CN": f"源文{index}", "EN": f"Target {index}"}
         for index in range(1001)
@@ -245,10 +247,12 @@ def test_complete_language_table_guard_blocks_wide_json_but_allows_long_glossary
             json={"artifact_id": long_artifact["id"]},
         )
 
-    assert wide_upload.status_code == 400, wide_upload.text
-    assert "完整语言表" in str(wide_upload.json()["detail"])
+    assert wide_upload.status_code == 200, wide_upload.text
+    assert wide_upload.json()["kind"] == "term_base"
     assert long_preview.status_code == 200, long_preview.text
     assert long_preview.json()["languages"] == ["en"]
+    assert db.list_glossary_terms(wide_project["id"]) == []
+    assert db.list_glossary_terms(long_project["id"]) == []
 
 
 def test_implicit_xlsx_sheet_selection_returns_candidates_and_explicit_sheet_works() -> None:

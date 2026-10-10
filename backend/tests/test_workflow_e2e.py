@@ -3032,15 +3032,30 @@ def test_glossary_import_rejects_template_without_valid_rows(tmp_path: Path) -> 
         assert upload_response.status_code == 200, upload_response.text
         term_artifact = upload_response.json()
 
+        analysis_response = client.post(
+            f"/api/projects/{project['id']}/glossary/import/analyze",
+            json={"artifact_id": term_artifact["id"], "confirmed_glossary": True},
+        )
+        assert analysis_response.status_code == 200, analysis_response.text
+        analysis = analysis_response.json()
+        assert analysis["can_commit"] is False
+        assert analysis["summary"]["skip"] == 1
+        assert analysis["summary"]["conflict"] == 1
+        assert analysis["conflict_groups"][0]["codes"] == ["missing_source"]
+        assert analysis["conflict_groups"][0]["rows"][0]["row_key"] == "row:3"
+
         import_response = client.post(
             f"/api/projects/{project['id']}/glossary/import",
             json={"artifact_id": term_artifact["id"]},
         )
-        assert import_response.status_code == 400
+        assert import_response.status_code == 409, import_response.text
+        assert import_response.json()["detail"]["code"] == "conflicts_present"
         assert client.get(f"/api/projects/{project['id']}/glossary").json() == []
+        stored_artifact = db.get_artifact(term_artifact["id"])
+        assert Path(stored_artifact["path"]).read_bytes() == terms.read_bytes()
 
 
-def test_large_language_table_is_blocked_from_project_glossary_import(tmp_path: Path) -> None:
+def test_large_language_table_preview_does_not_bypass_candidate_scan_requirement(tmp_path: Path) -> None:
     language_table = tmp_path / "full-language-table.xlsx"
     _large_language_table_workbook(language_table)
 
@@ -3057,19 +3072,20 @@ def test_large_language_table_is_blocked_from_project_glossary_import(tmp_path: 
             f"/api/projects/{project['id']}/glossary/import-preview",
             json={"artifact_id": term_artifact["id"], "language": "ko"},
         )
-        assert preview_response.status_code == 400
-        assert "完整语言表" in preview_response.json()["detail"]
-        assert "高频词扫描" in preview_response.json()["detail"]
+        assert preview_response.status_code == 200, preview_response.text
+        assert preview_response.json()["languages"] == ["ko"]
+        assert client.get(f"/api/projects/{project['id']}/glossary?language=ko").json() == []
 
         import_response = client.post(
             f"/api/projects/{project['id']}/glossary/import",
             json={"artifact_id": term_artifact["id"], "language": "ko"},
         )
-        assert import_response.status_code == 400
+        assert import_response.status_code == 400, import_response.text
+        assert import_response.json()["detail"]["code"] == "candidate_scan_required"
         assert client.get(f"/api/projects/{project['id']}/glossary?language=ko").json() == []
 
 
-def test_large_language_table_upload_is_rejected_as_term_base(tmp_path: Path) -> None:
+def test_large_glossary_upload_is_retained_without_automatic_archiving(tmp_path: Path) -> None:
     language_table = tmp_path / "full-language-table.xlsx"
     _large_language_table_workbook(language_table)
 
@@ -3080,9 +3096,9 @@ def test_large_language_table_upload_is_rejected_as_term_base(tmp_path: Path) ->
                 f"/api/projects/{project['id']}/files?kind=term_base",
                 files={"file": ("full-language-table.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             )
-        assert upload_response.status_code == 400
-        assert "完整语言表" in upload_response.json()["detail"]
-        assert client.get(f"/api/projects/{project['id']}/assets?role=glossary_source").json() == []
+        assert upload_response.status_code == 200, upload_response.text
+        assert len(client.get(f"/api/projects/{project['id']}/assets?role=glossary_source").json()) == 1
+        assert client.get(f"/api/projects/{project['id']}/glossary").json() == []
 
 
 def test_large_language_table_project_material_is_rejected_but_language_table_upload_is_allowed(tmp_path: Path) -> None:

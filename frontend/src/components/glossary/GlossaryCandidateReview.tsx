@@ -149,6 +149,17 @@ function GlossaryCandidateReviewRow({
     setEditing(false)
   }, [candidate.id, candidate.term_key, candidate.source, candidate.target, candidate.category, candidate.note])
 
+  function cancelEditing() {
+    setDraft({
+      term_key: candidate.term_key || '',
+      source: candidate.source || '',
+      target: candidate.target || '',
+      category: candidate.category || '',
+      note: normalizeGlossaryNote(candidate.note),
+    })
+    setEditing(false)
+  }
+
   async function save(confirmAfter: boolean) {
     const updated = await onUpdateCandidate(candidate, draft)
     if (updated === false) return
@@ -157,7 +168,7 @@ function GlossaryCandidateReviewRow({
   }
 
   function cell(key: keyof typeof draft) {
-    if (!editing) return <span className="readonly-cell">{draft[key] || '-'}</span>
+    if (!editing) return <span className="readonly-cell">{(key === 'note' ? normalizeGlossaryNote(candidate.note) : candidate[key]) || '-'}</span>
     return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
   }
 
@@ -176,7 +187,7 @@ function GlossaryCandidateReviewRow({
             <>
               <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => void save(false)}>保存</button>
               <button type="button" className="btn btn-sm" disabled={busy || !batchId || !draft.target.trim()} onClick={() => void save(true)}>保存并加入</button>
-              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setEditing(false)}>取消</button>
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={cancelEditing}>取消</button>
             </>
           ) : (
             <>

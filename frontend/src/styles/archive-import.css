@@ -5,13 +5,17 @@
 
 .archive-import-flow-modal {
   position: relative;
-  display: grid;
-  grid-template-rows: auto auto auto auto auto auto;
+  display: flex;
+  flex-direction: column;
   width: min(880px, calc(100vw - 44px));
   max-height: calc(100vh - 44px);
   padding: 0;
   overflow: hidden;
   background: var(--c-surface-modal);
+}
+
+.archive-import-flow-modal > :not(.archive-import-body) {
+  flex-shrink: 0;
 }
 
 .archive-import-head {
@@ -83,8 +87,8 @@
 }
 
 .archive-import-body {
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: calc(100vh - 280px);
   overflow: auto;
   padding: 20px 22px;
 }
@@ -506,6 +510,39 @@
 
 .archive-tool-block-head strong { color: var(--c-white); }
 .archive-tool-block-head span { color: var(--c-neutral-400); font-size: var(--fs-sm); line-height: 1.5; }
+
+.archive-import-inspection { display: grid; gap: 4px; color: var(--c-neutral-300); font-size: var(--fs-sm); line-height: 1.5; }
+.archive-import-inspection small { color: var(--c-neutral-500); }
+.archive-import-count-note { margin-top: -7px; color: var(--c-neutral-500); font-size: var(--fs-xs); line-height: 1.5; }
+.archive-import-resolution { display: grid; gap: 14px; }
+.archive-import-resolution-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
+.archive-import-resolution-head strong { color: var(--c-white); }
+.archive-import-resolution-head p { margin: 5px 0 0; color: var(--c-neutral-400); font-size: var(--fs-sm); line-height: 1.5; }
+.archive-import-resolution-head > button { flex-shrink: 0; }
+.archive-import-conflict-group { border: 1px solid var(--surface-border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+.archive-import-conflict-group > header { display: flex; justify-content: space-between; gap: 12px; padding: 11px 12px; color: var(--c-white); background: var(--surface-inset-1); }
+.archive-import-conflict-group > header span { color: var(--c-neutral-500); font-size: var(--fs-xs); white-space: nowrap; }
+.archive-import-conflict-reasons { display: grid; gap: 3px; padding: 8px 12px; color: var(--c-yellow-200); font-size: var(--fs-sm); line-height: 1.5; border-top: 1px solid var(--surface-border); }
+.archive-import-conflict-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 10px 10px; }
+.archive-import-conflict-row { min-width: 0; padding: 12px; border: 1px solid var(--surface-border); border-radius: var(--radius-sm); background: var(--c-surface-modal); }
+.archive-import-conflict-row.ignored { background: var(--surface-inset-1); border-style: dashed; }
+.archive-import-conflict-row-head { display: flex; justify-content: space-between; gap: 8px; color: var(--c-neutral-300); font-size: var(--fs-xs); }
+.archive-import-conflict-row-head strong { overflow-wrap: anywhere; }
+.archive-import-conflict-row-head span { flex-shrink: 0; color: var(--c-violet-300); }
+.archive-import-conflict-source { margin: 8px 0; color: var(--c-white); font-weight: 600; overflow-wrap: anywhere; }
+.archive-import-row-targets { display: grid; gap: 5px; }
+.archive-import-row-targets > div { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; font-size: var(--fs-sm); line-height: 1.45; }
+.archive-import-row-targets dt { color: var(--c-neutral-500); }
+.archive-import-row-targets dd { margin: 0; color: var(--c-neutral-300); white-space: pre-wrap; overflow-wrap: anywhere; }
+.archive-import-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
+.archive-import-row-editor { margin-top: 8px; }
+.archive-import-row-editor textarea { width: 100%; min-height: 58px; resize: vertical; padding: 8px 10px; color: var(--c-neutral-150); border: 1px solid var(--surface-border-strong); border-radius: var(--radius-sm); background: var(--c-surface-modal); font: inherit; line-height: 1.5; }
+.archive-import-decisions { padding: 11px 12px; border: 1px solid var(--surface-border); border-radius: var(--radius-sm); background: var(--surface-inset-1); }
+.archive-import-decisions summary { cursor: pointer; color: var(--c-neutral-300); font-size: var(--fs-sm); }
+.archive-import-decision-list { max-height: 200px; overflow: auto; margin: 8px 0; }
+.archive-import-decision-list > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid var(--surface-border); padding: 5px 0; color: var(--c-neutral-400); font-size: var(--fs-sm); }
+.archive-import-decision-list span { overflow-wrap: anywhere; }
+.archive-import-decision-list button { flex-shrink: 0; }
 
 @media (max-width: 720px) {
   .archive-import-flow-mask { padding: 0; }

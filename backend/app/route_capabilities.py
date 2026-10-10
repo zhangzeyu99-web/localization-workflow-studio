@@ -151,6 +151,7 @@ CAPABILITY_BY_ROUTE: dict[RouteKey, str] = {
     ("POST", "/api/projects/{project_id}/glossary/import-preview"): ASSETS_CURATE,
     ("POST", "/api/projects/{project_id}/glossary/import"): ASSETS_CURATE,
     ("POST", "/api/projects/{project_id}/glossary/import/analyze"): ASSETS_CURATE,
+    ("POST", "/api/projects/{project_id}/glossary/import/inspect"): ASSETS_CURATE,
     ("POST", "/api/projects/{project_id}/glossary/import/commit"): ASSETS_CURATE,
     ("GET", "/api/projects/{project_id}/glossary/import/batches"): PROJECT_READ,
     ("POST", "/api/projects/{project_id}/glossary/import/batches/{batch_id}/rollback"): ASSETS_CURATE,

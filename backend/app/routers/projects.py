@@ -27,7 +27,6 @@ from ..upload_storage import (
 )
 from ..workflow import (
     build_project_material_packet,
-    guard_complete_language_table_for_glossary_import,
     guard_complete_language_table_for_project_material,
     harness_overview,
     inspect_translation_readiness,
@@ -105,12 +104,6 @@ def _finalize_project_upload(
             destination.unlink(missing_ok=True)
             duplicate["duplicate"] = True
             return duplicate
-    if kind in {"term_base", "glossary_final"}:
-        try:
-            guard_complete_language_table_for_glossary_import(destination)
-        except ValueError as exc:
-            destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
     try:
         with destination.open("rb") as fh:
             fh.read(1)

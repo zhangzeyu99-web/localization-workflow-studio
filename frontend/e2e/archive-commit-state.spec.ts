@@ -29,7 +29,7 @@ test('archive commit keeps the queue status truthful and rejects a stale cancel 
   await cancel.click()
   await page.getByTestId('confirm-modal-confirm').click()
   await expect.poll(() => cancelRequests).toBe(1)
-  await expect(page.getByRole('status').filter({ hasText: '译文归档已提交，任务正在完成或已完成，不能再取消' }).first()).toBeVisible()
+  await expect(page.getByTestId('queue-job-run:archive-finalizing').getByRole('alert')).toContainText('译文归档已提交，任务正在完成或已完成，不能再取消')
   await expect(page.getByTestId('queue-job-run:archive-finalizing')).toContainText('归档已提交，正在完成')
   await expect(cancel).toBeDisabled()
   await expect(cancel).toHaveText('已提交')

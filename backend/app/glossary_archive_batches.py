@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+from zipfile import BadZipFile
 
 from . import db
 from .archive_batch_engine import (
@@ -71,6 +72,7 @@ class ParsedGlossaryArtifact:
     columns: dict[str, Any]
     sheet: str
     languages: list[str]
+    ignored_rows: int = 0
 
 
 def _source_key(value: Any) -> str:
@@ -121,7 +123,13 @@ def _parse_artifact(artifact: dict[str, Any], request: Any) -> ParsedGlossaryArt
     languages: list[str] = []
     auto_languages = bool(getattr(request, "auto_languages", True))
     explicit_target = bool(getattr(request, "target_column", None) or getattr(request, "target_alt_column", None))
-    if auto_languages and not explicit_target and not requested_languages:
+    if explicit_target and len(requested_languages) > 1:
+        raise ArchiveBatchError(
+            400,
+            "invalid_glossary_template",
+            "指定单个译文列时只能选择一种目标语言；多语导入请留空目标译文列以自动识别。",
+        )
+    if auto_languages and not explicit_target:
         rows, columns, languages = _read_multilingual_glossary_rows(
             path,
             sheet=getattr(request, "sheet", None),
@@ -130,9 +138,17 @@ def _parse_artifact(artifact: dict[str, Any], request: Any) -> ParsedGlossaryArt
             category_column=getattr(request, "category_column", None),
             note_column=getattr(request, "note_column", None),
             limit=None,
+            include_empty=True,
+            include_invalid=True,
         )
+        if languages and requested_languages:
+            missing = [language for language in requested_languages if language not in languages]
+            if missing:
+                raise ArchiveBatchError(400, "invalid_glossary_template", f"文件中未找到所选语种列：{' / '.join(missing)}")
+            rows = [row for row in rows if row["language"] in requested_languages or row.get("_parse_error")]
+            languages = requested_languages
 
-    if not languages:
+    if not languages and not rows:
         languages = requested_languages or [
             require_supported_language(getattr(request, "language", "en") or "en")
         ]
@@ -151,24 +167,27 @@ def _parse_artifact(artifact: dict[str, Any], request: Any) -> ParsedGlossaryArt
                 language=language,
                 limit=None,
                 include_empty=True,
+                include_invalid=True,
             )
-            rows.extend({**row, "language": language} for row in language_rows)
+            rows.extend({**row, "language": row.get("language", language)} for row in language_rows)
             language_columns[language] = detected
         columns = {"languages": language_columns}
 
     normalized_rows = [
         {
+            **({"_parse_error": row["_parse_error"]} if row.get("_parse_error") else {}),
+            "row_number": int(row["row_number"]),
+            "row_key": f"row:{row['row_number']}",
             "term_key": str(row.get("term_key") or "").strip(),
             "source": str(row.get("source") or "").strip(),
             "target": str(row.get("target") or "").strip(),
             "target_alt": "",
-            "language": normalize_language(row.get("language") or "en"),
+            "language": str(row.get("language") or "") if row.get("_parse_error") else normalize_language(row.get("language") or "en"),
             "category": str(row.get("category") or "").strip(),
             "note": str(row.get("note") or "").strip(),
             "target_column_present": True,
         }
         for row in rows
-        if str(row.get("source") or "").strip()
     ]
     if not normalized_rows:
         raise ArchiveBatchError(400, "invalid_glossary_template", "术语表没有可分析的中文源文行。")
@@ -187,7 +206,105 @@ def _conflict(code: str, message: str, row: dict[str, Any]) -> dict[str, Any]:
         "language": row.get("language", ""),
         "term_key": row.get("term_key", ""),
         "source": row.get("source", ""),
+        "row_key": row.get("row_key", ""),
+        "row_number": row.get("row_number", 0),
     }
+
+
+def _apply_row_decisions(parsed: ParsedGlossaryArtifact, request: Any) -> ParsedGlossaryArtifact:
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for row in parsed.rows:
+        by_key.setdefault(row["row_key"], []).append(row)
+    decisions: dict[str, dict[str, Any]] = {}
+    for raw_decision in getattr(request, "row_decisions", None) or []:
+        decision = raw_decision.model_dump(exclude_none=True) if hasattr(raw_decision, "model_dump") else dict(raw_decision)
+        row_key = str(decision.get("row_key") or "")
+        if row_key not in by_key or row_key in decisions:
+            raise ArchiveBatchError(400, "invalid_row_decision", "行处理项不存在或重复，请重新分析文件。")
+        if decision.get("action") not in {"ignore", "edit"}:
+            raise ArchiveBatchError(400, "invalid_row_decision", "行处理方式必须是忽略或编辑。")
+        if decision.get("action") == "edit" and any(row.get("_parse_error") for row in by_key[row_key]):
+            raise ArchiveBatchError(400, "invalid_row_decision", "该行语种无法识别，请修正源文件中的 language 后重新上传，或忽略该行。")
+        if "source" in decision and not str(decision["source"]).strip():
+            raise ArchiveBatchError(400, "invalid_row_decision", "编辑后的中文源文不能为空。")
+        normalized_targets: dict[str, str] = {}
+        available_languages = {row["language"] for row in by_key[row_key]}
+        for raw_language, target in (decision.get("targets") or {}).items():
+            try:
+                language = require_supported_language(raw_language)
+            except ValueError as exc:
+                raise ArchiveBatchError(400, "invalid_row_decision", "编辑译文的语言无效。") from exc
+            if language not in available_languages or language in normalized_targets:
+                raise ArchiveBatchError(400, "invalid_row_decision", "只能编辑当前文件所选行中已有的语种，且不能重复。")
+            normalized_targets[language] = str(target).strip()
+        decisions[row_key] = {**decision, "targets": normalized_targets}
+
+    rows: list[dict[str, Any]] = []
+    ignored_keys: set[str] = set()
+    for original in parsed.rows:
+        row = dict(original)
+        decision = decisions.get(row["row_key"], {})
+        if decision.get("action") == "ignore":
+            ignored_keys.add(row["row_key"])
+            continue
+        if decision.get("action") == "edit":
+            row["_edited_fields"] = [field for field in ("term_key", "source", "category", "note") if field in decision]
+            for field in ("term_key", "source", "category", "note"):
+                if field in decision:
+                    row[field] = str(decision[field]).strip()
+            if row["language"] in decision["targets"]:
+                row["target"] = decision["targets"][row["language"]]
+        rows.append(row)
+    return ParsedGlossaryArtifact(rows, parsed.columns, parsed.sheet, parsed.languages, len(ignored_keys))
+
+
+def _conflict_groups(rows: list[dict[str, Any]], conflicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group connected source rows, not repeated per-language diagnostics."""
+    parents = {row["row_key"]: row["row_key"] for row in rows}
+
+    def find(key: str) -> str:
+        while parents[key] != key:
+            parents[key] = parents[parents[key]]
+            key = parents[key]
+        return key
+
+    identities: dict[tuple[str, str], str] = {}
+    for row in rows:
+        key = row["row_key"]
+        for kind, value in (("id", row["term_key"]), ("source", _source_key(row["source"]))):
+            if not value:
+                continue
+            identity = (kind, value)
+            if identity in identities:
+                parents[find(key)] = find(identities[identity])
+            else:
+                identities[identity] = key
+    grouped_conflicts: dict[str, list[dict[str, Any]]] = {}
+    for conflict in conflicts:
+        key = conflict["row_key"]
+        grouped_conflicts.setdefault(find(key), []).append(conflict)
+    grouped_rows: dict[str, dict[str, dict[str, Any]]] = {key: {} for key in grouped_conflicts}
+    for row in rows:
+        root = find(row["row_key"])
+        if root not in grouped_rows:
+            continue
+        source_row = grouped_rows[root].setdefault(row["row_key"], {
+            "row_key": row["row_key"], "row_number": row["row_number"],
+            "term_key": row["term_key"], "source": row["source"],
+            "category": row["category"], "note": row["note"], "targets": {},
+            **({"edit_blocked_reason": row["_parse_error"]["message"]} if row.get("_parse_error") else {}),
+        })
+        source_row["targets"][row["language"] or "未指定语种"] = row["target"]
+    result = []
+    for root, row_conflicts in grouped_conflicts.items():
+        source_rows = sorted(grouped_rows[root].values(), key=lambda row: row["row_number"])
+        result.append({
+            "id": f"conflict:{source_rows[0]['row_key']}",
+            "codes": list(dict.fromkeys(conflict["code"] for conflict in row_conflicts)),
+            "messages": list(dict.fromkeys(conflict["message"] for conflict in row_conflicts)),
+            "rows": source_rows,
+        })
+    return sorted(result, key=lambda group: group["rows"][0]["row_number"])
 
 
 def _input_conflicts(rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
@@ -206,7 +323,13 @@ def _input_conflicts(rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any
             by_source.setdefault((language, source_key), []).append(index)
             by_source_global.setdefault(source_key, []).append(index)
 
-    result: dict[int, list[dict[str, Any]]] = {}
+    result: dict[int, list[dict[str, Any]]] = {
+        index: [_conflict("missing_source", "该行有内容但缺少中文源文，请补齐源文或忽略该行。", row)]
+        for index, row in enumerate(rows) if not _source_key(row.get("source"))
+    }
+    for index, row in enumerate(rows):
+        if error := row.get("_parse_error"):
+            result.setdefault(index, []).append(_conflict(error["code"], error["message"], row))
     for indices in by_id.values():
         if len(indices) > 1:
             for index in indices:
@@ -256,7 +379,10 @@ def _input_conflicts(rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any
             continue
         for index in indices:
             result.setdefault(index, []).append(_conflict(code, message, rows[index]))
-    return result
+    return {
+        index: list({conflict["code"]: conflict for conflict in reversed(conflicts)}.values())
+        for index, conflicts in result.items()
+    }
 
 
 def _make_after(
@@ -273,6 +399,10 @@ def _make_after(
     confirmed: bool = True,
 ) -> dict[str, Any]:
     created_at = str((before or {}).get("created_at") or timestamp)
+    shared_values = {
+        field: row.get(field) if field in row.get("_edited_fields", []) else row.get(field) or (before or {}).get(field)
+        for field in ("category", "note")
+    }
     return {
         "id": entity_id,
         "project_id": project_id,
@@ -282,8 +412,8 @@ def _make_after(
         "target": str(row.get("target") or "").strip(),
         "target_alt": "",
         "language": normalize_language(row.get("language") or (before or {}).get("language") or "en"),
-        "category": str(row.get("category") or (before or {}).get("category") or "").strip(),
-        "note": str(row.get("note") or (before or {}).get("note") or "").strip(),
+        "category": str(shared_values["category"] or "").strip(),
+        "note": str(shared_values["note"] or "").strip(),
         "source_type": source_type,
         "confirmed": confirmed,
         "active": 1,
@@ -595,6 +725,8 @@ def _plan_batch(
                 timestamp=timestamp,
             )
             sibling_row = {
+                "row_key": parsed.rows[index]["row_key"],
+                "row_number": parsed.rows[index]["row_number"],
                 "term_key": after.get("term_key", ""),
                 "source": after.get("source", ""),
                 "target": before.get("target", ""),
@@ -657,12 +789,16 @@ def analyze_glossary_archive(project_id: str, request: Any) -> dict[str, Any]:
     timestamp = db.now_iso()
     try:
         parsed = _parse_artifact(artifact, request)
+        parsed = _apply_row_decisions(parsed, request)
+        checksum = file_checksum(Path(artifact["path"]))
     except ArchiveBatchError:
         raise
+    except (FileNotFoundError, IsADirectoryError) as exc:
+        raise ArchiveBatchError(404, "artifact_file_missing", "原文件已丢失或不可用，请重新上传后分析。") from exc
+    except BadZipFile as exc:
+        raise ArchiveBatchError(400, "invalid_glossary_file", "该文件不是有效的 XLSX 工作簿或已损坏，请检查并重新上传。") from exc
     except (KeyError, ValueError) as exc:
         raise ArchiveBatchError(400, "invalid_glossary_template", str(exc)) from exc
-    path = Path(artifact["path"])
-    checksum = file_checksum(path)
     with db.connect() as conn:
         rows = [
             _glossary_row(row)
@@ -685,6 +821,10 @@ def analyze_glossary_archive(project_id: str, request: Any) -> dict[str, Any]:
         timestamp,
         rows,
     )
+    conflict_groups = _conflict_groups(parsed.rows, conflicts)
+    summary["conflict"] = len(conflict_groups)
+    summary["conflict_records"] = sum(bool(item["conflicts"]) for item in items)
+    summary["ignored_rows"] = parsed.ignored_rows
     request_payload = _request_payload(request)
     persist_archive_analysis(
         kind=ARCHIVE_KIND,
@@ -732,6 +872,7 @@ def analyze_glossary_archive(project_id: str, request: Any) -> dict[str, Any]:
         "summary": summary,
         "changes": changes,
         "conflicts": conflicts,
+        "conflict_groups": conflict_groups,
         "can_commit": not conflicts,
     }
 

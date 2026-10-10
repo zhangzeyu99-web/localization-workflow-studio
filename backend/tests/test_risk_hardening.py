@@ -919,7 +919,7 @@ def test_error_responses_do_not_leak_traceback_or_server_paths(monkeypatch: pyte
         )
         assert source_upload.status_code == 200, source_upload.text
         rejected_upload = client.post(
-            f"/api/projects/{project['id']}/files?kind=term_base",
+            f"/api/projects/{project['id']}/files?kind=asset&purpose=project_material",
             files={
                 "file": (
                     "full-language-table.xlsx",
@@ -952,8 +952,8 @@ def test_error_responses_do_not_leak_traceback_or_server_paths(monkeypatch: pyte
         (["ID", "CN"], 1001, False),
     ],
 )
-def test_complete_language_table_classifier_boundary(tmp_path: Path, headers: list[str], rows: int, expected: bool) -> None:
-    from app.workflow.asset_import_export import is_complete_language_table_for_glossary_import
+def test_project_material_language_table_classifier_boundary(tmp_path: Path, headers: list[str], rows: int, expected: bool) -> None:
+    from app.workflow.asset_import_export import _is_large_project_language_table
 
     path = tmp_path / "classifier-input.xlsx"
     wb = Workbook()
@@ -965,7 +965,7 @@ def test_complete_language_table_classifier_boundary(tmp_path: Path, headers: li
     wb.save(path)
     wb.close()
 
-    assert is_complete_language_table_for_glossary_import(path) is expected
+    assert _is_large_project_language_table(path) is expected
 
 
 def test_deployment_check_frontend_asset_comparison(tmp_path: Path) -> None:

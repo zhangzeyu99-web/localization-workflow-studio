@@ -19,6 +19,7 @@ from .table_helpers import (
     XLSX_IMPORT_SUFFIXES,
     _auto_language_indices,
     _column_index,
+    _json_glossary_language_error,
     _mapping_rows_to_matrix,
     _normalized_header_indices,
     _primary_target,
@@ -34,7 +35,6 @@ from .table_helpers import (
 
 _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD = 1000
 _LANGUAGE_TABLE_SOURCE_ALIASES = [alias for alias in SOURCE_HEADER_ALIASES if alias not in {"term", "术语"}]
-COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE = "这个文件看起来是完整语言表，不是项目术语表。请到「生成术语」或翻译流程 STEP5 做高频词扫描并生成术语候选，候选确认后才会进入项目术语库。"
 COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE = "这个文件看起来是完整语言表，请上传到 STEP4「语言表」。它不会作为项目资料参与术语提取。"
 INVALID_GLOSSARY_TEMPLATE_MESSAGE = "术语表格式有误，请重新上传。请先下载导入模板，按模板列填写：ID、CN、EN 或 KR/JP、分类、备注。"
 
@@ -56,7 +56,7 @@ def _has_complete_language_table_rows(headers: list[str], raw_rows: Any, row_thr
     return False
 
 
-def is_complete_language_table_for_glossary_import(path: Path, sheet: str | None = None, row_threshold: int = _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD) -> bool:
+def _is_large_project_language_table(path: Path, sheet: str | None = None, row_threshold: int = _LARGE_LANGUAGE_TABLE_ROW_THRESHOLD) -> bool:
     suffix = path.suffix.lower()
     if suffix == ".csv":
         headers, raw_rows = _read_csv_matrix(path)
@@ -88,13 +88,8 @@ def is_complete_language_table_for_glossary_import(path: Path, sheet: str | None
         wb.close()
 
 
-def guard_complete_language_table_for_glossary_import(path: Path, sheet: str | None = None) -> None:
-    if is_complete_language_table_for_glossary_import(path, sheet=sheet):
-        raise ValueError(COMPLETE_LANGUAGE_TABLE_GLOSSARY_IMPORT_MESSAGE)
-
-
 def guard_complete_language_table_for_project_material(path: Path, sheet: str | None = None) -> None:
-    if is_complete_language_table_for_glossary_import(path, sheet=sheet):
+    if _is_large_project_language_table(path, sheet=sheet):
         raise ValueError(COMPLETE_LANGUAGE_TABLE_PROJECT_MATERIAL_MESSAGE)
 
 
@@ -105,7 +100,6 @@ def preview_glossary_import(project_id: str, request: Any, import_all: bool = Fa
     if artifact["project_id"] != project_id:
         raise KeyError("artifact")
     path = Path(artifact["path"])
-    guard_complete_language_table_for_glossary_import(path, sheet=getattr(request, "sheet", None))
     language = require_supported_language(getattr(request, "language", "en") or "en")
     auto_languages = bool(getattr(request, "auto_languages", True))
     if auto_languages and not getattr(request, "target_column", None) and not getattr(request, "target_alt_column", None):
@@ -441,6 +435,9 @@ def _parse_multilingual_glossary_matrix(
     category_column: str | None,
     note_column: str | None,
     limit: int | None,
+    include_empty: bool = False,
+    first_row_number: int = 2,
+    include_invalid: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
     term_key_idx, source_idx, category_idx, note_idx, language_indices = _multilingual_glossary_layout(
         headers,
@@ -453,19 +450,20 @@ def _parse_multilingual_glossary_matrix(
         return [], {}, []
     rows: list[dict[str, Any]] = []
     source_rows = 0
-    for row in raw_rows:
+    for row_number, row in enumerate(raw_rows, start=first_row_number):
         source = _value_at(row, source_idx)
-        if not source:
+        if not source and not (include_invalid and any(value is not None and str(value).strip() for value in row)):
             continue
         source_rows += 1
         if limit is not None and source_rows > limit:
             break
         for code, (target_idx, alt_idx) in language_indices.items():
             target = _primary_target(_value_at(row, target_idx), _value_at(row, alt_idx))
-            if not target:
+            if not target and not include_empty:
                 continue
             rows.append(
                 {
+                    "row_number": row_number,
                     "term_key": _value_at(row, term_key_idx) if term_key_idx is not None else "",
                     "source": source,
                     "target": target,
@@ -506,9 +504,11 @@ def _read_multilingual_glossary_json_rows(
     category_column: str | None,
     note_column: str | None,
     limit: int | None,
+    include_empty: bool = False,
+    include_invalid: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
-    mappings = _read_json_mapping_rows(path, ("terms", "rows", "entries"))
-    if not any(str(row.get("language") or "").strip() for row in mappings):
+    mappings = _read_json_mapping_rows(path, ("terms", "rows", "entries"), preserve_positions=True)
+    if not any("language" in row for row in mappings):
         headers, raw_rows = _mapping_rows_to_matrix(mappings)
         return _parse_multilingual_glossary_matrix(
             headers,
@@ -518,22 +518,25 @@ def _read_multilingual_glossary_json_rows(
             category_column=category_column,
             note_column=note_column,
             limit=limit,
+            include_empty=include_empty,
+            first_row_number=1,
+            include_invalid=include_invalid,
         )
     rows: list[dict[str, Any]] = []
     columns: dict[str, Any] = {"term_key": "", "source": "", "languages": {}, "category": "", "note": ""}
-    for mapping in mappings:
+    for row_number, mapping in enumerate(mappings, start=1):
+        if not any(value is not None and str(value).strip() for value in mapping.values()):
+            continue
         raw_language = str(mapping.get("language") or "").strip()
-        if not raw_language:
+        language_error = _json_glossary_language_error(mapping, requires_language=True)
+        if language_error and not include_invalid:
             continue
-        try:
-            code = require_supported_language(raw_language)
-        except ValueError:
-            continue
+        code = raw_language if language_error else require_supported_language(raw_language)
         source, source_header = _mapping_pick(mapping, source_column, list(SOURCE_HEADER_ALIASES))
-        target, target_header = _mapping_pick(mapping, None, ["target", *target_aliases(code)])
-        legacy_alt, _ = _mapping_pick(mapping, None, ["target_alt", *alt_aliases(code)])
+        target, target_header = _mapping_pick(mapping, None, ["target", *(target_aliases(code) if not language_error else [])])
+        legacy_alt, _ = _mapping_pick(mapping, None, ["target_alt", *(alt_aliases(code) if not language_error else [])])
         target = _primary_target(target, legacy_alt)
-        if not source or not target:
+        if (not source and not include_invalid) or (not target and not include_empty):
             continue
         if limit is not None and len(rows) >= limit:
             break
@@ -542,6 +545,8 @@ def _read_multilingual_glossary_json_rows(
         note, note_header = _mapping_pick(mapping, note_column, ["note", "notes", "comment", "备注"])
         rows.append(
             {
+                **({"_parse_error": {"code": "invalid_language", "message": language_error}} if language_error else {}),
+                "row_number": row_number,
                 "term_key": term_key,
                 "source": source,
                 "target": target,
@@ -555,7 +560,8 @@ def _read_multilingual_glossary_json_rows(
         columns["source"] = columns["source"] or source_header
         columns["category"] = columns["category"] or category_header
         columns["note"] = columns["note"] or note_header
-        columns["languages"].setdefault(code, {"target": target_header, "target_alt": ""})
+        if not language_error:
+            columns["languages"].setdefault(code, {"target": target_header, "target_alt": ""})
     languages = [code for code in LANGUAGE_ORDER if any(row.get("language") == code for row in rows)]
     return rows, columns, languages
 
@@ -568,6 +574,8 @@ def _read_multilingual_glossary_rows(
     category_column: str | None = None,
     note_column: str | None = None,
     limit: int | None = 100,
+    include_empty: bool = False,
+    include_invalid: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
     suffix = path.suffix.lower()
     if suffix == ".xls":
@@ -582,6 +590,8 @@ def _read_multilingual_glossary_rows(
             category_column=category_column,
             note_column=note_column,
             limit=limit,
+            include_empty=include_empty,
+            include_invalid=include_invalid,
         )
     if suffix == ".json":
         return _read_multilingual_glossary_json_rows(
@@ -591,6 +601,8 @@ def _read_multilingual_glossary_rows(
             category_column=category_column,
             note_column=note_column,
             limit=limit,
+            include_empty=include_empty,
+            include_invalid=include_invalid,
         )
     if suffix not in XLSX_IMPORT_SUFFIXES:
         raise UnsupportedImportFormatError(suffix, (".xlsx", ".csv", ".json"))
@@ -608,10 +620,15 @@ def _read_multilingual_glossary_rows(
                 )
             except (KeyError, ValueError):
                 return False
+            if include_invalid and language_indices:
+                return any(
+                    any(value is not None and str(value).strip() for value in row)
+                    for row in worksheet.iter_rows(min_row=2, values_only=True)
+                )
             return bool(language_indices) and _worksheet_has_data(
                 worksheet,
                 source_idx,
-                [index for pair in language_indices.values() for index in pair],
+                [source_idx] if include_empty else [index for pair in language_indices.values() for index in pair],
             )
 
         worksheet = _select_xlsx_data_sheet(workbook, sheet, is_candidate, allow_none=True)
@@ -625,6 +642,8 @@ def _read_multilingual_glossary_rows(
             category_column=category_column,
             note_column=note_column,
             limit=limit,
+            include_empty=include_empty,
+            include_invalid=include_invalid,
         )
     finally:
         workbook.close()

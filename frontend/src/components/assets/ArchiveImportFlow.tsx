@@ -8,10 +8,12 @@ import {
   type ArchiveImportMode,
   type ArchiveImportStage,
   type ArchiveImportSummary,
+  type GlossaryImportRow,
+  type GlossaryRowDecision,
 } from '../../domain/archiveImport'
 import { useArchiveImportFlow } from '../../hooks/useArchiveImportFlow'
 import { api } from '../../apiClient'
-import { languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
+import { isLanguageCode, languageSpec, supportedLanguages, type LanguageCode } from '../../languages'
 import type { Artifact, Project } from '../../types'
 import '../../styles/archive-import.css'
 
@@ -56,6 +58,10 @@ function actionLabel(action?: string): string {
   } as Record<string, string>)[String(action || '')] || String(action || '-')
 }
 
+function sheetLabel(sheet?: string): string {
+  return sheet === '__csv__' ? 'CSV 数据' : sheet === '__json__' ? 'JSON 数据' : sheet || '自动工作表'
+}
+
 function committedLanguageStats(result: ArchiveImportCommitResult): Array<{ language: string; count: number | null }> {
   const counts = new Map<string, number | null>((result.languages || []).map((language) => [language, null]))
   if (result.language_summary && Object.keys(result.language_summary).length) {
@@ -87,6 +93,48 @@ function focusableElements(root: HTMLElement): HTMLElement[] {
   )).filter((element) => !element.hasAttribute('hidden') && element.getClientRects().length > 0)
 }
 
+function GlossaryConflictRow({ row, decision, disabled, canKeep, onDecision, onKeep }: {
+  row: GlossaryImportRow
+  decision?: GlossaryRowDecision
+  disabled: boolean
+  canKeep: boolean
+  onDecision: (decision: GlossaryRowDecision | null) => void
+  onKeep: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const value = decision?.action === 'edit' ? { ...row, ...decision, targets: { ...row.targets, ...decision.targets } } : row
+  const ignored = decision?.action === 'ignore'
+  function edit(updates: Partial<GlossaryRowDecision>) {
+    onDecision({ row_key: row.row_key, action: 'edit', term_key: value.term_key, source: value.source, category: value.category, note: value.note, targets: value.targets, ...updates })
+  }
+  return <article className={`archive-import-conflict-row${ignored ? ' ignored' : ''}`} data-testid={`glossary-conflict-row-${row.row_key}`}>
+    <div className="archive-import-conflict-row-head">
+      <strong>原表第 {row.row_number} 行 · 编号 {value.term_key || '未填写'}</strong>
+      <span>{ignored ? '已选忽略' : decision?.action === 'edit' ? '已修改' : '待处理'}</span>
+    </div>
+    <p className="archive-import-conflict-source">{value.source}</p>
+    {row.edit_blocked_reason ? <p className="field-hint">需回源文件修正语种，或忽略此条。</p> : null}
+    {editing && !row.edit_blocked_reason ? <div className="archive-import-column-grid archive-import-row-editor">
+      <label><span>术语编号</span><input aria-label={`第 ${row.row_number} 行术语编号`} disabled={disabled} value={value.term_key} onChange={(event) => edit({ term_key: event.target.value })} /></label>
+      <label><span>中文原文</span><input aria-label={`第 ${row.row_number} 行中文原文`} disabled={disabled} value={value.source} onChange={(event) => edit({ source: event.target.value })} /></label>
+      <label><span>分类</span><input aria-label={`第 ${row.row_number} 行分类`} disabled={disabled} value={value.category} onChange={(event) => edit({ category: event.target.value })} /></label>
+      <label><span>备注</span><input aria-label={`第 ${row.row_number} 行备注`} disabled={disabled} value={value.note} onChange={(event) => edit({ note: event.target.value })} /></label>
+      {Object.entries(value.targets).map(([language, target]) => <label key={language}>
+        <span>{languageSpec(language).short} 译文</span>
+        <textarea aria-label={`第 ${row.row_number} 行 ${languageSpec(language).short} 译文`} disabled={disabled} value={target} onChange={(event) => edit({ targets: { ...value.targets, [language]: event.target.value } })} />
+      </label>)}
+    </div> : <dl className="archive-import-row-targets">
+      {Object.entries(value.targets).map(([language, target]) => <div key={language}><dt>{isLanguageCode(language) ? languageSpec(language).short : language}</dt><dd>{target || '（空，保留已有译文）'}</dd></div>)}
+    </dl>}
+    <div className="archive-import-row-actions">
+      {ignored ? <button type="button" className="btn btn-ghost btn-sm" disabled={disabled} onClick={() => onDecision(null)}>撤销忽略</button>
+        : <button type="button" className="btn btn-ghost btn-sm" disabled={disabled} onClick={() => { setEditing(false); onDecision({ row_key: row.row_key, action: 'ignore' }) }}>忽略此条</button>}
+      {!ignored ? <button type="button" className="btn btn-ghost btn-sm" disabled={disabled || Boolean(row.edit_blocked_reason)} onClick={() => setEditing(!editing)}>{editing ? '收起编辑' : '编辑此条'}</button> : null}
+      {canKeep && !ignored && !row.edit_blocked_reason ? <button type="button" className="btn btn-sm" disabled={disabled} title="忽略本组其余原表行，再重新预览" onClick={onKeep}>本组只保留此条</button> : null}
+    </div>
+  </article>
+}
+
 export function ArchiveImportFlow({
   project,
   kind,
@@ -105,6 +153,7 @@ export function ArchiveImportFlow({
   const [pendingReviewCount, setPendingReviewCount] = useState<number | null>(null)
   const [pendingReviewError, setPendingReviewError] = useState(false)
   const [pendingReviewRetry, setPendingReviewRetry] = useState(0)
+  const [conflictPage, setConflictPage] = useState(0)
   const flow = useArchiveImportFlow({
     projectId: project.id,
     kind,
@@ -116,13 +165,21 @@ export function ArchiveImportFlow({
   const title = kind === 'translations' ? '安全导入译文归档' : '导入已确认术语'
   const description = kind === 'translations'
     ? '先分析真实差异，再明确提交。选择或上传文件不会自动写入归档。'
-    : '仅导入已经人工确认过的术语表；完整语言表请使用候选扫描流程。'
+    : '文件先存档，再预览术语差异；冲突可逐条处理，确认后才写入术语库。'
   const assets = useMemo(() => {
     const allowed = (project.artifacts || []).filter((artifact) => artifactCanBeImported(kind, artifact))
     if (state.artifact && !allowed.some((artifact) => artifact.id === state.artifact?.id)) return [state.artifact, ...allowed]
     return allowed
   }, [kind, project.artifacts, state.artifact])
   const datasets = flow.lineages
+  const conflictGroups = state.preview?.conflict_groups || []
+  const ignoredCount = state.rowDecisions.filter((item) => item.action === 'ignore').length
+  const editedCount = state.rowDecisions.filter((item) => item.action === 'edit').length
+  const visibleSummaryFields = kind === 'glossary'
+    ? [...summaryFields.filter((field) => !['clear', 'deactivate', 'conflict'].includes(field.key)), { key: 'ignored_rows' as const, label: '忽略原行' }, { key: 'conflict' as const, label: '冲突组' }]
+    : summaryFields
+
+  useEffect(() => setConflictPage(0), [state.preview?.batch_id])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -194,7 +251,7 @@ export function ArchiveImportFlow({
   }
 
   async function requestCommit() {
-    if (state.settings.mode === 'snapshot') {
+    if (state.settings.mode === 'snapshot' && !state.commitUncertain) {
       setSnapshotConfirmOpen(true)
       return
     }
@@ -269,7 +326,7 @@ export function ArchiveImportFlow({
                   }}
                 />
               </label>
-              {kind === 'glossary' ? <div className="archive-import-guidance">这是人工确认入口。完整语言表不会直接写入术语库，应改用“扫描候选”。</div> : null}
+              {kind === 'glossary' ? <div className="archive-import-guidance">已确认的术语表可直接导入，不按 1000 条拆分。完整语言表建议先提取术语候选；上传存档与术语入库分开，不会自动写入。</div> : null}
             </section>
           ) : null}
 
@@ -328,7 +385,7 @@ export function ArchiveImportFlow({
                     }}
                   >
                     <option value="">{state.settings.mode === 'snapshot' ? '请选择后端识别的既有数据集' : '自动判断（匹配既有则更新，否则新建数据集）'}</option>
-                    {datasets.map((dataset) => <option key={dataset.value} value={dataset.value}>{dataset.key}{dataset.sheet ? ` · ${dataset.sheet}` : ''}</option>)}
+                    {datasets.map((dataset) => <option key={dataset.value} value={dataset.value}>{dataset.key}{dataset.sheet ? ` · ${sheetLabel(dataset.sheet)}` : ''}</option>)}
                   </select>
                   {flow.lineagesLoading ? <small>正在读取既有数据集…</small> : null}
                   {flow.lineagesError ? <small role="alert">{flow.lineagesError}</small> : null}
@@ -337,6 +394,13 @@ export function ArchiveImportFlow({
 
               <fieldset className="archive-import-fieldset">
                 <legend>语言范围</legend>
+                {kind === 'glossary' ? <div className="archive-import-inspection" role="status">
+                  {state.busy === 'inspect' ? '正在识别文件语种…' : state.inspection ? <>
+                    <span>文件识别：{state.inspection.languages.map((language) => languageSpec(language).short).join(' / ') || '未识别到目标语言'} · {sheetLabel(state.inspection.sheet)} · {state.inspection.source_rows} 条原表记录</span>
+                    <small>{state.settings.targetColumn.trim() ? '指定单列时保留你的语言选择，不会自动扩展到其他语种。' : state.inspection.languages.length ? '首次识别会选中全部语种；手动调整后保留你的选择。' : '请手动选择语言，并在高级列映射中指定目标译文列。'}</small>
+                    {(state.inspection.warnings || []).map((warning) => <small key={warning}>{warning}</small>)}
+                  </> : <span>{state.inspectionError || '请选择本次要导入的目标语言。'}</span>}
+                </div> : null}
                 <div className="archive-import-language-grid">
                   {supportedLanguages.map((language) => {
                     const selected = state.settings.languages.includes(language.code)
@@ -354,6 +418,9 @@ export function ArchiveImportFlow({
                     )
                   })}
                 </div>
+                {kind === 'glossary' && state.settings.targetColumn.trim() ? <div className="archive-import-guidance" role="status">
+                  已指定目标译文列“{state.settings.targetColumn}”，只能选择一种目标语言。{state.settings.languages.length !== 1 ? '请点击上方所需语种，单选后才能分析。' : '本次仅写入所选语种。'}
+                </div> : null}
               </fieldset>
 
               {state.availableSheets.length ? (
@@ -384,24 +451,54 @@ export function ArchiveImportFlow({
               <div className="archive-import-section-head">
                 <div><span>第 3 步</span><h4 id="archive-preview-heading">核对真实差异</h4></div>
                 <div className="archive-import-preview-scope">
-                  {state.preview.dataset_key || '新数据集'} · {state.preview.sheet || '自动工作表'} · {state.preview.languages.map((language) => languageSpec(language).short).join('/')}
+                  {state.preview.dataset_key || '新数据集'} · {sheetLabel(state.preview.sheet)} · {state.preview.languages.map((language) => languageSpec(language).short).join('/')}
                 </div>
               </div>
-              <div className="archive-import-summary-grid">
-                {summaryFields.map((field) => (
+              <div className="archive-import-summary-grid" style={kind === 'glossary' ? { gridTemplateColumns: `repeat(${visibleSummaryFields.length}, minmax(0, 1fr))` } : undefined}>
+                {visibleSummaryFields.map((field) => (
                   <div key={field.key} data-testid={`archive-import-summary-${field.key}`} className={['protected', 'conflict'].includes(field.key) ? 'warn' : ''}>
-                    <span>{field.label}</span>
+                    <span>{kind === 'glossary' && field.key === 'conflict' ? '冲突组' : field.label}</span>
                     <strong>{archiveImportSummaryValue(state.preview?.summary, field.key)}</strong>
                   </div>
                 ))}
               </div>
+              {kind === 'glossary' ? <div className="archive-import-count-note">新增、更新、跳过按各语种译文计数；忽略按原表行计数。{archiveImportSummaryValue(state.preview.summary, 'conflict_records') > 0 ? ` 当前冲突涉及 ${archiveImportSummaryValue(state.preview.summary, 'conflict_records')} 条译文。` : ''}</div> : null}
               {state.settings.mode === 'snapshot' ? (
                 <div className="archive-import-snapshot-warning">
-                  <strong>快照范围：{state.preview.dataset_key} · {state.preview.sheet}</strong>
+                  <strong>快照范围：{state.preview.dataset_key} · {sheetLabel(state.preview.sheet)}</strong>
                   <span>将停用 {archiveImportSummaryValue(state.preview.summary, 'deactivate')} 条当前数据集内、但本次文件缺失的译文。</span>
                 </div>
               ) : null}
-              {state.preview.conflicts.length || !state.preview.can_commit ? (
+              {kind === 'glossary' && conflictGroups.length ? <section className="archive-import-resolution" aria-label="逐条处理术语冲突">
+                <div className="archive-import-resolution-head">
+                  <div><strong>{conflictGroups.length} 组冲突待处理</strong><p>忽略只影响本次入库，原文件已保留。编辑或保留一条后，重新预览有效记录。</p></div>
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={Boolean(state.busy) || state.commitUncertain} onClick={() => void flow.ignoreAllConflicts()}>忽略全部冲突行并重新预览</button>
+                </div>
+                {conflictGroups.slice(conflictPage * 5, (conflictPage + 1) * 5).map((group, index) => <section key={group.id} className="archive-import-conflict-group">
+                  <header><strong>冲突 {conflictPage * 5 + index + 1} · {group.rows[0]?.source || '术语记录'}</strong><span>{group.rows.length} 条原表记录</span></header>
+                  <div className="archive-import-conflict-reasons">{[...new Set(group.messages)].map((message) => <span key={message}>{message}</span>)}</div>
+                  <div className="archive-import-conflict-rows">
+                    {group.rows.map((row) => <GlossaryConflictRow key={row.row_key} row={row} decision={state.rowDecisions.find((item) => item.row_key === row.row_key)} disabled={Boolean(state.busy) || state.commitUncertain} canKeep={group.rows.length > 1} onDecision={(decision) => flow.setRowDecision(row.row_key, decision)} onKeep={() => flow.keepConflictRow(group, row.row_key)} />)}
+                  </div>
+                </section>)}
+                {conflictGroups.length > 5 ? <div className="archive-import-row-actions">
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={conflictPage === 0} onClick={() => setConflictPage(conflictPage - 1)}>上一页</button>
+                  <span>第 {conflictPage + 1} / {Math.ceil(conflictGroups.length / 5)} 页</span>
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={(conflictPage + 1) * 5 >= conflictGroups.length} onClick={() => setConflictPage(conflictPage + 1)}>下一页</button>
+                </div> : null}
+              </section> : null}
+              {kind === 'glossary' && state.rowDecisions.length ? <details className="archive-import-decisions" open={state.decisionsDirty || undefined}>
+                <summary>本次处理：忽略 {ignoredCount} 条，编辑 {editedCount} 条{state.decisionsDirty ? ' · 待重新预览' : ' · 已计入上方预览'}</summary>
+                <div className="archive-import-decision-list">
+                  {state.rowDecisions.map((decision) => {
+                    const row = state.decisionRows.find((item) => item.row_key === decision.row_key)
+                    return <div key={decision.row_key}><span>{decision.action === 'ignore' ? '忽略' : '编辑'} · 原表第 {row?.row_number || '-'} 行 · {decision.source ?? row?.source ?? decision.row_key}</span><button type="button" className="btn btn-ghost btn-sm" disabled={Boolean(state.busy) || state.commitUncertain} onClick={() => flow.setRowDecision(decision.row_key, null)}>撤销</button></div>
+                  })}
+                </div>
+                <button type="button" className="btn btn-ghost btn-sm" disabled={Boolean(state.busy) || state.commitUncertain} onClick={flow.resetRowDecisions}>撤销全部处理选择</button>
+              </details> : null}
+              {state.decisionsDirty ? <div className="archive-import-guidance" role="status">处理选择已更改，上方仍是上一次预览。请点击“重新预览”后再提交。</div> : null}
+              {(!conflictGroups.length || kind !== 'glossary') && (state.preview.conflicts.length || !state.preview.can_commit) ? (
                 <div className="archive-import-conflicts" role="alert">
                   <strong>当前预览不能提交</strong>
                   {(state.preview.conflicts.length ? state.preview.conflicts : [{ message: '后端判定 can_commit=false，请修正设置后重新分析。' }]).map((conflict, index) => (
@@ -427,7 +524,7 @@ export function ArchiveImportFlow({
                       {state.preview.changes.slice(0, 20).map((change, index) => (
                         <tr key={`${change.ordinal || index}-${change.language || ''}`}>
                           <td>{actionLabel(change.action)}</td>
-                          <td>{languageSpec(change.language || defaultLanguage).short}</td>
+                          <td>{change.language ? isLanguageCode(change.language) ? languageSpec(change.language).short : change.language : '未指定语种'}</td>
                           <td>{change.entry_key || change.term_key || '-'}</td>
                           <td>{change.source || '-'}</td>
                           <td>{change.explicit_empty ? '（明确清空）' : change.target || '-'}</td>
@@ -450,8 +547,8 @@ export function ArchiveImportFlow({
                 <div><dt>语言</dt><dd>{(state.result.languages || state.preview?.languages || []).map((language) => languageSpec(language).short).join(' / ') || '-'}</dd></div>
                 <div><dt>写入变化</dt><dd>{state.result.changed_count ?? (archiveImportSummaryValue(state.result.summary, 'insert') + archiveImportSummaryValue(state.result.summary, 'update'))}</dd></div>
               </dl>
-              <div className="archive-import-summary-grid compact">
-                {summaryFields.map((field) => (
+              <div className="archive-import-summary-grid compact" style={kind === 'glossary' ? { gridTemplateColumns: `repeat(${visibleSummaryFields.length}, minmax(0, 1fr))` } : undefined}>
+                {visibleSummaryFields.map((field) => (
                   <div key={field.key}><span>{field.label}</span><strong>{archiveImportSummaryValue(state.result?.summary, field.key)}</strong></div>
                 ))}
               </div>
@@ -476,7 +573,7 @@ export function ArchiveImportFlow({
 
         <footer className="archive-import-footer">
           <div>
-            {state.stage === 'preview' ? <button type="button" className="btn btn-ghost" disabled={Boolean(state.busy)} onClick={flow.showSettings}>返回设置</button> : null}
+            {state.stage === 'preview' ? <button type="button" className="btn btn-ghost" disabled={Boolean(state.busy) || state.commitUncertain} onClick={flow.showSettings}>返回设置</button> : null}
             {state.stage === 'settings' ? <button type="button" className="btn btn-ghost" disabled={Boolean(state.busy)} onClick={flow.showSource}>返回来源</button> : null}
           </div>
           <div className="archive-import-primary-actions">
@@ -494,10 +591,10 @@ export function ArchiveImportFlow({
                   type="button"
                   className="btn btn-primary"
                   data-testid="archive-import-analyze"
-                  disabled={state.stage !== 'settings' || !flow.canAnalyze}
+                  disabled={!(state.stage === 'settings' || (kind === 'glossary' && state.stage === 'preview')) || !flow.canAnalyze}
                   onClick={() => void flow.analyze()}
                 >
-                  {state.busy === 'analyze' ? '正在分析…' : '分析差异'}
+                  {state.busy === 'analyze' ? '正在分析…' : state.stage === 'preview' && kind === 'glossary' ? '重新预览' : '分析差异'}
                 </button>
                 <button
                   ref={commitButtonRef}
@@ -507,7 +604,7 @@ export function ArchiveImportFlow({
                   disabled={!flow.canCommit}
                   onClick={() => void requestCommit()}
                 >
-                  {state.busy === 'commit' ? '正在提交…' : state.settings.mode === 'snapshot' ? '提交快照' : '确认提交'}
+                  {state.busy === 'commit' ? '正在提交并核验…' : state.commitUncertain ? '核对并重试本批次' : state.settings.mode === 'snapshot' ? '提交快照' : '确认提交'}
                 </button>
               </>
             )}

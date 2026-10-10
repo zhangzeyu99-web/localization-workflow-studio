@@ -599,6 +599,19 @@ export function GlossaryToolsPanel({
   )
 }
 
+function glossaryRowDraft(row: WideGlossaryRow): GlossaryWideDraft {
+  return {
+    term_key: row.term_key || '',
+    source: row.source || '',
+    category: row.category || '',
+    note: row.note || '',
+    targets: supportedLanguages.reduce((acc, lang) => {
+      acc[lang.code] = row.translations[lang.code]?.target || ''
+      return acc
+    }, {} as Record<LanguageCode, string>),
+  }
+}
+
 function WideGlossaryTermRowImpl({
   row,
   visibleLanguages,
@@ -620,30 +633,36 @@ function WideGlossaryTermRowImpl({
 }) {
   const [editing, setEditing] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
-  const [draft, setDraft] = useState({
-    term_key: row.term_key || '',
-    source: row.source || '',
-    category: row.category || '',
-    note: row.note || '',
-    targets: supportedLanguages.reduce((acc, lang) => {
-      acc[lang.code] = row.translations[lang.code]?.target || ''
-      return acc
-    }, {} as Record<LanguageCode, string>)
-  })
+  const [draft, setDraft] = useState(() => glossaryRowDraft(row))
+  const loadedLanguages = useRef(new Set(Object.keys(row.translations)))
 
   useEffect(() => {
-    setDraft({
-      term_key: row.term_key || '',
-      source: row.source || '',
-      category: row.category || '',
-      note: row.note || '',
-      targets: supportedLanguages.reduce((acc, lang) => {
-        acc[lang.code] = row.translations[lang.code]?.target || ''
-        return acc
-      }, {} as Record<LanguageCode, string>)
-    })
+    if (!editing) {
+      setDraft(glossaryRowDraft(row))
+      loadedLanguages.current = new Set(Object.keys(row.translations))
+      return
+    }
+    // Loading another visible language must not turn its saved value into an empty edit.
+    const addedLanguages = supportedLanguages.filter(({ code }) => row.translations[code] && !loadedLanguages.current.has(code))
+    if (addedLanguages.length) {
+      setDraft((value) => ({
+        ...value,
+        targets: addedLanguages.reduce((targets, { code }) => ({ ...targets, [code]: row.translations[code]!.target }), value.targets),
+      }))
+      addedLanguages.forEach(({ code }) => loadedLanguages.current.add(code))
+    }
+  }, [editing, row.source_key, row.term_key, row.source, row.category, row.note, JSON.stringify(row.translations)])
+
+  function beginEditing() {
+    setDraft(glossaryRowDraft(row))
+    loadedLanguages.current = new Set(Object.keys(row.translations))
+    setEditing(true)
+  }
+
+  function cancelEditing() {
+    setDraft(glossaryRowDraft(row))
     setEditing(false)
-  }, [row.source_key, row.term_key, row.source, row.category, row.note, JSON.stringify(row.translations)])
+  }
 
   async function save() {
     setActionBusy(true)
@@ -675,12 +694,12 @@ function WideGlossaryTermRowImpl({
   }
 
   function sharedCell(key: 'term_key' | 'source' | 'category' | 'note') {
-    if (!editing) return <span className="readonly-cell">{draft[key] || '-'}</span>
+    if (!editing) return <span className="readonly-cell">{row[key] || '-'}</span>
     return <input className="cell-input" value={draft[key]} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
   }
 
   function targetCell(code: LanguageCode) {
-    if (!editing) return <span className="readonly-cell">{draft.targets[code] || '-'}</span>
+    if (!editing) return <span className="readonly-cell">{row.translations[code]?.target || '-'}</span>
     if (!row.translations[code]?.record) {
       return <input className="cell-input" value="" disabled aria-label={`${languageSpec(code).short} 无归档记录`} title="无该语言记录，请先手动新增" placeholder="无该语言记录" />
     }
@@ -705,10 +724,10 @@ function WideGlossaryTermRowImpl({
                 {editing ? (
                   <>
                     <button type="button" className="btn btn-primary btn-sm" disabled={actionBusy} onClick={save}>保存</button>
-                    <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={() => setEditing(false)}>取消</button>
+                    <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={cancelEditing}>取消</button>
                   </>
                 ) : (
-                  <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={() => setEditing(true)}>编辑</button>
+                  <button type="button" className="btn btn-sm" disabled={actionBusy} onClick={beginEditing}>编辑</button>
                 )}
                 <button
                   type="button"

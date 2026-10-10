@@ -20,6 +20,7 @@ from ..schemas import (
     GlossaryTermUpdate,
 )
 from ..archive_batch_engine import ArchiveBatchError
+from ..glossary_import_inspection import inspect_glossary_import
 from ..glossary_archive_batches import (
     analyze_glossary_archive,
     commit_glossary_archive,
@@ -300,6 +301,18 @@ def import_project_glossary(project_id: str, payload: GlossaryImportRequest) -> 
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project, artifact, or column not found") from exc
     except ValueError as exc:
+        raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
+
+
+@router.post("/api/projects/{project_id}/glossary/import/inspect")
+def inspect_project_glossary_import(project_id: str, payload: GlossaryImportRequest) -> dict[str, Any]:
+    try:
+        return inspect_glossary_import(project_id, payload)
+    except ArchiveBatchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except ImportContractError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=user_facing_error(exc)) from exc
 
 

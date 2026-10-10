@@ -153,7 +153,9 @@ def _read_csv_matrix(path: Path) -> tuple[list[str], list[tuple[Any, ...]]]:
         return headers, [tuple(row) for row in reader]
 
 
-def _read_json_mapping_rows(path: Path, collection_keys: tuple[str, ...]) -> list[dict[str, Any]]:
+def _read_json_mapping_rows(
+    path: Path, collection_keys: tuple[str, ...], *, preserve_positions: bool = False,
+) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if isinstance(payload, list):
         raw_rows = payload
@@ -167,7 +169,7 @@ def _read_json_mapping_rows(path: Path, collection_keys: tuple[str, ...]) -> lis
             raw_rows = [payload]
     else:
         raise ValueError("JSON import payload must be an array or object")
-    return [dict(row) for row in raw_rows if isinstance(row, dict)]
+    return [dict(row) if isinstance(row, dict) else {} for row in raw_rows if isinstance(row, dict) or preserve_positions]
 
 
 def _mapping_rows_to_matrix(rows: list[dict[str, Any]]) -> tuple[list[str], list[tuple[Any, ...]]]:
@@ -178,6 +180,19 @@ def _mapping_rows_to_matrix(rows: list[dict[str, Any]]) -> tuple[list[str], list
             if label and label not in headers:
                 headers.append(label)
     return headers, [tuple(row.get(header) for header in headers) for row in rows]
+
+
+def _json_glossary_language_error(row: dict[str, Any], *, requires_language: bool) -> str:
+    if not requires_language or not any(value is not None and str(value).strip() for value in row.values()):
+        return ""
+    raw_language = str(row.get("language") or "").strip()
+    if not raw_language:
+        return "该 JSON 记录缺少 language，无法确定译文语种。请在源文件补齐 language 后重新上传，或忽略该行。"
+    try:
+        require_supported_language(raw_language)
+    except ValueError:
+        return f"该 JSON 记录的 language（{raw_language}）不是支持的语种。请修正源文件后重新上传，或忽略该行。"
+    return ""
 
 
 def _auto_language_indices(headers: list[str], reserved_indices: set[int] | None = None) -> dict[str, tuple[int, int | None]]:
@@ -242,6 +257,8 @@ def _parse_glossary_matrix(
     language: str,
     limit: int | None,
     include_empty: bool,
+    row_numbers: Iterable[int] | None = None,
+    include_invalid: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     _, term_key_idx, source_idx, target_idx, target_alt_idx, category_idx, note_idx = _glossary_layout(
         headers,
@@ -254,15 +271,18 @@ def _parse_glossary_matrix(
         language=language,
     )
     rows: list[dict[str, Any]] = []
-    for row in raw_rows:
+    numbered_rows = zip(row_numbers, raw_rows) if row_numbers is not None else enumerate(raw_rows, start=2)
+    for row_number, row in numbered_rows:
         if limit is not None and len(rows) >= limit:
             break
         source = _value_at(row, source_idx)
         target = _primary_target(_value_at(row, target_idx), _value_at(row, target_alt_idx))
-        if not source or (not target and not include_empty):
+        has_values = any(value is not None and str(value).strip() for value in row)
+        if (not source and not (include_invalid and has_values)) or (not target and not include_empty):
             continue
         rows.append(
             {
+                "row_number": row_number,
                 "term_key": _value_at(row, term_key_idx) if term_key_idx is not None else "",
                 "source": source,
                 "target": target,
@@ -294,6 +314,7 @@ def _read_glossary_rows(
     limit: int | None = 100,
     include_empty: bool = False,
     allow_header_only: bool = False,
+    include_invalid: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     language = require_supported_language(language)
     suffix = path.suffix.lower()
@@ -313,16 +334,25 @@ def _read_glossary_rows(
             language=language,
             limit=limit,
             include_empty=include_empty,
+            include_invalid=include_invalid,
         )
     if suffix == ".json":
-        mappings = _read_json_mapping_rows(path, ("terms", "rows", "entries"))
-        mappings = [
-            row
-            for row in mappings
-            if not str(row.get("language") or "").strip() or normalize_language(row.get("language")) == language
+        mappings = _read_json_mapping_rows(path, ("terms", "rows", "entries"), preserve_positions=True)
+        requires_language = any("language" in row for row in mappings)
+        language_errors = {
+            row_number: message for row_number, row in enumerate(mappings, start=1)
+            if (message := _json_glossary_language_error(row, requires_language=requires_language))
+        }
+        numbered_mappings = [
+            (row_number, row)
+            for row_number, row in enumerate(mappings, start=1)
+            if (include_invalid and row_number in language_errors)
+            or not str(row.get("language") or "").strip() or normalize_language(row.get("language")) == language
         ]
+        original_languages = {row_number: str(row.get("language") or "").strip() for row_number, row in numbered_mappings}
+        mappings = [row for _, row in numbered_mappings]
         headers, raw_rows = _mapping_rows_to_matrix(mappings)
-        return _parse_glossary_matrix(
+        rows, columns = _parse_glossary_matrix(
             headers,
             raw_rows,
             term_key_column=term_key_column,
@@ -334,7 +364,15 @@ def _read_glossary_rows(
             language=language,
             limit=limit,
             include_empty=include_empty,
+            row_numbers=[row_number for row_number, _ in numbered_mappings],
+            include_invalid=include_invalid,
         )
+        if include_invalid:
+            for row in rows:
+                if message := language_errors.get(row["row_number"]):
+                    row["_parse_error"] = {"code": "invalid_language", "message": message}
+                    row["language"] = original_languages[row["row_number"]]
+        return rows, columns
     if suffix not in XLSX_IMPORT_SUFFIXES:
         raise UnsupportedImportFormatError(suffix, (".xlsx", ".csv", ".json"))
     wb = load_workbook(path, read_only=True, data_only=True)
@@ -356,6 +394,11 @@ def _read_glossary_rows(
                 return False
             if allow_header_only:
                 return True
+            if include_invalid:
+                return any(
+                    any(value is not None and str(value).strip() for value in row)
+                    for row in worksheet.iter_rows(min_row=2, values_only=True)
+                )
             if include_empty:
                 return _worksheet_has_source_data(worksheet, source_idx)
             return _worksheet_has_data(worksheet, source_idx, (target_idx, target_alt_idx))
@@ -374,6 +417,7 @@ def _read_glossary_rows(
             language=language,
             limit=limit,
             include_empty=include_empty,
+            include_invalid=include_invalid,
         )
     finally:
         wb.close()

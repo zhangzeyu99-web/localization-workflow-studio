@@ -90,6 +90,16 @@ class GlossaryBatchResolveRequest(BaseModel):
     candidate_ids: list[str] = Field(default_factory=list)
 
 
+class GlossaryImportRowDecision(BaseModel):
+    row_key: str
+    action: Literal["ignore", "edit"]
+    term_key: str | None = None
+    source: str | None = None
+    category: str | None = None
+    note: str | None = None
+    targets: dict[str, str] | None = None
+
+
 class GlossaryImportRequest(BaseModel):
     artifact_id: str
     mode: str = "merge"
@@ -107,6 +117,7 @@ class GlossaryImportRequest(BaseModel):
     category_column: str | None = None
     note_column: str | None = None
     limit: int = 100
+    row_decisions: list[GlossaryImportRowDecision] = Field(default_factory=list)
 
 
 class TranslationEntryPayload(BaseModel):
